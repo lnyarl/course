@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Course Library</title>
+<meta name="description" content="운영체제·네트워크·런타임·게임 AI 인터랙티브 학습자료 모음">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 레이아웃: 상단 제목 + 장 검색, 아래로 코스 카드 그리드. 카드마다 전체 장 목록을 펼쳐 한 화면에서 훑어볼 수 있게 함 */
+:root{
+  --bg:#f2f5f6; --surface:#ffffff; --sunk:#e8edf0; --ink:#13212b; --muted:#5a6b77; --line:#d4dde2; --accent:#0e7c86;
+  --c1:#2f6fd6; --c2:#7a4fd0; --c3:#0e8a7a; --c4:#4f8a1f; --c5:#c4741a; --c6:#c2415f;
+  --f-body:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0c1318; --surface:#131d24; --sunk:#0f181e; --ink:#e1eaef; --muted:#8a9eab; --line:#24333d; --accent:#3fc2cd;
+    --c1:#6fa0f0; --c2:#a888f0; --c3:#3cc4b0; --c4:#8cc456; --c5:#eba04a; --c6:#ee7792; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0c1318; --surface:#131d24; --sunk:#0f181e; --ink:#e1eaef; --muted:#8a9eab; --line:#24333d; --accent:#3fc2cd;
+  --c1:#6fa0f0; --c2:#a888f0; --c3:#3cc4b0; --c4:#8cc456; --c5:#eba04a; --c6:#ee7792; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 var(--f-body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+a{color:inherit}
+.wrap{max-width:1240px;margin:0 auto;padding-block:48px 72px;display:grid;gap:28px}
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:20px}
+.eyebrow{font:600 12px var(--f-mono);letter-spacing:.1em;color:var(--accent)}
+h1{margin:6px 0 8px;font-size:clamp(30px,4.5vw,46px);letter-spacing:-.02em;line-height:1.15;text-wrap:balance}
+.lead{margin:0;color:var(--muted);max-width:60ch}
+.stats{font:13px var(--f-mono);color:var(--muted);margin-top:10px;display:flex;gap:18px;flex-wrap:wrap}
+.stats b{color:var(--ink)}
+.search{display:grid;gap:6px;min-width:min(320px,100%)}
+.search label{font-size:12px;color:var(--muted)}
+.search input{font:15px var(--f-body);padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);width:100%}
+.search input:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;align-items:start}
+.course{background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:10px;padding:18px 18px 14px;display:grid;gap:12px;min-width:0}
+.course header{display:grid;gap:6px}
+.meta{display:flex;justify-content:space-between;align-items:center;font:600 11.5px var(--f-mono);letter-spacing:.06em}
+.tag{color:var(--c)}
+.count{color:var(--muted)}
+.course h2{margin:0;font-size:20px;line-height:1.3}
+.course h2 a{text-decoration:none}
+.course h2 a:hover{color:var(--c)}
+.course p{margin:0;color:var(--muted);font-size:13.5px}
+.ch{list-style:none;margin:0;padding:8px 0 0;border-top:1px solid var(--line);display:grid;gap:1px}
+.ch a{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:4px 6px;border-radius:5px;text-decoration:none;font-size:14px}
+.ch a:hover{background:var(--sunk)}
+.ch .no{font:12px/1.9 var(--f-mono);color:var(--c)}
+.ch .t{overflow-wrap:anywhere}
+.ch li[hidden]{display:none}
+.ch mark{background:none;color:var(--c);font-weight:700}
+.start{justify-self:start;font:600 13px var(--f-body);color:var(--c);text-decoration:none}
+.start:hover{text-decoration:underline}
+.empty{color:var(--muted);font-size:14px}
+footer{font-size:12.5px;color:var(--muted)}
+@media (max-width:420px){.grid{grid-template-columns:minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="eyebrow">INTERACTIVE COURSES</div>
+      <h1>Course Library</h1>
+      <p class="lead">운영체제, 네트워크, 런타임, 게임 AI를 도식·애니메이션·시뮬레이터로 직접 조작하며 배우는 학습자료 모음입니다.</p>
+      <div class="stats"><span>코스 <b>6</b></span><span>장·섹션 <b>98</b></span></div>
+    </div>
+    <div class="search">
+      <label for="q">모든 장에서 찾기</label>
+      <input id="q" type="search" placeholder="예: TLB, 혼잡 제어, GC" autocomplete="off">
+    </div>
+  </div>
+  <div class="grid" id="grid">
+<article class="course" style="--c:var(--c1)" data-title="현대 운영체제 메모리 관리">
+  <header>
+    <div class="meta"><span class="tag">운영체제</span><span class="count">16장</span></div>
+    <h2><a href="os-memory-course/">현대 운영체제 메모리 관리</a></h2>
+    <p>주소 변환의 원리에서 출발해 Linux 커널의 할당자, 회수, NUMA, 가상화, 보안까지 다룹니다.</p>
+  </header>
+  <ol class="ch">
+<li><a href="os-memory-course/01-hierarchy-address-space.html"><span class="no">01</span><span class="t">메모리 계층과 주소 공간</span></a></li>
+<li><a href="os-memory-course/02-contiguous-allocation.html"><span class="no">02</span><span class="t">주소 바인딩과 연속 할당</span></a></li>
+<li><a href="os-memory-course/03-paging-basics.html"><span class="no">03</span><span class="t">페이징과 주소 변환</span></a></li>
+<li><a href="os-memory-course/04-tlb.html"><span class="no">04</span><span class="t">TLB와 유효 접근 시간</span></a></li>
+<li><a href="os-memory-course/05-multilevel-page-tables.html"><span class="no">05</span><span class="t">다단계 페이지 테이블</span></a></li>
+<li><a href="os-memory-course/06-virtual-memory-page-fault.html"><span class="no">06</span><span class="t">가상 메모리와 페이지 폴트</span></a></li>
+<li><a href="os-memory-course/07-page-replacement.html"><span class="no">07</span><span class="t">페이지 교체 알고리즘</span></a></li>
+<li><a href="os-memory-course/08-thrashing-working-set.html"><span class="no">08</span><span class="t">스래싱과 워킹셋</span></a></li>
+<li><a href="os-memory-course/09-kernel-allocators.html"><span class="no">09</span><span class="t">커널 할당자 Buddy와 SLUB</span></a></li>
+<li><a href="os-memory-course/10-user-allocators.html"><span class="no">10</span><span class="t">유저 공간 할당자 malloc</span></a></li>
+<li><a href="os-memory-course/11-cow-mmap-pagecache.html"><span class="no">11</span><span class="t">COW, mmap, 페이지 캐시</span></a></li>
+<li><a href="os-memory-course/12-linux-reclaim-oom.html"><span class="no">12</span><span class="t">Linux 회수와 OOM</span></a></li>
+<li><a href="os-memory-course/13-numa-hugepages-cache.html"><span class="no">13</span><span class="t">캐시·NUMA·Huge Page</span></a></li>
+<li><a href="os-memory-course/14-memory-security.html"><span class="no">14</span><span class="t">메모리 보호 메커니즘</span></a></li>
+<li><a href="os-memory-course/15-virtualization-memory.html"><span class="no">15</span><span class="t">가상화와 메모리</span></a></li>
+<li><a href="os-memory-course/16-practice-diagnostics.html"><span class="no">16</span><span class="t">메모리 진단 플레이북</span></a></li>
+  </ol>
+  <a class="start" href="os-memory-course/">코스 목차로 →</a>
+</article>
+<article class="course" style="--c:var(--c2)" data-title="Windows Kernel Deep Dive">
+  <header>
+    <div class="meta"><span class="tag">운영체제</span><span class="count">17장</span></div>
+    <h2><a href="windows-kernel-course/">Windows Kernel Deep Dive</a></h2>
+    <p>유저·커널 모드 경계에서 시작해 스케줄러, 메모리 관리자, I/O, 보안 모델, 드라이버와 크래시 분석까지.</p>
+  </header>
+  <ol class="ch">
+<li><a href="windows-kernel-course/01-architecture.html"><span class="no">01</span><span class="t">윈도우 아키텍처 개관</span></a></li>
+<li><a href="windows-kernel-course/02-system-calls.html"><span class="no">02</span><span class="t">시스템 콜과 모드 전환</span></a></li>
+<li><a href="windows-kernel-course/03-boot-process.html"><span class="no">03</span><span class="t">부팅 과정</span></a></li>
+<li><a href="windows-kernel-course/04-processes-threads.html"><span class="no">04</span><span class="t">프로세스와 스레드</span></a></li>
+<li><a href="windows-kernel-course/05-scheduling.html"><span class="no">05</span><span class="t">스레드 스케줄링</span></a></li>
+<li><a href="windows-kernel-course/06-irql-interrupts.html"><span class="no">06</span><span class="t">IRQL · 인터럽트 · DPC · APC</span></a></li>
+<li><a href="windows-kernel-course/07-synchronization.html"><span class="no">07</span><span class="t">동기화</span></a></li>
+<li><a href="windows-kernel-course/08-virtual-memory.html"><span class="no">08</span><span class="t">가상 메모리와 페이징</span></a></li>
+<li><a href="windows-kernel-course/09-memory-manager.html"><span class="no">09</span><span class="t">메모리 관리자 내부</span></a></li>
+<li><a href="windows-kernel-course/10-object-manager.html"><span class="no">10</span><span class="t">객체 관리자와 핸들</span></a></li>
+<li><a href="windows-kernel-course/11-io-system.html"><span class="no">11</span><span class="t">I/O 시스템과 IRP</span></a></li>
+<li><a href="windows-kernel-course/12-filesystem-cache.html"><span class="no">12</span><span class="t">파일 시스템 · 캐시 · 미니필터</span></a></li>
+<li><a href="windows-kernel-course/13-security.html"><span class="no">13</span><span class="t">보안 모델</span></a></li>
+<li><a href="windows-kernel-course/14-driver-development.html"><span class="no">14</span><span class="t">커널 드라이버 개발</span></a></li>
+<li><a href="windows-kernel-course/15-debugging.html"><span class="no">15</span><span class="t">커널 디버깅과 크래시 분석</span></a></li>
+<li><a href="windows-kernel-course/16-mitigations-vbs.html"><span class="no">16</span><span class="t">커널 보안 메커니즘과 VBS</span></a></li>
+<li><a href="windows-kernel-course/17-expert-roadmap.html"><span class="no">17</span><span class="t">전문가 로드맵과 실습 랩</span></a></li>
+  </ol>
+  <a class="start" href="windows-kernel-course/">코스 목차로 →</a>
+</article>
+<article class="course" style="--c:var(--c3)" data-title="TCP/IP 전문가 과정">
+  <header>
+    <div class="meta"><span class="tag">네트워크</span><span class="count">14장</span></div>
+    <h2><a href="tcpip-course/">TCP/IP 전문가 과정</a></h2>
+    <p>링크 계층부터 IP, TCP 신뢰성과 혼잡 제어, IPv6, 라우팅, 보안, 성능 분석까지 패킷의 여정을 따라갑니다.</p>
+  </header>
+  <ol class="ch">
+<li><a href="tcpip-course/01-model.html"><span class="no">01</span><span class="t">네트워크와 TCP/IP 모델</span></a></li>
+<li><a href="tcpip-course/02-link.html"><span class="no">02</span><span class="t">링크 계층: Ethernet · ARP · 스위치</span></a></li>
+<li><a href="tcpip-course/03-ip.html"><span class="no">03</span><span class="t">IP 계층: 주소 · 서브넷 · 라우팅 기초</span></a></li>
+<li><a href="tcpip-course/04-icmp-dns-dhcp.html"><span class="no">04</span><span class="t">ICMP · DNS · DHCP</span></a></li>
+<li><a href="tcpip-course/05-transport.html"><span class="no">05</span><span class="t">전송 계층 기초: UDP와 TCP</span></a></li>
+<li><a href="tcpip-course/06-application.html"><span class="no">06</span><span class="t">응용 계층과 소켓</span></a></li>
+<li><a href="tcpip-course/07-reliability.html"><span class="no">07</span><span class="t">TCP 신뢰성: 시퀀스 · ACK · 재전송</span></a></li>
+<li><a href="tcpip-course/08-congestion.html"><span class="no">08</span><span class="t">혼잡 제어</span></a></li>
+<li><a href="tcpip-course/09-tcp-advanced.html"><span class="no">09</span><span class="t">TCP 심화 옵션과 동작</span></a></li>
+<li><a href="tcpip-course/10-ipv6.html"><span class="no">10</span><span class="t">IPv6</span></a></li>
+<li><a href="tcpip-course/11-routing.html"><span class="no">11</span><span class="t">라우팅 심화: OSPF · BGP</span></a></li>
+<li><a href="tcpip-course/12-nat-security.html"><span class="no">12</span><span class="t">NAT · 방화벽 · TLS · 공격과 방어</span></a></li>
+<li><a href="tcpip-course/13-performance.html"><span class="no">13</span><span class="t">성능 분석과 도구</span></a></li>
+<li><a href="tcpip-course/14-lab.html"><span class="no">14</span><span class="t">종합 실습: 패킷 디코더와 트러블슈팅</span></a></li>
+  </ol>
+  <a class="start" href="tcpip-course/">코스 목차로 →</a>
+</article>
+<article class="course" style="--c:var(--c4)" data-title="Node.js 전문가 코스">
+  <header>
+    <div class="meta"><span class="tag">런타임</span><span class="count">20장</span></div>
+    <h2><a href="nodejs-advanced-course/">Node.js 전문가 코스</a></h2>
+    <p>V8과 libuv의 내부, 성능 진단, 프로덕션 운영과 확장 아키텍처까지.</p>
+  </header>
+  <ol class="ch">
+<li><a href="nodejs-advanced-course/01-architecture-bootstrap.html"><span class="no">01</span><span class="t">아키텍처와 부트스트랩</span></a></li>
+<li><a href="nodejs-advanced-course/02-event-loop.html"><span class="no">02</span><span class="t">이벤트 루프 심층</span></a></li>
+<li><a href="nodejs-advanced-course/03-libuv-threadpool-io.html"><span class="no">03</span><span class="t">libuv 스레드풀과 I/O</span></a></li>
+<li><a href="nodejs-advanced-course/04-v8-jit-optimization.html"><span class="no">04</span><span class="t">V8 JIT와 최적화</span></a></li>
+<li><a href="nodejs-advanced-course/05-v8-memory-gc.html"><span class="no">05</span><span class="t">V8 메모리와 GC</span></a></li>
+<li><a href="nodejs-advanced-course/06-streams-backpressure.html"><span class="no">06</span><span class="t">스트림과 백프레셔</span></a></li>
+<li><a href="nodejs-advanced-course/07-async-internals.html"><span class="no">07</span><span class="t">비동기 내부 구조</span></a></li>
+<li><a href="nodejs-advanced-course/08-module-system.html"><span class="no">08</span><span class="t">모듈 시스템 심층</span></a></li>
+<li><a href="nodejs-advanced-course/09-multicore-workers-cluster.html"><span class="no">09</span><span class="t">멀티코어 Node.js</span></a></li>
+<li><a href="nodejs-advanced-course/10-cpu-profiling.html"><span class="no">10</span><span class="t">CPU 프로파일링</span></a></li>
+<li><a href="nodejs-advanced-course/11-memory-leak-diagnosis.html"><span class="no">11</span><span class="t">메모리 누수 진단</span></a></li>
+<li><a href="nodejs-advanced-course/12-networking-http.html"><span class="no">12</span><span class="t">네트워킹 심층</span></a></li>
+<li><a href="nodejs-advanced-course/13-errors-resilience.html"><span class="no">13</span><span class="t">에러와 복원력</span></a></li>
+<li><a href="nodejs-advanced-course/14-production-deployment.html"><span class="no">14</span><span class="t">프로덕션 배포</span></a></li>
+<li><a href="nodejs-advanced-course/15-observability.html"><span class="no">15</span><span class="t">관측성</span></a></li>
+<li><a href="nodejs-advanced-course/16-security.html"><span class="no">16</span><span class="t">Node.js 보안</span></a></li>
+<li><a href="nodejs-advanced-course/17-testing-quality.html"><span class="no">17</span><span class="t">테스트 전략과 품질</span></a></li>
+<li><a href="nodejs-advanced-course/18-scalable-architecture.html"><span class="no">18</span><span class="t">확장 가능한 아키텍처</span></a></li>
+<li><a href="nodejs-advanced-course/19-native-addons-wasm.html"><span class="no">19</span><span class="t">네이티브 확장과 WASM</span></a></li>
+<li><a href="nodejs-advanced-course/20-diagnostics-workshop.html"><span class="no">20</span><span class="t">실전 진단 워크숍</span></a></li>
+  </ol>
+  <a class="start" href="nodejs-advanced-course/">코스 목차로 →</a>
+</article>
+<article class="course" style="--c:var(--c6)" data-title="C# 가비지 컬렉터 해부">
+  <header>
+    <div class="meta"><span class="tag">런타임</span><span class="count">19개 섹션</span></div>
+    <h2><a href="CSharp_GC_학습자료.html">C# 가비지 컬렉터 해부</a></h2>
+    <p>CLR GC가 언제, 무엇을, 어떻게 치우는지 조작하며 익히고 컨테이너 설정·진단·Unity GC까지 이어서 다룹니다. 한 페이지 구성.</p>
+  </header>
+  <ol class="ch">
+<li><a href="CSharp_GC_학습자료.html#alloc"><span class="no">01</span><span class="t">관리 힙과 할당</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#trigger"><span class="no">02</span><span class="t">GC는 언제 도는가</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#mark"><span class="no">03</span><span class="t">Mark · Sweep · Compact</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#phases"><span class="no">04</span><span class="t">GC 단계와 스레드 정지</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#lifetime"><span class="no">05</span><span class="t">루트의 수명과 JIT</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#gen"><span class="no">06</span><span class="t">세대별 GC</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#card"><span class="no">07</span><span class="t">카드 테이블</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#loh"><span class="no">08</span><span class="t">LOH와 POH</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#pin"><span class="no">09</span><span class="t">Pinning과 단편화</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#regions"><span class="no">10</span><span class="t">Regions</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#modes"><span class="no">11</span><span class="t">GC 모드</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#latency"><span class="no">12</span><span class="t">지연 시간 제어 API</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#container"><span class="no">13</span><span class="t">컨테이너와 설정</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#final"><span class="no">14</span><span class="t">Finalizer와 Dispose</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#handles"><span class="no">15</span><span class="t">GC 핸들과 약한 참조</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#hidden"><span class="no">16</span><span class="t">숨은 할당</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#diag"><span class="no">17</span><span class="t">진단과 체크리스트</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#unity"><span class="no">18</span><span class="t">Unity · Mono GC</span></a></li>
+<li><a href="CSharp_GC_학습자료.html#quiz"><span class="no">19</span><span class="t">확인 퀴즈</span></a></li>
+  </ol>
+  <a class="start" href="CSharp_GC_학습자료.html">페이지 열기 →</a>
+</article>
+<article class="course" style="--c:var(--c5)" data-title="효용 AI 시뮬레이션 코스">
+  <header>
+    <div class="meta"><span class="tag">게임 AI</span><span class="count">12장</span></div>
+    <h2><a href="utility-ai-course/">효용 AI 시뮬레이션 코스</a></h2>
+    <p>반응 커브, 점수 결합, 행동 선택, 욕구와 스마트 오브젝트를 거쳐 마을 시뮬레이션 엔진을 완성합니다.</p>
+  </header>
+  <ol class="ch">
+<li><a href="utility-ai-course/01-decision-landscape.html"><span class="no">01</span><span class="t">의사결정 아키텍처 지형도</span></a></li>
+<li><a href="utility-ai-course/02-utility-expected-utility.html"><span class="no">02</span><span class="t">효용과 기대 효용</span></a></li>
+<li><a href="utility-ai-course/03-response-curves.html"><span class="no">03</span><span class="t">반응 커브</span></a></li>
+<li><a href="utility-ai-course/04-considerations.html"><span class="no">04</span><span class="t">Consideration과 점수 결합</span></a></li>
+<li><a href="utility-ai-course/05-action-selection.html"><span class="no">05</span><span class="t">행동 선택과 Dual Utility</span></a></li>
+<li><a href="utility-ai-course/06-time-inertia.html"><span class="no">06</span><span class="t">시간, 관성, 반응성</span></a></li>
+<li><a href="utility-ai-course/07-needs-smart-objects.html"><span class="no">07</span><span class="t">욕구와 스마트 오브젝트</span></a></li>
+<li><a href="utility-ai-course/08-context-targets.html"><span class="no">08</span><span class="t">컨텍스트와 타깃 평가</span></a></li>
+<li><a href="utility-ai-course/09-engine-architecture.html"><span class="no">09</span><span class="t">시뮬레이션 엔진 아키텍처</span></a></li>
+<li><a href="utility-ai-course/10-hybrid-architectures.html"><span class="no">10</span><span class="t">하이브리드 아키텍처 사례</span></a></li>
+<li><a href="utility-ai-course/11-tuning-debugging.html"><span class="no">11</span><span class="t">튜닝, 디버깅, 밸런싱</span></a></li>
+<li><a href="utility-ai-course/12-capstone-hamlet.html"><span class="no">12</span><span class="t">Hamlet 마을 시뮬레이터</span></a></li>
+  </ol>
+  <a class="start" href="utility-ai-course/">코스 목차로 →</a>
+</article>
+  </div>
+  <p class="empty" id="empty" hidden>일치하는 장이 없습니다. 다른 단어로 찾아보세요.</p>
+  <footer>각 코스는 정적 HTML이라 GitHub Pages에서 바로 열립니다.</footer>
+</div>
+<script>
+(() => {
+  const q = document.getElementById('q'), courses = [...document.querySelectorAll('.course')];
+  courses.forEach(c => c.querySelectorAll('.t').forEach(t => t.dataset.raw = t.textContent));
+  const esc = s => s.replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'})[ch]);
+  q.addEventListener('input', () => {
+    const v = q.value.trim().toLowerCase();
+    let any = false;
+    courses.forEach(c => {
+      const titleHit = !v || c.dataset.title.toLowerCase().includes(v) || c.querySelector('p').textContent.toLowerCase().includes(v);
+      let hits = 0;
+      c.querySelectorAll('.ch li').forEach(li => {
+        const t = li.querySelector('.t'), raw = t.dataset.raw, i = raw.toLowerCase().indexOf(v);
+        const hit = !v || i >= 0;
+        li.hidden = !(hit || titleHit);
+        t.innerHTML = v && i >= 0 ? esc(raw.slice(0, i)) + '<mark>' + esc(raw.slice(i, i + v.length)) + '</mark>' + esc(raw.slice(i + v.length)) : esc(raw);
+        if (hit) hits++;
+      });
+      c.hidden = !(titleHit || hits);
+      if (!c.hidden) any = true;
+    });
+    document.getElementById('empty').hidden = any;
+  });
+})();
+</script>
+</body>
+</html>
