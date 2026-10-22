@@ -1,0 +1,1165 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>하이브리드 아키텍처 사례</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 10장 전용 */
+.mono { font-family: var(--mono); }
+.sliders { display: grid; grid-template-columns: minmax(120px, auto) 1fr minmax(64px, auto); gap: 6px 12px; align-items: center; font-size: 14px; margin: 10px 0; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; font-size: 13.5px; border: 0; padding: 5px 12px; background: var(--surface-2); color: var(--text); cursor: pointer; }
+.seg button.on { background: var(--accent); color: var(--surface); }
+
+/* BT 그림 */
+svg.bt { min-width: 600px; font-family: var(--sans); font-size: 12.5px; }
+svg.bt text { fill: var(--text); }
+svg.bt .sub { font-size: 11px; fill: var(--muted); }
+svg.bt .ord { font-size: 11px; font-weight: 700; fill: var(--violet); }
+svg.bt .edge { stroke: var(--border); stroke-width: 1.6; transition: stroke .2s, stroke-width .2s; }
+svg.bt .edge.on { stroke: var(--accent); stroke-width: 3.2; }
+svg.bt .nd rect { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; transition: fill .2s, stroke .2s; }
+svg.bt .nd.visit rect, svg.bt .nd.calc rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+svg.bt .nd.fail rect { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 2.5; }
+svg.bt .nd.busy rect { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 3; }
+svg.bt .nd.done rect { fill: var(--teal-soft); stroke: var(--teal); stroke-width: 3; }
+svg.bt .nd.off { opacity: .35; }
+svg.bt .nd.off rect { stroke-dasharray: 4 3; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--muted); margin: 6px 0; }
+.legend i { display: inline-block; width: 14px; height: 10px; border-radius: 3px; vertical-align: middle; margin-right: 5px; border: 2px solid; }
+
+/* 리스팅 하이라이트 */
+pre.lst { font-size: 13px; padding: 10px 0; }
+pre.lst span { display: block; padding: 0 14px; border-left: 3px solid transparent; transition: background .2s; }
+pre.lst span.hl { background: var(--accent-soft); border-left-color: var(--accent); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1.5px solid var(--border); background: var(--surface-2); font-variant-numeric: tabular-nums; transition: all .2s; }
+.chip.busy { border-color: var(--ok); background: var(--ok-soft); }
+.chip.fail { border-color: var(--bad); background: var(--bad-soft); text-decoration: line-through; }
+.chip.done { border-color: var(--teal); background: var(--teal-soft); }
+.chip.run { border-color: var(--accent); background: var(--accent-soft); }
+
+/* BDS 위젯 */
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 10px 0; }
+.slot { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--bg); }
+.slot h5 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.slot .btn { margin: 0 6px 6px 0; font-size: 13px; padding: 4px 10px; }
+.slot .btn.eq { background: var(--violet-soft); border-color: var(--violet); color: var(--text); font-weight: 700; }
+table.bds td, table.bds th { font-size: 13px; padding: 5px 8px; }
+table.bds td.num { font-family: var(--mono); text-align: right; }
+table.bds tr.best td { background: var(--ok-soft); font-weight: 700; }
+table.bds tr.off td { color: var(--muted); }
+.cls { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; border: 1px solid; }
+.cls.Basic { color: var(--muted); border-color: var(--muted); }
+.cls.Offensive { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
+.cls.Support { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.cls.Reaction { color: var(--violet); border-color: var(--violet); background: var(--violet-soft); }
+.cls.Passive { color: var(--teal); border-color: var(--teal); background: var(--teal-soft); }
+.cls.Tether { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+svg.band { min-width: 620px; }
+svg.band text { font-size: 12px; }
+svg.band .tick { font-size: 10.5px; fill: var(--muted); }
+
+/* consideration 빌더 */
+.crow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; margin: 4px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 13.5px; }
+.crow .ind { display: inline-block; border-left: 3px solid var(--violet); height: 22px; }
+.crow input[type=text] { width: 9.5em; }
+.crow input[type=range] { width: 110px; }
+.crow .val { font-family: var(--mono); width: 3em; text-align: right; }
+.crow .opfix { display: inline-block; width: 4.2em; text-align: center; font-family: var(--mono); color: var(--muted); }
+.crow .btn { padding: 2px 8px; font-size: 13px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+svg.flow { min-width: 640px; }
+svg.flow text { font-size: 12.5px; }
+svg.flow .dia { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+svg.flow .res { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 1.5; }
+svg.flow .res.alt { fill: var(--surface-2); stroke: var(--border); }
+svg.flow .arr { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+svg.flow .lab { font-size: 11.5px; fill: var(--muted); font-weight: 700; }
+</style>
+</head>
+<body data-chapter="10">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">엔진 · Chapter 10</span>
+    <h1>하이브리드 아키텍처 사례</h1>
+    <p class="lead">실제 게임에서 효용 AI는 혼자 쓰이는 경우보다 행동 트리(BT)나 상태 트리 같은 기존 구조 안에 끼워 넣어 쓰이는 경우가 더 많다. 이 장에서는 세 가지 사례를 직접 조작해 본다. BT에 Utility Selector를 꽂은 Bill Merrill의 방식, 장비에 붙은 snippet에 점수를 매기는 Dragon Age: Inquisition의 Behavior Decision System, 그리고 UE5 StateTree의 utility 선택이다. 이어서 숙고와 반응을 분리하는 설계를 보고, 언제 하이브리드로 가야 하는지 정리한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>정적 우선순위 BT가 "상황에 따라 우선순위가 바뀌는 행동"을 어떻게 다루지 못하는지, Utility Selector가 이를 어떻게 푸는지 Listing 수준으로 설명한다.</li>
+      <li>Utility가 composite를 따라 위로 전파되는 방식(자식 max)과 decorator 변환(cube)의 효과를 계산한다.</li>
+      <li>DA:I BDS의 snippet·evaluation tree·Target Selector·점수 관례를 이해하고, 정규화 0~1·점수 대역·dual rank를 비교한다.</li>
+      <li>UE5 StateTree의 consideration 결합(AND=min, OR=max, × Weight)을 우리 엔진의 보정 곱과 비교한다.</li>
+      <li>숙고와 반응을 분리하는 Action Selector가 우리 엔진의 <code>think(a, interruptOnly)</code>와 어떻게 대응하는지 설명하고, 상황별로 어떤 하이브리드를 고를지 판단한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> 새 함수 없음 · 기존 부품을 다른 아키텍처와 나란히 비교한다: <code>UAI.select()</code>(best·weighted·dual) <code>UAI.combine()</code>(min·max·compensated) <code>UAI.curve()</code> <code>action.rank</code> <code>World.think(a, interruptOnly)</code></div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 하이브리드인가</a></li>
+    <li><a href="#s2">BT + Utility: Utility Selector (Merrill)</a></li>
+    <li><a href="#s3">Dragon Age: Inquisition의 Behavior Decision System</a></li>
+    <li><a href="#s4">UE5 StateTree의 utility 선택</a></li>
+    <li><a href="#s5">숙고와 반응의 분리 (Côté, 권·서)</a></li>
+    <li><a href="#s6">비교와 의사결정 가이드</a></li>
+    <li><a href="#s7">하이브리드에서 자주 밟는 함정</a></li>
+  </ol></nav>
+
+  <!-- ───────────────────────── s1 ───────────────────────── -->
+  <section id="s1">
+    <h2>1. 왜 하이브리드인가</h2>
+    <p><a class="xref" href="01-decision-landscape.html">01장 지형도</a>에서 본 것처럼 의사결정 아키텍처마다 강점과 약점이 다르다. BT는 구현이 쉽고 시각화가 좋아 팀 전체가 빨리 익힌다. 대신 우선순위가 트리 구조에 고정되고, 조건이 참/거짓뿐이라 "둘 다 그럴듯한" 회색지대 결정에 약하다. 효용 AI는 바로 그 회색지대에 강하지만 결과를 예측하기 어렵고, 연출상 반드시 나와야 하는 행동은 스크립트로 덮어써야 하며, 튜닝은 기술보다 감각에 가깝다(GAP1 4장).</p>
+    <p>그래서 현업에서는 둘 중 하나를 고르기보다 <b>잘 돌아가는 구조는 그대로 두고 회색지대에만 효용을 꽂는다</b>. Merrill은 이 접근을 "기존 구현을 갈아엎지 않고, BT의 좋은 성질을 포기하지 않고" 효용을 섞는 방법이라고 설명한다. 이 장의 세 사례는 효용을 꽂는 위치가 서로 다르다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>사례</th><th>효용이 들어가는 자리</th><th>바깥 구조</th></tr>
+      <tr><td>Merrill (GAP1 10장)</td><td>BT의 특정 Selector 노드 하나</td><td>BT 그대로</td></tr>
+      <tr><td>DA:I BDS (GAP3 31장)</td><td>최상위 행동 선택 전체. 점수 계산과 실행은 BT로</td><td>효용 선택기 + BT 부품</td></tr>
+      <tr><td>UE5 StateTree</td><td>자식 상태를 고르는 selection behavior</td><td>계층 상태 트리 그대로</td></tr>
+      <tr><td>Côté (GAP1 11장)</td><td>숙고 모듈 내부(어떤 모델이든 가능)</td><td>숙고/반응 2모듈 + Action Selector</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ───────────────────────── s2 ───────────────────────── -->
+  <section id="s2">
+    <h2>2. BT + Utility: Utility Selector (Merrill)</h2>
+    <h3>2.1 Monster Hunter의 문제: 같은 행동을 트리에 두 번 넣기</h3>
+    <p>Merrill의 예제는 Monster Hunter다. 루트 아래 <b>Combat</b>(Reload · Shoot · Seek Medic)과 <b>Relaxed</b>(Eat · Nap · Patrol) 두 가지가 있다. 표준 BT에서는 우선순위가 트리에 박혀 있다. 문제는 같은 행동이 상황에 따라 다른 우선순위를 가져야 할 때 생긴다. 탄창을 채워 두는 일은 정글을 순찰할 때도 고려할 일이지만, 괴물과 싸우는 중이라면 계속 피해를 주는 쪽이 절대적으로 중요하다.</p>
+    <p>Seek Medic은 더 곤란하다. 원래 이 행동의 전제조건은 "쏠 수 없음"이다. 체력이 "매우 낮을 때"는 사격보다 먼저, "괴물이 시야 밖이고 체력이 다소 낮을 때"는 사격 다음에 와야 한다면 트리에 Seek Medic을 두 번 넣는 수밖에 없다. 서브트리 인스턴싱이나 참조를 써도 장황하고 깨지기 쉽다. 그렇다고 Seek Medic의 조건을 엄격하게 만들어 Shoot보다 앞에 두면 반대 문제가 생긴다. 조건이 통과되는 순간 사냥꾼이 곧바로 Seek Medic으로 달려간다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 720 230" style="min-width:600px" role="img" aria-label="Seek Medic 중복 트리와 Utility Selector 트리 비교">
+        <text x="180" y="18" text-anchor="middle" style="font-weight:700">(가) 표준 BT: Seek Medic 중복 삽입</text>
+        <text x="545" y="18" text-anchor="middle" style="font-weight:700">(나) Combat을 Utility Selector로</text>
+        <rect class="box" x="130" y="34" width="100" height="32" rx="6"/><text x="180" y="55" text-anchor="middle">Combat</text>
+        <line class="line" x1="180" y1="66" x2="60" y2="110"/><line class="line" x1="180" y1="66" x2="180" y2="110"/><line class="line" x1="180" y1="66" x2="300" y2="110"/>
+        <rect x="8" y="110" width="104" height="32" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="60" y="131" text-anchor="middle">Seek Medic</text>
+        <text x="60" y="160" text-anchor="middle" class="muted">체력 매우 낮음</text>
+        <rect class="box" x="130" y="110" width="100" height="32" rx="6"/><text x="180" y="131" text-anchor="middle">Shoot</text>
+        <rect x="248" y="110" width="104" height="32" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="300" y="131" text-anchor="middle">Seek Medic</text>
+        <text x="300" y="160" text-anchor="middle" class="muted">괴물 시야 밖 ·</text>
+        <text x="300" y="176" text-anchor="middle" class="muted">체력 다소 낮음</text>
+        <text x="180" y="210" text-anchor="middle" class="muted">같은 행동이 조건만 바꿔 두 번 나온다 (Fig 10.2 재구성)</text>
+        <line class="line" x1="372" y1="20" x2="372" y2="220" style="stroke-dasharray:4 4"/>
+        <rect x="485" y="34" width="120" height="32" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="545" y="55" text-anchor="middle">Combat (Utility)</text>
+        <line class="line" x1="545" y1="66" x2="430" y2="110"/><line class="line" x1="545" y1="66" x2="545" y2="110"/><line class="line" x1="545" y1="66" x2="660" y2="110"/>
+        <rect class="box" x="385" y="110" width="90" height="32" rx="6"/><text x="430" y="131" text-anchor="middle">Reload</text>
+        <rect class="box" x="500" y="110" width="90" height="32" rx="6"/><text x="545" y="131" text-anchor="middle">Shoot</text>
+        <rect class="box" x="610" y="110" width="100" height="32" rx="6"/><text x="660" y="131" text-anchor="middle">Seek Medic</text>
+        <text x="430" y="162" text-anchor="middle" class="muted">U = 0.22</text>
+        <text x="545" y="162" text-anchor="middle" class="muted">U = 0.40</text>
+        <text x="660" y="162" text-anchor="middle" class="muted">U = 0.48</text>
+        <text x="545" y="210" text-anchor="middle" class="muted">한 번만 두고 순서를 매 결정마다 utility로 정한다 (Fig 10.3)</text>
+      </svg>
+      </div>
+      <figcaption>그림 10-1. 정적 우선순위 때문에 생기는 중복 삽입(가)과 Utility Selector로 바꾼 트리(나). (나)의 수치는 이 장 위젯의 교육용 계산식으로 구한 예다.</figcaption>
+    </figure>
+
+    <h3>2.2 입력을 같은 단위로 만들기: 수식 10.1~10.4</h3>
+    <p>Utility Selector를 쓰려면 자식마다 비교 가능한 utility 값이 있어야 한다. Merrill이 먼저 권하는 것은 <b>공통 단위</b>를 찾는 일이다. 사냥꾼이 의무병에게 달려갈지 정할 때, 치료로 얻는 체력과 이동 중 괴물에게 노출되어 잃을 체력을 둘 다 "체력 점수"로 표현하면 바로 뺄 수 있다.</p>
+    <div class="formula">RawUtility = HealthGained − HealthLost &nbsp;&nbsp;(10.1)</div>
+    <p>본전치기라면 괴물을 때릴 시간을 버린 셈이므로 손실에 가중치를 더 준다. 예측이 낙관적이었더라도 순손실로 끝나지 않으려는 것이다. 지수를 씌우면 위험이 커질수록 효용이 더 빨리 떨어진다.</p>
+    <div class="formula">Value = HealthGained − (HealthLost × 2.0) &nbsp;&nbsp;(10.2)<br>Value = HealthGained − pow(HealthLost, 1.2) &nbsp;&nbsp;(10.3)</div>
+    <p>공통 단위가 없을 때는 여러 입력을 "Morale", "Threat" 같은 상위 개념으로 묶어 각각 0~1로 정규화한다. 위 식을 정규화해 <b>Heal</b>로, 괴물을 공격하지 못하고 잃은 시간을 정규화해 <b>Delay</b>로 두면 가중 차이로 합칠 수 있다.</p>
+    <div class="formula">Utility = (Heal × HealPower − Delay × DelayPower) / (HealPower + DelayPower) &nbsp;&nbsp;(10.4)</div>
+    <p>Merrill은 이런 공식과 반응 커브를 <b>다시 불러올 수 있는 데이터</b>로 만들어 디자이너가 즉석에서 고치게 하라고 권한다. 우리 엔진의 consideration이 이미 그렇게 되어 있다(<a class="xref" href="03-response-curves.html">03장 반응 커브</a>). 아래 위젯의 Seek Medic은 수식 10.4를 그대로 쓴다. HealPower=2, DelayPower=1이고, Heal은 잃은 체력 비율(1 − 체력/100), Delay는 괴물과 가까운 정도(1 − 거리/40)다. 이 값들은 교육용으로 정한 것이다.</p>
+
+    <h3>2.3 Utility Selector 알고리즘 (Listing 10.1 → 10.2)</h3>
+    <p>BT는 결국 트리 순회이고, 어느 가지로 갈지는 노드가 스스로 정한다. 그래서 새 Selector 종류를 하나 만들면 된다. 평범한 Selector(Listing 10.1)는 자식을 정해진 순서대로 실행하다가 Busy나 Done을 돌려주는 첫 자식에서 멈춘다. Utility Selector(Listing 10.2)는 그 앞에 단계 하나가 붙는다.</p>
+    <div class="two">
+      <pre><code>// Listing 10.1 기본 Selector
+Status Execute() {
+  if (CurrChild == null) CurrChild = FirstChild;
+  // 유효한 자식을 만날 때까지 실행
+  while (CurrChild != null) {
+    Status s = CurrChild.Execute();
+    if (s == Busy || s == Done) return s;
+    CurrChild = CurrChild.Next;
+  }
+  return Failed;
+}</code></pre>
+      <div>
+<pre class="lst" id="lst102"><span>Status Execute() {</span><span>  if (Utility.Size() == 0) {</span><span>    // 자식 utility 질의</span><span>    for (child in Children)</span><span>      Utility[child] = child.CalculateUtility();</span><span>    SortChildrenByUtility();   // 내림차순</span><span>    CurrChild = FirstChild;</span><span>  }</span><span>  // utility 순서로 실행: 첫 유효 자식 선택</span><span>  while (CurrChild != null) {</span><span>    Status s = CurrChild.Execute();</span><span>    if (s == Busy) return Busy;</span><span>    else if (s == Done) { Utility.Clear(); return Done; }</span><span>    CurrChild = CurrChild.Next;</span><span>  }</span><span>  Utility.Clear();</span><span>  return Failed;</span><span>}</span></pre>
+      </div>
+    </div>
+    <p>핵심은 세 가지다. ① utility는 <b>Utility 테이블이 비어 있을 때만</b>, 즉 첫 실행 시에만 계산한다. ② 정렬된 순서는 "누구를 먼저 시도할지"일 뿐이다. 정렬 1위가 실행에 실패하면(Failed) 2위로 넘어가므로, 효용과 BT의 유효성 검사가 함께 일한다. ③ 자식이 Busy인 동안에는 테이블이 그대로 남는다. 그 사이에 상황이 바뀌어도 다시 계산하지 않는다는 뜻이다. Done이나 전체 실패가 나야 테이블을 비운다.</p>
+    <div class="widget" id="w-step">
+      <div class="w-title">스텝 애니메이션: Listing 10.2 한 줄씩 따라가기</div>
+      <div class="w-desc">상황: 체력 15, 탄약 12/30, 괴물 거리 30m, Reload에 cube decorator 적용. 강조된 줄이 지금 실행 중인 코드다.</div>
+      <div class="chips" id="step-chips"></div>
+      <div id="step-host"></div>
+    </div>
+    <p>Merrill은 정렬 후 순서대로 실행하는 방법 외의 선택 방식도 열어 둔다. 최고점 자식만 고르거나, 자식을 버킷으로 나눈 뒤 가중 랜덤을 쓰거나(<a class="xref" href="05-action-selection.html">05장 Dual Utility</a>), 일정 임계값을 넘는 자식들 중 가중치 없이 랜덤으로 고를 수도 있다. 어느 방식이든 하는 일은 같다. 기존 Selector에 utility 수집을 더해 우선순위를 동적으로 정하는 것이다. Merrill은 이것으로 BT의 가장 큰 약점이라 할 정적 우선순위를 깨뜨렸다고 평가한다.</p>
+
+    <h3>2.4 Utility 전파와 Utility Decorator</h3>
+    <p>보통 utility는 리프 행동이 계산한다. 하지만 Utility Selector의 자식은 Sequence일 수도, Selector일 수도, 또 다른 Utility Selector일 수도 있다. utility가 위로 자연스럽게 올라가게 하려면 모든 composite가 <code>CalculateUtility()</code>를 재정의해야 한다. 가장 단순한 규칙은 <b>Selector든 Sequencer든 자식 중 최댓값을 돌려주는 것</b>이다.</p>
+    <div class="formula">U(composite) = max( U(child₁), U(child₂), … )</div>
+    <p>대가도 있다. Utility Selector가 값을 모으려면 자식 서브트리를 전부 펼쳐야 한다. 큰 트리에서 utility 계산이 비싸고 플랫폼이 무작위 메모리 접근에 민감하다면 부담이 된다. Merrill이 제시한 완화책은 두 가지다. 리프가 일정 주기로만 계산하고 그 사이에는 캐시를 돌려주게 하거나, 모든 리프 계산을 자체 부하 분산이 있는 별도 패스로 빼서 <code>CalculateUtility()</code>는 캐시만 읽게 한다. 우리 엔진이 <a class="xref" href="09-engine-architecture.html">09장</a>에서 <code>thinkEvery</code>와 <code>thinkOffset</code>으로 결정을 시간에 분산한 것과 같은 고민이다.</p>
+    <p>전파 경로에서 utility를 <b>변환</b>할 수도 있다. 자식 하나를 받는 decorator로 가중치를 곱하거나 함수를 씌우면 된다. Reload가 내부적으로 정규화 utility를 계산하는 블랙박스라 해 보자. 평소에는 형제와 그대로 비교해도 되지만, 탄약이 정말 바닥나기 전까지는 Reload를 미루고 싶을 때가 있다. 그럴 때 Reload 위에 <code>square()</code>나 <code>cube()</code> decorator를 얹는다.</p>
+    <div class="two">
+      <figure style="margin:0"><svg id="cube-plot" viewBox="0 0 240 200" style="max-width:300px;display:block;margin:0 auto"></svg>
+        <figcaption>그림 10-2. cube decorator: 원래 U(점선) → U³(실선). 마커는 위젯 10-1의 현재 탄약에서 나온 Reload 원래 U다. 엔진 프리셋 <code>"3차 지연 (x³)"</code>을 그대로 썼다.</figcaption></figure>
+      <div>
+        <p>원래 U가 0.5면 cube 후 0.125다. 탄창이 절반 남았을 때는 거의 장전하지 않는다는 뜻이다. 원래 U가 0.9(탄약 3발)면 0.73으로, 여전히 대부분의 형제를 이긴다. 곡선 하나로 "급할 때만 급해지는" 성질을 만든 것이고, <a class="xref" href="06-time-inertia.html">06장</a>의 cooldown 커브 x⁵와 같은 발상이다.</p>
+        <p>decorator 방식의 장점은 <b>Reload 내부를 건드리지 않는다</b>는 데 있다. 같은 Reload 리프를 다른 트리에서는 decorator 없이 재사용할 수 있다.</p>
+      </div>
+    </div>
+
+    <h3>2.5 평가와 실행의 분리</h3>
+    <p>Merrill의 구현은 트리 <b>평가(Evaluate)</b>와 <b>실행(Execute)</b>을 나눈다. 덕분에 Utility Selector는 먼저 자식의 유효성을 평가한 뒤 유효한 자식에 대해서만 utility를 계산한다. 비싼 계산은 리프가 조건을 확인하는 <code>Evaluate()</code>에서 해 두고, <code>CalculateUtility()</code>는 캐시를 돌려준다. 에이전트가 행동을 실행하는 동안 트리를 병렬로 평가해 두었다가, 평가 결과가 지금 실행 중인 계획과 다를 때만 끼어드는 것도 가능하다. 트리 전체를 미리 평가하면 계획이 끝까지 유효한지 확인한 뒤 실행하는 제한적 look-ahead도 할 수 있다. 이 평가/실행 분리는 다음 절의 DA:I에서 아키텍처의 중심이 된다.</p>
+
+    <div class="widget" id="w-bt">
+      <div class="w-title">위젯 10-1: 일반 Selector vs Utility Selector</div>
+      <div class="w-desc">Monster Hunter 트리를 한 틱씩 실행한다. 루트는 매 틱 처음부터 도는 우선순위 Selector이고, Combat만 모드에 따라 바뀐다. 슬라이더로 상태를 바꾸면 Utility 값이 바로 다시 계산된다. 다만 Combat이 Busy인 동안에는 Listing 10.2대로 <b>캐시된 순서</b>를 유지한다. 행동의 효과: Shoot = 탄약 −5·넉백 +3m, Reload(2틱) = 탄약 가득, Seek Medic(3틱) = 틱마다 4m 후퇴, 끝나면 체력 +45. 괴물은 틱마다 2m씩 다가오고, 가까울수록 피해가 크다.</div>
+      <div class="controls">
+        <span class="seg" id="bt-mode"><button data-m="plain">일반 Selector</button><button data-m="util" class="on">Utility Selector</button></span>
+        <label><input type="checkbox" id="bt-cube" checked> Reload에 cube decorator</label>
+      </div>
+      <div class="sliders">
+        <label for="bt-h">체력</label><input type="range" id="bt-h" min="0" max="100" step="1" value="70"><output id="bt-h-o"></output>
+        <label for="bt-a">탄약 (탄창 30)</label><input type="range" id="bt-a" min="0" max="30" step="1" value="30"><output id="bt-a-o"></output>
+        <label for="bt-d">괴물 거리</label><input type="range" id="bt-d" min="2" max="50" step="1" value="34"><output id="bt-d-o"></output>
+      </div>
+      <div class="stage"><svg class="bt" id="bt-svg" viewBox="0 0 720 300" role="img" aria-label="Monster Hunter 행동 트리"></svg></div>
+      <div class="legend">
+        <span><i style="border-color:var(--accent);background:var(--accent-soft)"></i>방문·utility 계산</span>
+        <span><i style="border-color:var(--bad);background:var(--bad-soft)"></i>Failed</span>
+        <span><i style="border-color:var(--ok);background:var(--ok-soft)"></i>Busy</span>
+        <span><i style="border-color:var(--teal);background:var(--teal-soft)"></i>Done</span>
+        <span style="color:var(--violet)">#k = 실행 시도 순서</span>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="bt-tick">한 틱 실행</button>
+        <button class="btn" id="bt-auto">▶ 자동</button>
+        <button class="btn" id="bt-reset">초기화</button>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">이번 틱 행동</div><div class="v" id="bt-act">—</div></div>
+        <div class="stat"><div class="k">Combat 캐시</div><div class="v" id="bt-cache" style="font-size:15px">비어 있음</div></div>
+        <div class="stat"><div class="k">누적: Shoot / Reload / Medic</div><div class="v" id="bt-cnt">0 / 0 / 0</div></div>
+      </div>
+      <div class="log" id="bt-log"></div>
+    </div>
+    <div class="callout tip"><span class="title">해 볼 것</span>
+      <ol style="margin:0;padding-left:20px">
+        <li><b>일반 Selector</b>로 체력을 20까지 내린다. 탄약이 있고 사거리(30m) 안이면 Shoot가 먼저라 Seek Medic은 나오지 않는다. 이 Seek Medic을 쓰게 하려면 트리를 중복해야 한다(그림 10-1 가).</li>
+        <li><b>Utility Selector</b>, 체력 20, 거리 30: Seek Medic(0.45)이 Shoot(0.40)보다 앞선다. 거리를 8로 줄이면 Delay가 커져 Shoot가 다시 1위가 된다. 수식 10.4에서 "괴물 코앞에서 등 돌리고 뛰는 위험"이 반영된 결과다.</li>
+        <li>cube를 끄고 탄약을 15로 둔다. Reload(0.50)가 Shoot(0.40)보다 높아져 반쯤 남은 탄창을 계속 갈아 끼운다. cube를 켜면 0.125로 떨어진다. 초기화 후 cube를 끄고 자동 실행하면 반쯤 찬 탄창을 갈아 끼우다 사냥꾼이 60틱 안팎에서 쓰러진다. 켜면 버틴다.</li>
+        <li>Seek Medic이 Busy일 때 체력을 85로 올린다. live U는 0 근처로 떨어지지만 #순서와 실행은 캐시대로 이어진다. Listing 10.2의 "첫 실행 시에만 계산"이다. 90 이상으로 올리면 리프 자체 조건(체력 &lt; 90)이 깨져 Failed가 되고, 캐시 순서상 다음 자식으로 넘어간다.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── s3 ───────────────────────── -->
+  <section id="s3">
+    <h2>3. Dragon Age: Inquisition의 Behavior Decision System</h2>
+    <p>DA:I의 전투에서는 플레이어가 조종하는 Inquisitor 옆에서 AI 동료 셋이 함께 싸운다. 전투원 하나가 쓸 수 있는 어빌리티는 2~20개이고, 각 어빌리티는 mana나 stamina를 쓴다. 자원이 한정되어 있으니 지금 하나를 쓰면 나중에 다른 것을 못 쓰는 <b>기회비용</b>이 생긴다. BioWare의 Hanlon과 Watts는 이 문제를 풀려고 효용 기반 <b>Behavior Decision System(BDS)</b>을 만들었다.</p>
+    <h3>3.1 네 가지 가정과 탐욕 알고리즘</h3>
+    <p>BDS는 네 가지를 가정한다. ① 어느 순간이든 AI가 할 수 있는 행동 집합은 유한하다. ② 한 번에 하나만 한다. ③ 행동마다 효용이 다르다. ④ 모든 행동의 효용을 정량화할 수 있다. 이 가정 아래서는 단순한 탐욕 알고리즘이 나온다. 합법적인 행동을 나열하고, 각각 점수를 매기고, 최고점을 실행한다(Graham 2014). 남는 질문은 "가능한 행동을 어떻게 나열하나"와 "효용을 어떻게 매기나"다.</p>
+    <h3>3.2 Behavior Snippet: 어빌리티가 아니라 "쓰는 방식"이 단위</h3>
+    <p>DA:I에는 어빌리티가 60개가 넘지만, 행동 수는 어빌리티 수가 아니다. 전사의 <b>Charging Bull</b>은 적진으로 돌진해 길을 막는 적을 쳐 내는 기술이다. 그런데 부상당한 전사가 전투에서 빠르게 <b>빠져나갈 때</b>도 같은 기술을 쓸 수 있다. 기술은 같아도 동기가 완전히 다르다. 그래서 BDS의 기본 단위는 "어빌리티를 특정한 방식으로 평가하고 실행하는 데 필요한 정보"인 <b>behavior snippet</b>이다.</p>
+    <p>snippet은 지식의 조각이고, 캐릭터에 <b>등록(register)</b>된다. 예를 들어 무기에 snippet 몇 개가 붙어 있으면, 캐릭터가 그 무기를 장착할 때 등록되고 해제할 때 등록이 풀린다. 그러면 행동을 나열하는 일이 등록된 snippet 목록을 읽는 것으로 끝난다. 평균적인 AI 캐릭터는 snippet 10~20개, 가장 복잡한 캐릭터는 50개 이상을 동시에 등록한다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 720 250" style="min-width:600px" role="img" aria-label="BDS 구조">
+        <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="box" x="10" y="30" width="120" height="110" rx="8"/>
+        <text x="70" y="52" text-anchor="middle" style="font-weight:700">장비·어빌리티</text>
+        <text x="70" y="76" text-anchor="middle" class="muted">지팡이</text>
+        <text x="70" y="96" text-anchor="middle" class="muted">장검</text>
+        <text x="70" y="116" text-anchor="middle" class="muted">부적 …</text>
+        <line class="line" x1="130" y1="85" x2="165" y2="85" style="marker-end:url(#ah2)"/>
+        <text x="148" y="76" text-anchor="middle" class="muted" style="font-size:11px">등록</text>
+        <rect x="168" y="20" width="210" height="140" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="273" y="40" text-anchor="middle" style="font-weight:700">behavior snippet × N</text>
+        <rect class="box" x="180" y="52" width="186" height="40" rx="6"/>
+        <text x="273" y="70" text-anchor="middle">평가 트리 (evaluation tree)</text>
+        <text x="273" y="85" text-anchor="middle" class="muted" style="font-size:11px">점수 가산 · Target Selector</text>
+        <rect class="box" x="180" y="104" width="186" height="40" rx="6"/>
+        <text x="273" y="122" text-anchor="middle">실행 트리 (execution tree)</text>
+        <text x="273" y="137" text-anchor="middle" class="muted" style="font-size:11px">이동 → 범위 확인 → Execute Ability</text>
+        <line class="line" x1="366" y1="72" x2="420" y2="72" style="marker-end:url(#ah2)"/>
+        <text x="393" y="64" text-anchor="middle" class="muted" style="font-size:11px">(점수, 대상)</text>
+        <rect class="box" x="422" y="30" width="150" height="90" rx="8"/>
+        <text x="497" y="52" text-anchor="middle" style="font-weight:700">평가 테이블</text>
+        <text x="497" y="74" text-anchor="middle" class="muted">result=true만</text>
+        <text x="497" y="92" text-anchor="middle" class="muted">점수 내림차순</text>
+        <text x="497" y="110" text-anchor="middle" class="muted">(디버그 뷰)</text>
+        <line class="line" x1="572" y1="75" x2="602" y2="75" style="marker-end:url(#ah2)"/>
+        <rect x="604" y="45" width="106" height="60" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="657" y="70" text-anchor="middle" style="font-weight:700">최고점</text>
+        <text x="657" y="88" text-anchor="middle">snippet 실행</text>
+        <path class="line" d="M657,105 L657,200 L273,200 L273,146" style="marker-end:url(#ah2)"/>
+        <text x="465" y="194" text-anchor="middle" class="muted">선택된 snippet의 실행 트리를 매 업데이트 실행</text>
+        <path class="line" d="M497,120 L497,175 L120,175 L120,230 L40,230 L40,150" style="stroke-dasharray:4 3"/>
+        <text x="300" y="240" text-anchor="middle" class="muted">실행 중에도 평가는 매 AI 업데이트마다 계속 (Execute Ability 발동 후엔 끝날 때까지 쉬어도 됨)</text>
+      </svg>
+      </div>
+      <figcaption>그림 10-3. BDS의 흐름. snippet은 점수를 매기는 평가 트리와 실제로 수행하는 실행 트리를 함께 가진다.</figcaption>
+    </figure>
+
+    <h3>3.3 평가 트리와 점수 관례</h3>
+    <p>각 snippet은 자기 효용을 계산하는 방법을 품고 있어야 한다. DA:I는 이를 변형된 BT인 <b>evaluation tree</b>로 표현했다. 트리는 루트에서 점수 0으로 출발하고, <b>scoring 노드</b>를 지날 때마다 그 값을 더한다. 평가는 "맥락 안에서" 이루어지므로 노드는 평가하는 캐릭터 같은 정보를 읽을 수 있다. 예를 들어 "내 체력이 50% 미만인가?" Filter 아래 "Score: 5"를 두면, 체력이 절반 미만일 때 5점, 아니면 0점을 돌려준다(Merrill 2014를 인용한 맥락 의존 평가).</p>
+    <p>여기서 BioWare는 자동 정규화나 스케일링을 여러 방식으로 검토했다. 그리고 결국 <b>디자이너용 점수 관례</b>를 쓰기로 했고, 그것을 권한다. 이 관례는 콘텐츠 제작자를 위한 지침일 뿐 게임 데이터에 따로 표현되지 않는다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>행동 유형</th><th>점수</th><th>의미 (Table 31.1)</th></tr>
+      <tr><td><span class="cls Basic">Basic</span></td><td class="mono">10</td><td>아무것도 안 하는 것보다는 낫다. 여럿이면 서로 동등하다.</td></tr>
+      <tr><td><span class="cls Offensive">Offensive</span></td><td class="mono">20–40</td><td>부류 전체가 Basic보다 항상 낫다. 부류 안에서는 상황에 따라 20점의 "urgency dynamic range"로 우선순위를 다툰다.</td></tr>
+      <tr><td><span class="cls Support">Support</span></td><td class="mono">25–45</td><td>같은 긴급도의 Offensive보다 낫다. 공격 전에 써야 하는 준비 행동이거나, 나빠지는 상황에 대한 대응이기 때문이다.</td></tr>
+      <tr><td><span class="cls Reaction">Reaction</span></td><td class="mono">50–70</td><td>임박한 위협 같은 구체적·즉각적 실행 조건에 반응한다. 조건이 맞으면 다른 모든 유효 선택지보다 먼저 실행해야 한다.</td></tr>
+    </table></div>
+    <p>평가 트리를 만드는 디자이너는 점수가 적절한 대역 안에 들어오도록 조건부로 점수를 배분할 책임을 진다. DA:I에서는 행동 부류마다 그 대역의 값을 돌려주도록 만든 점수 로직 자산을 따로 두었다. 예를 들어 Support 평가 트리는 기본 25점을 주고, 상황에 따라 최대 45점까지 더한다.</p>
+    <div class="callout deep"><span class="title">왜 정규화 대신 관례인가</span>
+      대역을 정해 두면 점수 하나만 보고도 의미를 읽을 수 있다. 디버그 테이블에 "55"가 보이면 무언가에 반응하고 있다는 뜻이다. Offensive와 Support는 25~40에서 겹치므로 그 구간에서는 맥락이 승부를 낸다. 반면 Reaction(50~)은 Offensive(~40)와 겹치지 않아, 조건이 맞는 순간 사실상 <b>rank</b>처럼 동작한다. 하나의 숫자 축 위에 "겹치는 구간"과 "절대 우선 구간"을 함께 만든 셈이다. 대가는 규율이다. 관례가 데이터에 강제되지 않으므로 누군가 Offensive에 45점을 주면 아무도 막지 못한다. 그래서 BioWare는 부류별 점수 로직 자산을 재사용해 관례를 지켰다.
+    </div>
+
+    <h3>3.4 Target Selector: 행동과 대상을 함께 고르기</h3>
+    <p>DA:I의 어빌리티는 대부분 대상이 필요하다. 그냥 "Immolate를 시전"할 수는 없고 특정 적에게 써야 한다. 화염에 약한 적에게 쓰면 큰 피해를 주지만 화염 면역인 적에게 쓰면 마나만 버린다. 그래서 평가 트리는 점수와 함께 <b>대상</b>도 돌려준다(<a class="xref" href="08-context-targets.html">08장 행동 × 대상</a>과 같은 문제다). 이를 맡는 <b>Target Selector</b> 노드는 다음 알고리즘으로 동작한다.</p>
+    <ol>
+      <li>현재 맥락 점수를 "초기 점수"로 기록한다.</li>
+      <li>디자이너가 지정한 대상 후보마다: (a) 맥락 점수를 초기 점수로 되돌리고 (b) "behavior target iterator" 슬롯에 그 후보를 넣고 (c) 자식 노드를 평가해서 (d) 자식이 true를 돌려주면 그 후보의 점수를 기록한다.</li>
+      <li>기록된 후보가 하나라도 있으면 최고점 후보를 Behavior Target으로 정하고, 맥락 점수를 그 점수로 바꾸고, true를 돌려준다.</li>
+      <li>기록된 후보가 없으면 false를 돌려준다.</li>
+    </ol>
+    <p>논문의 예(Figure 31.2)는 "나로부터 10m 안의 적"을 하나씩 평가한다. "대상이 화염 면역이 아닌가?" Filter를 통과하면 +5, 이어서 "대상이 화염에 약한가?"를 통과하면 +5를 더 준다. 면역인 적은 Filter에서 걸려 기록되지 않고, 약점이 있는 적이 더 높은 점수를 받는다.</p>
+
+    <h3>3.5 snippet 비교 (Listing 31.1)</h3>
+<pre><code>struct SnippetEvaluation { BehaviorSnippet snippet; Boolean result; Integer score; Character target; };
+
+// 등록된 behavior를 평가해 효용이 가장 높은 것을 돌려준다
+Optional&lt;SnippetEvaluation&gt; EvaluateSnippets() {
+  list&lt;SnippetEvaluation&gt; evaluatedSnippets;
+  for (BehaviorSnippet snippet : registeredBehaviors) {
+    SnippetEvaluation evaluation = snippet.evaluate();
+    if (evaluation.result == true) evaluatedSnippets.push(evaluation);
+  }
+  sortByDescendingScore(evaluatedSnippets);
+  if (evaluatedSnippets.empty() == false) return evaluatedSnippets.first();
+  else return None;
+}</code></pre>
+    <p>실행 단계에 필요한 것은 최고점 snippet과 선택된 대상뿐이므로, 평가 결과를 따로 남길 필요는 없다. 그런데 BioWare는 평가 결과를 <b>디버그로 볼 수 있는 테이블</b>로 남겨 두는 것이 디버깅과 반복 작업에 큰 도움이 되었다고 말한다. 우리 엔진의 <code>Reasoner.evaluate()</code>가 행 전체(<code>rows</code>)를 돌려주는 것도 같은 이유다(<a class="xref" href="11-tuning-debugging.html">11장</a>).</p>
+
+    <h3>3.6 실행 트리와 재평가 계약</h3>
+    <p>snippet은 평가 트리와 함께 <b>execution tree</b>도 가진다. 실행 트리는 실제 효과가 나기 전에 필요한 준비와 위치 잡기를 담당한다. BDS는 평가에서 고른 대상과 snippet의 어빌리티를 맥락에 넣어 주고, <b>Execute Ability</b> 태스크 노드는 "맥락의 어빌리티를 맥락의 대상에게 쓰라"는 일만 한다. 대상과 어빌리티를 트리에 직접 적지 않고 맥락에서 받으니 실행 트리가 범용이 된다. "사거리까지 이동해서 친다" 트리 하나를 펀치·찌르기·물기에 모두 재사용할 수 있다. 근접 거리에서만 일어나면 된다.</p>
+    <p>선택된 snippet의 실행 트리는 Execute Ability가 발동할 때까지 매 AI 업데이트마다 실행된다. 그 동안에도 BDS는 평가를 계속한다. 그래야 상황이 바뀌었을 때 이미 최선이 아니게 된 snippet을 기계적으로 끝까지 하지 않는다. 여기서 둘 사이의 <b>계약</b>이 생긴다. <b>실행 트리의 지시를 수행할 수 없게 만드는 조건은 평가 트리가 찾아내 막아야 한다.</b> 실행 도중 대상이 죽으면 재평가가 무효해진 snippet을 유효한 것으로 바꿔 준다. 다만 Execute Ability가 발동한 뒤에는 어빌리티가 끝날 때까지 AI 업데이트를 멈춰도 된다. 어차피 수행할 수 없는 결정을 낭비하지 않기 위해서다.</p>
+    <div class="callout warn"><span class="title">Merrill과 정반대의 재평가 정책</span>
+      Merrill의 Utility Selector는 자식이 Busy인 동안 utility를 <b>다시 계산하지 않는다</b>. BDS는 실행 중에도 <b>매번 다시 평가</b>하고, Execute Ability 이후에만 쉰다. 어느 쪽도 정답은 아니다. 캐시 쪽은 싸고 행동이 안정적이지만 상황 변화에 둔하다. 매번 평가하는 쪽은 반응이 빠르지만 진동을 막을 장치가 따로 필요하다(<a class="xref" href="06-time-inertia.html">06장 관성</a>).
+    </div>
+
+    <h3>3.7 이동과 패시브 행동: 점수 0과 tether</h3>
+    <p>BDS는 원래 개별 행동용으로 설계되었지만, BioWare는 계속 이어지는 "패시브" 행동을 다스리는 데도 쓸모가 있다는 것을 알게 되었다.</p>
+    <ul>
+      <li><b>리더 따라가기</b>: 할 일이 없는 동료는 플레이어를 따라간다. 평가 트리가 어떤 행동보다 낮은 상수(점수 관례에서 0)를 돌려주고, 실행 트리는 "follow the leader" 이동만 켜는 snippet으로 만들었다. 0보다 높은 유효 snippet이 하나도 없을 때 저절로 선택된다.</li>
+      <li><b>변형된 따라가기</b>: 전투 중이거나 플레이어가 특정 위치에 대기하라고 명령했을 때의 이동은 조건부로 기본 이동보다 높게 평가하되, 능동 행동에는 양보하게 했다.</li>
+      <li><b>tether</b>: 지정 구역 안에 머물러야 하는 캐릭터에게는 구역 중심으로 돌아가게 하는 snippet을 붙였다. 이 snippet은 구역 밖에 있을 때만 <b>어떤 전투 어빌리티보다도 높은 점수</b>를 낸다. 그래서 대상에게 끌려 점점 멀어지는 일 없이 항상 교전을 끊고 돌아온다.</li>
+    </ul>
+    <p>우리 Hamlet 엔진의 <code>wander</code>(weight 0.12)가 "리더 따라가기"에 해당하고, <code>flee</code>(rank 10)가 tether에 해당한다. 같은 문제를 BDS는 점수 대역으로, 우리 엔진은 rank로 풀었다.</p>
+
+    <div class="widget" id="w-bds">
+      <div class="w-title">위젯 10-2: snippet 장착 → 평가 테이블 (Listing 31.1)</div>
+      <div class="w-desc">Hamlet 자경단원 <b>찬</b>에게 DA:I 방식을 옮겨 보자. 장비를 장착하면 거기 붙은 snippet이 등록되고, 해제하면 등록이 풀린다. "리더 따라가기"는 기본 내장이다. 테이블은 Listing 31.1처럼 result=true인 행만 점수 내림차순으로 정렬해 1위를 고르고, false인 행은 회색으로 아래에 둔다. Immolate의 대상 점수(10m · 면역 아님 +5 · 약점 +5)와 부류 대역은 논문 그대로이고, 나머지 조건과 가산점은 관례 표에 맞춰 정한 교육용 값이다.</div>
+      <div class="slots" id="bds-slots"></div>
+      <div class="sliders">
+        <label for="bds-h">찬의 체력</label><input type="range" id="bds-h" min="0" max="100" step="1" value="80"><output id="bds-h-o"></output>
+        <label for="bds-d">가장 가까운 늑대 거리</label><input type="range" id="bds-d" min="0" max="20" step="0.5" value="8"><output id="bds-d-o"></output>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="bds-weak" checked> 늑대 B 화염 약점</label>
+        <label><input type="checkbox" id="bds-imm"> 늑대 A 화염 면역</label>
+        <label><input type="checkbox" id="bds-out"> 경비 구역 밖에 있음</label>
+      </div>
+      <div class="w-desc" id="bds-enemies" style="margin:0"></div>
+      <div class="tbl-wrap"><table class="bds" id="bds-table"></table></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">선택된 snippet</div><div class="v" id="bds-best">—</div></div>
+        <div class="stat"><div class="k">대상</div><div class="v" id="bds-target">—</div></div>
+      </div>
+      <div class="log" id="bds-log" style="max-height:120px"></div>
+      <h4 style="margin:18px 0 4px">점수 대역(dynamic range) 비교</h4>
+      <div class="w-desc">위: DA:I 관례 대역과 지금 유효한 snippet 점수(점). 가운데: 우리 엔진의 정규화 0~1(Hamlet 행동). 아래: dual utility의 rank 버킷. 같은 문제를 세 가지 방법으로 푼 모습이다.</div>
+      <div class="stage"><svg class="diagram band" id="bds-band" viewBox="0 0 720 290" role="img" aria-label="점수 대역 비교"></svg></div>
+    </div>
+    <div class="callout tip"><span class="title">해 볼 것</span>
+      ① 화염 지팡이만 장착한 채 늑대 B의 약점을 끄고 켜 본다. Immolate의 대상이 A↔B로 바뀐다. ② 늑대 A를 면역으로 만들고 거리를 9m 이상으로 늘린다. 10m 안의 후보가 면역인 A뿐이면 Immolate는 false가 되어 테이블에서 빠진다. ③ 치유 부적을 장착하고 체력을 40%로 내린다. Support(34)가 Offensive(25~30)를 이긴다. ④ 장검 + 방패, 체력 25%, 거리 2m: 같은 Charging Bull이 "후퇴" snippet으로 Reaction 대역에 올라간다. ⑤ "구역 밖"을 켜면 tether가 무엇이든 이긴다.
+    </div>
+
+    <h3>3.8 모듈성: 플레이어가 장비를 바꿔도 AI가 따라온다</h3>
+    <p>snippet 덕분에 BDS는 모듈식이다. 디버깅할 때 특정 행동의 평가 로직만 떼어 보거나, 평가 테이블로 캐릭터의 우선순위를 비교하기 쉽다. 더 중요한 것은 DA:I가 플레이어에게 동료의 장비와 어빌리티를 마음대로 바꾸게 한다는 점이다. snippet을 장비·어빌리티 자산에 묶고 일관된 점수 체계를 지키면, 무엇을 들려 주든 AI가 그것을 효과적으로 쓴다. 이 모듈성은 원래 동료 AI 때문에 필요했지만 적에게도 이득이었다. 한 적 유형을 위해 만든 행동을 애니메이션·VFX 같은 자산만 있으면 다른 팩션과 공유할 수 있었다. 대부분의 snippet은 자주 재사용되는 소수의 트리 자산으로 구현했고, 복잡한 행동 몇 개만 전용 로직이 필요했다.</p>
+  </section>
+
+  <!-- ───────────────────────── s4 ───────────────────────── -->
+  <section id="s4">
+    <h2>4. UE5 StateTree의 utility 선택</h2>
+    <p>Unreal Engine의 StateTree는 계층 상태 기계에 BT의 selector 개념을 섞은 범용 구조다. 부모 상태는 <b>selection behavior</b>에 따라 어느 자식 상태로 들어갈지 정한다. 기본 동작은 Try Enter, Try Select Children in Order(목록 순서), Try Select Children at Random(섞은 뒤 Enter Condition을 통과하는 첫째), Try Follow Transitions이고, UE 5.5부터 utility 기반 두 가지가 더해졌다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>selection behavior</th><th>동작 (공식 문서)</th><th>우리 엔진 대응</th></tr>
+      <tr><td>Try Select Children with Highest Utility</td><td>utility 점수가 가장 높은 자식 상태를 시도한다. 동점이면 목록의 첫 번째.</td><td><code>UAI.select(c, {strategy:"best"})</code>. 동점이면 배열 앞쪽(<code>pool.find</code>)</td></tr>
+      <tr><td>Try Select Children at Random Weighted by Utility</td><td>각 상태의 utility로 랜덤 선택한다. 선택 확률은 정규화된 utility 점수.</td><td><code>UAI.select(c, {strategy:"weighted"})</code>. p = U / ΣU</td></tr>
+    </table></div>
+    <p>점수는 <b>Consideration</b>이라는 새 노드 종류로 만든다. consideration은 상태를 점수 매길 때 고려할 한 측면이며 0~1로 정규화된 점수를 낸다. 여러 consideration은 연산자로 묶는다. <b>AND는 두 입력 중 작은 값, OR는 큰 값</b>을 내고, <b>들여쓰기</b>로 연산 우선순위(괄호)를 정한다. 결합된 점수에는 상태의 <b>Weight</b>(기본 1)를 곱하는데, 문서는 이 Weight가 곱해진 최종 점수를 정규화하지 않는다고 명시한다.</p>
+    <div class="formula">Score(state) = combine_{AND=min, OR=max}(consideration₁ … consideration_n) × Weight</div>
+    <p>재평가 시점도 짚어 두자. selection behavior는 <b>자식 상태를 고르는 순간</b>에 적용된다. 이미 활성화된 상태는 다른 형제의 점수가 높아졌다고 저절로 바뀌지 않는다. 바뀌려면 transition(완료·실패·이벤트·조건)이 일어나 다시 선택해야 한다. 공식 selector 문서도 이 선택 단계만 설명한다. 그래서 "상황이 바뀌면 다시 고르라"는 동작이 필요하면 디자이너가 transition으로 명시해야 한다. 예를 들어 위협 이벤트가 오면 부모로 transition시키는 식이다. 실행 중에도 매번 다시 평가하는 DA:I BDS나 주기적으로 인터럽트를 검사하는 우리 엔진과는 철학이 다르다.</p>
+
+    <div class="widget" id="w-st">
+      <div class="w-title">위젯 10-3: consideration 트리 빌더 (AND=min · OR=max · 들여쓰기)</div>
+      <div class="w-desc">Hamlet 주민의 "빵집 가기" 상태에 consideration을 조합한다. 행마다 연산자(AND/OR), 들여쓰기(◀ ▶), 값을 정한다. 이 위젯은 <b>더 들여쓴 연속 행을 하나의 괄호 묶음</b>으로 보고, 묶음 첫 행의 연산자로 바깥과 잇는다. 왼쪽부터 순서대로 계산한다. 실제 에디터에서는 표시되는 괄호식을 함께 확인하자. 아래에서 같은 값들을 우리 엔진의 곱셈·보정 곱으로 합친 결과와 비교하고, 형제 상태와 함께 두 selection behavior의 결과를 본다.</div>
+      <div class="controls">
+        <span>프리셋:</span>
+        <button class="btn" data-pre="0">AND 그룹 + OR</button>
+        <button class="btn" data-pre="1">AND만 (최약 고리)</button>
+        <button class="btn" data-pre="2">중첩 2단</button>
+        <button class="btn" id="st-add">+ 행 추가</button>
+      </div>
+      <div id="st-rows"></div>
+      <div class="sliders">
+        <label for="st-w">상태 Weight</label><input type="range" id="st-w" min="0" max="2" step="0.05" value="1"><output id="st-w-o"></output>
+      </div>
+      <div class="formula" id="st-expr" style="white-space:normal;text-align:left"></div>
+      <div class="two">
+        <div>
+          <h4 style="margin:6px 0">결합 방식 비교 (같은 consideration 값)</h4>
+          <div class="tbl-wrap" style="margin:6px 0"><table id="st-cmp"></table></div>
+        </div>
+        <div>
+          <h4 style="margin:6px 0">형제 상태와 선택</h4>
+          <div class="sliders">
+            <label for="st-s2">선술집 가기</label><input type="range" id="st-s2" min="0" max="1.5" step="0.01" value="0.45"><output id="st-s2-o"></output>
+            <label for="st-s3">광장 산책</label><input type="range" id="st-s3" min="0" max="1.5" step="0.01" value="0.2"><output id="st-s3-o"></output>
+          </div>
+          <div id="st-sel"></div>
+        </div>
+      </div>
+    </div>
+    <div class="callout deep"><span class="title">min 결합 vs 보정 곱: 무엇이 다른가</span>
+      <p style="margin-top:0">AND=min은 "가장 약한 고리"만 본다. consideration이 몇 개든 점수가 깎이지 않아, <a class="xref" href="04-considerations.html">04장</a>에서 본 곱셈의 희석 문제(n이 늘수록 점수 하락)가 아예 없다. 보정 곱이 필요 없는 이유다. 대신 <b>최솟값이 아닌 consideration은 점수에 전혀 기여하지 않는다</b>. 배고픔 0.9·거리 0.6과 배고픔 0.6·거리 0.6이 똑같이 0.6이다. 곱셈 계열은 모든 요소가 점수를 조금씩 움직이므로 미세한 차이로 순위가 갈린다. 프리셋 "AND만"에서 최솟값이 아닌 슬라이더를 움직여 보자. min 결과는 그대로이고 곱 계열만 변한다.</p>
+      <p style="margin-bottom:0">OR는 우리 엔진에 없는 표현이다. 우리 엔진에서 "지갑 여유 <i>또는</i> 외상 가능"을 표현하려면 행동을 둘로 나누거나 커스텀 입력 함수 안에서 <code>Math.max</code>를 써야 한다. 반대로 StateTree는 상태 하나에 OR를 쓸 수 있는 대신, 결과가 0~1이고 정규화 안 된 Weight만 곱해지므로 형제 사이에 우선 "부류"를 두려면 계층(부모 상태)을 하나 더 만들어야 한다. 우리 엔진의 rank에 해당하는 것이 StateTree에서는 <b>트리 구조</b>다.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── s5 ───────────────────────── -->
+  <section id="s5">
+    <h2>5. 숙고와 반응의 분리 (Côté, 권·서)</h2>
+    <h3>5.1 Côté의 Action Selector</h3>
+    <p>Carle Côté(GAP1 11장)는 하이브리드를 다른 각도에서 본다. 어떤 결정 모델을 쓰느냐보다 <b>반응(reactivity)과 숙고(deliberation)를 하나의 모델로 합치지 말라</b>는 것이다. 반응은 자극에 즉시 응답하는 일이다. 통증·질식·재채기 같은 비자발적 반응도 있고, 맥락을 해석하는 인지적 반응도 있다. 도서관의 큰 소리에는 놀라지만 공사장의 큰 소리에는 놀라지 않는 것이 인지적 반응이다. 숙고는 아는 것을 고려해 다음 행동을 정하는 일이다. 둘은 트리거가 다르고(반응 = 높은 우선순위의 인터럽트, 숙고 = 현재 행동이 끝나거나 무효해졌을 때) 목표도 다르다(반응 = 즉각적 변화, 숙고 = 오래 유지할 최선).</p>
+    <p>Côté의 예에서 Chase/Patrol/Combat/Flee FSM에 Hurt·Suffocate 같은 반응 상태를 넣으면, 숙고 상태는 언제든 끊길 수 있으므로 <b>모든 숙고 상태에서 모든 반응 상태로 가는 전이</b>가 필요해진다. 반응을 하나 추가하면 기존 숙고 상태마다 전이를 하나씩 새로 달아야 하고, 숙고 상태를 추가해도 마찬가지다. 해법은 두 모듈이 같은 자극을 받아 각자 행동을 내고, <b>Action Selector</b>가 그 사이를 스위치하는 구조다. 셀렉터는 숙고 모듈에 새 결정을 요청하거나 반응을 실행하려고 현재 숙고 행동을 취소하라는 신호를 보낸다. 모듈마다 서로 다른 결정 모델을 써도 된다. 숙고는 FSM, 반응은 단순 규칙이나 결정 트리로 해도 된다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 680 220" style="min-width:560px" role="img" aria-label="Action Selector 구조">
+        <defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="box" x="10" y="88" width="90" height="44" rx="8"/><text x="55" y="115" text-anchor="middle">자극</text>
+        <line class="line" x1="100" y1="100" x2="190" y2="50" style="marker-end:url(#ah3)"/>
+        <line class="line" x1="100" y1="120" x2="190" y2="170" style="marker-end:url(#ah3)"/>
+        <rect x="192" y="22" width="170" height="56" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="277" y="45" text-anchor="middle" style="font-weight:700">숙고 (Deliberation)</text>
+        <text x="277" y="64" text-anchor="middle" class="muted" style="font-size:11.5px">효용 Reasoner · FSM · BT …</text>
+        <rect x="192" y="142" width="170" height="56" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="277" y="165" text-anchor="middle" style="font-weight:700">반응 (Reactivity)</text>
+        <text x="277" y="184" text-anchor="middle" class="muted" style="font-size:11.5px">규칙 · 결정 트리 · rank</text>
+        <line class="line" x1="362" y1="50" x2="448" y2="96" style="marker-end:url(#ah3)"/>
+        <line class="line" x1="362" y1="170" x2="448" y2="124" style="marker-end:url(#ah3)"/>
+        <text x="410" y="60" class="muted" style="font-size:11px">행동</text>
+        <text x="410" y="170" class="muted" style="font-size:11px">행동</text>
+        <rect x="450" y="84" width="120" height="52" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="510" y="106" text-anchor="middle" style="font-weight:700">Action</text>
+        <text x="510" y="124" text-anchor="middle" style="font-weight:700">Selector</text>
+        <line class="line" x1="570" y1="110" x2="640" y2="110" style="marker-end:url(#ah3)"/>
+        <text x="606" y="100" text-anchor="middle" class="muted" style="font-size:11px">실행</text>
+        <path class="line" d="M500,84 L500,20 L370,20 L362,30" style="stroke-dasharray:5 3;marker-end:url(#ah3)"/>
+        <text x="440" y="14" text-anchor="middle" class="muted" style="font-size:11px">제어 신호: 새 결정 요청 / 숙고 행동 취소</text>
+      </svg>
+      </div>
+      <figcaption>그림 10-4. Côté의 Action Selector(Fig 11.8 재구성). 숙고와 반응이 각자 행동을 내고, 셀렉터가 스위치한다.</figcaption>
+    </figure>
+    <p>우리 엔진은 이미 이 구조를 축소한 형태로 갖고 있다. <a class="xref" href="06-time-inertia.html">06장</a>에서 만든 <code>World.tick</code>은 할 일이 없을 때만 숙고(전체 결정)를 하고, 바쁠 때는 <code>thinkEvery</code> 틱마다 <b>인터럽트만</b> 검사한다.</p>
+<pre class="engine"><code>        // 2) 결정 (06장, GAP1 11장): 숙고는 할 일이 끝났을 때만, 반응(인터럽트)은 주기적으로 검사
+        const due = (this.tickCount + a.thinkOffset) % this.thinkEvery === 0;
+        if (!a.current) this.think(a);
+        else if (due) this.think(a, true);</code></pre>
+<pre class="engine"><code>      if (interruptOnly) {
+        const curAct = this.reasoner.actions.find(x => x.id === a.current.action);
+        if (c.rank <= curAct.rank) return;
+      }</code></pre>
+    <p>숙고와 반응이 같은 Reasoner를 공유하지만, 반응 경로는 "rank가 더 높은 후보"만 받아들인다. rank 10인 <code>flee</code>가 반응 모듈 역할이고, <code>think(a, true)</code>의 rank 비교가 Action Selector의 스위치 역할이다. Côté가 경고한 모든 숙고 상태 × 모든 반응 상태의 전이 폭발이 우리 엔진에서 생기지 않는 이유는 rank가 전이를 대신하기 때문이다. 다만 Côté가 요구한 세부 사항, 즉 비자발적 반응이 인지적 반응보다 우선하고, 동시에 일어난 비자발적 반응을 결합하는 것(질식 중 원거리 피격)까지 다루려면 반응 모듈을 따로 키워야 한다.</p>
+    <div class="callout"><span class="title">Côté가 지적한 또 하나의 함정: 진동</span>
+      시야 시스템의 "위협 보임" 신호를 FSM 전이에 직접 연결하면, 추격 중 장애물 때문에 시야가 깜빡일 때마다 Chase↔Patrol이 몇 초 안에 여러 번 바뀐다. 애니메이션이 튀는 문제도 생긴다. 해법은 히스테리시스 같은 필터를 거친 "논리적 위협 인지"에 연결하는 것이다. 숙고에서는 반응성만큼이나 행동을 적절한 시간 동안 유지하는 것이 중요하다는 교훈이다.
+    </div>
+    <h3>5.2 권·서(2022)의 숙고형 행동트리</h3>
+    <p>국내 연구로는 권·서(2022, 동의대)의 「효용이론과 행동 트리를 결합한 숙고형 행동트리」가 있다. 행동 트리에 노드를 추가해, 자식을 고를 때 하위 트리의 효용값을 평가하게 한 것이다. 접근 자체는 Merrill의 Utility Selector와 같은 계열이다. BT의 구조와 도구를 유지하면서 선택 지점에만 효용을 넣는다. 한국어로 된 정리를 원하면 함께 읽어 볼 만하다.</p>
+  </section>
+
+  <!-- ───────────────────────── s6 ───────────────────────── -->
+  <section id="s6">
+    <h2>6. 비교와 의사결정 가이드</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>아키텍처</th><th>점수 스케일</th><th>선택 방식</th><th>재평가 시점</th><th>디자이너 친화성</th></tr>
+      <tr><td><b>UAI 엔진</b> (이 코스)</td><td>consideration 0~1 → 보정 곱 × weight. 부류는 <code>rank</code>로 분리</td><td><code>UAI.select</code>: best / weighted / topN / topPct / dual</td><td>할 일이 끝나면 숙고, <code>thinkEvery</code>마다 인터럽트(rank 비교)</td><td>커브·가중치가 데이터. 결과 예측에는 디버그 도구 필요(11장)</td></tr>
+      <tr><td><b>BT + Utility Selector</b> (Merrill)</td><td>리프의 정규화 utility. composite는 자식 max, decorator로 변환</td><td>정렬 후 순서대로 실행, 첫 유효 자식. 최고점·버킷 가중 랜덤·임계값 랜덤도 가능</td><td>첫 실행 때 계산 후 Busy 동안 캐시. Done/Failed에서 Clear</td><td>기존 BT 툴·시각화를 그대로 쓰고 필요한 노드만 바꾼다</td></tr>
+      <tr><td><b>DA:I BDS</b></td><td>정수 점수 가산. 관례 대역 0 / 10 / 20–40 / 25–45 / 50–70 / tether 최상</td><td>등록된 snippet을 모두 평가, 내림차순 첫째(탐욕)</td><td>매 AI 업데이트, 실행 중에도. Execute Ability 후 일시 중단 가능</td><td>점수 의미를 대역으로 읽는다. 장비 단위 모듈. 관례는 데이터로 강제되지 않는다</td></tr>
+      <tr><td><b>UE5 StateTree</b></td><td>consideration 0~1, AND=min · OR=max, × Weight(정규화 안 함)</td><td>Highest(동점이면 첫째) / Random Weighted(정규화 점수 비례)</td><td>상태를 선택할 때(transition). 다시 고르려면 transition·이벤트 필요</td><td>에디터 안에서 연산자·들여쓰기로 조합. 부류 분리는 계층으로</td></tr>
+      <tr><td><b>Action Selector</b> (Côté)</td><td>모듈마다 자유</td><td>셀렉터가 숙고/반응 출력 사이를 스위치</td><td>반응: 자극 즉시 / 숙고: 행동 종료·무효화 시</td><td>모듈이 분리되어 전이 폭발이 없다. 모듈 간 계약 설계가 필요</td></tr>
+    </table></div>
+    <figure>
+      <div class="stage">
+      <svg class="diagram flow" viewBox="0 0 740 520" role="img" aria-label="하이브리드 선택 플로차트">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="box" x="130" y="8" width="200" height="34" rx="17"/><text x="230" y="30" text-anchor="middle" style="font-weight:700">새 결정 문제</text>
+        <line class="arr" x1="230" y1="42" x2="230" y2="58"/>
+        <!-- Q0 -->
+        <polygon class="dia" points="230,60 430,98 230,136 30,98"/>
+        <text x="230" y="94" text-anchor="middle">결정 대부분이 예/아니오로</text><text x="230" y="111" text-anchor="middle">깔끔하게 갈리나?</text>
+        <line class="arr" x1="430" y1="98" x2="468" y2="98"/><text x="449" y="90" text-anchor="middle" class="lab">예</text>
+        <rect class="res alt" x="470" y="72" width="255" height="52" rx="8"/><text x="597" y="94" text-anchor="middle">BT·FSM 그대로</text><text x="597" y="112" text-anchor="middle" class="muted">하이브리드 불필요</text>
+        <line class="arr" x1="230" y1="136" x2="230" y2="152"/><text x="244" y="148" class="lab">아니오</text>
+        <!-- Q1 -->
+        <polygon class="dia" points="230,154 430,192 230,230 30,192"/>
+        <text x="230" y="188" text-anchor="middle">애매한 결정이 기존 트리의</text><text x="230" y="205" text-anchor="middle">일부 노드에만 몰려 있나?</text>
+        <line class="arr" x1="430" y1="192" x2="468" y2="192"/><text x="449" y="184" text-anchor="middle" class="lab">예</text>
+        <rect class="res" x="470" y="166" width="255" height="52" rx="8"/><text x="597" y="188" text-anchor="middle">그 노드만 Utility Selector /</text><text x="597" y="206" text-anchor="middle">StateTree utility 선택 (2·4절)</text>
+        <line class="arr" x1="230" y1="230" x2="230" y2="246"/><text x="244" y="242" class="lab">아니오</text>
+        <!-- Q2 -->
+        <polygon class="dia" points="230,248 430,286 230,324 30,286"/>
+        <text x="230" y="282" text-anchor="middle">행동 목록이 장비·스킬로</text><text x="230" y="299" text-anchor="middle">런타임에 바뀌나?</text>
+        <line class="arr" x1="430" y1="286" x2="468" y2="286"/><text x="449" y="278" text-anchor="middle" class="lab">예</text>
+        <rect class="res" x="470" y="260" width="255" height="52" rx="8"/><text x="597" y="282" text-anchor="middle">BDS식 snippet 등록</text><text x="597" y="300" text-anchor="middle">+ 점수 대역 관례 (3절)</text>
+        <line class="arr" x1="230" y1="324" x2="230" y2="340"/><text x="244" y="336" class="lab">아니오</text>
+        <!-- Q3 -->
+        <polygon class="dia" points="230,342 430,380 230,418 30,380"/>
+        <text x="230" y="376" text-anchor="middle">피격·위협 같은 반응이 숙고</text><text x="230" y="393" text-anchor="middle">행동을 자주 끊어야 하나?</text>
+        <line class="arr" x1="430" y1="380" x2="468" y2="380"/><text x="449" y="372" text-anchor="middle" class="lab">예</text>
+        <rect class="res" x="470" y="354" width="255" height="52" rx="8"/><text x="597" y="376" text-anchor="middle">숙고/반응 분리: Action Selector,</text><text x="597" y="394" text-anchor="middle">rank + interruptOnly (5절)</text>
+        <line class="arr" x1="230" y1="418" x2="230" y2="448"/><text x="244" y="438" class="lab">아니오</text>
+        <rect class="res" x="90" y="450" width="280" height="52" rx="8"/><text x="230" y="472" text-anchor="middle">단일 효용 Reasoner</text><text x="230" y="490" text-anchor="middle" class="muted">UAI 엔진 그대로 (dual 선택 포함)</text>
+        <text x="597" y="450" text-anchor="middle" class="muted" style="font-size:11.5px">※ 오른쪽 결과들은 서로 배타적이지 않다.</text>
+        <text x="597" y="468" text-anchor="middle" class="muted" style="font-size:11.5px">BDS도 내부적으로 반응 대역(50–70)을 두고,</text>
+        <text x="597" y="486" text-anchor="middle" class="muted" style="font-size:11.5px">BT + Utility에도 숙고/반응 분리를 겹칠 수 있다.</text>
+      </svg>
+      </div>
+      <figcaption>그림 10-5. 언제 하이브리드로 가나: 위에서부터 차례로 묻는다. 위쪽 질문일수록 기존 자산을 더 많이 보존하는 선택이다.</figcaption>
+    </figure>
+    <p>질문 순서에는 이유가 있다. 맨 위 질문들은 <b>이미 가진 것을 지키는 쪽</b>이다. Merrill이 BT를 계속 쓴 이유는 기술적 우월성보다 팀 생산성이었다. 디자이너·스크립터·애니메이터가 캐릭터가 어떻게 행동할지 이해하는 것이 중요했고, STRIPS 플래너는 "너무 유기적이고 신비로워" 디자이너가 불편해했으며, FSM은 특수 케이스가 쌓여 지저분해졌다. 하이브리드는 이 학습 비용을 다시 치르지 않으면서 회색지대만 해결하는 방법이다.</p>
+  </section>
+
+  <!-- ───────────────────────── s7 ───────────────────────── -->
+  <section id="s7">
+    <h2>7. 하이브리드에서 자주 밟는 함정</h2>
+    <div class="callout danger"><span class="title">① 서로 다른 스케일을 섞어 비교</span>
+      BT 리프 하나는 0~1 utility를 내고 다른 리프는 BDS식 정수 점수를 내면, 정렬은 되지만 의미는 없다. 하이브리드에서는 한 selector 안의 형제들이 <b>같은 스케일</b>을 쓰도록 강제해야 한다. Merrill이 공통 단위를 먼저 강조하고, BioWare가 부류별 점수 로직 자산을 공유한 이유다.
+    </div>
+    <div class="callout danger"><span class="title">② 캐시가 낡은 줄 모르고 디버깅</span>
+      Utility Selector는 Busy 동안 utility를 다시 계산하지 않는다. 디버거에 찍힌 "지금의 utility"와 실제 실행 순서가 다를 수 있다. 디버그 뷰에는 live 값과 캐시 값을 <b>둘 다</b> 보여 주자(위젯 10-1의 "Combat 캐시").
+    </div>
+    <div class="callout warn"><span class="title">③ 자식 max 전파가 숨기는 것</span>
+      composite가 자식 max를 돌려주면, 그 서브트리에서 유효하지 않은 자식의 높은 utility가 부모를 끌어올릴 수 있다. 부모가 선택되어도 실제로는 낮은 자식이 실행된다. 그래서 Merrill은 평가/실행을 분리해 <b>유효한 자식만</b> utility를 계산하게 했다.
+    </div>
+    <div class="callout warn"><span class="title">④ 정규화 안 된 Weight가 부류를 흉내 낸다</span>
+      StateTree에서 Weight 2를 주면 최종 점수가 1을 넘을 수 있다. 이것으로 "항상 우선"을 흉내 내다 보면 점수 의미가 흐려진다. 절대 우선이 필요하면 BDS의 대역 분리나 우리 엔진의 rank, StateTree라면 상위 상태로 구조적으로 분리하는 편이 명확하다.
+    </div>
+    <div class="callout"><span class="title">⑤ 평가와 실행의 계약 누락</span>
+      BDS의 규칙대로, 실행 트리가 해낼 수 없는 조건(대상 사망, 사거리 밖으로 영구 이탈)은 평가 트리가 막아야 한다. 이 계약이 없으면 최고점 snippet이 실행에서 매번 실패하는데도 다음 평가에서 또 1위가 되는 루프가 생긴다. 우리 엔진에서는 consideration의 스위치 커브(early-out)가 같은 역할을 한다.
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>하이브리드의 핵심은 효용을 <b>어디에</b> 꽂느냐다. BT의 노드 하나(Merrill), 최상위 선택 전체(DA:I BDS), 자식 상태 선택(StateTree), 숙고 모듈 내부(Côté)가 있다.</li>
+    <li><b>Utility Selector</b>(Listing 10.2)는 첫 실행 때 자식 utility를 계산해 내림차순으로 정렬하고 순서대로 실행한다. Busy면 캐시를 유지하고, Done이나 전체 실패에서 비운다. composite는 자식 max로 utility를 전파하고, decorator(cube 등)로 변환한다.</li>
+    <li><b>DA:I BDS</b>: 장비에 붙은 snippet이 등록되면 평가 트리가 점수를 가산하고, Target Selector가 대상을 고르며, Listing 31.1이 정렬 후 1위를 고른다. 실행 트리는 맥락으로 받은 어빌리티·대상을 쓰는 범용 트리다. 자동 정규화 대신 <b>점수 관례 대역</b>을 쓴다(10 / 20–40 / 25–45 / 50–70). 따라가기는 0점, tether는 최고점이다.</li>
+    <li><b>StateTree</b>: consideration 0~1을 AND=min, OR=max, 들여쓰기 괄호로 묶고 Weight를 곱한다(정규화 안 함). Highest(동점이면 첫째) 또는 Random Weighted로 고르며, 선택은 transition 시점에 일어난다.</li>
+    <li>정규화 0~1은 모든 행동이 겹치고, 점수 대역은 겹침과 절대 우선을 한 축에 담고, dual rank는 절대 우선을 별도 축으로 뺀다. 우리 엔진은 마지막 방식을 쓴다.</li>
+    <li>반응과 숙고는 트리거와 목표가 다르다. 한 모델에 섞으면 전이가 폭발한다. 우리 엔진의 <code>think(a, interruptOnly)</code>와 rank가 Côté식 Action Selector의 축소판이다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Utility Selector(Listing 10.2) 아래의 Seek Medic이 Busy를 돌려주는 동안 사냥꾼의 체력이 크게 회복되었다. 다음 Execute()에서 일어나는 일은?</div>
+    <button class="opt">모든 자식의 utility를 다시 계산해 Shoot로 갈아탄다.</button>
+    <button class="opt">Seek Medic이 자동으로 Failed가 된다.</button>
+    <button class="opt">Utility 테이블이 비어 있지 않으므로 재계산 없이 Seek Medic을 이어서 실행한다.</button>
+    <button class="opt">부모 Selector가 Combat을 건너뛴다.</button>
+    <div class="explain"><code>if (Utility.Size() == 0)</code>일 때만 계산한다. 테이블은 Done이나 전체 실패에서만 비워진다. 리프가 스스로 조건을 확인해 Failed를 내지 않는 한 캐시된 순서가 유지된다. 이것이 BDS의 "실행 중에도 재평가"와 대비되는 정책이다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Utility Selector의 자식이 일반 Selector(자식 utility 0.2, 0.7, 0.4)일 때, Merrill이 제안한 가장 단순한 전파 규칙으로 이 composite가 돌려주는 utility는?</div>
+    <button class="opt">0.2 (최솟값)</button>
+    <button class="opt">0.7 (최댓값)</button>
+    <button class="opt">0.433 (평균)</button>
+    <button class="opt">0.056 (곱)</button>
+    <div class="explain">selector와 sequencer 모두 자식 중 최고 utility를 돌려주는 것이 가장 단순한 방법이다. 대가로 서브트리를 다 펼쳐야 하므로 리프 캐싱이나 별도 패스로 비용을 나눈다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">DA:I 점수 관례에서 Support가 25~45로, Offensive(20~40)보다 5점 높게 겹치도록 정해진 이유에 가장 가까운 것은?</div>
+    <button class="opt">Support 어빌리티가 마나를 더 많이 쓰기 때문이다.</button>
+    <button class="opt">엔진이 자동으로 25점을 더해 주기 때문이다.</button>
+    <button class="opt">Support는 항상 Offensive를 이겨야 하기 때문이다.</button>
+    <button class="opt">같은 긴급도라면 준비·대응 성격의 Support를 공격보다 먼저 써야 하지만, 긴급한 공격이 덜 긴급한 지원을 이길 여지는 남기기 위해서다.</button>
+    <div class="explain">Table 31.1: Support는 "같은 수준의 urgency라면" Offensive보다 낫다. 대역이 겹치므로(25~40) 긴급도 높은 Offensive(예 38)는 기본 Support(25)를 이길 수 있다. 관례는 데이터에 강제되지 않는 디자이너 지침이다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">BDS에서 "리더 따라가기" snippet의 평가 트리가 상수 0을 돌려주도록 만든 효과는?</div>
+    <button class="opt">0보다 높은 유효 snippet이 하나도 없을 때만 자동으로 선택된다.</button>
+    <button class="opt">평가 테이블에서 항상 제외된다.</button>
+    <button class="opt">tether와 동점이 되어 랜덤으로 선택된다.</button>
+    <button class="opt">실행 중인 어빌리티를 즉시 취소한다.</button>
+    <div class="explain">result는 true이고 점수만 최하위다. 다른 유효 행동이 있으면 양보하고, 없으면 빈자리를 채운다. 우리 엔진의 <code>wander</code>(weight 0.12)가 같은 역할이다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">StateTree에서 consideration A=0.8, B=0.3, C=0.7을 <code>A AND (B OR C)</code>로 묶고 Weight 1.5를 주었다. 최종 점수는?</div>
+    <button class="opt">0.45</button>
+    <button class="opt">0.7</button>
+    <button class="opt">1.05</button>
+    <button class="opt">1.0 (1로 잘림)</button>
+    <div class="explain">B OR C = max(0.3, 0.7) = 0.7, A AND 0.7 = min(0.8, 0.7) = 0.7, × 1.5 = 1.05. 문서에 따르면 Weight를 곱한 최종 점수는 정규화하지 않으므로 1을 넘을 수 있다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Côté가 반응 상태(Hurt, Suffocate)를 숙고 FSM에 함께 넣지 말라고 한 핵심 이유는?</div>
+    <button class="opt">반응 상태는 애니메이션이 없어서다.</button>
+    <button class="opt">숙고 상태는 언제든 끊길 수 있어 모든 숙고 상태에서 모든 반응 상태로 전이가 필요해지고, 상태를 추가할 때마다 전이가 늘어나기 때문이다.</button>
+    <button class="opt">FSM은 한 번에 두 상태를 가질 수 없어서 반응이 무시되기 때문이다.</button>
+    <button class="opt">반응은 효용 점수로 표현할 수 없어서다.</button>
+    <div class="explain">반응은 인터럽트, 숙고는 유지가 목적이라 전이 역학이 정반대다. 해법은 모듈을 나누고 Action Selector가 스위치하는 것이다. 우리 엔진은 rank와 <code>interruptOnly</code>로 이 전이를 대신한다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b> 이 장에서는 Utility Selector의 캐시, BDS의 평가 테이블, StateTree의 consideration 트리처럼 서로 다른 구조로 결정을 만들었다. 그런데 NPC가 이상한 선택을 했을 때 "왜"를 어떻게 찾아낼까? 11장에서는 <code>lastEval</code>·<code>trace</code>·<code>log</code>로 결정을 기록하고, 진동과 점수 희석을 찾아 튜닝·밸런싱하는 방법을 다룬다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>Merrill, B. (2014). Building Utility Decisions into Your Existing Behavior Tree. In S. Rabin (Ed.), <i>Game AI Pro</i>, Ch. 10, pp. 127–136. CRC Press.</li>
+    <li>Hanlon, S., &amp; Watts, C. (2017). Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture. In S. Rabin (Ed.), <i>Game AI Pro 3</i>, Ch. 31. CRC Press.</li>
+    <li>Côté, C. (2014). Reactivity and Deliberation in Decision-Making Systems. In <i>Game AI Pro</i>, Ch. 11. CRC Press.</li>
+    <li>Graham, D. (2014). An Introduction to Utility Theory. In <i>Game AI Pro</i>, Ch. 9, pp. 113–126. CRC Press.</li>
+    <li>Dawe, M., Gargolinski, S., Dicken, L., Humphreys, T., &amp; Mark, D. (2014). Behavior Selection Algorithms: An Overview. In <i>Game AI Pro</i>, Ch. 4. CRC Press.</li>
+    <li>Dill, K. (2015). Dual-Utility Reasoning. In <i>Game AI Pro 2</i>, Ch. 3. CRC Press.</li>
+    <li>Epic Games. StateTree Selectors Overview. Unreal Engine Documentation. https://dev.epicgames.com/documentation/unreal-engine/statetree-selectors-overview</li>
+    <li>권·서 (2022). 효용이론과 행동 트리를 결합한 숙고형 행동트리. 동의대학교. KoreaScience JAKO202210351421868.</li>
+  </ul></div>
+</main>
+
+<script>
+/*LOGIC-START*/
+// ───────── 순수 로직: DOM 없이 node에서 검증 가능 ─────────
+const L10 = {};
+
+// [1] Monster Hunter BT (교육용 수치)
+L10.CLIP = 30; L10.HP = 2; L10.DP = 1;
+L10.cube = UAI.curve("3차 지연 (x³)");
+L10.uShoot = w => 0.3 + 0.4 * (1 - UAI.normalize(w.d, 0, 40));
+L10.uReloadRaw = w => 1 - w.a / L10.CLIP;
+// 수식 10.4: (Heal·HealPower − Delay·DelayPower) / (HealPower + DelayPower)
+L10.uMedic = w => {
+  const heal = 1 - w.h / 100, delay = 1 - UAI.normalize(w.d, 0, 40);
+  return UAI.clamp01((heal * L10.HP - delay * L10.DP) / (L10.HP + L10.DP));
+};
+L10.makeNodes = function () {
+  const N = {
+    root: { type: "prio", kids: ["combat", "relaxed"], label: "Monster Hunter" },
+    combat: { type: "sel", kids: ["reload", "shoot", "medic"], cond: w => w.d < 40, label: "Combat" },
+    relaxed: { type: "sel", kids: ["eat", "nap", "patrol"], label: "Relaxed" },
+    reload: { type: "leaf", label: "Reload", dur: 2, strict: w => w.a === 0, loose: w => w.a < L10.CLIP,
+      done: w => { w.a = L10.CLIP; }, util: (w, cube) => (cube ? L10.cube(L10.uReloadRaw(w)) : L10.uReloadRaw(w)),
+      strictTxt: "탄약 = 0", looseTxt: "탄약 < 30" },
+    shoot: { type: "leaf", label: "Shoot", dur: 1, strict: w => w.a > 0 && w.d <= 30, loose: w => w.a > 0 && w.d <= 30,
+      done: w => { w.a = Math.max(0, w.a - 5); w.d = Math.min(50, w.d + 3); }, util: w => L10.uShoot(w),
+      strictTxt: "탄약>0 · 30m 안", looseTxt: "탄약>0 · 30m 안" },
+    medic: { type: "leaf", label: "Seek Medic", dur: 3, strict: w => w.h < 35, loose: w => w.h < 90,
+      tick: w => { w.d = Math.min(50, w.d + 4); }, done: w => { w.h = Math.min(100, w.h + 45); }, util: w => L10.uMedic(w),
+      strictTxt: "체력 < 35", looseTxt: "체력 < 90" },
+    eat: { type: "leaf", label: "Eat", dur: 2, strict: w => w.h < 50, loose: w => w.h < 50, done: w => { w.h = Math.min(100, w.h + 10); }, strictTxt: "체력 < 50" },
+    nap: { type: "leaf", label: "Nap", dur: 2, strict: () => false, loose: () => false, strictTxt: "밤에만 (지금 낮)" },
+    patrol: { type: "leaf", label: "Patrol", dur: 2, strict: () => true, loose: () => true, strictTxt: "항상" },
+  };
+  for (const id in N) Object.assign(N[id], { id, cur: 0, cache: null, running: false, left: 0 });
+  return N;
+};
+L10.BT = class {
+  constructor(opt) { opt = opt || {}; this.N = L10.makeNodes(); this.mode = opt.mode || "util"; this.cube = opt.cube !== false; this.lastKid = null; }
+  valid(n, w) { return this.mode === "util" ? n.loose(w) : n.strict(w); }
+  util(id, w) {
+    const n = this.N[id];
+    if (n.type === "leaf") return n.util ? n.util(w, this.cube) : 0;
+    return Math.max(...n.kids.map(k => this.util(k, w))); // composite: 자식 max (Merrill 10.7)
+  }
+  reset(id) { const n = this.N[id]; n.cur = 0; n.cache = null; n.running = false; if (n.kids) n.kids.forEach(k => this.reset(k)); }
+  exec(id, w, tr) {
+    const n = this.N[id];
+    if (n.type === "leaf") {
+      if (id === "reload" && this.mode === "util" && this.cube) tr.push({ id: "cube", st: "visit" });
+      if (!this.valid(n, w)) { n.running = false; tr.push({ id, st: "fail" }); return "F"; }
+      if (!n.running) { n.running = true; n.left = n.dur; }
+      if (n.tick) n.tick(w);
+      n.left--;
+      if (n.left <= 0) { n.running = false; if (n.done) n.done(w); tr.push({ id, st: "done" }); return "D"; }
+      tr.push({ id, st: "busy" }); return "B";
+    }
+    tr.push({ id, st: "visit" });
+    if (n.type === "prio") { // 루트: 매 틱 첫 자식부터 (우선순위 selector)
+      for (const k of n.kids) {
+        const s = this.exec(k, w, tr);
+        if (s !== "F") {
+          if (this.lastKid && this.lastKid !== k) this.reset(this.lastKid);
+          this.lastKid = k;
+          tr.push({ id, st: s === "B" ? "busy" : "done" });
+          return s;
+        }
+      }
+      tr.push({ id, st: "fail" }); return "F";
+    }
+    if (n.cond && !n.cond(w)) { this.reset(id); tr.push({ id, st: "fail" }); return "F"; }
+    const useUtil = this.mode === "util" && id === "combat";
+    // Listing 10.2: 테이블이 비어 있을 때만 계산 → 내림차순 정렬 (동점이면 원래 순서 유지)
+    if (useUtil && !n.cache) {
+      n.cache = n.kids.map(k => ({ id: k, u: this.util(k, w) })).sort((a, b) => b.u - a.u);
+      n.cur = 0; tr.push({ id, st: "calc" });
+    }
+    const order = useUtil ? n.cache.map(c => c.id) : n.kids;
+    while (n.cur < order.length) {
+      const s = this.exec(order[n.cur], w, tr);
+      if (s === "B") { tr.push({ id, st: "busy" }); return "B"; }
+      if (s === "D") { n.cur = 0; n.cache = null; tr.push({ id, st: "done" }); return "D"; }
+      n.cur++;
+    }
+    n.cur = 0; n.cache = null; tr.push({ id, st: "fail" }); return "F";
+  }
+};
+L10.worldStep = function (w) {
+  if (w.d < 40) w.h -= w.d <= 10 ? 6 : w.d <= 25 ? 3 : 1;
+  w.h = Math.max(0, w.h);
+  w.d = Math.max(2, w.d - 2);
+};
+L10.tick = function (bt, w) {
+  const tr = [];
+  const s = bt.exec("root", w, tr);
+  L10.worldStep(w);
+  const leaf = [...tr].reverse().find(e => (e.st === "busy" || e.st === "done") && bt.N[e.id] && bt.N[e.id].type === "leaf");
+  return { tr, s, leaf: leaf ? leaf.id : null, leafSt: leaf ? leaf.st : null };
+};
+
+// [2] DA:I BDS (Immolate 대상 점수·부류 대역은 논문, 나머지는 교육용)
+L10.ITEMS = {
+  staff: { label: "화염 지팡이", slot: "main", snippets: ["staffBasic", "immolate"] },
+  sword: { label: "장검", slot: "main", snippets: ["swordBasic", "charge", "chargeRetreat"] },
+  amulet: { label: "치유 부적", slot: "off", snippets: ["healAura"] },
+  shield: { label: "방패", slot: "off", snippets: ["shieldUp"] },
+  post: { label: "경비 임무 표식", slot: "duty", snippets: ["tether"] },
+};
+L10.SLOTS = { main: "주무기", off: "보조", duty: "임무" };
+L10.enemies = st => [
+  { name: "늑대 A", dist: st.d, immune: !!st.immuneA, weak: false },
+  { name: "늑대 B", dist: st.d + 1.5, immune: false, weak: !!st.weakB },
+  { name: "늑대 C", dist: st.d + 6, immune: false, weak: false },
+];
+// Target Selector 노드 (GAP3 31.4.2 알고리즘)
+L10.targetSelector = function (ctx, cands, child) {
+  const init = ctx.score; let best = null; const notes = [];
+  for (const t of cands) {
+    ctx.score = init; ctx.iter = t;
+    if (child(ctx, t)) { notes.push(`${t.name}=${ctx.score}`); if (!best || ctx.score > best.score) best = { t, score: ctx.score }; }
+    else notes.push(`${t.name}=false`);
+  }
+  ctx.why.push(cands.length ? "대상[" + notes.join(", ") + "]" : "후보 없음");
+  if (best) { ctx.target = best.t; ctx.score = best.score; return true; }
+  ctx.score = init; return false;
+};
+L10.SNIPPETS = {
+  follow: { label: "리더 따라가기", ability: "(이동)", cls: "Passive", eval(c) { c.why.push("상수 0"); return true; } },
+  tether: { label: "경비 구역 복귀", ability: "(이동)", cls: "Tether", eval(c) {
+    if (!c.st.outside) { c.why.push("구역 안"); return false; } c.score += 100; c.why.push("구역 밖 → 100"); return true; } },
+  staffBasic: { label: "지팡이 기본 공격", ability: "기본 공격", cls: "Basic", eval(c) {
+    return L10.targetSelector(c, c.enemies.filter(e => e.dist <= 15), x => { x.score += 10; return true; }); } },
+  immolate: { label: "Immolate", ability: "Immolate", cls: "Offensive", eval(c) {
+    c.score += 20; c.why.push("기본 20");
+    return L10.targetSelector(c, c.enemies.filter(e => e.dist <= 10), (x, t) => {
+      if (t.immune) return false; x.score += 5; if (t.weak) x.score += 5; return true; }); } },
+  swordBasic: { label: "장검 기본 베기", ability: "기본 공격", cls: "Basic", eval(c) {
+    return L10.targetSelector(c, c.enemies.filter(e => e.dist <= 15), x => { x.score += 10; return true; }); } },
+  charge: { label: "Charging Bull (돌진)", ability: "Charging Bull", cls: "Offensive", eval(c) {
+    c.score += 20; c.why.push("기본 20");
+    if (c.st.h >= 50) { c.score += 5; c.why.push("체력≥50% +5"); }
+    return L10.targetSelector(c, c.enemies.filter(e => e.dist <= 15), (x, t) => {
+      if (t.dist >= 5) x.score += 10; return true; }); } },
+  chargeRetreat: { label: "Charging Bull (후퇴)", ability: "Charging Bull", cls: "Reaction", eval(c) {
+    const near = Math.min(...c.enemies.map(e => e.dist));
+    if (!(c.st.h < 30 && near <= 5)) { c.why.push("체력<30% & 5m 안 아님"); return false; }
+    c.score += 50; c.why.push("반응 50"); if (c.st.h < 15) { c.score += 10; c.why.push("체력<15% +10"); } return true; } },
+  healAura: { label: "치유 오라", ability: "치유 오라", cls: "Support", eval(c) {
+    if (c.st.h >= 70) { c.why.push("체력≥70%"); return false; }
+    const add = Math.round(20 * (0.7 - c.st.h / 100) / 0.7);
+    c.score += 25 + add; c.why.push(`기본 25 + 결핍 ${add}`); return true; } },
+  shieldUp: { label: "방패 올리기", ability: "방패 막기", cls: "Reaction", eval(c) {
+    const near = Math.min(...c.enemies.map(e => e.dist));
+    if (!(near <= 3 && c.st.h < 60)) { c.why.push("3m 안 & 체력<60% 아님"); return false; }
+    c.score += 50; c.why.push("반응 50"); if (near <= 1.5) { c.score += 10; c.why.push("1.5m 안 +10"); } return true; } },
+};
+L10.registered = function (equipped) {
+  const ids = ["follow"];
+  for (const slot in equipped) { const it = equipped[slot]; if (it) ids.push(...L10.ITEMS[it].snippets); }
+  return ids;
+};
+// Listing 31.1
+L10.evaluateSnippets = function (ids, st) {
+  const enemies = L10.enemies(st), rows = [];
+  for (const id of ids) {
+    const sn = L10.SNIPPETS[id];
+    const ctx = { st, enemies, score: 0, target: null, why: [] };
+    const result = !!sn.eval(ctx);
+    rows.push({ id, sn, result, score: ctx.score, target: result ? ctx.target : null, why: ctx.why.join(" · ") });
+  }
+  const valid = rows.filter(r => r.result).sort((a, b) => b.score - a.score);
+  return { rows, valid, best: valid[0] || null };
+};
+
+// [3] StateTree consideration 결합 (위젯 해석: 더 들여쓴 연속 행 = 괄호 묶음)
+L10.parseCons = function (rows) {
+  function group(i, lvl) {
+    const items = [];
+    while (i < rows.length && rows[i].ind >= lvl) {
+      if (rows[i].ind === lvl) { items.push({ op: rows[i].op, leaf: rows[i] }); i++; }
+      else { const g = group(i, lvl + 1); items.push({ op: rows[i].op, grp: g.items }); i = g.i; }
+    }
+    return { items, i };
+  }
+  return group(0, 0).items;
+};
+L10.evalCons = function (items) {
+  let v = 0, expr = "", names = "";
+  items.forEach((it, k) => {
+    let iv, ie, inm;
+    if (it.leaf) { iv = it.leaf.v; ie = it.leaf.v.toFixed(2); inm = it.leaf.name; }
+    else { const g = L10.evalCons(it.grp); iv = g.v; ie = "(" + g.expr + ")"; inm = "(" + g.names + ")"; }
+    if (k === 0) { v = iv; expr = ie; names = inm; }
+    else {
+      v = UAI.combine([v, iv], it.op === "AND" ? "min" : "max");
+      expr += ` ${it.op} ${ie}`; names += ` ${it.op} ${inm}`;
+    }
+  });
+  return { v, expr, names };
+};
+L10.stateScore = function (rows, weight) {
+  if (!rows.length) return { v: 0, final: 0, expr: "—", names: "—" };
+  const r = L10.evalCons(L10.parseCons(rows));
+  return Object.assign(r, { final: r.v * weight });
+};
+/*LOGIC-END*/
+
+if (typeof document !== "undefined") (function () {
+  const $ = s => document.querySelector(s);
+  const NS = "http://www.w3.org/2000/svg";
+
+  // ───────── 그림 10-2: cube 플롯 ─────────
+  const cubePlot = MM.plotCurve($("#cube-plot"), x => L10.cube(x), {
+    color: "--violet", marker: 0, label: "cube(U)", xLabel: "Reload 원래 U", yLabel: "전파되는 U",
+    extra: [{ fn: x => x, color: "--muted", dash: true }],
+  });
+
+  // ───────── 스텝 애니메이션: Listing 10.2 ─────────
+  (function () {
+    const w0 = { h: 15, a: 12, d: 30 };
+    const bt = new L10.BT({ mode: "util", cube: true });
+    const U = { reload: bt.util("reload", w0), shoot: bt.util("shoot", w0), medic: bt.util("medic", w0) };
+    const order = ["reload", "shoot", "medic"].sort((a, b) => U[b] - U[a]);
+    const NAME = { reload: "Reload", shoot: "Shoot", medic: "Seek Medic" };
+    const lines = [...document.querySelectorAll("#lst102 span")];
+    const chips = $("#step-chips");
+    const S = [
+      { l: [0, 1], c: {}, sorted: false, t: "Combat.Execute() 첫 호출. <code>Utility.Size() == 0</code>이므로 utility 계산 블록에 들어간다." },
+      { l: [3, 4], c: {}, sorted: false, t: `자식마다 CalculateUtility(): Reload ${MM.fmt(U.reload)} (cube 적용, 원래 ${MM.fmt(L10.uReloadRaw(w0))}), Shoot ${MM.fmt(U.shoot)}, Seek Medic ${MM.fmt(U.medic)} (수식 10.4).` },
+      { l: [5, 6], c: {}, sorted: true, t: `내림차순 정렬 → ${order.map(k => NAME[k]).join(" → ")}. CurrChild = 1위.` },
+      { l: [9, 10, 11], c: { [order[0]]: "busy" }, sorted: true, t: `${NAME[order[0]]}.Execute() → <b>Busy</b>. 그대로 Busy를 돌려주고 테이블은 남긴다.` },
+      { l: [0, 1, 9, 10, 11], c: { [order[0]]: "busy" }, sorted: true, t: "다음 프레임. 테이블이 비어 있지 않으니 <b>재계산을 건너뛰고</b> 같은 자식을 이어 실행한다. 그 사이 괴물이 다가와도 순서는 그대로다. 캐시의 대가다." },
+      { l: [12], c: { [order[0]]: "done" }, sorted: true, t: `${NAME[order[0]]} → <b>Done</b>. <code>Utility.Clear()</code> 후 Done. 다음 호출 때 새로 계산한다.` },
+      { l: [10, 13], c: { [order[0]]: "fail" }, sorted: true, t: `(다른 전개) ${NAME[order[0]]}가 <b>Failed</b>(예: 의무병까지 가는 길이 막힘) → CurrChild = Next.` },
+      { l: [10, 11], c: { [order[0]]: "fail", [order[1]]: "busy" }, sorted: true, t: `2위 ${NAME[order[1]]} 실행 → Busy. utility 정렬과 BT 유효성 검사가 함께 일한다.` },
+      { l: [15, 16], c: { [order[0]]: "fail", [order[1]]: "fail", [order[2]]: "fail" }, sorted: true, t: "모든 자식이 실패하면 Clear 후 <b>Failed</b>. 부모 Selector가 다음 형제(Relaxed)로 넘어간다." },
+    ];
+    MM.stepper($("#step-host"), {
+      steps: S.length, interval: 1700,
+      render(i) {
+        const s = S[i];
+        lines.forEach((el, k) => el.classList.toggle("hl", s.l.includes(k)));
+        const list = s.sorted ? order : ["reload", "shoot", "medic"];
+        chips.innerHTML = list.map((k, j) => `<span class="chip ${s.c[k] || (s.sorted ? "run" : "")}">${s.sorted ? "#" + (j + 1) + " " : ""}${NAME[k]} ${i >= 1 ? MM.fmt(U[k]) : "?"}</span>`).join("");
+        return s.t;
+      },
+    });
+  })();
+
+  // ───────── 위젯 10-1: BT ─────────
+  const POS = {
+    root: [360, 30], combat: [190, 105], relaxed: [560, 105], cube: [70, 172],
+    reload: [70, 240], shoot: [190, 240], medic: [310, 240], eat: [460, 240], nap: [560, 240], patrol: [660, 240],
+  };
+  const PARENT = { combat: "root", relaxed: "root", cube: "combat", reload: "cube", shoot: "combat", medic: "combat", eat: "relaxed", nap: "relaxed", patrol: "relaxed" };
+  const svg = $("#bt-svg");
+  (function build() {
+    let h = "";
+    for (const c in PARENT) {
+      const [x1, y1] = POS[PARENT[c]], [x2, y2] = POS[c];
+      h += `<line class="edge" id="be-${c}" x1="${x1}" y1="${y1 + 18}" x2="${x2}" y2="${y2 - 18}"/>`;
+    }
+    for (const id in POS) {
+      const [x, y] = POS[id], wd = id === "cube" ? 70 : id === "root" ? 140 : 108;
+      const label = { root: "Monster Hunter", combat: "Combat", relaxed: "Relaxed", cube: "cube()", reload: "Reload", shoot: "Shoot", medic: "Seek Medic", eat: "Eat", nap: "Nap", patrol: "Patrol" }[id];
+      h += `<g class="nd" id="bn-${id}"><rect x="${x - wd / 2}" y="${y - 18}" width="${wd}" height="36" rx="7"/>` +
+        `<text x="${x}" y="${y - 1}" text-anchor="middle" style="font-weight:700">${label}</text>` +
+        `<text x="${x}" y="${y + 13}" text-anchor="middle" class="sub" id="bs-${id}"></text></g>`;
+      if (["reload", "shoot", "medic"].includes(id)) {
+        h += `<text x="${x}" y="${y + 34}" text-anchor="middle" class="sub" id="bu-${id}"></text>`;
+        h += `<text x="${x + 46}" y="${y - 22}" text-anchor="end" class="ord" id="bo-${id}"></text>`;
+      }
+      if (["eat", "nap", "patrol"].includes(id)) h += `<text x="${x}" y="${y + 34}" text-anchor="middle" class="sub" id="bu-${id}"></text>`;
+    }
+    svg.innerHTML = h;
+  })();
+
+  let world, bt, timer = null, anim = [], tcount = 0, cnt;
+  const mode = () => (document.querySelector("#bt-mode .on").dataset.m);
+  function reset() {
+    world = { h: 70, a: 30, d: 34 };
+    bt = new L10.BT({ mode: mode(), cube: $("#bt-cube").checked });
+    tcount = 0; cnt = { shoot: 0, reload: 0, medic: 0 };
+    $("#bt-log").textContent = "";
+    clearHL(); syncSliders(); render(); $("#bt-act").textContent = "—";
+  }
+  function syncSliders() {
+    $("#bt-h").value = world.h; $("#bt-a").value = world.a; $("#bt-d").value = world.d;
+  }
+  function clearHL() {
+    anim.forEach(clearTimeout); anim = [];
+    svg.querySelectorAll(".nd").forEach(n => n.classList.remove("visit", "fail", "busy", "done", "calc"));
+    svg.querySelectorAll(".edge").forEach(e => e.classList.remove("on"));
+  }
+  function render() {
+    $("#bt-h-o").textContent = Math.round(world.h);
+    $("#bt-a-o").textContent = world.a + "발";
+    $("#bt-d-o").textContent = world.d + "m";
+    const util = bt.mode === "util", cache = bt.N.combat.cache;
+    $("#bn-cube").classList.toggle("off", !(util && bt.cube));
+    $("#bs-root").textContent = "Selector (우선순위)";
+    $("#bs-combat").textContent = util ? `Utility · U=max ${MM.fmt(bt.util("combat", world))}` : "Selector";
+    $("#bs-relaxed").textContent = "Selector";
+    $("#bs-cube").textContent = util && bt.cube ? "decorator" : "꺼짐";
+    const live = ["reload", "shoot", "medic"].map(k => ({ id: k, u: bt.util(k, world) })).sort((a, b) => b.u - a.u);
+    const ordSrc = cache || live;
+    for (const k of ["reload", "shoot", "medic"]) {
+      const n = bt.N[k], ok = bt.valid(n, world);
+      $("#bs-" + k).textContent = (ok ? "✔ " : "✘ ") + (util ? n.looseTxt : n.strictTxt);
+      if (util) {
+        const c = cache && cache.find(x => x.id === k);
+        $("#bu-" + k).textContent = `live U ${MM.fmt(n.util(world, bt.cube))}` + (c ? ` · 캐시 ${MM.fmt(c.u)}` : "");
+        $("#bo-" + k).textContent = "#" + (ordSrc.findIndex(x => x.id === k) + 1);
+      } else {
+        $("#bu-" + k).textContent = "";
+        $("#bo-" + k).textContent = "#" + (bt.N.combat.kids.indexOf(k) + 1);
+      }
+    }
+    for (const k of ["eat", "nap", "patrol"]) $("#bs-" + k).textContent = (bt.N[k].strict(world) ? "✔ " : "✘ ") + bt.N[k].strictTxt;
+    $("#bt-cache").textContent = !util ? "— (일반 Selector)" : cache ? "유지: " + cache.map(c => bt.N[c.id].label + " " + MM.fmt(c.u)).join(" > ") : "비어 있음";
+    $("#bt-cnt").textContent = `${cnt.shoot} / ${cnt.reload} / ${cnt.medic}`;
+    cubePlot.update(null, L10.uReloadRaw(world));
+  }
+  function playTrace(tr) {
+    clearHL();
+    tr.forEach((e, i) => anim.push(setTimeout(() => {
+      const nd = $("#bn-" + e.id); if (!nd) return;
+      nd.classList.remove("visit", "fail", "busy", "done", "calc"); nd.classList.add(e.st);
+      const ed = $("#be-" + e.id); if (ed) ed.classList.add("on");
+      if (e.id === "reload") $("#be-cube").classList.add("on");
+    }, i * 110)));
+  }
+  function doTick() {
+    if (world.h <= 0) { stopAuto(); return; }
+    const cacheBefore = bt.N.combat.cache ? bt.N.combat.cache.map(c => bt.N[c.id].label).join(">") : null;
+    const r = L10.tick(bt, world);
+    tcount++;
+    if (r.leaf && r.leafSt === "done" && cnt[r.leaf] != null) cnt[r.leaf]++;
+    playTrace(r.tr);
+    syncSliders(); render();
+    const lab = r.leaf ? bt.N[r.leaf].label + (r.leafSt === "busy" ? " (Busy)" : " (Done)") : "없음";
+    $("#bt-act").textContent = lab;
+    const calc = r.tr.some(e => e.id === "combat" && e.st === "calc");
+    const fails = r.tr.filter(e => e.st === "fail" && bt.N[e.id] && bt.N[e.id].type === "leaf").map(e => bt.N[e.id].label);
+    let line = `t=${String(tcount).padStart(2)} → ${lab}`;
+    if (bt.mode === "util" && r.tr.some(e => e.id === "combat")) line += calc ? "  [utility 계산·정렬]" : cacheBefore ? `  [캐시 재사용: ${cacheBefore}]` : "";
+    if (fails.length) line += `  실패: ${fails.join(", ")}`;
+    line += `  | 체력 ${Math.round(world.h)} 탄약 ${world.a} 거리 ${world.d}m`;
+    if (world.h <= 0) { line += "\n사냥꾼이 쓰러졌다. 초기화하자."; stopAuto(); }
+    const log = $("#bt-log");
+    log.textContent = (line + "\n" + log.textContent).split("\n").slice(0, 40).join("\n");
+  }
+  function stopAuto() { clearInterval(timer); timer = null; $("#bt-auto").textContent = "▶ 자동"; }
+  $("#bt-tick").onclick = () => { stopAuto(); doTick(); };
+  $("#bt-auto").onclick = () => {
+    if (timer) return stopAuto();
+    $("#bt-auto").textContent = "⏸ 정지"; doTick(); timer = setInterval(doTick, 1300);
+  };
+  $("#bt-reset").onclick = () => { stopAuto(); reset(); };
+  document.querySelectorAll("#bt-mode button").forEach(b => b.onclick = () => {
+    document.querySelectorAll("#bt-mode button").forEach(x => x.classList.toggle("on", x === b));
+    bt.mode = b.dataset.m; bt.reset("root"); bt.lastKid = null; clearHL(); render();
+  });
+  $("#bt-cube").onchange = () => { bt.cube = $("#bt-cube").checked; render(); };
+  ["h", "a", "d"].forEach(k => $("#bt-" + k).oninput = e => { world[k] = +e.target.value; render(); });
+  reset();
+
+  // ───────── 위젯 10-2: BDS ─────────
+  const equipped = { main: "staff", off: null, duty: null };
+  let prevIds = L10.registered(equipped);
+  function bdsSlots() {
+    const host = $("#bds-slots"); host.innerHTML = "";
+    for (const slot in L10.SLOTS) {
+      const box = MM.el("div", { class: "slot" }, `<h5>${L10.SLOTS[slot]} 슬롯</h5>`);
+      for (const it in L10.ITEMS) {
+        if (L10.ITEMS[it].slot !== slot) continue;
+        const on = equipped[slot] === it;
+        const b = MM.el("button", { class: "btn" + (on ? " eq" : ""), type: "button" }, (on ? "✓ " : "") + L10.ITEMS[it].label);
+        b.title = "snippet: " + L10.ITEMS[it].snippets.map(s => L10.SNIPPETS[s].label).join(", ");
+        b.onclick = () => { equipped[slot] = on ? null : it; bdsSlots(); bdsRender(true); };
+        box.append(b);
+        box.append(MM.el("div", { style: "font-size:11.5px;color:var(--muted);margin:-2px 0 6px" }, "↳ " + L10.ITEMS[it].snippets.map(s => L10.SNIPPETS[s].label).join(", ")));
+      }
+      host.append(box);
+    }
+  }
+  const CLSVAR = { Basic: "--muted", Offensive: "--bad", Support: "--ok", Reaction: "--violet", Passive: "--teal", Tether: "--warn" };
+  function bdsState() {
+    return { h: +$("#bds-h").value, d: +$("#bds-d").value, weakB: $("#bds-weak").checked, immuneA: $("#bds-imm").checked, outside: $("#bds-out").checked };
+  }
+  function bdsRender(equipChanged) {
+    const st = bdsState();
+    $("#bds-h-o").textContent = Math.round(st.h) + "%";
+    $("#bds-d-o").textContent = st.d + "m";
+    $("#bds-enemies").innerHTML = "늑대: " + L10.enemies(st).map(e => `${e.name} ${e.dist}m${e.immune ? " (화염 면역)" : ""}${e.weak ? " (화염 약점)" : ""}`).join(" · ");
+    const ids = L10.registered(equipped);
+    if (equipChanged) {
+      const add = ids.filter(x => !prevIds.includes(x)), rem = prevIds.filter(x => !ids.includes(x));
+      const log = $("#bds-log");
+      if (add.length) log.textContent = `등록: ${add.map(s => L10.SNIPPETS[s].label).join(", ")}\n` + log.textContent;
+      if (rem.length) log.textContent = `해제: ${rem.map(s => L10.SNIPPETS[s].label).join(", ")}\n` + log.textContent;
+      prevIds = ids;
+    }
+    const res = L10.evaluateSnippets(ids, { h: st.h, d: st.d, weakB: st.weakB, immuneA: st.immuneA, outside: st.outside });
+    const off = res.rows.filter(r => !r.result);
+    let h = "<tr><th>#</th><th>snippet</th><th>어빌리티</th><th>부류</th><th>result</th><th>score</th><th>target</th><th>평가 근거</th></tr>";
+    res.valid.forEach((r, i) => {
+      h += `<tr class="${i === 0 ? "best" : ""}"><td class="num">${i + 1}</td><td>${r.sn.label}</td><td>${r.sn.ability}</td><td><span class="cls ${r.sn.cls}">${r.sn.cls}</span></td><td>true</td><td class="num">${r.score}</td><td>${r.target ? r.target.name : "—"}</td><td style="font-size:12px">${r.why}</td></tr>`;
+    });
+    off.forEach(r => {
+      h += `<tr class="off"><td class="num">—</td><td>${r.sn.label}</td><td>${r.sn.ability}</td><td><span class="cls ${r.sn.cls}">${r.sn.cls}</span></td><td>false</td><td class="num">—</td><td>—</td><td style="font-size:12px">${r.why}</td></tr>`;
+    });
+    $("#bds-table").innerHTML = h;
+    $("#bds-best").textContent = res.best ? res.best.sn.label : "None";
+    $("#bds-target").textContent = res.best && res.best.target ? res.best.target.name : "—";
+    drawBand(res.valid);
+  }
+  function drawBand(valid) {
+    const X0 = 170, X1 = 700, sx = s => X0 + (X1 - X0) * Math.min(s, 100) / 100;
+    let h = "";
+    // 1) DA:I 대역
+    h += `<text x="8" y="22" style="font-weight:700">DA:I 점수 관례</text><text x="8" y="38" class="muted" style="font-size:11px">한 축 · 겹침 + 분리</text>`;
+    const bands = [["Passive", 0, 0, "따라가기 0"], ["Basic", 10, 10, "Basic 10"], ["Offensive", 20, 40, "Offensive 20–40"], ["Support", 25, 45, "Support 25–45"], ["Reaction", 50, 70, "Reaction 50–70"], ["Tether", 100, 100, "tether: 최상"]];
+    const lane = { Passive: 0, Basic: 0, Offensive: 1, Support: 2, Reaction: 3, Tether: 3 };
+    bands.forEach(([c, a, b, lab]) => {
+      const y = 12 + lane[c] * 18, v = CLSVAR[c];
+      if (a === b) h += `<rect x="${sx(a) - 3}" y="${y}" width="6" height="13" rx="2" style="fill:var(${v})"/><text x="${sx(a) + (a >= 100 ? -8 : 8)}" y="${y + 11}" style="font-size:11px;fill:var(${v})" text-anchor="${a >= 100 ? "end" : "start"}">${lab}</text>`;
+      else h += `<rect x="${sx(a)}" y="${y}" width="${sx(b) - sx(a)}" height="13" rx="3" style="fill:var(${v});fill-opacity:.25;stroke:var(${v})"/><text x="${sx(b) + 6}" y="${y + 11}" style="font-size:11px;fill:var(${v})">${lab}</text>`;
+    });
+    valid.forEach((r, i) => {
+      const y = 12 + lane[r.sn.cls] * 18 + 6.5;
+      h += `<circle cx="${sx(r.score)}" cy="${y}" r="${i === 0 ? 6.5 : 4.5}" style="fill:var(${CLSVAR[r.sn.cls]});stroke:var(--surface);stroke-width:2"><title>${r.sn.label}: ${r.score}</title></circle>`;
+    });
+    h += `<line x1="${X0}" y1="88" x2="${X1}" y2="88" style="stroke:var(--muted)"/>`;
+    for (let s = 0; s <= 100; s += 10) h += `<line x1="${sx(s)}" y1="85" x2="${sx(s)}" y2="91" style="stroke:var(--muted)"/><text x="${sx(s)}" y="103" text-anchor="middle" class="tick">${s}</text>`;
+    // 2) 우리 엔진 0~1
+    const ex = v => X0 + (X1 - X0) * v;
+    h += `<text x="8" y="135" style="font-weight:700">UAI 정규화 0~1</text><text x="8" y="151" class="muted" style="font-size:11px">전부 겹침 · weight로 조절</text>`;
+    const eb = [["산책 (weight 0.12)", 0, 0.12, "--teal"], ["이용하기 · 수다", 0, 1, "--accent"], ["도망치기 (rank 10)", 0, 1, "--violet"]];
+    eb.forEach(([lab, a, b, v], i) => {
+      const y = 122 + i * 18;
+      h += `<rect x="${ex(a)}" y="${y}" width="${ex(b) - ex(a)}" height="13" rx="3" style="fill:var(${v});fill-opacity:.22;stroke:var(${v})"/><text x="${ex(b) - (b > 0.5 ? 6 : -6)}" y="${y + 11}" style="font-size:11px;fill:var(${v})" text-anchor="${b > 0.5 ? "end" : "start"}">${lab}</text>`;
+    });
+    h += `<line x1="${X0}" y1="182" x2="${X1}" y2="182" style="stroke:var(--muted)"/>`;
+    for (let v = 0; v <= 1.001; v += 0.25) h += `<line x1="${ex(v)}" y1="179" x2="${ex(v)}" y2="185" style="stroke:var(--muted)"/><text x="${ex(v)}" y="197" text-anchor="middle" class="tick">${v.toFixed(2)}</text>`;
+    // 3) dual rank
+    h += `<text x="8" y="232" style="font-weight:700">Dual utility</text><text x="8" y="248" class="muted" style="font-size:11px">rank 먼저 · weight는 버킷 안</text>`;
+    const mid = (X0 + X1) / 2;
+    h += `<rect x="${X0}" y="218" width="${mid - X0 - 24}" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="${(X0 + mid - 24) / 2}" y="232" text-anchor="middle" style="font-size:11.5px">rank 0 버킷: weight 0~1</text><text x="${(X0 + mid - 24) / 2}" y="246" text-anchor="middle" class="muted" style="font-size:11px">이용하기 · 수다 · 산책</text>`;
+    h += `<rect x="${mid + 24}" y="218" width="${X1 - mid - 24}" height="34" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="${(mid + 24 + X1) / 2}" y="232" text-anchor="middle" style="font-size:11.5px">rank 10 버킷: weight 0~1</text><text x="${(mid + 24 + X1) / 2}" y="246" text-anchor="middle" class="muted" style="font-size:11px">도망치기 (유효하면 무조건 우선)</text>`;
+    h += `<text x="${mid}" y="240" text-anchor="middle" style="font-size:16px;fill:var(--muted)">≪</text>`;
+    h += `<text x="${X0}" y="278" class="muted" style="font-size:11px">DA:I의 Reaction(50–70)은 Offensive(≤40)와 겹치지 않아 점수 축 위의 "rank"처럼 동작한다. Offensive·Support의 겹침(25–40)은 맥락이 가른다.</text>`;
+    $("#bds-band").innerHTML = h;
+  }
+  bdsSlots();
+  ["#bds-h", "#bds-d"].forEach(s => $(s).oninput = () => bdsRender());
+  ["#bds-weak", "#bds-imm", "#bds-out"].forEach(s => $(s).onchange = () => bdsRender());
+  bdsRender();
+
+  // ───────── 위젯 10-3: StateTree consideration 빌더 ─────────
+  const PRESETS = [
+    [{ name: "배고픔 긴급도", v: 0.8, op: "AND", ind: 0 }, { name: "지갑 여유", v: 0.3, op: "AND", ind: 1 }, { name: "외상 가능", v: 0.7, op: "OR", ind: 1 }, { name: "빵집 가까움", v: 0.6, op: "AND", ind: 0 }],
+    [{ name: "배고픔 긴급도", v: 0.9, op: "AND", ind: 0 }, { name: "빵집 가까움", v: 0.6, op: "AND", ind: 0 }, { name: "영업 중", v: 1, op: "AND", ind: 0 }, { name: "혼잡 낮음", v: 0.75, op: "AND", ind: 0 }],
+    [{ name: "배고픔 긴급도", v: 0.7, op: "AND", ind: 0 }, { name: "낮 시간", v: 0.9, op: "AND", ind: 1 }, { name: "등불 있음", v: 0.4, op: "OR", ind: 1 }, { name: "늑대 없음", v: 0.5, op: "AND", ind: 2 }, { name: "동행 있음", v: 0.8, op: "OR", ind: 2 }, { name: "빵집 가까움", v: 0.6, op: "AND", ind: 0 }],
+  ];
+  let rows = PRESETS[0].map(r => Object.assign({}, r));
+  function stRows() {
+    const host = $("#st-rows"); host.innerHTML = "";
+    rows.forEach((r, i) => {
+      const d = MM.el("div", { class: "crow" });
+      d.innerHTML = (r.ind ? `<span style="width:${r.ind * 18}px;display:inline-block"></span><span class="ind"></span>` : "") +
+        (i === 0 ? `<span class="opfix">IF</span>` : `<select data-k="op"><option${r.op === "AND" ? " selected" : ""}>AND</option><option${r.op === "OR" ? " selected" : ""}>OR</option></select>`) +
+        `<button class="btn" data-k="out" title="내어쓰기">◀</button><button class="btn" data-k="in" title="들여쓰기">▶</button>` +
+        `<input type="text" data-k="name" value="${r.name}">` +
+        `<input type="range" data-k="v" min="0" max="1" step="0.01" value="${r.v}"><span class="val">${r.v.toFixed(2)}</span>` +
+        `<button class="btn" data-k="del" title="삭제">✕</button>`;
+      d.querySelector('[data-k="out"]').onclick = () => { r.ind = Math.max(0, r.ind - 1); stRows(); };
+      d.querySelector('[data-k="in"]').onclick = () => { r.ind = Math.min(2, r.ind + 1); stRows(); };
+      d.querySelector('[data-k="del"]').onclick = () => { rows.splice(i, 1); stRows(); };
+      d.querySelector('[data-k="name"]').oninput = e => { r.name = e.target.value || "?"; stRender(); };
+      d.querySelector('[data-k="v"]').oninput = e => { r.v = +e.target.value; d.querySelector(".val").textContent = r.v.toFixed(2); stRender(); };
+      const sel = d.querySelector('[data-k="op"]'); if (sel) sel.onchange = e => { r.op = e.target.value; stRender(); };
+      host.append(d);
+    });
+    stRender();
+  }
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function stRender() {
+    const W = +$("#st-w").value;
+    $("#st-w-o").textContent = "× " + W.toFixed(2);
+    $("#st-s2-o").textContent = (+$("#st-s2").value).toFixed(2);
+    $("#st-s3-o").textContent = (+$("#st-s3").value).toFixed(2);
+    const r = L10.stateScore(rows, W);
+    $("#st-expr").innerHTML = `<b>식</b> ${esc(r.names)}<br><b>값</b> ${r.expr.replace(/AND/g, "∧").replace(/OR/g, "∨")} = <b>${MM.fmt(r.v)}</b>` +
+      ` &nbsp;→ × Weight ${W.toFixed(2)} = <b class="c-accent">${MM.fmt(r.final)}</b>${r.final > 1 ? ' <span class="c-warn">(1 초과: 정규화 안 함)</span>' : ""}` +
+      `<br><span class="muted" style="font-size:13px">∧ = AND = min, ∨ = OR = max. 괄호는 들여쓰기에서 나온다.</span>`;
+    const vals = rows.map(x => x.v);
+    const cmp = [
+      ["StateTree (AND/OR 식)", r.v, "min/max"],
+      ["모두 AND라면 = <code>combine(…, \"min\")</code>", vals.length ? UAI.combine(vals, "min") : 0, "최약 고리"],
+      ["우리 엔진 <code>\"product\"</code>", vals.length ? UAI.combine(vals, "product") : 0, "n개 곱 → 희석"],
+      ["우리 엔진 <code>\"compensated\"</code> (기본값)", vals.length ? UAI.combine(vals, "compensated") : 0, "IAUS 보정"],
+    ];
+    $("#st-cmp").innerHTML = "<tr><th>결합</th><th>값</th><th>성질</th></tr>" + cmp.map(([a, v, c]) =>
+      `<tr><td>${a}</td><td class="mono">${MM.fmt(v)} <div class="bar violet" style="width:80px;display:inline-block;vertical-align:middle"><i style="width:${Math.min(100, v * 100)}%"></i></div></td><td style="font-size:12.5px">${c}</td></tr>`).join("");
+    const cands = [
+      { label: "빵집 가기", score: r.final },
+      { label: "선술집 가기", score: +$("#st-s2").value },
+      { label: "광장 산책", score: +$("#st-s3").value },
+    ];
+    const best = UAI.select(cands, { strategy: "best" }).chosen;
+    const pool = UAI.select(cands, { strategy: "weighted" }, UAI.rng(1)).pool;
+    let h = `<div class="tbl-wrap" style="margin:4px 0"><table><tr><th>상태</th><th>점수</th><th>Highest</th><th>Random Weighted</th></tr>`;
+    cands.forEach(c => {
+      const p = pool.find(x => x.cand === c);
+      h += `<tr${best === c ? ' style="font-weight:700"' : ""}><td>${c.label}</td><td class="mono">${MM.fmt(c.score)}</td><td>${best === c ? "✔ 선택" : ""}</td><td class="mono">${p ? MM.pct(p.p) : "0%"}</td></tr>`;
+    });
+    h += `</table></div><div style="font-size:12.5px;color:var(--muted)">동점이면 Highest는 목록의 첫째를 고른다. 엔진 <code>select("best")</code>도 같다.</div>`;
+    $("#st-sel").innerHTML = best ? h : "모든 점수가 0: 선택할 상태가 없다.";
+  }
+  document.querySelectorAll("#w-st [data-pre]").forEach(b => b.onclick = () => { rows = PRESETS[+b.dataset.pre].map(r => Object.assign({}, r)); stRows(); });
+  $("#st-add").onclick = () => { rows.push({ name: "새 consideration", v: 0.5, op: "AND", ind: 0 }); stRows(); };
+  ["#st-w", "#st-s2", "#st-s3"].forEach(s => $(s).oninput = stRender);
+  stRows();
+})();
+</script>
+</body></html>

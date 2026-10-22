@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시스템 콜과 모드 전환</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .svc-bits .bit.u { color: var(--muted); opacity: .7; }
+  .svc-bits .bit.t { background: var(--kernel-bg); border-color: var(--kernel); color: var(--kernel); font-weight: 700; }
+  .svc-bits .bit.i { background: var(--acc-bg); border-color: var(--acc); color: var(--acc); }
+  .svc-bits .bit.one { font-weight: 800; }
+  .dec-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 8px 0 10px; font: 600 .92rem var(--mono); }
+  .dec-sum .k { color: var(--muted); font-weight: 400; }
+  .dec-sum .tb { color: var(--kernel); }
+  .dec-sum .ix { color: var(--acc); }
+  .sim h4 { margin: 18px 0 6px; font-size: .95rem; }
+  .sim .sep-line { border-top: 1px dashed var(--line); margin: 16px 0 4px; }
+</style>
+</head>
+<body data-chapter="02">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part I · Chapter 02</div>
+  <h1>시스템 콜과 모드 전환</h1>
+  <p class="sub">유저 코드가 커널에게 일을 맡기는 유일한 정문. <code>syscall</code> 명령 하나가 실행되는 동안 CPU와 커널이 하는 일을 레지스터 단위로 따라갑니다.</p>
+  <div class="meta"><span class="pill lv-basic">입문</span><span class="pill">⏱ 약 75분</span><span class="pill">선수: 01장, x64 레지스터 기초</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>모드 전환이 왜 필요한지, 왜 스레드마다 유저 스택과 커널 스택이 따로 있는지 설명할 수 있다.</li>
+    <li>ntdll 시스템 서비스 스텁의 각 명령과 <code>syscall</code>/<code>sysret</code>의 하드웨어 동작, 관련 MSR의 역할을 설명할 수 있다.</li>
+    <li><code>KiSystemCall64</code>가 스택 전환 → 트랩 프레임 저장 → 서비스 테이블 조회 → 인자 복사 → 복귀를 수행하는 순서를 그릴 수 있다.</li>
+    <li>서비스 번호의 비트 의미와 서비스 테이블의 상대 오프셋 인코딩을 해석할 수 있다.</li>
+    <li>PreviousMode, <code>ProbeForRead/Write</code>, Nt와 Zw의 차이를 정확히 구분할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="why">왜 모드 전환이 필요한가</h2>
+<p>
+  01장에서 본 것처럼 유저 모드(CPL 3) 코드는 특권 명령을 실행할 수 없고, 커널 메모리에도 접근할 수 없습니다.
+  그런데 파일 읽기, 메모리 할당, 스레드 생성처럼 하드웨어나 공유 자원을 다루는 일은 모두 커널만 할 수 있습니다.
+  그래서 유저 코드에는 <strong>"정해진 입구로만 커널에 들어가는" 통로</strong>가 필요합니다. 이것이 시스템 콜입니다.
+</p>
+<p>
+  핵심은 <b>입구가 커널이 정한 단 한 곳</b>이라는 점입니다. 유저 코드가 커널 안의 임의 주소로 점프할 수 있다면 보호는 의미가 없습니다.
+  x64에서 그 입구 주소는 커널만 쓸 수 있는 MSR(<code>IA32_LSTAR</code>)에 들어 있고, <code>syscall</code> 명령은 그 주소로만 갑니다.
+  유저가 고를 수 있는 것은 "몇 번 서비스를 원하는가"(서비스 번호)와 인자뿐이며, 커널은 그 둘을 <b>믿지 않고 검증</b>합니다.
+</p>
+
+<h3>스레드 하나, 스택 둘</h3>
+<p>
+  시스템 콜은 다른 스레드에게 일을 넘기는 것이 아니라 <b>같은 스레드가 모드만 바꿔</b> 커널 코드를 실행하는 것입니다.
+  그런데 커널 코드는 유저 스택을 그대로 쓸 수 없습니다. 이유는 세 가지입니다.
+</p>
+<div class="grid3">
+  <div class="card user"><h4>신뢰할 수 없다</h4><p>유저 <code>RSP</code>는 유저가 마음대로 정한 값입니다. 커널 주소나 매핑되지 않은 주소를 가리킬 수도 있습니다.</p></div>
+  <div class="card user"><h4>동시에 바뀔 수 있다</h4><p>같은 프로세스의 다른 스레드가 이 유저 스택 메모리를 언제든 덮어쓰거나 해제할 수 있습니다.</p></div>
+  <div class="card kernel"><h4>커널 데이터 노출</h4><p>커널이 유저 스택에 지역 변수를 두면, 커널 포인터나 비밀 값이 유저에게 그대로 보입니다.</p></div>
+</div>
+<p>
+  그래서 Windows는 스레드마다 <b>커널 스택</b>을 따로 할당합니다(<code>KTHREAD.InitialStack</code>/<code>StackLimit</code>, x64 기본 크기는 수십 KB 수준이며 GUI 스레드 등은 필요 시 확장).
+  커널 진입 직후 가장 먼저 하는 일이 이 커널 스택으로 갈아타는 것입니다.
+</p>
+
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 300" role="img" aria-label="유저 스택과 커널 스택">
+    <rect class="zone user" x="10" y="10" width="425" height="280" rx="12"/>
+    <text x="24" y="32" class="b c-user">유저 스택 · TEB.NtTib.StackBase/Limit</text>
+    <rect class="box user" x="40" y="50" width="200" height="225" rx="8"/>
+    <text x="140" y="74" text-anchor="middle" class="sm">낮은 주소 (성장 방향 ↑)</text>
+    <rect class="box plain" x="52" y="160" width="176" height="30" rx="5"/><text x="140" y="180" text-anchor="middle" class="mono">ntdll!NtReadFile</text>
+    <rect class="box plain" x="52" y="195" width="176" height="30" rx="5"/><text x="140" y="215" text-anchor="middle" class="mono">kernelbase!ReadFile</text>
+    <rect class="box plain" x="52" y="230" width="176" height="30" rx="5"/><text x="140" y="250" text-anchor="middle" class="mono">app!main</text>
+    <path class="ln user" d="M290 160 L236 160"/><text x="296" y="164" class="mono c-user">유저 RSP</text>
+    <text x="256" y="208" class="sm">· 기본 예약 크기는 PE 헤더가 결정</text>
+    <text x="256" y="228" class="sm">· 유저 코드가 자유롭게 변경</text>
+    <text x="256" y="248" class="sm">· 유효성 보장 없음</text>
+
+    <rect class="zone kernel" x="445" y="10" width="425" height="280" rx="12"/>
+    <text x="459" y="32" class="b c-kernel">커널 스택 · KTHREAD.InitialStack</text>
+    <rect class="box kernel" x="475" y="50" width="200" height="225" rx="8"/>
+    <text x="575" y="74" text-anchor="middle" class="sm">낮은 주소 (성장 방향 ↑)</text>
+    <rect class="box plain" x="487" y="160" width="176" height="30" rx="5"/><text x="575" y="180" text-anchor="middle" class="mono">nt!NtReadFile …</text>
+    <rect class="box plain" x="487" y="195" width="176" height="30" rx="5"/><text x="575" y="215" text-anchor="middle" class="mono">복사된 스택 인자</text>
+    <rect class="box warn" x="487" y="230" width="176" height="30" rx="5"/><text x="575" y="250" text-anchor="middle" class="mono">KTRAP_FRAME</text>
+    <path class="ln kernel" d="M725 160 L671 160"/><text x="731" y="164" class="mono c-kernel">커널 RSP</text>
+    <text x="691" y="208" class="sm">· 스레드마다 1개</text>
+    <text x="691" y="228" class="sm">· 유저 모드에서 접근 불가</text>
+    <text x="691" y="248" class="sm">· 맨 위(높은 주소)에 트랩 프레임</text>
+  </svg>
+  <figcaption><b>그림 2-1.</b> 한 스레드가 가진 두 스택. 시스템 콜 동안 유저 스택은 그대로 두고 커널 스택에서 실행한다.</figcaption>
+</figure>
+
+<h2 id="stub">Win32 API에서 ntdll 스텁까지</h2>
+<p>
+  <code>ReadFile</code>을 호출하면 <code>kernel32</code> → <code>kernelbase</code>를 거쳐 Win32 의미(예: 동기/비동기 처리, 오류 코드 변환)를 네이티브 인자로 바꾼 뒤
+  <code>ntdll!NtReadFile</code>을 호출합니다. GUI 계열(<code>user32</code>/<code>gdi32</code>)은 <code>win32u.dll</code>의 스텁을 거칩니다.
+  두 DLL의 스텁은 모양이 같고, 사용하는 서비스 번호 범위만 다릅니다.
+</p>
+<table>
+  <thead><tr><th>계층</th><th>예</th><th>하는 일</th></tr></thead>
+  <tbody>
+    <tr><td>Win32 API</td><td><code>kernel32!ReadFile</code> → <code>kernelbase!ReadFile</code></td><td>문서화된 계약. 핸들/오버랩 처리, <code>NTSTATUS</code> → <code>GetLastError</code> 값 변환</td></tr>
+    <tr><td>네이티브 API 스텁</td><td><code>ntdll!NtReadFile</code></td><td>서비스 번호를 <code>eax</code>에 넣고 <code>syscall</code>. 로직 없음</td></tr>
+    <tr><td>GUI 스텁</td><td><code>win32u!NtUserGetMessage</code></td><td>같은 형태, 번호가 <code>0x1000</code> 이상 → win32k 테이블</td></tr>
+  </tbody>
+</table>
+<p>스텁 하나를 명령 단위로 뜯어 봅시다. <b>각 줄을 클릭</b>하면 의미가 표시됩니다.</p>
+
+<figure class="fig explore" id="stubFig">
+  <svg class="dia" viewBox="0 0 880 400" role="img" aria-label="ntdll NtReadFile 스텁 디스어셈블리">
+    <text x="24" y="26" class="b mono">ntdll!NtReadFile:</text>
+    <text x="190" y="26" class="sm">오프셋 · 기계어 바이트 · 명령 · 요지</text>
+    <g data-info="s0"><rect class="box user" x="20" y="40" width="840" height="34" rx="6"/>
+      <text x="36" y="62" class="mono c-muted">+0x00</text><text x="110" y="62" class="mono">4c 8b d1</text><text x="330" y="62" class="mono b">mov  r10, rcx</text><text x="560" y="62" class="sm">첫 번째 인자 보존</text></g>
+    <g data-info="s1"><rect class="box user" x="20" y="82" width="840" height="34" rx="6"/>
+      <text x="36" y="104" class="mono c-muted">+0x03</text><text x="110" y="104" class="mono">b8 06 00 00 00</text><text x="330" y="104" class="mono b">mov  eax, 6</text><text x="560" y="104" class="sm">시스템 서비스 번호 (빌드마다 다름)</text></g>
+    <g data-info="s2"><rect class="box user" x="20" y="124" width="840" height="34" rx="6"/>
+      <text x="36" y="146" class="mono c-muted">+0x08</text><text x="110" y="146" class="mono">f6 04 25 08 03 fe 7f 01</text><text x="330" y="146" class="mono b">test byte [7FFE0308h], 1</text><text x="560" y="146" class="sm">KUSER_SHARED_DATA 플래그 검사</text></g>
+    <g data-info="s3"><rect class="box user" x="20" y="166" width="840" height="34" rx="6"/>
+      <text x="36" y="188" class="mono c-muted">+0x10</text><text x="110" y="188" class="mono">75 03</text><text x="330" y="188" class="mono b">jne  +0x15</text><text x="560" y="188" class="sm">플래그가 켜져 있으면 int 2Eh 경로로</text></g>
+    <g data-info="s4"><rect class="box acc" x="20" y="208" width="840" height="34" rx="6"/>
+      <text x="36" y="230" class="mono c-muted">+0x12</text><text x="110" y="230" class="mono">0f 05</text><text x="330" y="230" class="mono b">syscall</text><text x="560" y="230" class="sm">커널 진입 (기본 경로)</text></g>
+    <g data-info="s5"><rect class="box user" x="20" y="250" width="840" height="34" rx="6"/>
+      <text x="36" y="272" class="mono c-muted">+0x14</text><text x="110" y="272" class="mono">c3</text><text x="330" y="272" class="mono b">ret</text><text x="560" y="272" class="sm">복귀 · rax = NTSTATUS</text></g>
+    <g data-info="s6"><rect class="box hw" x="20" y="292" width="840" height="34" rx="6"/>
+      <text x="36" y="314" class="mono c-muted">+0x15</text><text x="110" y="314" class="mono">cd 2e</text><text x="330" y="314" class="mono b">int  2Eh</text><text x="560" y="314" class="sm">레거시 진입 (IDT 경유)</text></g>
+    <g data-info="s7"><rect class="box hw" x="20" y="334" width="840" height="34" rx="6"/>
+      <text x="36" y="356" class="mono c-muted">+0x17</text><text x="110" y="356" class="mono">c3</text><text x="330" y="356" class="mono b">ret</text><text x="560" y="356" class="sm">복귀</text></g>
+    <text x="440" y="392" text-anchor="middle" class="sm">파랑 = 유저 모드에서 실행 · 강조 = 모드 경계 · 회색 = 대체 경로</text>
+  </svg>
+  <template data-key="s0">
+    <h4><code>mov r10, rcx</code> — 첫 번째 인자 옮기기</h4>
+    <p>x64 호출 규약에서 첫 네 인자는 <code>rcx</code>, <code>rdx</code>, <code>r8</code>, <code>r9</code>로 전달됩니다. 그런데 <code>syscall</code> 명령은 <b>복귀 주소를 <code>rcx</code>에 덮어씁니다</b>. 그래서 스텁은 첫 인자를 미리 <code>r10</code>에 옮겨 두고, 커널은 첫 인자를 <code>r10</code>에서 읽습니다. 커널 쪽 시스템 콜 규약은 "<code>r10, rdx, r8, r9</code> + 스택"인 셈입니다.</p>
+  </template>
+  <template data-key="s1">
+    <h4><code>mov eax, 6</code> — 서비스 번호</h4>
+    <p>원하는 커널 서비스를 번호로 지정합니다. 커널은 이 값으로 서비스 디스패치 테이블을 조회합니다. 번호는 <b>공개 계약이 아니며</b> Windows 빌드마다 바뀔 수 있습니다. 응용 프로그램이 Win32 API나 ntdll 함수를 호출해야 하는 이유 중 하나입니다 — 번호를 아는 것은 해당 빌드의 ntdll뿐입니다.</p>
+    <p class="muted">상위 32비트는 <code>mov eax</code>가 자동으로 0으로 만듭니다. 번호 해석은 아래 "서비스 디스패치 테이블" 절에서 다룹니다.</p>
+  </template>
+  <template data-key="s2">
+    <h4><code>test byte ptr [7FFE0308h], 1</code></h4>
+    <p><code>0x7FFE0000</code>은 모든 프로세스에 같은 주소로 읽기 전용 매핑되는 <code>KUSER_SHARED_DATA</code> 페이지입니다(커널이 쓰고 유저가 읽음). 오프셋 <code>0x308</code>의 <code>SystemCall</code> 필드는 커널이 "이 시스템에서는 <code>syscall</code> 대신 <code>int 2Eh</code>를 써라"라고 알려주는 플래그입니다.</p>
+    <p>대부분의 환경에서는 0이라 바로 <code>syscall</code>로 갑니다. 이 플래그가 켜지는 조건은 시스템 구성에 따라 다르므로 직접 확인하세요(<code>dt nt!_KUSER_SHARED_DATA SystemCall</code>).</p>
+  </template>
+  <template data-key="s3">
+    <h4><code>jne +0x15</code></h4>
+    <p>플래그가 1이면 <code>int 2Eh</code>가 있는 +0x15로 분기합니다. 두 경로 모두 결과는 같은 서비스 디스패치이며, 커널 진입 방식(빠른 MSR 기반 vs IDT 기반)만 다릅니다.</p>
+  </template>
+  <template data-key="s4">
+    <h4><code>syscall</code> — 경계를 넘는 단 한 줄</h4>
+    <p>이 명령 하나로 CPU는 CPL 3 → 0으로 바뀌고, <code>IA32_LSTAR</code>가 가리키는 커널 진입점(<code>nt!KiSystemCall64</code>, KVA Shadow 활성 시 <code>KiSystemCall64Shadow</code>)으로 점프합니다. 복귀 주소(+0x14)는 <code>rcx</code>에, <code>RFLAGS</code>는 <code>r11</code>에 저장됩니다. <b>스택은 바뀌지 않습니다</b> — 다음 절에서 자세히.</p>
+  </template>
+  <template data-key="s5">
+    <h4><code>ret</code> — 호출자로 복귀</h4>
+    <p>커널이 <code>sysret</code>으로 돌아오면 실행은 <code>syscall</code> 다음 명령인 여기서 재개됩니다. <code>rax</code>에는 서비스의 반환값인 <code>NTSTATUS</code>가 들어 있습니다(0 = <code>STATUS_SUCCESS</code>, 최상위 비트 1 = 오류). 이 값을 Win32 오류 코드로 바꾸는 것은 kernelbase의 몫입니다.</p>
+  </template>
+  <template data-key="s6">
+    <h4><code>int 2Eh</code> — IDT 경유 진입</h4>
+    <p>소프트웨어 인터럽트 0x2E는 IDT를 통해 <code>nt!KiSystemService</code>로 들어갑니다. 이 경우 CPU가 인터럽트 처리 규칙대로 스택을 커널 스택(TSS의 RSP0)으로 바꾸고 머신 프레임을 push합니다. 32비트 시절의 전통적 진입 방식이며, x64에서는 위 플래그가 켜진 경우에만 쓰입니다.</p>
+  </template>
+  <template data-key="s7">
+    <h4><code>ret</code></h4>
+    <p><code>iretq</code>로 돌아온 뒤 호출자로 복귀합니다. 역시 <code>rax</code> = <code>NTSTATUS</code>.</p>
+  </template>
+  <figcaption><b>그림 2-2.</b> x64 Windows 10/11의 ntdll 시스템 서비스 스텁. 주소와 서비스 번호는 빌드마다 다르다.</figcaption>
+</figure>
+
+<div class="callout note">
+  <div class="callout-title">스텁에는 로직이 없다</div>
+  <p>Nt 스텁은 인자를 전혀 건드리지 않습니다. 인자 검증, 핸들 해석, 접근 검사는 전부 커널의 <code>nt!NtReadFile</code>이 합니다. 유저 모드의 어떤 검사도 보안 경계가 아니라는 원칙이 여기서 드러납니다 — 유저 모드 코드는 유저가 바꿀 수 있기 때문입니다.</p>
+</div>
+
+<h2 id="syscall">syscall / sysret의 하드웨어 동작</h2>
+<p>
+  <code>syscall</code>은 AMD가 도입하고 x64에서 표준이 된 "빠른 시스템 콜" 명령입니다. 인터럽트 방식보다 빠른 이유는 <b>CPU가 하는 일이 극히 적기</b> 때문입니다.
+  IDT 조회도, 디스크립터 권한 검사도, 스택 전환도, 메모리에 push하는 것도 없습니다. 레지스터 몇 개를 바꾸는 것이 전부이고, 나머지는 모두 커널 소프트웨어의 책임입니다.
+</p>
+<pre data-title="ASM · CPU 동작 (의사 코드)"><code class="lang-asm">; syscall  (64비트 모드, CPL 3 → 0)
+RCX    = RIP                       ; 다음 명령 주소 (복귀 지점)
+R11    = RFLAGS                    ; 플래그 보존
+RFLAGS = RFLAGS AND NOT IA32_FMASK ; IF 등 지정 비트를 끈다 → 인터럽트 금지 상태로 진입
+CS.sel = IA32_STAR[47:32]          ; 0x10  (CPL = 0)
+SS.sel = IA32_STAR[47:32] + 8      ; 0x18
+RIP    = IA32_LSTAR                ; nt!KiSystemCall64 (또는 ...Shadow)
+; RSP는 그대로!  스택에 아무것도 push하지 않는다!
+
+; sysretq  (CPL 0 → 3)
+RIP    = RCX
+RFLAGS = R11                       ; (일부 비트는 정리됨)
+CS.sel = IA32_STAR[63:48] + 16     ; 0x33  (RPL = 3)
+SS.sel = IA32_STAR[63:48] + 8      ; 0x2B
+; RSP는 역시 그대로 → 커널이 sysret 직전에 유저 RSP를 직접 되돌려 놓아야 한다</code></pre>
+
+<table>
+  <thead><tr><th>MSR</th><th>번호</th><th>Windows에서의 역할</th></tr></thead>
+  <tbody>
+    <tr><td><code>IA32_EFER</code></td><td><code>C0000080</code></td><td>비트 0(SCE)이 켜져 있어야 <code>syscall</code>/<code>sysret</code>이 동작. 꺼져 있으면 #UD</td></tr>
+    <tr><td><code>IA32_STAR</code></td><td><code>C0000081</code></td><td>[47:32] 커널 CS 셀렉터 기준(0x10 → SS 0x18), [63:48] 복귀 기준(0x23 → 64비트 CS 0x33, SS 0x2B)</td></tr>
+    <tr><td><code>IA32_LSTAR</code></td><td><code>C0000082</code></td><td>64비트 코드에서 <code>syscall</code> 시 점프할 RIP = 시스템 콜 진입점</td></tr>
+    <tr><td><code>IA32_CSTAR</code></td><td><code>C0000083</code></td><td>호환 모드(32비트 코드)에서의 진입점. WoW64는 64비트 ntdll을 거쳐 진입하므로 일반 경로가 아님</td></tr>
+    <tr><td><code>IA32_FMASK</code></td><td><code>C0000084</code></td><td>진입 시 RFLAGS에서 끌 비트 마스크(IF, TF, DF, AC 등)</td></tr>
+    <tr><td><code>IA32_KERNEL_GS_BASE</code></td><td><code>C0000102</code></td><td><code>swapgs</code>가 현재 GS.base와 맞바꾸는 값. 유저 모드 동안 KPCR 주소를 보관</td></tr>
+  </tbody>
+</table>
+<p>
+  이 MSR들은 부팅 시 커널이 프로세서마다 설정합니다. <code>wrmsr</code>는 특권 명령이므로 유저는 진입점을 바꿀 수 없고,
+  커널 측에서도 이 값들은 무결성 감시(PatchGuard, HVCI 환경의 하이퍼바이저 보호) 대상입니다(→ 16장).
+</p>
+
+<div class="callout expert">
+  <div class="callout-title">왜 IF를 끄고 들어오는가</div>
+  <p><code>syscall</code> 직후의 <code>RSP</code>는 아직 <b>유저 스택</b>입니다. 이 상태에서 인터럽트가 들어오면 CPU는 이미 CPL 0이므로 스택을 바꾸지 않고 현재 스택(=유저 스택)에 프레임을 push하게 됩니다. 그래서 <code>IA32_FMASK</code>로 IF를 끈 채 진입하고, 커널 스택 전환이 끝난 뒤에야 <code>sti</code>로 인터럽트를 허용합니다. 같은 이유로 <code>swapgs</code> 전후 몇 명령은 매우 정교하게 짜여 있습니다.</p>
+</div>
+
+<h2 id="entry">KiSystemCall64: 커널 진입 루틴</h2>
+<p>
+  <code>IA32_LSTAR</code>가 가리키는 <code>nt!KiSystemCall64</code>는 CPU가 하지 않은 나머지 일을 모두 해야 합니다.
+  아래 스테퍼는 <code>ReadFile</code> 한 번이 커널을 왕복하는 동안 <b>오른쪽 레지스터 값이 어떻게 바뀌는지</b> 보여줍니다.
+</p>
+
+<figure class="fig stepper" data-interval="3400" id="flowFig">
+  <svg class="dia" viewBox="0 0 880 490" role="img" aria-label="시스템 콜 전체 흐름과 레지스터 변화">
+    <rect class="zone user" x="10" y="10" width="530" height="148" rx="12"/>
+    <text x="24" y="30" class="sm b c-user">유저 모드 · CPL 3</text>
+    <g data-hl="1"><rect class="box user" x="56" y="40" width="470" height="40" rx="8"/><text x="70" y="65" class="mono">kernelbase!ReadFile → ntdll!NtReadFile 호출</text></g>
+    <g data-hl="2,9"><rect class="box user" x="56" y="100" width="470" height="40" rx="8"/><text x="70" y="125" class="mono">ntdll!NtReadFile: mov r10,rcx · mov eax,6 · syscall</text></g>
+
+    <line class="sep" x1="10" y1="176" x2="540" y2="176" data-hl="3,8"/>
+    <rect x="160" y="166" width="230" height="20" rx="10" style="fill:var(--panel)"/>
+    <text x="275" y="181" text-anchor="middle" class="sm b" style="fill:var(--acc)">syscall ▼   ▲ sysretq</text>
+
+    <rect class="zone kernel" x="10" y="194" width="530" height="286" rx="12"/>
+    <text x="24" y="212" class="sm b c-kernel">커널 모드 · CPL 0</text>
+    <g data-hl="3-4"><rect class="box kernel" x="56" y="220" width="470" height="40" rx="8"/><text x="70" y="245" class="mono">KiSystemCall64: swapgs · RSP ← KPRCB.RspBase</text></g>
+    <g data-hl="5"><rect class="box kernel" x="56" y="272" width="470" height="40" rx="8"/><text x="70" y="297" class="mono">KTRAP_FRAME 저장 · sti · PreviousMode=UserMode</text></g>
+    <g data-hl="6"><rect class="box kernel" x="56" y="324" width="470" height="40" rx="8"/><text x="70" y="349" class="mono">KiSystemServiceRepeat: 테이블 조회 · 인자 복사</text></g>
+    <g data-hl="7"><rect class="box kernel" x="56" y="376" width="470" height="40" rx="8"/><text x="70" y="401" class="mono">nt!NtReadFile: 프로브 · 핸들 해석 · I/O</text></g>
+    <g data-hl="8"><rect class="box kernel" x="56" y="428" width="470" height="40" rx="8"/><text x="70" y="453" class="mono">KiSystemServiceExit: APC 확인 · swapgs · sysretq</text></g>
+
+    <g data-at="1:0,0|2:0,60|3:0,180|4:0,180|5:0,232|6:0,284|7:0,336|8:0,388|9:0,60">
+      <circle class="token" cx="33" cy="60" r="9"/>
+    </g>
+
+    <!-- 레지스터 패널 -->
+    <rect class="box plain" x="556" y="10" width="314" height="470" rx="12"/>
+    <text x="572" y="34" class="b">CPU 상태 / 레지스터</text>
+    <g class="mono">
+      <text x="572" y="70" class="b">CPL</text>      <text x="650" y="70" data-text="1:3 (유저)|3:0 (커널)|9:3 (유저)" data-hl="3,9">3</text>
+      <text x="572" y="106" class="b">CS</text>      <text x="650" y="106" data-text="1:0x33|3:0x10|9:0x33" data-hl="3,9">0x33</text>
+      <text x="572" y="142" class="b">RIP</text>     <text x="650" y="142" data-text="1:kernelbase!ReadFile+…|2:ntdll!NtReadFile+0x12|3:nt!KiSystemCall64|4:KiSystemCall64+…|5:KiSystemCall64+…|6:KiSystemServiceRepeat|7:nt!NtReadFile|8:KiSystemServiceExit|9:ntdll!NtReadFile+0x14" data-hl="2-9">…</text>
+      <text x="572" y="178" class="b">RSP</text>     <text x="650" y="178" data-text="1:0000002f`5d8ff6a8 (유저)|2:0000002f`5d8ff648 (유저)|4:ffffb88c`1a3e6f50 (커널)|5:ffffb88c`1a3e6e90 (커널)|6:ffffb88c`1a3e6e30 (커널)|9:0000002f`5d8ff648 (유저)" data-hl="4,9">…</text>
+      <text x="572" y="214" class="b">RCX</text>     <text x="650" y="214" data-text="1:hFile (인자 1)|3:NtReadFile+0x14 (복귀 RIP)|8:NtReadFile+0x14 → RIP로" data-hl="3,8">…</text>
+      <text x="572" y="250" class="b">R10</text>     <text x="650" y="250" data-text="1:—|2:hFile (인자 1 사본)" data-hl="2">—</text>
+      <text x="572" y="286" class="b">R11</text>     <text x="650" y="286" data-text="1:—|3:0x246 (RFLAGS 사본)|8:0x246 → RFLAGS로" data-hl="3,8">—</text>
+      <text x="572" y="322" class="b">RAX</text>     <text x="650" y="322" data-text="1:—|2:0x6 (서비스 번호)|6:0x6 → 표[0][6]|7:0x0 (STATUS_SUCCESS)" data-hl="2,6,7">—</text>
+      <text x="572" y="358" class="b">GS.base</text> <text x="650" y="358" data-text="1:TEB|4:KPCR (swapgs)|8:TEB (swapgs)" data-hl="4,8">TEB</text>
+      <text x="572" y="394" class="b">RFLAGS.IF</text><text x="650" y="394" data-text="1:1|3:0 (FMASK로 꺼짐)|5:1 (sti)|8:0 → sysret이 R11로 복원|9:1" data-hl="3,5">1</text>
+      <text x="572" y="430" class="b">Prev.Mode</text><text x="650" y="430" data-text="1:—|5:UserMode|9:—" data-hl="5">—</text>
+    </g>
+    <text x="572" y="466" class="sm">값은 예시. 주소·오프셋은 시스템마다 다름</text>
+  </svg>
+  <ol class="steps">
+    <li><b>Win32 계층</b>: <code>kernelbase!ReadFile</code>이 9개 인자를 준비해 <code>ntdll!NtReadFile</code>을 호출합니다. 첫 4개는 <code>rcx, rdx, r8, r9</code>, 나머지 5개는 유저 스택(호출자가 예약한 32바이트 홈 영역과 복귀 주소 위쪽)에 놓입니다.</li>
+    <li><b>스텁</b>: <code>mov r10, rcx</code>로 첫 인자를 옮기고 <code>mov eax, 6</code>으로 서비스 번호를 넣은 뒤 <code>syscall</code>(+0x12)에 도달합니다. 아직 모든 것이 유저 모드입니다.</li>
+    <li><b>syscall 실행</b>: CPU가 <code>RCX ← 복귀 RIP</code>, <code>R11 ← RFLAGS</code>, IF 끄기, CS=0x10(CPL 0), <code>RIP ← IA32_LSTAR</code>를 수행합니다. <b>RSP는 여전히 유저 스택</b>이고 GS도 아직 TEB를 가리킵니다.</li>
+    <li><b>커널 문맥 확보</b>: <code>swapgs</code>로 GS.base를 KPCR로 바꿔 프로세서별 데이터에 접근합니다. 유저 RSP를 KPCR의 임시 칸(<code>UserRsp</code>)에 저장하고, <code>KPRCB.RspBase</code>(현재 스레드 커널 스택의 맨 위)를 RSP에 넣습니다. 이제 신뢰할 수 있는 스택이 생겼습니다.</li>
+    <li><b>트랩 프레임</b>: 커널 스택 맨 위에 유저 SS, 유저 RSP, R11(RFLAGS), 유저 CS, RCX(RIP)를 push해 인터럽트 프레임과 같은 모양을 만들고, 나머지 <code>KTRAP_FRAME</code> 칸(휘발성 레지스터 등)을 채웁니다. 이 시점에 <code>sti</code>로 인터럽트를 허용하고, 스레드의 PreviousMode를 UserMode로 기록합니다(이전 값은 트랩 프레임에 보관).</li>
+    <li><b>디스패치</b>: <code>eax</code>의 비트 12로 테이블을, 하위 12비트로 인덱스를 고릅니다(0x6 → 테이블 0, 6번). 엔트리에서 서비스 주소와 <b>스택 인자 개수</b>(NtReadFile은 5개)를 얻고, 유저 스택의 인자를 커널 스택으로 복사합니다. 복사는 예외 처리로 보호되어 잘못된 유저 스택이면 오류 상태로 끝납니다.</li>
+    <li><b>서비스 실행</b>: <code>nt!NtReadFile</code>이 일반 C 함수처럼 호출됩니다. PreviousMode가 UserMode이므로 유저 버퍼·<code>IO_STATUS_BLOCK</code> 포인터를 프로브하고, 핸들을 파일 객체로 해석해 IRP를 만듭니다. 결과 <code>NTSTATUS</code>는 <code>rax</code>로 돌아옵니다.</li>
+    <li><b>복귀 준비</b>: 유저 APC가 대기 중이면 먼저 처리하도록 하고, PreviousMode를 복원합니다. 인터럽트를 끄고 트랩 프레임에서 RCX(유저 RIP)·R11(RFLAGS)·유저 RSP를 되돌린 뒤 <code>swapgs</code>로 GS를 TEB로 돌려 놓습니다. 문맥이 바뀌어 일반 복귀가 부적절한 경우에는 <code>iretq</code> 경로를 씁니다.</li>
+    <li><b>sysretq</b>: CPU가 <code>RIP ← RCX</code>, <code>RFLAGS ← R11</code>, CS=0x33(CPL 3)으로 바꿉니다. 실행은 스텁의 +0x14 <code>ret</code>에서 재개되고, <code>rax</code>의 NTSTATUS가 kernelbase로 전달됩니다.</li>
+  </ol>
+  <figcaption><b>그림 2-3.</b> <code>NtReadFile</code> 시스템 콜의 왕복 경로와 레지스터 변화.</figcaption>
+</figure>
+
+<p>진입부를 단순화하면 다음과 같습니다. 실제 코드는 빌드마다 다르고 KVA Shadow, 디버깅, 계측(instrumentation) 처리 등이 섞여 있으니 반드시 <code>u nt!KiSystemCall64</code>로 대조하세요.</p>
+<pre data-title="ASM · KiSystemCall64 진입부 (단순화)"><code class="lang-asm">swapgs                                  ; GS.base ← KPCR
+mov   gs:[KPCR.UserRsp], rsp            ; 유저 RSP 임시 보관
+mov   rsp, gs:[KPCR.Prcb.RspBase]       ; 커널 스택으로 전환
+push  2Bh                               ; 유저 SS
+push  qword ptr gs:[KPCR.UserRsp]       ; 유저 RSP
+push  r11                               ; 유저 RFLAGS
+push  33h                               ; 유저 CS
+push  rcx                               ; 유저 RIP (복귀 주소)
+; ... KTRAP_FRAME의 나머지 공간 확보, rax/r10/rdx/r8/r9 등 저장
+sti                                     ; 이제 인터럽트 허용
+; ... PreviousMode 기록, 스레드의 TrapFrame 갱신
+; KiSystemServiceStart / KiSystemServiceRepeat:
+;   edi = (eax &gt;&gt; 7) &amp; 20h  → 테이블 디스크립터 선택 (비트 12)
+;   eax = eax &amp; 0FFFh        → 테이블 인덱스</code></pre>
+
+<div class="callout tip">
+  <div class="callout-title">KPCR과 KPRCB</div>
+  <p><code>KPCR</code>(Processor Control Region)은 프로세서마다 하나씩 있는 구조체이고, 그 안에 더 큰 <code>KPRCB</code>(Processor Control Block)가 들어 있습니다. 커널 모드에서는 항상 <code>gs:</code>가 현재 프로세서의 KPCR을 가리키므로 "지금 이 CPU에서 실행 중인 스레드", "그 스레드의 커널 스택 꼭대기" 같은 정보를 레지스터 하나로 찾을 수 있습니다. 컨텍스트 스위치 때 커널이 <code>RspBase</code>를 새 스레드의 값으로 갱신합니다.</p>
+</div>
+
+<h2 id="trapframe">트랩 프레임 (KTRAP_FRAME)</h2>
+<p>
+  트랩 프레임은 "커널에 들어오기 직전의 유저 상태" 중 커널이 저장해야 하는 부분입니다. 시스템 콜뿐 아니라 인터럽트, 예외 진입에서도 <b>같은 구조체</b>가 만들어집니다.
+  스레드의 <code>KTHREAD.TrapFrame</code>이 가장 최근 트랩 프레임을 가리키므로, 디버거의 <code>.trap</code> 명령이나 컨텍스트 조회(<code>GetThreadContext</code>)가 여기서 유저 레지스터를 읽습니다.
+  아래는 x64 <code>KTRAP_FRAME</code>의 주요 영역을 낮은 주소부터 나열한 것입니다. <b>각 영역을 클릭</b>하세요.
+</p>
+
+<figure class="fig explore" id="tfFig">
+  <svg class="dia" viewBox="0 0 880 460" role="img" aria-label="KTRAP_FRAME 구조">
+    <text x="190" y="40" text-anchor="end" class="sm">낮은 주소</text>
+    <text x="190" y="54" text-anchor="end" class="sm">(트랩 프레임 시작)</text>
+    <text x="190" y="420" text-anchor="end" class="sm">높은 주소</text>
+    <text x="190" y="434" text-anchor="end" class="sm">(가장 먼저 push)</text>
+    <path class="ln noarr" d="M196 36 L196 434" style="stroke-dasharray:3 4"/>
+
+    <g data-info="home"><rect class="box kernel" x="210" y="24" width="420" height="30" rx="5"/><text x="420" y="44" text-anchor="middle" class="mono">P1Home … P6Home</text></g>
+    <g data-info="mode"><rect class="box kernel" x="210" y="58" width="420" height="30" rx="5"/><text x="420" y="78" text-anchor="middle" class="mono">PreviousMode · PreviousIrql · 플래그</text></g>
+    <g data-info="mxcsr"><rect class="box kernel" x="210" y="92" width="420" height="30" rx="5"/><text x="420" y="112" text-anchor="middle" class="mono">MxCsr</text></g>
+    <g data-info="vol"><rect class="box kernel" x="210" y="126" width="420" height="30" rx="5"/><text x="420" y="146" text-anchor="middle" class="mono">Rax Rcx Rdx R8 R9 R10 R11</text></g>
+    <g data-info="gs"><rect class="box kernel" x="210" y="160" width="420" height="30" rx="5"/><text x="420" y="180" text-anchor="middle" class="mono">GsBase / GsSwap</text></g>
+    <g data-info="xmm"><rect class="box kernel" x="210" y="194" width="420" height="30" rx="5"/><text x="420" y="214" text-anchor="middle" class="mono">Xmm0 … Xmm5</text></g>
+    <g data-info="fault"><rect class="box kernel" x="210" y="228" width="420" height="30" rx="5"/><text x="420" y="248" text-anchor="middle" class="mono">FaultAddress / ContextRecord</text></g>
+    <g data-info="dr"><rect class="box kernel" x="210" y="262" width="420" height="30" rx="5"/><text x="420" y="282" text-anchor="middle" class="mono">Dr0–Dr3 · Dr6 · Dr7 (+분기 기록)</text></g>
+    <g data-info="nonvol"><rect class="box kernel" x="210" y="296" width="420" height="30" rx="5"/><text x="420" y="316" text-anchor="middle" class="mono">Rbx · Rdi · Rsi · Rbp</text></g>
+    <g data-info="err"><rect class="box kernel" x="210" y="330" width="420" height="30" rx="5"/><text x="420" y="350" text-anchor="middle" class="mono">ErrorCode / ExceptionFrame</text></g>
+    <g data-info="mach"><rect class="box warn" x="210" y="370" width="420" height="56" rx="6"/><text x="420" y="393" text-anchor="middle" class="mono b">Rip · SegCs · EFlags · Rsp · SegSs</text><text x="420" y="413" text-anchor="middle" class="sm">머신 프레임</text></g>
+
+    <path class="ln noarr" d="M642 24 L652 24 L652 360 L642 360"/>
+    <text x="662" y="186" class="sm">진입 루틴(소프트웨어)이</text>
+    <text x="662" y="202" class="sm">채우는 영역</text>
+    <path class="ln noarr" d="M642 370 L652 370 L652 426 L642 426"/>
+    <text x="662" y="394" class="sm">인터럽트: CPU가 push</text>
+    <text x="662" y="410" class="sm">syscall: KiSystemCall64가 push</text>
+  </svg>
+  <template data-key="home">
+    <h4>P1Home … P6Home — 인자 홈 영역</h4>
+    <p>x64 호출 규약은 호출자가 피호출 함수를 위해 레지스터 인자 4개분의 "홈(shadow) 공간"을 스택에 예약하게 합니다. 트랩 프레임 맨 앞의 이 칸들은 진입 루틴이 다른 함수를 호출할 때 그 공간으로 재사용됩니다.</p>
+  </template>
+  <template data-key="mode">
+    <h4>PreviousMode · PreviousIrql · 상태 플래그</h4>
+    <p><code>PreviousMode</code> 칸에는 <b>이 진입 이전에 스레드가 갖고 있던 PreviousMode</b>가 저장됩니다. 진입 시 스레드의 PreviousMode를 새 값(UserMode 또는 KernelMode)으로 바꾸고, 복귀 시 이 칸에서 원래 값을 되돌립니다. Zw 호출이 중첩되어도 올바르게 복원되는 이유입니다.</p>
+    <p>그 밖에 진입 시점 IRQL, 예외 진행 여부 같은 상태 바이트가 있습니다.</p>
+  </template>
+  <template data-key="mxcsr">
+    <h4>MxCsr</h4>
+    <p>SSE 부동소수점 제어/상태 레지스터. 유저 코드가 설정한 반올림 모드 등이 커널 코드에 영향을 주지 않도록 보존·재설정합니다.</p>
+  </template>
+  <template data-key="vol">
+    <h4>휘발성 정수 레지스터</h4>
+    <p>x64 ABI에서 호출 간 보존되지 않는(volatile) 레지스터입니다. 커널 코드가 자유롭게 쓰므로 유저 값을 여기 저장합니다. 시스템 콜에서는 <code>Rcx</code> 칸에 유저 RIP가 아니라 <code>r10</code>(첫 인자) 처리와 관련된 값이 들어가는 등 진입 경로별 세부가 다르니, 해석은 <code>.trap</code> 출력과 함께 하세요.</p>
+  </template>
+  <template data-key="gs">
+    <h4>GsBase / GsSwap</h4>
+    <p><code>swapgs</code> 관련 GS 베이스 값을 보관하는 칸입니다. 유저 GS(TEB)와 커널 GS(KPCR) 전환 상태를 복귀 경로에서 일관되게 유지하는 데 쓰입니다.</p>
+  </template>
+  <template data-key="xmm">
+    <h4>Xmm0 … Xmm5</h4>
+    <p>x64 ABI에서 휘발성인 XMM 레지스터. 커널 코드(컴파일러가 생성한 memcpy 등)가 쓸 수 있으므로 저장합니다. 비휘발성 XMM6–15나 AVX 상태 전체는 여기 없으며, 필요한 경우 별도 메커니즘으로 저장합니다.</p>
+  </template>
+  <template data-key="fault">
+    <h4>FaultAddress / ContextRecord</h4>
+    <p>페이지 폴트 진입이라면 CR2의 폴트 주소가 여기 기록됩니다. 같은 공간이 다른 진입 유형에서는 다른 용도(union)로 쓰입니다. 덤프 분석에서 <code>.trap</code>으로 폴트 주소를 확인하는 근거입니다.</p>
+  </template>
+  <template data-key="dr">
+    <h4>디버그 레지스터</h4>
+    <p>하드웨어 브레이크포인트(Dr0–Dr3, Dr7) 상태. 스레드가 디버그 레지스터를 사용 중일 때만 저장·복원해 일반 시스템 콜의 비용을 줄입니다.</p>
+  </template>
+  <template data-key="nonvol">
+    <h4>Rbx · Rdi · Rsi · Rbp</h4>
+    <p>진입 루틴이 자신이 사용하는 일부 비휘발성 레지스터를 보관하는 칸입니다. 나머지 비휘발성 레지스터(r12–r15 등)는 x64 호출 규약상 피호출 함수가 보존하므로 시스템 콜마다 저장하지 않습니다. 예외 디스패치처럼 <b>전체 문맥</b>이 필요할 때는 <code>KEXCEPTION_FRAME</code>에 추가로 저장합니다. 이것이 x64 트랩 프레임이 "전체 문맥"이 아닌 이유입니다.</p>
+  </template>
+  <template data-key="err">
+    <h4>ErrorCode / ExceptionFrame</h4>
+    <p>#PF, #GP 같은 일부 예외는 CPU가 에러 코드를 push합니다. 그 값이 머신 프레임 바로 아래에 오도록 자리가 맞춰져 있습니다. 에러 코드를 push하지 않는 진입에서는 진입 루틴이 같은 크기의 자리를 채워 모양을 통일합니다.</p>
+  </template>
+  <template data-key="mach">
+    <h4>머신 프레임: Rip · SegCs · EFlags · Rsp · SegSs</h4>
+    <p>x64에서 인터럽트·예외가 발생하면 CPU는 <b>SS, RSP, RFLAGS, CS, RIP</b> 순으로 push합니다. 트랩 프레임의 끝부분은 이 모양과 정확히 일치합니다.</p>
+    <p><code>syscall</code>은 아무것도 push하지 않으므로 <code>KiSystemCall64</code>가 같은 다섯 값을 <b>직접 push</b>해 모양을 맞춥니다. 덕분에 시스템 콜·인터럽트·예외 모두 같은 복귀/문맥 조회 코드를 공유할 수 있습니다. <code>SegCs</code>의 하위 2비트(RPL)를 보면 "유저에서 들어왔는가"를 판단할 수 있습니다.</p>
+  </template>
+  <figcaption><b>그림 2-4.</b> x64 <code>KTRAP_FRAME</code>의 주요 영역(순서는 개략). 정확한 오프셋과 필드는 <code>dt nt!_KTRAP_FRAME</code>으로 확인.</figcaption>
+</figure>
+
+<h2 id="ssdt">서비스 디스패치 테이블</h2>
+<p>
+  서비스 번호를 실제 함수로 바꾸는 표가 <b>시스템 서비스 디스패치 테이블</b>(흔히 SSDT)입니다. 커널에는 두 개의 <b>서비스 디스크립터 테이블</b>이 있고, 각 디스크립터에는 최대 두 개의 서비스 테이블이 등록됩니다.
+</p>
+<table>
+  <thead><tr><th>디스크립터</th><th>[0] (번호 0x0000–0x0FFF)</th><th>[1] (번호 0x1000–0x1FFF)</th><th>사용하는 스레드</th></tr></thead>
+  <tbody>
+    <tr><td><code>KeServiceDescriptorTable</code></td><td><code>nt!KiServiceTable</code></td><td>(비어 있음)</td><td>일반(비 GUI) 스레드</td></tr>
+    <tr><td><code>KeServiceDescriptorTableShadow</code></td><td><code>nt!KiServiceTable</code></td><td><code>win32k!W32pServiceTable</code></td><td>GUI 스레드</td></tr>
+  </tbody>
+</table>
+<p>
+  각 디스크립터 항목(<code>KSERVICE_TABLE_DESCRIPTOR</code>)은 <b>Base</b>(테이블 주소), <b>Count</b>, <b>Limit</b>(서비스 개수), <b>Number</b>(인자 테이블) 네 필드로 이루어집니다.
+  스레드는 <code>KTHREAD.ServiceTable</code>로 어느 디스크립터를 쓸지 가리키며, 처음에는 모두 일반 디스크립터를 씁니다.
+  일반 스레드가 처음 win32k 서비스를 호출하면 [1]의 Limit이 0이라 인덱스 검사에 실패하는데, 이때 커널은 오류 대신 스레드를 <b>GUI 스레드로 변환</b>(win32k 쪽 스레드 정보 할당, 더 큰 커널 스택 준비 등)하고 Shadow 디스크립터로 바꾼 뒤 재시도합니다.
+  최근 Windows에는 Win32k 시스템 콜 필터링 정책이 적용된 프로세스를 위한 필터 디스크립터도 있습니다.
+</p>
+
+<h3>번호의 비트 의미와 상대 오프셋 인코딩</h3>
+<p>
+  <code>eax</code>의 <b>비트 12</b>가 디스크립터 안의 테이블([0] 또는 [1])을 고르고, <b>비트 0–11</b>이 테이블 인덱스입니다(그래서 테이블당 최대 4096개).
+  x64의 서비스 테이블 엔트리는 64비트 포인터가 아니라 <b>32비트 값</b>입니다. 상위 28비트는 테이블 시작 주소로부터의 <b>부호 있는 상대 오프셋</b>,
+  하위 4비트는 <b>스택으로 전달되는 인자 개수</b>입니다.
+</p>
+<pre data-title="C · 개념 모델"><code class="lang-c">LONG  entry   = ServiceTable[index];        // 32비트 엔트리
+PVOID routine = (PUCHAR)ServiceTable + (entry &gt;&gt; 4);  // 산술 시프트: 부호 유지
+ULONG stackArgs = entry &amp; 0xF;              // 5번째 이후 인자 수 → 복사할 8바이트 개수</code></pre>
+<p>
+  이렇게 하면 테이블 크기가 절반이 되고, 엔트리가 로드 주소와 무관하므로 KASLR로 커널 위치가 바뀌어도 테이블 내용은 재배치가 필요 없습니다.
+  인자 개수까지 한 엔트리에 담겨 디스패처가 메모리를 한 번만 읽으면 됩니다. 대가는 오프셋 범위가 ±128MB(28비트)로 제한된다는 점입니다.
+</p>
+
+<div class="sim" id="svcSim">
+  <div class="sim-title">서비스 번호 디코더</div>
+  <div class="sim-controls">
+    <label for="svcIn">EAX =</label>
+    <input type="text" id="svcIn" value="0x6" style="width:130px" aria-label="서비스 번호">
+    <span class="muted" style="font-size:.85rem">예시:</span>
+    <button class="btn" data-v="0x6">0x6</button>
+    <button class="btn" data-v="0x55">0x55</button>
+    <button class="btn" data-v="0x1001">0x1001</button>
+    <button class="btn" data-v="0x1FFF">0x1FFF</button>
+    <button class="btn" data-v="0x2006">0x2006</button>
+  </div>
+  <div class="sim-controls">
+    <span>호출 스레드:</span>
+    <button class="btn on" data-gui="0">일반 스레드</button>
+    <button class="btn" data-gui="1">GUI 스레드 (Shadow)</button>
+  </div>
+  <div class="bitrow svc-bits" id="svcBits"></div>
+  <div class="dec-sum" id="svcSum"></div>
+  <div class="console" id="svcLog"></div>
+
+  <div class="sep-line"></div>
+  <h4>테이블 엔트리 디코더 (상대 오프셋 인코딩)</h4>
+  <div class="sim-controls">
+    <label for="entIn">엔트리(32비트) =</label>
+    <input type="text" id="entIn" value="0x02B4E705" style="width:150px" aria-label="테이블 엔트리">
+    <button class="btn" data-e="0x02B4E705">양수 오프셋</button>
+    <button class="btn" data-e="0x0011A400">스택 인자 0</button>
+    <button class="btn" data-e="0xFFF8C203">음수 오프셋</button>
+  </div>
+  <div class="console" id="entLog"></div>
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">번호를 외우지 말 것</div>
+  <p>예시의 <code>0x6</code>, <code>0x55</code> 같은 값은 특정 빌드의 관찰 결과일 뿐입니다. 서비스가 추가될 때마다 번호가 밀릴 수 있으므로, 번호와 서비스의 대응은 항상 그 시스템의 ntdll과 커널 심볼로 확인해야 합니다.</p>
+</div>
+
+<h2 id="prevmode">PreviousMode와 인자 검증</h2>
+<p>
+  같은 <code>nt!NtReadFile</code>이 유저의 요청도, 커널 구성요소의 요청도 처리합니다. 유저가 준 포인터는 검증해야 하지만, 커널이 준 커널 버퍼 포인터는 검증하면 오히려 실패합니다.
+  서비스는 이를 <code>KTHREAD.PreviousMode</code>로 구분합니다. 이름 그대로 <b>"이 서비스를 요청한 쪽의 모드"</b>이지 현재 CPU 모드가 아닙니다(서비스 코드는 언제나 CPL 0에서 실행됩니다).
+  드라이버는 <code>ExGetPreviousMode()</code>로 읽습니다.
+</p>
+
+<h3>ProbeForRead / ProbeForWrite</h3>
+<p>
+  PreviousMode가 UserMode이면 서비스는 유저 포인터를 사용하기 전에 프로브합니다. 프로브는 <b>정렬</b>과 <b>범위가 유저 주소 공간 안에 있는지</b>(<code>MmUserProbeAddress</code> 미만)를 확인하고, 실패하면 예외를 발생시킵니다.
+  주의할 점은 프로브가 "지금 이 순간 접근 가능함"을 보장하지 않는다는 것입니다. 다른 스레드가 직후에 메모리를 해제하거나 보호 속성을 바꿀 수 있으므로,
+  유저 메모리 접근은 <b>전부</b> <code>__try/__except</code> 안에서 해야 하고, 검사에 쓴 값은 <b>커널 쪽으로 한 번 복사(캡처)한 뒤</b> 그 사본만 써야 합니다.
+</p>
+<pre data-title="C · 서비스 측 패턴"><code class="lang-c">NTSTATUS QueryValue(_Out_writes_bytes_(Length) PVOID Buffer, ULONG Length)
+{
+    KPROCESSOR_MODE mode = ExGetPreviousMode();
+    ULONG value = ComputeValue();
+
+    if (Length &lt; sizeof(ULONG))
+        return STATUS_BUFFER_TOO_SMALL;
+
+    if (mode != KernelMode) {
+        __try {
+            ProbeForWrite(Buffer, Length, sizeof(ULONG));  // 범위·정렬 검사
+            *(ULONG *)Buffer = value;                      // 접근도 __try 안에서
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return GetExceptionCode();                     // 잘못된 포인터 → 오류 반환
+        }
+    } else {
+        *(ULONG *)Buffer = value;                          // 커널 호출자: 신뢰
+    }
+    return STATUS_SUCCESS;
+}</code></pre>
+
+<h3>Nt vs Zw, 그리고 커널 내부 호출 경로</h3>
+<p>
+  ntoskrnl에는 서비스마다 <code>Nt</code> 버전(실제 구현)과 <code>Zw</code> 버전(커널용 진입 래퍼)이 있습니다. 유저 모드의 ntdll에서는 두 이름이 같은 스텁을 가리키므로 차이가 없습니다.
+  커널의 <code>Zw</code> 함수는 시스템 콜을 흉내 내는 작은 스텁입니다.
+</p>
+<pre data-title="ASM · nt!ZwReadFile (Windows 10 x64 예)"><code class="lang-asm">mov   rax, rsp
+cli
+sub   rsp, 10h
+push  rax                    ; 원래 RSP  ┐
+pushfq                       ; RFLAGS   │ 인터럽트 프레임과 같은 모양을
+push  10h                    ; 커널 CS   │ 스택에 직접 구성
+lea   rax, [nt!KiServiceLinkage]
+push  rax                    ; 복귀 RIP  ┘
+mov   eax, 6                 ; 서비스 번호 (ntdll과 동일)
+jmp   nt!KiServiceInternal   ; PreviousMode = KernelMode 로 설정 후 디스패치</code></pre>
+<p>
+  <code>KiServiceInternal</code>은 현재 PreviousMode를 트랩 프레임에 보관하고 <b>KernelMode로 설정</b>한 뒤, 시스템 콜과 같은 디스패치 경로로 <code>NtReadFile</code>을 호출합니다.
+  복귀할 때 보관한 값을 되돌립니다. 아래 스테퍼에서 세 가지 호출 방식을 비교해 보세요.
+</p>
+
+<figure class="fig stepper" data-interval="3600" id="ntzwFig">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="Nt와 Zw 호출 경로 비교">
+    <g data-dim="2-4">
+      <text x="20" y="22" class="sm b c-user">① 유저 스레드의 시스템 콜</text>
+      <g data-hl="1"><rect class="box user" x="20" y="30" width="195" height="62" rx="8"/><text x="117" y="56" text-anchor="middle" class="b">유저 스레드</text><text x="117" y="76" text-anchor="middle" class="sm mono">NtReadFile → syscall</text></g>
+      <path class="ln" d="M215 61 L233 61"/>
+      <g data-hl="1"><rect class="box kernel" x="235" y="30" width="195" height="62" rx="8"/><text x="332" y="56" text-anchor="middle" class="b mono">KiSystemCall64</text><text x="332" y="76" text-anchor="middle" class="sm">트랩 프레임 구성</text></g>
+      <path class="ln" d="M430 61 L448 61"/>
+      <g data-hl="1"><rect class="box kernel" x="450" y="30" width="195" height="62" rx="8"/><text x="547" y="56" text-anchor="middle" class="b mono">PreviousMode</text><text x="547" y="76" text-anchor="middle" class="sm mono">= UserMode</text></g>
+      <path class="ln" d="M645 61 L663 61"/>
+      <g data-hl="1"><rect class="box ok" x="665" y="30" width="195" height="62" rx="8"/><text x="762" y="56" text-anchor="middle" class="b mono">nt!NtReadFile</text><text x="762" y="76" text-anchor="middle" class="sm">유저 버퍼 프로브 ✓</text></g>
+    </g>
+
+    <g data-on="2" data-dim="4">
+      <text x="20" y="122" class="sm b c-kernel">② 드라이버가 Zw 함수 호출</text>
+      <g data-hl="2"><rect class="box kernel" x="20" y="130" width="195" height="62" rx="8"/><text x="117" y="156" text-anchor="middle" class="b">드라이버</text><text x="117" y="176" text-anchor="middle" class="sm mono">ZwReadFile(커널 버퍼)</text></g>
+      <path class="ln kernel" d="M215 161 L233 161"/>
+      <g data-hl="2"><rect class="box kernel" x="235" y="130" width="195" height="62" rx="8"/><text x="332" y="156" text-anchor="middle" class="b mono">nt!ZwReadFile</text><text x="332" y="176" text-anchor="middle" class="sm mono">→ KiServiceInternal</text></g>
+      <path class="ln kernel" d="M430 161 L448 161" data-on="3"/>
+      <g data-on="3" data-hl="3,5"><rect class="box kernel" x="450" y="130" width="195" height="62" rx="8"/><text x="547" y="156" text-anchor="middle" class="b mono">PreviousMode</text><text x="547" y="176" text-anchor="middle" class="sm mono">= KernelMode</text></g>
+      <path class="ln kernel" d="M645 161 L663 161" data-on="3"/>
+      <g data-on="3" data-hl="3"><rect class="box ok" x="665" y="130" width="195" height="62" rx="8"/><text x="762" y="156" text-anchor="middle" class="b mono">nt!NtReadFile</text><text x="762" y="176" text-anchor="middle" class="sm">프로브 생략 ✓</text></g>
+    </g>
+
+    <g data-on="4" data-dim="5">
+      <text x="20" y="222" class="sm b c-bad">③ 드라이버가 Nt 함수를 직접 호출 (유저 요청 처리 중)</text>
+      <g data-hl="4"><rect class="box kernel" x="20" y="230" width="195" height="62" rx="8"/><text x="117" y="256" text-anchor="middle" class="b">드라이버</text><text x="117" y="276" text-anchor="middle" class="sm mono">NtReadFile(커널 버퍼)</text></g>
+      <path class="ln bad" d="M215 261 L233 261"/>
+      <g data-hl="4"><rect class="box kernel" x="235" y="230" width="195" height="62" rx="8"/><text x="332" y="256" text-anchor="middle" class="b">일반 함수 호출</text><text x="332" y="276" text-anchor="middle" class="sm">모드 설정 경로 없음</text></g>
+      <path class="ln bad" d="M430 261 L448 261"/>
+      <g data-hl="4"><rect class="box warn" x="450" y="230" width="195" height="62" rx="8"/><text x="547" y="256" text-anchor="middle" class="b mono">PreviousMode</text><text x="547" y="276" text-anchor="middle" class="sm mono">= UserMode 그대로</text></g>
+      <path class="ln bad" d="M645 261 L663 261"/>
+      <g data-hl="4"><rect class="box bad" x="665" y="230" width="195" height="62" rx="8"/><text x="762" y="256" text-anchor="middle" class="b mono">nt!NtReadFile</text><text x="762" y="276" text-anchor="middle" class="sm">커널 버퍼 프로브 실패 ✗</text></g>
+    </g>
+    <text x="440" y="320" text-anchor="middle" class="sm" data-on="5">복귀 시 KiServiceInternal 경로가 트랩 프레임의 이전 PreviousMode를 복원한다</text>
+  </svg>
+  <ol class="steps">
+    <li><b>유저 시스템 콜</b>: <code>KiSystemCall64</code>가 스레드의 PreviousMode를 UserMode로 설정합니다. <code>NtReadFile</code>은 버퍼와 <code>IO_STATUS_BLOCK</code> 포인터를 프로브하고, 핸들 해석 시 접근 검사도 수행합니다.</li>
+    <li><b>Zw 호출</b>: 드라이버가 <code>ZwReadFile</code>을 호출합니다. 이 스텁은 인터럽트 프레임 모양을 스택에 만들고 서비스 번호를 넣은 뒤 <code>KiServiceInternal</code>로 점프합니다. 모드 전환(CPL 변화)은 없습니다 — 이미 커널입니다.</li>
+    <li><b>KernelMode로 설정</b>: <code>KiServiceInternal</code>이 이전 PreviousMode를 트랩 프레임에 저장하고 KernelMode로 바꾼 뒤 같은 테이블로 디스패치합니다. <code>NtReadFile</code>은 커널 호출자를 신뢰해 프로브를 생략합니다. 커널 핸들(<code>OBJ_KERNEL_HANDLE</code>)도 정상적으로 다룹니다.</li>
+    <li><b>Nt 직접 호출</b>: 유저 요청을 처리하던 스레드에서 드라이버가 <code>NtReadFile</code>을 직접 부르면 PreviousMode는 여전히 UserMode입니다. 커널 버퍼 주소는 프로브에서 거부되어 <code>STATUS_ACCESS_VIOLATION</code> 같은 오류가 납니다. 반대로 검사가 적용되어야 할 상황에서 KernelMode로 호출되면 접근 검사가 생략될 수 있어 보안 결함이 됩니다.</li>
+    <li><b>정리</b>: 드라이버는 원칙적으로 <b>Zw</b>를 쓰고, 유저에게서 받은 핸들·포인터를 커널 모드로 넘길 때는 그것이 이미 검증되었는지 반드시 따져야 합니다. 복귀 시 이전 PreviousMode가 복원되므로 Zw 호출이 중첩되어도 안전합니다.</li>
+  </ol>
+  <figcaption><b>그림 2-5.</b> 같은 서비스, 다른 PreviousMode. Zw는 "커널이 요청자"임을 선언하는 경로다.</figcaption>
+</figure>
+
+<div class="callout expert">
+  <div class="callout-title">PreviousMode가 결정하는 것들</div>
+  <p>프로브 여부만이 아닙니다. 핸들 참조(<code>ObReferenceObjectByHandle</code>의 AccessMode), 접근 검사, 특권 검사, 대기의 경고 가능성(alertable) 처리 등 많은 결정이 "요청자 모드"를 인자로 받습니다. 드라이버가 이런 API에 <code>KernelMode</code>를 넘기면 "검사하지 말라"는 뜻이 되므로, 유저에게서 온 값을 다룰 때는 <code>UserMode</code>(또는 <code>ExGetPreviousMode()</code>)를 넘기는 것이 안전한 기본값입니다.</p>
+</div>
+
+<h2 id="other">다른 커널 진입 경로와의 비교</h2>
+<p>
+  CPU가 커널로 들어가는 길은 시스템 콜만이 아닙니다. 예외와 인터럽트는 IDT(Interrupt Descriptor Table)를 거치며, CPU가 더 많은 일을 대신 해줍니다.
+  그러나 도착 후 커널이 만드는 것은 결국 같은 <code>KTRAP_FRAME</code>입니다.
+</p>
+<table>
+  <thead><tr><th>경로</th><th>계기</th><th>진입점 결정</th><th>스택 전환</th><th>CPU가 저장</th><th>복귀</th></tr></thead>
+  <tbody>
+    <tr><td><code>syscall</code></td><td>명령 (동기·의도적)</td><td><code>IA32_LSTAR</code></td><td>소프트웨어 (<code>KPRCB.RspBase</code>)</td><td>RCX←RIP, R11←RFLAGS뿐</td><td><code>sysretq</code> (필요 시 <code>iretq</code>)</td></tr>
+    <tr><td><code>int 2Eh</code></td><td>명령 (동기·의도적)</td><td>IDT[0x2E] → <code>KiSystemService</code></td><td>CPU (TSS.RSP0)</td><td>SS, RSP, RFLAGS, CS, RIP</td><td><code>iretq</code></td></tr>
+    <tr><td>예외 (#PF, #GP, #DE…)</td><td>명령 실행 결과 (동기·비의도적)</td><td>IDT 벡터 0–31 → <code>KiPageFault</code> 등</td><td>CPU (RSP0 또는 IST)</td><td>머신 프레임 (+에러 코드)</td><td><code>iretq</code></td></tr>
+    <tr><td>하드웨어 인터럽트</td><td>장치·타이머 (비동기)</td><td>IDT 벡터 (APIC가 전달)</td><td>유저에서 오면 CPU가 RSP0로, 커널 실행 중이면 현재 스택 유지</td><td>머신 프레임</td><td><code>iretq</code></td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><b>TSS.RSP0</b>: 컨텍스트 스위치 때 커널이 새 스레드의 커널 스택 꼭대기를 기록해 두는 곳입니다. 유저 모드에서 인터럽트가 들어오면 CPU가 이 값을 읽어 스택을 바꿉니다.</li>
+  <li><b>IST</b>(Interrupt Stack Table): NMI, 더블 폴트, 머신 체크처럼 현재 스택을 믿을 수 없는 이벤트는 IDT 엔트리에 지정한 별도의 프로세서별 스택으로 무조건 전환합니다.</li>
+  <li><b>예외의 행방</b>: 유저 모드 예외는 <code>KiDispatchException</code>을 거쳐 ntdll의 <code>KiUserExceptionDispatcher</code>로 "되돌려 보내져" SEH/VEH가 처리합니다. 커널 모드 예외가 처리되지 않으면 버그체크입니다.</li>
+  <li><b>비동기성</b>: 시스템 콜과 예외는 현재 스레드가 원인이므로 그 스레드 문맥에서 처리하는 것이 자연스럽지만, 하드웨어 인터럽트는 우연히 실행 중이던 스레드를 "빌려" 처리합니다. 그래서 ISR은 현재 프로세스 문맥에 의존하면 안 됩니다(→ 06장).</li>
+</ul>
+
+<h2 id="kva">KVA Shadow가 진입 경로에 미친 영향</h2>
+<p>
+  2018년 공개된 Meltdown(CVE-2017-5754)은 일부 CPU에서 유저 코드가 <b>투기적 실행</b>을 통해, 페이지 테이블에 매핑되어 있지만 접근 권한이 없는 커널 메모리 내용을 간접적으로 추론할 수 있게 하는 하드웨어 취약점이었습니다.
+  근본 원인이 "유저 실행 중에도 커널 전체가 페이지 테이블에 매핑되어 있다"는 점이었으므로, Windows는 <b>KVA Shadow</b>(Kernel Virtual Address Shadow)로 대응했습니다.
+  유저 모드에서 실행되는 동안에는 <b>커널 대부분이 빠진 별도의 페이지 테이블</b>을 쓰는 방식입니다(Linux의 KPTI와 같은 발상).
+</p>
+
+<figure class="fig stepper" data-interval="3200" id="kvaFig">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="KVA Shadow 진입과 복귀">
+    <g data-hl="1,5"><rect class="box user" x="20" y="30" width="250" height="250" rx="10"/></g>
+    <text x="145" y="54" text-anchor="middle" class="b">유저(섀도) 페이지 테이블</text>
+    <rect class="box ok" x="36" y="70" width="218" height="40" rx="6"/><text x="145" y="95" text-anchor="middle">유저 주소 공간 ✓</text>
+    <rect class="box ok" x="36" y="118" width="218" height="40" rx="6"/><text x="145" y="143" text-anchor="middle" class="mono">전환 코드 (KVASCODE) ✓</text>
+    <rect class="box ok" x="36" y="166" width="218" height="40" rx="6"/><text x="145" y="191" text-anchor="middle">전환용 프로세서별 데이터 ✓</text>
+    <rect class="box bad" x="36" y="214" width="218" height="52" rx="6"/><text x="145" y="237" text-anchor="middle">나머지 커널 ✗</text><text x="145" y="255" text-anchor="middle" class="sm">매핑 자체가 없음</text>
+
+    <g data-hl="3-4"><rect class="box kernel" x="290" y="30" width="250" height="250" rx="10"/></g>
+    <text x="415" y="54" text-anchor="middle" class="b">커널 페이지 테이블 (전체)</text>
+    <rect class="box ok" x="306" y="70" width="218" height="40" rx="6"/><text x="415" y="95" text-anchor="middle">유저 주소 공간 ✓</text>
+    <rect class="box ok" x="306" y="118" width="218" height="148" rx="6"/><text x="415" y="190" text-anchor="middle">커널 전체 ✓</text>
+
+    <rect class="box plain" x="566" y="30" width="294" height="44" rx="8"/>
+    <text x="580" y="57" class="b mono">CR3 =</text>
+    <text x="640" y="57" class="mono c-acc" data-text="1:유저(섀도) 테이블|3:커널 테이블|5:유저(섀도) 테이블">유저(섀도) 테이블</text>
+
+    <g data-hl="2"><rect class="box user" x="590" y="90" width="270" height="36" rx="7"/><text x="725" y="113" text-anchor="middle" class="mono">syscall → KiSystemCall64Shadow</text></g>
+    <g data-hl="3"><rect class="box kernel" x="590" y="138" width="270" height="36" rx="7"/><text x="725" y="161" text-anchor="middle" class="mono">swapgs · mov cr3, 커널 CR3</text></g>
+    <g data-hl="4"><rect class="box kernel" x="590" y="186" width="270" height="36" rx="7"/><text x="725" y="209" text-anchor="middle" class="mono">KiSystemServiceUser → 서비스</text></g>
+    <g data-hl="5"><rect class="box kernel" x="590" y="234" width="270" height="36" rx="7"/><text x="725" y="257" text-anchor="middle" class="mono">KiKernelSysretExit · cr3 복귀</text></g>
+    <g data-at="1:0,0|2:0,48|3:0,96|4:0,144|5:0,0">
+      <circle class="token" cx="574" cy="108" r="8"/>
+    </g>
+    <text x="440" y="312" text-anchor="middle" class="sm">취약하지 않은 CPU에서는 KVA Shadow가 비활성이며 LSTAR는 KiSystemCall64를 직접 가리킨다</text>
+  </svg>
+  <ol class="steps">
+    <li><b>유저 실행 중</b>: CR3는 섀도 페이지 테이블을 가리킵니다. 커널 메모리 대부분은 매핑 자체가 없으므로 투기적 실행으로도 읽을 대상이 없습니다.</li>
+    <li><b>syscall</b>: <code>IA32_LSTAR</code>는 <code>KiSystemCall64Shadow</code>를 가리킵니다. 이 코드는 <code>KVASCODE</code> 섹션에 있어 섀도 테이블에도 매핑되어 있으므로 실행할 수 있습니다.</li>
+    <li><b>CR3 전환</b>: <code>swapgs</code> 후 프로세서별 데이터에서 커널 페이지 테이블 주소를 읽어 CR3에 씁니다. PCID를 지원하는 CPU에서는 두 테이블에 다른 PCID를 주어 CR3 교체 때마다 TLB 전체를 비우는 비용을 줄입니다.</li>
+    <li><b>본 경로로 합류</b>: 이제 커널 전체가 보이므로 <code>KiSystemCall64</code> 본체의 공통 부분(<code>KiSystemServiceUser</code>)으로 점프해 앞에서 본 디스패치를 그대로 수행합니다.</li>
+    <li><b>복귀</b>: 복귀 경로의 전환 코드(<code>KiKernelSysretExit</code>)가 CR3를 섀도 테이블로 되돌리고 <code>sysretq</code>합니다. 인터럽트·예외 진입점도 같은 이유로 섀도 버전이 따로 있습니다.</li>
+  </ol>
+  <figcaption><b>그림 2-6.</b> KVA Shadow 활성 시 시스템 콜 경로에 추가되는 CR3 전환.</figcaption>
+</figure>
+<p>
+  결과적으로 모든 시스템 콜·인터럽트에 CR3 교체가 더해져 <b>시스템 콜이 잦은 작업에서 성능 비용</b>이 생겼습니다. 그래서 Windows는 CPU가 취약한지 판단해 필요할 때만 활성화하며,
+  WinDbg에서 <code>IA32_LSTAR</code>가 가리키는 함수 이름으로 현재 상태를 간단히 확인할 수 있습니다(실습 참고). 투기적 실행 완화 전반은 16장에서 다룹니다.
+</p>
+
+<h2 id="lab">실습: 스텁과 테이블 관찰</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 2-1 · 준비</div>
+  <p>유저 모드 관찰은 아무 프로세스(예: notepad)에 WinDbg를 붙이면 됩니다. 커널 관찰은 01장의 로컬 커널 디버깅(가상 머신 권장) 환경을 사용합니다. 모든 실습은 <b>읽기 전용 관찰</b>입니다.</p>
+</div>
+<pre data-title="WinDbg · 유저 모드"><code class="lang-windbg">0:000> u ntdll!NtReadFile L8
+ntdll!NtReadFile:
+00007ffa`3c5ad0e0 4c8bd1           mov     r10,rcx
+00007ffa`3c5ad0e3 b806000000       mov     eax,6
+00007ffa`3c5ad0e8 f604250803fe7f01 test    byte ptr [SharedUserData+0x308 (00000000`7ffe0308)],1
+00007ffa`3c5ad0f0 7503             jne     ntdll!NtReadFile+0x15 (00007ffa`3c5ad0f5)
+00007ffa`3c5ad0f2 0f05             syscall
+00007ffa`3c5ad0f4 c3               ret
+00007ffa`3c5ad0f5 cd2e             int     2Eh
+00007ffa`3c5ad0f7 c3               ret
+
+0:000> u win32u!NtUserGetMessage L3
+win32u!NtUserGetMessage:
+00007ffa`39a21030 4c8bd1           mov     r10,rcx
+00007ffa`39a21033 b8........       mov     eax,1...h
+...
+$$ 번호가 0x1000 이상 → win32k 테이블 (값은 빌드마다 다름)</code></pre>
+<pre data-title="WinDbg · 커널"><code class="lang-windbg">lkd> rdmsr c0000082
+msr[c0000082] = fffff802`1a612180
+lkd> ln fffff802`1a612180
+(fffff802`1a612180)   nt!KiSystemCall64Shadow   |  ...
+
+lkd> rdmsr c0000081
+msr[c0000081] = 00230010`00000000
+
+lkd> dps nt!KeServiceDescriptorTable L4
+fffff802`1aa018c0  fffff802`1a8c7b10 nt!KiServiceTable
+fffff802`1aa018c8  00000000`00000000
+fffff802`1aa018d0  00000000`000001d0
+fffff802`1aa018d8  fffff802`1a8c8458 nt!KiArgumentTable
+
+lkd> dd nt!KiServiceTable L8
+fffff802`1a8c7b10  fd2fa404 fd39c400 0216a702 04c86f00
+fffff802`1a8c7b20  02a9dc00 fd613d00 02b4e705 02a52d06
+
+lkd> ln nt!KiServiceTable + (02b4e705 >> 4)
+(...)   nt!NtReadFile
+
+lkd> dt nt!_KTRAP_FRAME
+lkd> dt nt!_KTHREAD PreviousMode TrapFrame ServiceTable</code></pre>
+<p class="muted" style="font-size:.88rem">주소·엔트리 값·서비스 개수는 예시이며 빌드마다 다릅니다. 숫자 자체보다 <b>명령이 무엇을 보여주는지</b>에 집중하세요.</p>
+<ol>
+  <li><code>u ntdll!NtReadFile</code>과 <code>u ntdll!NtWriteFile</code>의 <code>mov eax</code> 값을 비교하고, 두 스텁의 모양이 같다는 것을 확인하세요.</li>
+  <li><code>win32u.dll</code> 스텁의 번호가 0x1000 이상인지 확인하고, 위 디코더에 넣어 테이블 선택 비트를 확인하세요.</li>
+  <li><code>rdmsr c0000082</code> 결과를 <code>ln</code>으로 해석해 KVA Shadow 활성 여부를 판단하세요. <code>c0000081</code> 값에서 0x10과 0x23을 찾아 셀렉터 계산(0x10/0x18, 0x33/0x2B)을 검산해 보세요.</li>
+  <li><code>dd nt!KiServiceTable</code>에서 인덱스 6(일곱 번째) 엔트리를 읽어, 디코더로 오프셋과 스택 인자 개수를 계산하고 <code>ln</code>으로 함수 이름을 확인하세요. <code>NtReadFile</code>의 인자 9개 중 몇 개가 스택으로 가는지와 일치합니까?</li>
+  <li><code>dt nt!_KTRAP_FRAME</code>으로 그림 2-4의 영역들을 실제 필드와 대조하세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">ntdll 스텁이 <code>syscall</code> 전에 <code>mov r10, rcx</code>를 실행하는 이유는?</p>
+  <ol class="opts">
+    <li>커널이 <code>rcx</code>를 읽을 수 없기 때문</li>
+    <li data-correct><code>syscall</code>이 복귀 주소를 <code>rcx</code>에 덮어쓰므로 첫 번째 인자를 보존하기 위해</li>
+    <li><code>r10</code>에 서비스 번호를 넣어야 하기 때문</li>
+    <li>스택 정렬을 맞추기 위해</li>
+  </ol>
+  <div class="explain"><code>syscall</code>은 <code>RCX ← RIP</code>, <code>R11 ← RFLAGS</code>를 수행합니다. 그래서 첫 인자는 <code>r10</code>으로 옮겨 전달되고 커널은 거기서 읽습니다. 서비스 번호는 <code>eax</code>로 전달됩니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>syscall</code> 직후 커널 진입점의 첫 명령이 실행될 때, RSP는 어디를 가리키나요?</p>
+  <ol class="opts">
+    <li>TSS.RSP0가 가리키는 현재 스레드의 커널 스택</li>
+    <li>IST의 전용 스택</li>
+    <li data-correct>여전히 유저 스택 — 커널 스택 전환은 KiSystemCall64가 소프트웨어로 한다</li>
+    <li>KPCR 구조체</li>
+  </ol>
+  <div class="explain"><code>syscall</code>은 스택을 바꾸지 않습니다. 그래서 진입 루틴은 IF가 꺼진 상태에서 <code>swapgs</code> → 유저 RSP 보관 → <code>KPRCB.RspBase</code> 로드 순으로 직접 전환합니다. TSS.RSP0를 CPU가 자동으로 쓰는 것은 인터럽트·예외(및 <code>int 2Eh</code>) 경로입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">서비스 번호 <code>0x1045</code>를 디스패처가 해석한 결과로 옳은 것은?</p>
+  <ol class="opts">
+    <li>테이블 0, 인덱스 0x1045</li>
+    <li data-correct>테이블 1(win32k), 인덱스 0x45</li>
+    <li>테이블 4, 인덱스 0x45</li>
+    <li>범위를 벗어나 항상 STATUS_INVALID_SYSTEM_SERVICE</li>
+  </ol>
+  <div class="explain">비트 12(0x1000)가 1이므로 디스크립터의 두 번째 테이블(win32k), 하위 12비트 0x045가 인덱스입니다. 호출 스레드가 아직 GUI 스레드가 아니라면 처음에는 Limit 검사에 실패하지만, 커널이 GUI 스레드로 변환한 뒤 재시도합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">x64 서비스 테이블 엔트리 <code>0x02B4E705</code>의 의미는?</p>
+  <ol class="opts">
+    <li>서비스 함수의 절대 주소 하위 32비트</li>
+    <li>오프셋 0x02B4E705, 스택 인자 0개</li>
+    <li data-correct>테이블 시작 + 0x2B4E70 위치의 함수, 스택 인자 5개</li>
+    <li>테이블 시작 + 0x02B4E70 위치의 함수, 레지스터 인자 5개</li>
+  </ol>
+  <div class="explain">엔트리를 산술 시프트로 4비트 오른쪽으로 밀면 상대 오프셋(0x2B4E70), 하위 4비트(5)는 스택으로 전달되는 인자 수입니다. 레지스터 인자 4개는 항상 레지스터로 오므로 개수를 기록할 필요가 없습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">유저 요청을 처리하던 스레드에서 드라이버가 커널 버퍼를 넘겨 <code>NtReadFile</code>을 직접 호출했습니다. 가장 가능성 높은 결과는?</p>
+  <ol class="opts">
+    <li>정상 동작한다. 드라이버는 이미 커널 모드이므로</li>
+    <li>IRQL이 올라가 버그체크가 발생한다</li>
+    <li data-correct>PreviousMode가 UserMode로 남아 있어 커널 버퍼가 프로브에서 거부되고 오류가 반환된다</li>
+    <li>CPU가 #GP 예외를 발생시킨다</li>
+  </ol>
+  <div class="explain">PreviousMode는 CPU 모드가 아니라 "요청자 모드"입니다. Nt 함수 직접 호출은 일반 함수 호출이라 PreviousMode를 바꾸지 않습니다. <code>ZwReadFile</code>은 <code>KiServiceInternal</code>을 거치며 KernelMode로 설정하므로 커널 버퍼를 정상 처리합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">KVA Shadow가 켜진 시스템에서 <code>IA32_LSTAR</code>가 <code>KiSystemCall64</code>가 아닌 <code>KiSystemCall64Shadow</code>를 가리키는 이유는?</p>
+  <ol class="opts">
+    <li>Shadow 버전이 더 빠르기 때문</li>
+    <li>win32k 서비스 전용 진입점이기 때문</li>
+    <li data-correct>유저 실행 중 쓰는 페이지 테이블에는 커널 대부분이 없으므로, 양쪽에 매핑된 전환 코드에서 CR3를 먼저 바꿔야 하기 때문</li>
+    <li>PatchGuard가 원본 진입점을 숨기기 때문</li>
+  </ol>
+  <div class="explain">섀도 페이지 테이블에는 <code>KVASCODE</code> 같은 최소한의 전환 코드와 데이터만 매핑됩니다. 진입 직후 커널 페이지 테이블로 CR3를 바꾼 뒤에야 본래의 <code>KiSystemCall64</code> 경로를 실행할 수 있습니다. 비용이 추가되므로 Shadow 버전이 더 느립니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>시스템 콜은 같은 스레드의 모드 전환이다. 커널은 유저 스택을 믿지 않고 스레드별 커널 스택으로 갈아탄다.</li>
+    <li>ntdll/win32u 스텁: <code>mov r10,rcx</code> → <code>mov eax,번호</code> → <code>syscall</code>. 번호는 빌드마다 다르다.</li>
+    <li><code>syscall</code>은 RCX/R11/CS/SS/RIP만 바꾸고 스택은 그대로 둔다. 진입점은 <code>IA32_LSTAR</code>, 셀렉터는 <code>IA32_STAR</code>, 끌 플래그는 <code>IA32_FMASK</code>.</li>
+    <li><code>KiSystemCall64</code>: swapgs → 커널 스택 → <code>KTRAP_FRAME</code> → 비트 12로 테이블, 하위 12비트로 인덱스 → 스택 인자 복사 → 서비스 → <code>sysretq</code>.</li>
+    <li>x64 서비스 테이블 엔트리 = (상대 오프셋 &lt;&lt; 4) | 스택 인자 수. win32k 서비스는 Shadow 디스크립터의 두 번째 테이블.</li>
+    <li>PreviousMode는 요청자 모드다. UserMode면 프로브와 접근 검사, Zw는 <code>KiServiceInternal</code>로 KernelMode를 설정한다.</li>
+    <li>예외·인터럽트는 IDT와 CPU의 자동 스택 전환을 쓰지만 결국 같은 트랩 프레임을 만든다. KVA Shadow는 모든 진입·복귀에 CR3 전환을 추가했다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const hex = (n, w) => '0x' + (n >>> 0).toString(16).toUpperCase().padStart(w || 1, '0');
+
+  // ---- 서비스 번호 디코더 ----
+  const sim = $('#svcSim');
+  const inp = $('#svcIn'), bits = $('#svcBits'), sum = $('#svcSum'), log = $('#svcLog');
+  let gui = false;
+
+  function parse(s) {
+    s = s.trim().replace(/^0x/i, '');
+    if (!/^[0-9a-f]{1,8}$/i.test(s)) return null;
+    return parseInt(s, 16) >>> 0;
+  }
+  function cells(n, from, to, cls) {
+    let h = '';
+    for (let b = from; b >= to; b--) {
+      const v = (n >>> b) & 1;
+      h += `<span class="bit ${cls}${v ? ' one' : ''}" title="비트 ${b}">${v}</span>`;
+    }
+    return h;
+  }
+  function decodeSvc() {
+    const n = parse(inp.value);
+    if (n === null) {
+      bits.innerHTML = ''; sum.innerHTML = '';
+      log.innerHTML = '<span class="bad">16진수로 입력하세요 (예: 0x6, 1001)</span>';
+      return;
+    }
+    const idx = n & 0xFFF, tbl = (n >>> 12) & 1, high = n >>> 13;
+    bits.innerHTML =
+      `<div class="g"><span class="lbl">무시</span><span class="cells">${cells(n, 15, 13, 'u')}</span></div>` +
+      `<div class="g"><span class="lbl">T</span><span class="cells">${cells(n, 12, 12, 't')}</span></div>` +
+      `<div class="g"><span class="lbl">인덱스 (비트 11–0)</span><span class="cells">${cells(n, 11, 0, 'i')}</span></div>`;
+    sum.innerHTML =
+      `<span><span class="k">EAX</span> ${hex(n, 4)}</span>` +
+      `<span><span class="k">테이블</span> <span class="tb">${tbl}</span></span>` +
+      `<span><span class="k">인덱스</span> <span class="ix">${hex(idx, 3)} (${idx})</span></span>`;
+    const L = [];
+    L.push(`<span class="dim">; KiSystemServiceStart</span>`);
+    L.push(`edi = (eax &gt;&gt; 7) &amp; 0x20 = ${hex((n >>> 7) & 0x20, 2)}  <span class="dim">→ 디스크립터의 ${tbl}번째 항목 (항목 크기 0x20)</span>`);
+    L.push(`eax = eax &amp; 0xFFF     = ${hex(idx, 3)}`);
+    if (high) L.push(`<span class="warn">비트 13 이상(${hex(high << 13)})은 디스패치 계산에 쓰이지 않고 버려집니다.</span>`);
+    if (tbl === 0) {
+      L.push(`<span class="ok">✓ ${gui ? 'KeServiceDescriptorTableShadow' : 'KeServiceDescriptorTable'}[0] → nt!KiServiceTable (ntoskrnl)</span>`);
+      L.push(`  엔트리 = KiServiceTable[${hex(idx, 3)}] → 상대 오프셋과 스택 인자 수 해석 (아래 디코더)`);
+    } else if (!gui) {
+      L.push(`<span class="warn">△ KeServiceDescriptorTable[1]은 비어 있음 (Limit = 0) → 인덱스 ≥ Limit</span>`);
+      L.push(`  win32k 테이블이 선택되었으므로 오류 대신: 스레드를 GUI 스레드로 변환`);
+      L.push(`  (win32k 스레드 정보 할당 · KTHREAD.ServiceTable ← Shadow 디스크립터)`);
+      L.push(`<span class="ok">✓ 재시도 → KeServiceDescriptorTableShadow[1] → win32k!W32pServiceTable[${hex(idx, 3)}]</span>`);
+    } else {
+      L.push(`<span class="ok">✓ KeServiceDescriptorTableShadow[1] → win32k!W32pServiceTable[${hex(idx, 3)}]</span>`);
+    }
+    L.push(`<span class="dim">인덱스가 해당 테이블의 Limit 이상이면 STATUS_INVALID_SYSTEM_SERVICE (0xC000001C) 반환</span>`);
+    log.innerHTML = L.join('\n');
+  }
+  inp.addEventListener('input', decodeSvc);
+  $$('[data-v]', sim).forEach(b => b.addEventListener('click', () => { inp.value = b.dataset.v; decodeSvc(); }));
+  $$('[data-gui]', sim).forEach(b => b.addEventListener('click', () => {
+    gui = b.dataset.gui === '1';
+    $$('[data-gui]', sim).forEach(x => x.classList.toggle('on', x === b));
+    decodeSvc();
+  }));
+  decodeSvc();
+
+  // ---- 테이블 엔트리 디코더 ----
+  const ent = $('#entIn'), elog = $('#entLog');
+  function decodeEnt() {
+    const u = parse(ent.value);
+    if (u === null) { elog.innerHTML = '<span class="bad">32비트 16진수로 입력하세요 (예: 0x02B4E705)</span>'; return; }
+    const s = u | 0;               // 부호 있는 32비트로 해석
+    const off = s >> 4;            // 산술 시프트
+    const args = u & 0xF;
+    const offStr = off < 0 ? '-0x' + (-off).toString(16).toUpperCase() : '+0x' + off.toString(16).toUpperCase();
+    const L = [];
+    L.push(`엔트리          = ${hex(u, 8)}  <span class="dim">(부호 있는 값 ${s})</span>`);
+    L.push(`엔트리 &gt;&gt; 4 (산술) = ${offStr}  <span class="dim">← 상위 28비트: KiServiceTable 기준 상대 오프셋</span>`);
+    L.push(`엔트리 &amp; 0xF     = ${args}  <span class="dim">← 스택으로 전달되는 인자 수</span>`);
+    L.push(`<span class="ok">서비스 주소 = nt!KiServiceTable ${offStr}</span>`);
+    L.push(`총 인자 수 ≥ ${4 + args} <span class="dim">(레지스터 4개는 항상 r10, rdx, r8, r9)</span> → 커널 스택으로 ${args * 8}바이트 복사`);
+    if (off < 0) L.push(`<span class="warn">음수 오프셋: 서비스 함수가 테이블보다 낮은 주소에 있음. 시프트를 논리(&gt;&gt;&gt;)로 하면 잘못된 주소가 나온다.</span>`);
+    elog.innerHTML = L.join('\n');
+  }
+  ent.addEventListener('input', decodeEnt);
+  $$('[data-e]', sim).forEach(b => b.addEventListener('click', () => { ent.value = b.dataset.e; decodeEnt(); }));
+  decodeEnt();
+})();
+</script>
+</body>
+</html>

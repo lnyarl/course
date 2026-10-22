@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V8 JIT와 최적화</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .tier { fill: var(--surface-2); stroke: var(--border); transition: fill .25s, stroke .25s; }
+  .tier.on { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+  .shape-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .shape-btns .btn { font-family: var(--mono); font-size: 12.5px; }
+  .ic-state { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+  .ic-box { flex: 1; min-width: 120px; border: 2px solid var(--border); border-radius: 10px; padding: 8px 10px; text-align: center; font-size: 13px; transition: border-color .25s, background .25s; }
+  .ic-box b { display: block; font-size: 14px; }
+  .ic-box small { color: var(--muted); }
+  .ic-box.on { border-color: var(--accent); background: var(--accent-soft); }
+  .ic-box.on.mega { border-color: var(--bad); background: var(--bad-soft); }
+  .slot { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 36px; padding: 6px 10px; background: var(--surface-2); border-radius: 8px; border: 1px dashed var(--border); font-size: 13px; }
+  .map-chip { font-family: var(--mono); font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--violet-soft); border: 1px solid var(--violet); }
+  .ek-lattice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; }
+  .ek { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-family: var(--mono); font-size: 11.5px; text-align: center; background: var(--surface-2); transition: background .25s, border-color .25s; }
+  .ek.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 700; }
+  .ek.dict { grid-column: 1 / -1; }
+  .ek-ops { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ek-ops .btn { font-family: var(--mono); font-size: 12px; }
+  .ek-seq { font-family: var(--mono); font-size: 12.5px; margin: 8px 0; min-height: 1.6em; }
+  .ek-seq .cur { color: var(--accent); font-weight: 700; }
+  .tl { position: relative; height: 34px; background: var(--surface-2); border-radius: 6px; overflow: hidden; margin: 6px 0; }
+  .tl .seg { position: absolute; top: 0; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: var(--mono); white-space: nowrap; overflow: hidden; border-right: 1px solid var(--bg); }
+  .tl .mark { position: absolute; top: 0; height: 100%; width: 2px; background: var(--bad); }
+  .tl .mark::after { content: "deopt"; position: absolute; top: -2px; left: 4px; font-size: 10px; color: var(--bad); font-weight: 700; }
+  .tree-svg text { font-family: var(--mono); font-size: 11.5px; }
+  .tree-svg .mapnode { fill: var(--surface); stroke: var(--violet); }
+  .tree-svg .mapnode.root { fill: var(--violet-soft); }
+  .tree-svg .mapnode.dict { fill: var(--bad-soft); stroke: var(--bad); }
+  .obj-list { font-family: var(--mono); font-size: 12.5px; display: grid; gap: 3px; margin-top: 8px; }
+  .obj-list span.m { color: var(--violet); font-weight: 700; }
+</style>
+</head>
+<body data-chapter="04">
+<main>
+  <header class="chapter-head">
+    <span class="label">런타임 내부 · Chapter 04</span>
+    <h1>V8 JIT와 최적화·역최적화</h1>
+    <p class="lead">같은 JavaScript 함수가 어떤 때는 C에 가까운 속도로, 어떤 때는 100배 느리게 돕니다. 그 차이를 만드는 것은 코드가 아니라 <b>V8이 코드에 대해 무엇을 "관찰"했는가</b>입니다. 이 장은 V8의 4단계 실행 파이프라인, 관찰 결과가 저장되는 피드백 벡터와 인라인 캐시, 객체 모양(히든 클래스)과 배열 종류(elements kind), 그리고 최적화가 무효화되는 역최적화를 다룹니다. 10장의 CPU 프로파일을 읽는 데 필요한 전제 지식입니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>Ignition → Sparkplug → Maglev → TurboFan 파이프라인에서 각 티어가 무엇을 입력으로 받아 무엇을 만드는지, 언제 승격·강등되는지 설명할 수 있다.</li>
+      <li>히든 클래스(Map) 전이와 인라인 캐시 상태(mono/poly/mega)를 코드에서 예측하고, 피드백이 오염되는 패턴을 식별할 수 있다.</li>
+      <li>배열의 elements kind 전이 규칙을 알고 홀(hole)·타입 혼합이 만드는 비용을 설명할 수 있다.</li>
+      <li><code>--trace-opt</code>/<code>--trace-deopt</code>/<code>%GetOptimizationStatus</code>로 실제 최적화 상태를 관찰하고 역최적화 원인을 읽을 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 티어가 네 개인가</a></li>
+    <li><a href="#s2">Ignition: 바이트코드와 레지스터 머신</a></li>
+    <li><a href="#s3">관찰의 저장소: 피드백 벡터와 인라인 캐시</a></li>
+    <li><a href="#s4">히든 클래스(Map)와 전이 트리</a></li>
+    <li><a href="#s5">배열의 종류: elements kinds</a></li>
+    <li><a href="#s6">승격과 역최적화</a></li>
+    <li><a href="#s7">인라이닝과 그 한계</a></li>
+    <li><a href="#s8">관찰 도구와 Node 특이점</a></li>
+    <li><a href="#s9">실전 규칙과 신화 정리</a></li>
+    <li><a href="#s10">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 왜 티어가 네 개인가</h2>
+    <p>컴파일에는 비용이 듭니다. 한 번만 실행될 코드를 공들여 최적화하면 손해이고, 백만 번 실행될 코드를 인터프리터로 돌리면 손해입니다. 어느 코드가 어느 쪽인지는 <b>실행해 보기 전에는 모릅니다</b>. 그래서 V8은 "일단 싸게 시작하고, 뜨거워진 코드만 점점 비싸게 컴파일하는" 적응형 구조를 택했고, 티어가 하나 늘 때마다 그 사이의 틈을 메워 왔습니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="V8 실행 파이프라인">
+        <defs><marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="10" y="20" width="130" height="64" rx="10" class="box"/><text x="75" y="46" text-anchor="middle" font-weight="700">소스 코드</text><text x="75" y="66" text-anchor="middle" font-size="11.5" class="muted">파서 → AST</text>
+        <path d="M140 52 H180" class="line" marker-end="url(#a4)"/>
+        <rect x="180" y="20" width="150" height="64" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="255" y="40" text-anchor="middle" font-weight="700">Ignition</text><text x="255" y="58" text-anchor="middle" font-size="11.5">인터프리터 · 바이트코드</text><text x="255" y="74" text-anchor="middle" font-size="11" class="muted">즉시 시작 · 피드백 수집</text>
+        <path d="M330 52 H370" class="line" marker-end="url(#a4)"/>
+        <rect x="370" y="20" width="150" height="64" rx="10" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="445" y="40" text-anchor="middle" font-weight="700">Sparkplug</text><text x="445" y="58" text-anchor="middle" font-size="11.5">베이스라인 · 비최적화</text><text x="445" y="74" text-anchor="middle" font-size="11" class="muted">바이트코드→기계어 1:1</text>
+        <path d="M520 52 H560" class="line" marker-end="url(#a4)"/>
+        <rect x="560" y="20" width="150" height="64" rx="10" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="635" y="40" text-anchor="middle" font-weight="700">Maglev</text><text x="635" y="58" text-anchor="middle" font-size="11.5">중간 최적화 (Node 22+)</text><text x="635" y="74" text-anchor="middle" font-size="11" class="muted">피드백 기반 · 빠른 컴파일</text>
+        <path d="M710 52 H750" class="line" marker-end="url(#a4)"/>
+        <rect x="750" y="20" width="120" height="64" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="810" y="40" text-anchor="middle" font-weight="700">TurboFan</text><text x="810" y="58" text-anchor="middle" font-size="11.5">최상위 최적화</text><text x="810" y="74" text-anchor="middle" font-size="11" class="muted">인라이닝 · 탈출 분석</text>
+        <!-- deopt arrows -->
+        <path d="M810 84 C 810 150, 255 150, 255 84" class="line" stroke-dasharray="5 3" style="stroke:var(--bad)" marker-end="url(#a4)"/>
+        <text x="530" y="128" text-anchor="middle" font-size="12" style="fill:var(--bad)" font-weight="700">역최적화(deopt): 가정이 깨지면 바이트코드로 복귀</text>
+        <path d="M635 84 C 635 118, 255 118, 255 84" class="line" stroke-dasharray="5 3" style="stroke:var(--bad)" marker-end="url(#a4)"/>
+        <!-- properties table -->
+        <g font-size="11.5">
+          <text x="20" y="190" class="muted">컴파일 속도</text>
+          <text x="255" y="190" text-anchor="middle">즉시</text><text x="445" y="190" text-anchor="middle">매우 빠름</text><text x="635" y="190" text-anchor="middle">빠름 (~10×TF)</text><text x="810" y="190" text-anchor="middle">느림</text>
+          <text x="20" y="215" class="muted">실행 속도</text>
+          <text x="255" y="215" text-anchor="middle">1×</text><text x="445" y="215" text-anchor="middle">~1.5–2×</text><text x="635" y="215" text-anchor="middle">~5–10×</text><text x="810" y="215" text-anchor="middle">~10–100×</text>
+          <text x="20" y="240" class="muted">피드백 의존</text>
+          <text x="255" y="240" text-anchor="middle">수집함</text><text x="445" y="240" text-anchor="middle">없음 (deopt 없음)</text><text x="635" y="240" text-anchor="middle">있음 → deopt 가능</text><text x="810" y="240" text-anchor="middle">있음 → deopt 가능</text>
+          <text x="20" y="265" class="muted">도입</text>
+          <text x="255" y="265" text-anchor="middle">V8 5.9 (Node 8)</text><text x="445" y="265" text-anchor="middle">V8 9.1 (Node 16)</text><text x="635" y="265" text-anchor="middle">V8 11.7+ 기본, Node 22</text><text x="810" y="265" text-anchor="middle">V8 5.9 (Node 8)</text>
+        </g>
+        <text x="440" y="292" text-anchor="middle" font-size="11" class="muted">배율은 워크로드마다 크게 다르며 상대적 감각을 위한 값입니다.</text>
+      </svg>
+      <figcaption>오른쪽으로 갈수록 컴파일은 비싸고 실행은 빠릅니다. Maglev와 TurboFan은 피드백에 기반한 <em>추측</em>을 하므로, 추측이 틀리면 왼쪽으로 되돌아갑니다(역최적화).</figcaption>
+    </figure>
+    <p>각 티어의 역할을 한 줄씩 정리하면:</p>
+    <ul>
+      <li><b>Ignition</b>: 파싱 직후 바이트코드를 만들어 바로 실행. 실행하면서 "이 자리에서 본 객체의 Map은 무엇이었나, 이 덧셈의 피연산자는 Smi였나"를 <b>피드백 벡터</b>에 기록합니다. 모든 상위 티어는 이 기록을 먹고 삽니다.</li>
+      <li><b>Sparkplug</b>: 바이트코드를 거의 1:1로 기계어로 "번역"만 합니다. 추측이 없으므로 deopt도 없습니다. 인터프리터의 디스패치 오버헤드만 제거해서, "뜨겁지만 아직 피드백이 안정되지 않은" 구간을 메웁니다.</li>
+      <li><b>Maglev</b>: 피드백을 써서 타입 특화·간단한 인라이닝을 하되 TurboFan보다 훨씬 빨리 컴파일합니다. 실무 코드의 대부분(짧게 뜨거운 함수)은 Maglev에서 끝납니다. Node 22(V8 12.4)부터 기본 활성입니다.</li>
+      <li><b>TurboFan</b>: Sea-of-nodes IR 위에서(최근은 Turboshaft IR로 이행 중) 공격적 인라이닝, 탈출 분석(객체 할당 제거), 루프 최적화, 범위 분석을 수행합니다. 가장 뜨거운 소수 함수를 위한 것입니다.</li>
+    </ul>
+    <p>승격은 호출 횟수와 루프 반복으로 소모되는 <b>interrupt budget</b>이 바닥날 때 검토되며, 뜨거운 루프 안에서는 함수 호출이 끝나기를 기다리지 않고 실행 중인 프레임을 교체하는 <b>OSR(On-Stack Replacement)</b>이 일어납니다. 컴파일은 기본적으로 <b>백그라운드 스레드(1장의 V8 플랫폼 워커)에서 동시(concurrent)</b>에 수행되고, 완료되면 다음 호출부터 새 코드가 쓰입니다.</p>
+  </section>
+
+  <section id="s2">
+    <h2>2. Ignition: 바이트코드와 레지스터 머신</h2>
+    <p>Ignition은 레지스터 머신입니다. 누산기(accumulator) 하나와 함수별 레지스터 파일(<code>r0, r1…</code>)이 있고, 인자는 <code>a0, a1…</code>로 접근합니다. 실제 출력을 보겠습니다.</p>
+<pre><code>$ node --print-bytecode --print-bytecode-filter=add -e "function add(a,b){return a+b} add(1,2)"
+[generated bytecode for function: add]
+Bytecode length: 6
+Parameter count 3          ← this + a + b
+Register count 0
+   0 : Ldar a1              ← b 를 누산기에 로드
+   2 : Add a0, [0]          ← 누산기 += a.  [0]은 피드백 벡터 슬롯 0
+   5 : Return</code></pre>
+    <p>세 가지를 눈여겨보세요. (1) <code>Add a0, [0]</code>의 <code>[0]</code>이 <b>피드백 슬롯 인덱스</b>입니다. Ignition은 이 덧셈을 실행할 때마다 슬롯 0에 "둘 다 Smi였다" 같은 힌트를 갱신합니다. (2) 바이트코드는 <b>함수가 처음 호출될 때 지연 컴파일</b>됩니다(파싱은 pre-parse로 가볍게 한 번 하고, 호출 시 full parse). 거대한 모듈을 로드해도 호출되지 않은 함수는 바이트코드가 없습니다. (3) 바이트코드는 힙에 있고 GC 대상입니다. V8은 오래 실행되지 않은 함수의 바이트코드를 <b>flush</b>(버림)하고 재호출 시 재컴파일할 수 있습니다. 메모리 압박이 큰 환경에서 "가끔 호출되는 함수가 느린" 이유 중 하나입니다.</p>
+    <p>바이트코드의 길이는 뒤에 나올 인라이닝 판단의 기준이기도 합니다. 함수가 "작다"는 말은 소스 줄 수가 아니라 <b>바이트코드 바이트 수</b>로 정의됩니다.</p>
+  </section>
+
+  <section id="s3">
+    <h2>3. 관찰의 저장소: 피드백 벡터와 인라인 캐시</h2>
+    <p>함수마다 <b>FeedbackVector</b>라는 배열이 하나 붙습니다. 바이트코드에서 "타입에 따라 동작이 달라질 수 있는 지점"(프로퍼티 접근, 호출, 산술 연산, <code>instanceof</code> 등)마다 슬롯이 하나씩 배정됩니다. 프로퍼티 접근 슬롯이 바로 <b>인라인 캐시(IC)</b>입니다.</p>
+    <p><code>o.x</code>를 실행하려면 원칙적으로 o의 Map을 보고, 디스크립터 배열에서 'x'를 찾아, 오프셋을 알아내 메모리를 읽어야 합니다. IC는 "지난번에 Map M이 왔고 x는 오프셋 12였다"를 기억해 두고, 이번 객체의 Map이 M이면 조회를 건너뛰고 바로 오프셋 12를 읽습니다. 상태는 네 가지입니다.</p>
+    <div class="widget">
+      <div class="w-title">인라인 캐시 상태 시뮬레이터</div>
+      <div class="w-desc"><code>function getX(o) { return o.x; }</code>를 서로 다른 모양(Map)의 객체로 호출해 보세요. 같은 모양은 몇 번 넣어도 상태가 바뀌지 않고, 서로 다른 Map이 5개째가 되는 순간 메가모픽으로 떨어집니다.</div>
+      <div class="shape-btns" id="ic-btns"></div>
+      <div class="ic-state" id="ic-states">
+        <div class="ic-box" data-s="uninit"><b>Uninitialized</b><small>아직 실행 안 됨</small></div>
+        <div class="ic-box" data-s="mono"><b>Monomorphic</b><small>Map 1개 · 최고 속도</small></div>
+        <div class="ic-box" data-s="poly"><b>Polymorphic</b><small>Map 2~4개 · 선형 비교</small></div>
+        <div class="ic-box mega" data-s="mega"><b>Megamorphic</b><small>5개+ · 전역 스텁 캐시(해시)</small></div>
+      </div>
+      <div class="slot" id="ic-slot"><span class="muted">피드백 슬롯 [0]: (비어 있음)</span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">호출 수</div><div class="v" id="ic-calls">0</div></div>
+        <div class="stat"><div class="k">상대 비용(접근당)</div><div class="v" id="ic-cost">-</div></div>
+        <div class="stat"><div class="k">TurboFan이 할 수 있는 것</div><div class="v" id="ic-tf" style="font-size:14px">-</div></div>
+      </div>
+      <div class="controls"><button class="btn" id="ic-reset">리셋</button><span style="font-size:13px;color:var(--muted)">※ 메가모픽은 되돌아가지 않습니다. 함수가 재컴파일되어 피드백이 초기화될 때만 리셋됩니다.</span></div>
+    </div>
+    <p>비용 감각: 모노모픽은 Map 비교 1회 + 고정 오프셋 로드(몇 사이클). 폴리모픽은 최대 4개 Map을 순서대로 비교. 메가모픽은 전역 StubCache를 (Map, 이름) 해시로 조회하며, 그래도 없으면 런타임 조회(수백 사이클). 더 중요한 것은 셋째 통계입니다. <b>TurboFan은 모노/폴리모픽 피드백만 특화 코드로 바꿀 수 있습니다.</b> 메가모픽 접근은 최적화 코드 안에서도 일반 조회로 남고, 인라이닝 대상에서도 빠집니다.</p>
+    <div class="callout warn"><span class="title">피드백은 "함수의 자리"에 붙는다, 객체에 붙지 않는다</span>
+      같은 <code>o.x</code>라도 다른 함수 안에 있으면 다른 슬롯입니다. 그래서 "범용 유틸리티 함수"가 위험합니다. 예를 들어 <code>function get(obj, key) { return obj[key]; }</code>를 코드베이스 전체가 공유하면, 그 한 슬롯에 수십 개의 Map이 모여 메가모픽이 되고, 그 함수를 호출하는 모든 핫패스가 느려집니다. lodash의 <code>_.get</code>, 공용 직렬화기, ORM의 필드 접근기가 전형적인 자리입니다.
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. 히든 클래스(Map)와 전이 트리</h2>
+    <p>JavaScript 객체는 사전(dictionary)이지만, V8은 가능한 한 <b>C 구조체처럼</b> 다루려 합니다. 객체마다 <b>Map</b>(히든 클래스, 다른 엔진의 Shape)을 가리키는 포인터가 있고, Map은 "어떤 프로퍼티가 어떤 순서로 어떤 오프셋에 있는가"(DescriptorArray)와 프로토타입, elements kind를 담습니다. <b>같은 순서로 같은 프로퍼티를 추가한 객체는 같은 Map을 공유</b>하고, Map들은 "프로퍼티 추가"를 간선으로 하는 <b>전이 트리</b>를 이룹니다.</p>
+    <div class="widget">
+      <div class="w-title">히든 클래스 전이 트리 빌더</div>
+      <div class="w-desc">한 줄에 객체 하나. 프로퍼티를 추가하는 순서대로 쉼표로 적으세요(<code>x,y</code> = <code>o={}; o.x=..; o.y=..</code> 또는 리터럴 <code>{x, y}</code>). <code>-x</code>는 <code>delete o.x</code>. 트리에서 몇 개의 Map이 만들어지고 어떤 객체들이 같은 Map을 공유하는지 보세요.</div>
+      <div class="controls">
+        <textarea id="hc-in" rows="6" style="width:100%;font-family:var(--mono);font-size:12.5px">x,y
+x,y
+y,x
+x,y,z
+x,z
+x,y,-y
+a,b,c,d</textarea>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="hc-go">트리 그리기</button>
+        <button class="btn" data-p="same">예제: 생성자 통일</button>
+        <button class="btn" data-p="cond">예제: 조건부 필드</button>
+        <button class="btn" data-p="del">예제: delete</button>
+      </div>
+      <div class="stage"><svg class="diagram tree-svg" id="hc-svg" viewBox="0 0 880 300"></svg></div>
+      <div class="stat-row"><div class="stat"><div class="k">생성된 Map 수</div><div class="v" id="hc-maps">-</div></div><div class="stat"><div class="k">객체 수</div><div class="v" id="hc-objs">-</div></div><div class="stat"><div class="k">dictionary 모드 객체</div><div class="v" id="hc-dict">-</div></div></div>
+      <div class="obj-list" id="hc-list"></div>
+    </div>
+    <h3>4.1 Map이 갈라지는 순간들</h3>
+    <ul>
+      <li><b>추가 순서가 다르면 다른 Map.</b> <code>{x:1, y:2}</code>와 <code>{y:2, x:1}</code>은 형제가 아니라 다른 가지입니다. 리터럴로 만들면 순서가 고정되므로 생성자나 리터럴로 <b>모든 필드를 한 곳에서 같은 순서로</b> 초기화하는 것이 규칙입니다.</li>
+      <li><b>값의 표현(representation)도 Map에 기록됩니다.</b> 필드 x에 처음 Smi(정수)를 넣었다가 나중에 1.5를 넣으면 "x는 Double"로 <b>Map 자체가 일반화</b>되고, 이미 최적화된 코드는 그 가정이 깨져 deopt됩니다. <code>null</code>→객체도 마찬가지입니다(초기값은 <code>undefined</code>가 아닌 "같은 타입의 기본값"이 좋습니다. 단 이 규칙은 핫패스에서만 의미가 있습니다).</li>
+      <li><b>In-object 슬롯 수는 생성 시 추정됩니다.</b> 생성자 본문을 보고 "이 객체는 필드 N개"로 잡아 두며(slack tracking), 그보다 많이 추가하면 out-of-object 백킹 스토어(PropertyArray)로 밀려 간접 참조가 하나 늘어납니다.</li>
+      <li><b>dictionary(slow) 모드로 떨어지는 조건</b>: <code>delete</code>(마지막에 추가한 프로퍼티를 지우는 경우만 예외적으로 fast 유지), 프로퍼티가 매우 많아짐(한도 1020개, <code>kMaxNumberOfDescriptors</code>), 전이 트리가 지나치게 분기함, 프로퍼티를 계산된 이름으로 대량 추가(객체를 해시맵처럼 쓰는 경우). 느린 모드 객체의 프로퍼티 접근은 해시 조회이고 IC 혜택이 거의 없습니다. 해시맵이 필요하면 <code>Map</code>을 쓰세요.</li>
+      <li><code>Object.freeze</code>, <code>Object.defineProperty</code>(비기본 속성), 접근자(getter/setter) 추가, <code>__proto__</code> 변경도 Map 전이를 일으킵니다. 특히 <b>프로토타입 변경은 그 프로토타입을 쓰는 모든 IC를 무효화</b>하므로 핫패스에서 절대 하지 않습니다.</li>
+    </ul>
+    <p>클래스를 쓰면 이 규칙이 자연스럽게 지켜집니다. 클래스 필드와 생성자가 같은 순서로 초기화하기 때문입니다. TypeScript의 <code>?</code> 옵셔널 필드를 조건부로 할당하는 코드가 흔한 위반입니다.</p>
+  </section>
+
+  <section id="s5">
+    <h2>5. 배열의 종류: elements kinds</h2>
+    <p>배열의 요소는 프로퍼티와 별도의 저장소(elements)에 있고, 그 저장소의 "종류"도 Map에 기록됩니다. V8은 요소 타입이 균일할수록 더 빠른 코드를 만듭니다. 종류는 격자(lattice)를 이루며 <b>전이는 한 방향(더 일반적인 쪽)으로만</b> 갑니다. 한번 일반화되면 되돌아가지 않습니다.</p>
+    <div class="widget">
+      <div class="w-title">elements kind 전이 스텝 애니메이션</div>
+      <div class="w-desc">배열 연산을 순서대로 추가한 뒤 재생하세요. 각 단계에서 배열이 어떤 종류로 바뀌는지와 그 이유를 보여줍니다.</div>
+      <div class="ek-ops" id="ek-ops"></div>
+      <div class="ek-seq" id="ek-seq"></div>
+      <div class="controls"><button class="btn" id="ek-clear">시퀀스 비우기</button><button class="btn" data-p="1">예제: 숫자 섞기</button><button class="btn" data-p="2">예제: new Array(n)</button><button class="btn" data-p="3">예제: delete</button></div>
+      <div class="ek-lattice" id="ek-lattice">
+        <div class="ek" data-k="ps">PACKED_SMI_ELEMENTS<br><small>정수만, 빈칸 없음</small></div>
+        <div class="ek" data-k="pd">PACKED_DOUBLE_ELEMENTS<br><small>숫자(실수 포함), 언박싱 저장</small></div>
+        <div class="ek" data-k="pe">PACKED_ELEMENTS<br><small>아무 값, 포인터 저장</small></div>
+        <div class="ek" data-k="hs">HOLEY_SMI_ELEMENTS<br><small>정수 + 빈칸(hole)</small></div>
+        <div class="ek" data-k="hd">HOLEY_DOUBLE_ELEMENTS<br><small>실수 + 빈칸</small></div>
+        <div class="ek" data-k="he">HOLEY_ELEMENTS<br><small>아무 값 + 빈칸</small></div>
+        <div class="ek dict" data-k="dict">DICTIONARY_ELEMENTS<br><small>희소 배열: 해시 테이블. 인덱스 접근마다 해시 조회</small></div>
+      </div>
+      <div id="ek-step"></div>
+    </div>
+    <h3>5.1 왜 hole이 비싼가</h3>
+    <p><code>a[i]</code>를 읽을 때 PACKED이면 범위 검사 후 바로 로드합니다. HOLEY이면 로드한 값이 <code>the_hole</code>(V8 내부 센티널)인지 검사하고, 홀이면 <b>프로토타입 체인(<code>Array.prototype</code> → <code>Object.prototype</code>)을 올라가며 그 인덱스를 찾아야</b> 합니다(누군가 <code>Array.prototype[3] = 'x'</code>를 했을 수 있으니까). V8은 프로토타입 체인에 인덱스 프로퍼티가 없다는 사실을 "protector"로 캐시해 두어 빠른 경로를 유지하지만, 홀 검사 자체는 남습니다. 또 <code>new Array(n)</code>으로 만든 배열은 처음부터 HOLEY입니다. 크기를 미리 잡는 최적화가 오히려 손해일 수 있는 이유입니다(큰 배열을 채우는 경우에는 재할당 비용이 더 커서 여전히 이득인 경우도 있으니 측정하세요).</p>
+    <p><b>Double 배열</b>은 실수를 언박싱해 8바이트 연속으로 저장하므로 수치 계산에 유리합니다. 그러나 거기에 문자열이나 객체를 하나라도 넣으면 PACKED_ELEMENTS로 일반화되며 모든 실수가 <b>HeapNumber로 박싱</b>되어 재할당됩니다. 대량 수치 데이터는 <code>Float64Array</code> 같은 TypedArray가 종류 전이 자체를 없애 주는 정답입니다.</p>
+    <p><b>Node 특이점</b>: Node의 V8은 포인터 압축 없이 빌드되므로 Smi는 <b>32비트 부호 정수</b> 범위입니다(Chrome은 31비트). <code>2**31</code>부터는 HeapNumber가 되어 배열이 DOUBLE로 전이합니다. 타임스탬프(ms)는 Smi 범위를 넘으므로 <code>[Date.now(), …]</code>는 처음부터 DOUBLE 배열입니다.</p>
+  </section>
+
+  <section id="s6">
+    <h2>6. 승격과 역최적화</h2>
+    <div class="widget">
+      <div class="w-title">티어 승격 타임라인 시뮬레이터</div>
+      <div class="w-desc">함수가 N번 호출되는 동안 어느 티어에서 실행되는지, 중간에 피드백이 깨지면(예: 다른 Map 유입) 어떻게 되돌아가 다시 올라오는지 봅니다. 임계값은 개념적 값입니다(실제는 interrupt budget = 바이트코드 크기 × 호출/루프 가중치로 계산되며 V8 버전마다 다름. V8 14 기준 <code>--invocation-count-for-maglev=400</code>, <code>--invocation-count-for-turbofan=3000</code>).</div>
+      <div class="controls">
+        <label>총 호출 수 <input type="range" id="tl-n" min="100" max="20000" step="100" value="8000"> <span id="tl-n-v">8000</span></label>
+        <label>Sparkplug 임계 <input type="number" id="tl-sp" value="8" min="1" style="width:70px"></label>
+        <label>Maglev 임계 <input type="number" id="tl-mg" value="400" min="1" style="width:70px"></label>
+        <label>TurboFan 임계 <input type="number" id="tl-tf" value="3000" min="1" style="width:70px"></label>
+      </div>
+      <div class="controls">
+        <label>deopt 발생 호출 번호 (0=없음) <input type="number" id="tl-deopt" value="5000" min="0" style="width:90px"></label>
+        <label>재승격 대기 (피드백 안정화) <input type="number" id="tl-wait" value="500" min="0" style="width:70px"></label>
+        <label><input type="checkbox" id="tl-nomaglev"> --no-maglev (Node 20 이하처럼)</label>
+      </div>
+      <div class="tl" id="tl-bar"></div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>호출 1</span><span id="tl-mid"></span><span id="tl-end"></span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">Ignition 비율</div><div class="v" id="tl-ig">-</div></div>
+        <div class="stat"><div class="k">최적화 코드 비율</div><div class="v" id="tl-opt">-</div></div>
+        <div class="stat"><div class="k">상대 총 실행 시간</div><div class="v" id="tl-time">-</div></div>
+      </div>
+      <div id="tl-note" style="font-size:13.5px;color:var(--muted)"></div>
+    </div>
+
+    <h3>6.1 역최적화의 종류와 원인</h3>
+    <p>최적화 코드는 "가정"을 코드에 박아 넣고, 가정 검사(check)가 실패하면 <b>그 지점의 상태를 인터프리터 프레임으로 재구성</b>해 Ignition으로 빠져나옵니다. 이것이 deopt이고, 비용은 프레임 변환 자체(수 µs)보다 <b>최적화 코드를 잃고 다시 올라와야 한다는 것</b>입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>종류</th><th>언제</th><th>예</th></tr>
+      <tr><td><b>eager</b></td><td>최적화 코드 실행 중 검사 실패. 즉시 탈출</td><td><code>wrong map</code>(다른 Map 유입), <code>not a Smi</code>(정수 가정 깨짐), <code>out of bounds</code>, <code>hole</code>, <code>wrong call target</code></td></tr>
+      <tr><td><b>lazy</b></td><td>코드는 멀쩡하지만 의존하던 외부 가정이 바뀜. 다음 복귀 시점에 탈출</td><td>인라인한 함수의 프로토타입이 변경됨, 의존하던 전역 상수가 바뀜, Map이 deprecated됨(필드 표현 일반화)</td></tr>
+      <tr><td><b>soft</b></td><td>피드백이 부족해 추측 불가. 더 수집하러 내려감</td><td><code>insufficient type feedback</code>: 아직 실행된 적 없는 분기가 최적화 코드에서 처음 실행됨</td></tr>
+    </table></div>
+<pre><code>$ node --trace-deopt app.js
+[bailout (kind: deopt-eager, reason: wrong map): begin. deoptimizing 0x… &lt;JSFunction getX&gt;,
+  0x… &lt;Code TURBOFAN_JS&gt;, opt id 0, bytecode offset 0, deopt exit 1, …]
+                      ↑ 종류          ↑ 원인                                   ↑ 바이트코드 위치</code></pre>
+    <p>원인 문자열이 곧 진단입니다. <code>wrong map</code>이면 4절(모양 불일치), <code>not a Smi / not a Number</code>면 5절(타입 섞임)이나 필드 표현 변화, <code>hole</code>이면 홀 배열, <code>insufficient type feedback</code>이면 콜드 분기가 뒤늦게 실행된 것(한 번은 정상). 같은 함수가 <b>반복적으로</b> deopt되면 V8은 결국 그 함수의 최적화를 포기합니다(deopt loop 방지). <code>--trace-opt</code>에서 더 이상 marking이 안 보이면 그 상태입니다.</p>
+  </section>
+
+  <section id="s7">
+    <h2>7. 인라이닝과 그 한계</h2>
+    <p>TurboFan 최적화의 대부분은 인라이닝 이후에 가능해집니다. 호출을 본문으로 치환해야 상수 전파, 탈출 분석(임시 객체 할당 제거), 범위 검사 제거가 함수 경계를 넘어 작동하기 때문입니다. 따라서 "인라이닝이 안 되는 이유"가 곧 "최적화가 안 되는 이유"입니다.</p>
+    <ul>
+      <li><b>크기 한도</b>: 피호출 함수 바이트코드 ≤ <code>--max-inlined-bytecode-size</code>(기본 460바이트), 한 함수에 누적 ≤ <code>--max-inlined-bytecode-size-cumulative</code>(기본 920). 뜨거운 작은 함수 여러 개를 호출하는 함수는 뒤쪽 호출이 누적 한도에 걸립니다.</li>
+      <li><b>호출 대상이 하나여야</b>: 호출 지점의 피드백이 모노모픽(같은 함수)이거나 소수 폴리모픽이어야 합니다. 콜백을 받는 범용 고차 함수(<code>arr.map(fn)</code>의 내부, 이벤트 에미터의 <code>emit</code>)는 대상이 수십 개라 인라이닝되지 않습니다. 단 <code>Array.prototype.map/forEach/reduce</code> 등은 TurboFan이 빌트인 자체를 인라이닝하고, 그 안의 콜백도 호출 지점이 모노모픽이면 함께 인라이닝합니다.</li>
+      <li><b>인라이닝 불가 대상</b>: 일부 네이티브 바인딩 호출, <code>eval</code>/<code>with</code>를 포함한 함수, 제너레이터·async 함수의 일부 경로, 거대 함수.</li>
+      <li>관찰: <code>--trace-turbo-inlining</code>으로 어떤 호출이 왜 인라이닝되지 않았는지 출력됩니다.</li>
+    </ul>
+    <div class="callout tip"><span class="title">인라이닝 한도 때문에 "작은 함수로 쪼개기"가 항상 이득은 아니다</span>
+      핫 루프에서 유틸 함수 10개를 호출하면 누적 920바이트 한도에 걸려 뒤쪽은 실제 call이 됩니다. 반대로 함수 하나가 너무 크면(수천 바이트) 그 자체가 최적화 대상에서 제외되기도 합니다. 프로파일(10장)로 핫패스를 확인한 뒤 그 경로만 조정하세요. 코드베이스 전체에 적용할 규칙이 아닙니다.
+    </div>
+  </section>
+
+  <section id="s8">
+    <h2>8. 관찰 도구와 Node 특이점</h2>
+    <div class="tabs">
+      <div class="tab-bar"><button class="tab" data-tab="a">--trace-opt / --trace-deopt</button><button class="tab" data-tab="b">%GetOptimizationStatus</button><button class="tab" data-tab="c">바이트코드·IC 로그</button><button class="tab" data-tab="d">플래그 제어</button></div>
+      <div class="tab-pane" data-tab="a"><pre><code>$ node --trace-opt --trace-deopt app.js 2&gt;&amp;1 | grep -E "sum|getX"
+[marking 0x… &lt;JSFunction sum&gt; for optimization to MAGLEV, ConcurrencyMode::kConcurrent, reason: hot and stable]
+[compiling method 0x… &lt;JSFunction sum&gt; (target MAGLEV), mode: ConcurrencyMode::kConcurrent]
+[completed compiling 0x… &lt;JSFunction sum&gt; (target MAGLEV) - took 0.1, 0.8, 0.0 ms]
+[marking 0x… &lt;JSFunction sum&gt; for optimization to TURBOFAN, …, reason: hot and stable]
+[bailout (kind: deopt-eager, reason: wrong map): begin. deoptimizing … &lt;JSFunction sum&gt; …]
+
+# 특정 함수만: --trace-opt-verbose, 출력이 많으면 grep. 프로덕션에서는 짧은 구간만 켠다.</code></pre></div>
+      <div class="tab-pane" data-tab="b"><pre><code>// --allow-natives-syntax 필요. 테스트/벤치마크 전용 (프로덕션 금지)
+function getX(o) { return o.x; }
+%PrepareFunctionForOptimization(getX);   // 피드백 벡터 확보 (없으면 최적화가 거부됨)
+getX({ x: 1 }); getX({ x: 1 });          // 피드백 수집
+%OptimizeFunctionOnNextCall(getX);        // 다음 호출 때 최적화 (기본 Maglev 또는 TurboFan: 버전에 따라)
+getX({ x: 1 });
+console.log((%GetOptimizationStatus(getX)).toString(2));
+// 비트 (V8 runtime-test.cc, 버전 간 변동 가능):
+//  1 함수임   2 never optimize   4 always optimize   8 maybe deopted
+// 16 optimized(TurboFan)   32 Maglev 코드   64 TurboFan 코드   128 interpreted
+getX({ y: 2, x: 1 });                     // 다른 Map → wrong map deopt
+console.log((%GetOptimizationStatus(getX)).toString(2)); // 16/32 비트가 사라짐</code></pre>
+      <p>벤치마크에서 "최적화가 된 상태"를 보장하려면 이 네이티브 구문이 가장 확실합니다. 단 <code>--allow-natives-syntax</code>는 파서를 바꾸므로 프로덕션 플래그에 절대 넣지 마세요.</p></div>
+      <div class="tab-pane" data-tab="c"><pre><code>$ node --print-bytecode --print-bytecode-filter=함수이름 app.js   # Ignition 바이트코드
+$ node --log-ic app.js &amp;&amp; node v8/tools/ic-processor v8.log         # IC 전이 로그 (V8 소스의 도구 필요)
+$ node --print-opt-code --code-comments app.js                       # 최적화된 기계어 (매우 많음)
+$ node --cpu-prof app.js                                             # 10장: 어떤 함수가 뜨거운가가 먼저</code></pre></div>
+      <div class="tab-pane" data-tab="d"><pre><code>$ node --no-opt app.js          # Maglev·TurboFan 끔: 성능 차이로 "최적화 의존도" 측정
+$ node --no-maglev app.js       # Maglev만 끔 (Node 20 이하 동작 재현)
+$ node --always-sparkplug app.js
+$ node --jitless app.js         # JIT 전면 금지(인터프리터만). 보안 격리 환경·메모리 절약용. WASM 불가
+$ node --max-inlined-bytecode-size=1000 app.js   # 인라이닝 한도 조정 (측정 없이 바꾸지 말 것)
+
+// 런타임에서 (프로세스 초기에만 안전)
+require('node:v8').setFlagsFromString('--no-maglev');</code></pre></div>
+    </div>
+    <h3>Node에서만 신경 쓸 것</h3>
+    <ul>
+      <li><b>포인터 압축 없음</b>: Smi 32비트, 객체 포인터 8바이트. Chrome 수치(Smi 31비트, 힙 4GB 캡)와 다릅니다. 힙 상한은 <code>--max-old-space-size</code>로 수 GB 이상 가능(5장).</li>
+      <li><b>백그라운드 컴파일 스레드</b>: 최적화 컴파일은 V8 플랫폼 워커에서 돕니다. 컨테이너 CPU 할당량이 1 vCPU면 메인 스레드와 경쟁합니다. 부팅 직후 CPU 스파이크의 일부는 JIT 컴파일입니다.</li>
+      <li><b>장기 실행 프로세스</b>: 피드백은 프로세스 수명 내내 누적됩니다. 부팅 시 한 번 실행되는 경로가 핫 함수의 피드백을 오염시키면(예: 마이그레이션 코드가 같은 유틸을 다른 Map으로 호출) 그 함수는 영원히 폴리모픽입니다. 벤치마크는 항상 워밍업 후 측정하고, 프로덕션 프로파일은 부팅 후 충분히 지난 시점에 뜹니다.</li>
+    </ul>
+  </section>
+
+  <section id="s9">
+    <h2>9. 실전 규칙과 신화 정리</h2>
+    <h3>지키면 이득인 것 (핫패스 한정)</h3>
+    <ul class="checklist">
+      <li>객체는 생성자/리터럴에서 <b>모든 필드를 같은 순서로</b> 초기화한다. 조건부 필드는 <code>undefined</code>/<code>null</code>로라도 자리를 만든다.</li>
+      <li>필드의 타입을 바꾸지 않는다(정수→실수, 숫자→문자열, null→객체). 처음부터 해당 타입으로.</li>
+      <li><code>delete</code>를 쓰지 않는다. 필요하면 <code>undefined</code> 대입. 동적 키 집합은 <code>Map</code>.</li>
+      <li>배열은 한 종류의 값만 담고, 홀을 만들지 않는다(<code>push</code>로만 채우기). 수치 대량 데이터는 TypedArray.</li>
+      <li>범용 접근자 함수(<code>get(obj, key)</code>)를 핫패스 공용으로 쓰지 않는다. 메가모픽의 온상.</li>
+      <li>프로토타입을 런타임에 바꾸지 않는다(<code>Object.setPrototypeOf</code>, 클래스 패치). 부팅 시 한 번은 괜찮다.</li>
+      <li>최적화 상태를 <b>측정</b>한다. 규칙을 지켰다고 가정하지 말고 <code>--trace-deopt</code>로 확인한다.</li>
+    </ul>
+    <h3>더 이상 사실이 아닌 것 (Crankshaft 시절의 민간 전승)</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>신화</th><th>현재(TurboFan/Maglev)</th></tr>
+      <tr><td><code>try/catch</code>가 있는 함수는 최적화되지 않는다</td><td>2017년(V8 5.x)부터 최적화됩니다. 핫 루프 안에 try/catch를 두어도 됩니다.</td></tr>
+      <tr><td><code>arguments</code> 객체를 쓰면 최적화 불가</td><td>대부분의 사용 패턴(<code>arguments.length</code>, 인덱스 접근, <code>Array.from</code>)은 최적화됩니다. 레스트 파라미터가 더 명확하니 권장하지만 성능 이유는 아닙니다.</td></tr>
+      <tr><td>함수가 짧을수록 무조건 빠르다</td><td>인라이닝 누적 한도(920바이트)가 있습니다. 측정 없이 쪼개지 마세요.</td></tr>
+      <tr><td><code>for</code>가 <code>forEach</code>보다 항상 빠르다</td><td>콜백 호출 지점이 모노모픽이면 <code>forEach/map</code>도 빌트인 인라이닝으로 거의 동일합니다. 차이가 나는 경우는 콜백이 폴리모픽일 때입니다.</td></tr>
+      <tr><td>클래스는 느리고 객체 리터럴이 빠르다</td><td>반대에 가깝습니다. 클래스는 Map 일관성을 강제합니다.</td></tr>
+      <tr><td><code>const</code>/<code>let</code>이 <code>var</code>보다 느리다</td><td>차이 없습니다(TDZ 검사는 대부분 제거됨).</td></tr>
+    </table></div>
+  </section>
+
+  <section id="s10">
+    <h2>10. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: ORM 모델 접근이 메가모픽</span>
+      <p>API 응답 직렬화가 느렸고 CPU 프로파일에서 <code>serializeField(obj, name)</code>라는 작은 함수가 전체의 25%. 수십 개의 모델 클래스를 모두 같은 함수로 직렬화하니 <code>obj[name]</code>의 IC가 메가모픽. 모델별 직렬화 함수를 <b>코드 생성(<code>new Function</code>)</b>으로 만들어 각 함수의 IC를 모노모픽으로 바꾸자 직렬화 비용 70% 감소. fast-json-stringify, ajv가 스키마별 함수를 생성하는 이유가 정확히 이것입니다.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: 배포 후 p99만 나빠진 타임스탬프 파싱</span>
+      <p>이벤트 객체에 <code>ts</code> 필드를 정수(초)로 저장하다가 밀리초 정밀도로 바꾸면서 일부 경로가 실수를 넣기 시작. Map의 필드 표현이 Smi→Double로 일반화되면서 그 Map을 가정한 모든 최적화 코드가 lazy deopt, 재최적화 반복. 한동안 p99가 두 배. <code>--trace-deopt</code>에서 <code>not a Smi</code>와 Map deprecation이 반복 관측됨. 모든 생성 경로에서 <code>Number</code>(실수)로 통일하자 안정화.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 1 vCPU 컨테이너의 부팅 직후 타임아웃</span>
+      <p>부팅 후 첫 1~2분간 요청 지연이 높고 헬스체크가 간헐 실패. 원인은 세 가지 합: (a) 모든 핫 함수가 Ignition에서 시작해 승격 중, (b) 백그라운드 컴파일 스레드가 메인과 1 vCPU를 나눠 씀, (c) 첫 요청들이 피드백을 수집하는 동안 soft deopt 반복. 대응: k8s <code>startupProbe</code>와 워밍업 트래픽(합성 요청 수백 건)으로 승격을 끝낸 뒤 readiness를 올림(14장). CPU 할당량을 1에서 2로 올리는 것도 효과가 컸습니다.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>파이프라인: Ignition(바이트코드·피드백 수집) → Sparkplug(비추측 베이스라인) → Maglev(Node 22+, 빠른 중간 최적화) → TurboFan(최상위). 승격은 interrupt budget, 루프는 OSR, 컴파일은 백그라운드.</li>
+    <li>최적화의 원료는 피드백 벡터. 프로퍼티 접근 슬롯 = 인라인 캐시. mono(1) → poly(2~4) → mega(5+). 메가모픽은 최적화 코드에서도 느리고 되돌아가지 않는다.</li>
+    <li>Map(히든 클래스)은 프로퍼티 추가 순서로 결정되는 전이 트리. 순서 불일치, 타입 변경, delete, 과다 프로퍼티가 Map을 분기·일반화·dictionary화한다.</li>
+    <li>elements kind는 PACKED/HOLEY × SMI/DOUBLE/ELEMENTS 격자, 전이는 일반화 방향으로만. <code>new Array(n)</code>은 HOLEY, 타입 섞으면 박싱. Node의 Smi는 32비트.</li>
+    <li>역최적화: eager(검사 실패) / lazy(외부 가정 변경) / soft(피드백 부족). <code>--trace-deopt</code>의 reason이 진단이다. 반복되면 최적화 포기.</li>
+    <li>인라이닝 한도 460/920바이트, 호출 대상 모노모픽 필요. try/catch·arguments 신화는 끝났다.</li>
+    <li>측정 없이 규칙을 적용하지 말 것. 핫패스를 프로파일로 찾고(10장) 그 경로만 손본다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>function f(o){return o.v}</code>가 <code>{v:1}</code>, <code>{v:1, w:2}</code>, <code>{w:2, v:1}</code>, <code>{v:1, w:2, x:3}</code>, <code>{u:0, v:1}</code> 다섯 종류의 객체로 반복 호출된다. 이 접근의 IC 상태는?</div>
+    <button class="opt">모노모픽 (모두 v를 가지므로)</button>
+    <button class="opt">폴리모픽 (4개까지)</button>
+    <button class="opt">메가모픽 (서로 다른 Map 5개)</button>
+    <button class="opt">알 수 없음 (값에 따라 다름)</button>
+    <div class="explain">프로퍼티 집합이 아니라 Map이 기준입니다. 다섯 객체는 추가 순서·집합이 모두 달라 Map이 5개이고, 5개째에서 메가모픽으로 떨어집니다. 이후 TurboFan은 이 접근을 특화하지 못합니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q"><code>const a = [1, 2, 3]; a.push(4.5); a.push(1);</code> 이후 a의 elements kind는?</div>
+    <button class="opt">PACKED_SMI_ELEMENTS (마지막에 정수를 넣었으므로)</button>
+    <button class="opt">PACKED_DOUBLE_ELEMENTS (한번 일반화되면 되돌아가지 않음)</button>
+    <button class="opt">HOLEY_DOUBLE_ELEMENTS</button>
+    <button class="opt">PACKED_ELEMENTS</button>
+    <div class="explain">4.5를 넣는 순간 SMI→DOUBLE로 전이하고, 이후 정수를 넣어도 DOUBLE로 남습니다(정수도 double로 저장). 전이는 일반화 방향으로만 일어납니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q"><code>--trace-deopt</code>에 <code>reason: insufficient type feedback</code>이 한 번 찍혔다. 적절한 해석은?</div>
+    <button class="opt">객체 모양이 섞였다. 생성자를 통일해야 한다</button>
+    <button class="opt">배열에 홀이 있다</button>
+    <button class="opt">함수가 너무 커서 최적화가 거부되었다</button>
+    <button class="opt">최적화 시점에 실행된 적 없던 분기가 처음 실행되었다. 한 번이면 정상이며 반복될 때만 문제</button>
+    <div class="explain">soft deopt입니다. 피드백이 없는 분기를 최적화 코드가 만나면 수집하러 내려갑니다. 같은 자리에서 반복되면 그 분기가 사실상 핫한데 피드백이 계속 리셋되는 것이므로 원인을 봐야 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Sparkplug에서 실행 중인 코드가 역최적화될 수 있는가?</div>
+    <button class="opt">아니다. Sparkplug는 피드백 기반 추측을 하지 않으므로 deopt가 없다</button>
+    <button class="opt">그렇다. 모든 컴파일된 코드는 deopt될 수 있다</button>
+    <button class="opt">Map이 바뀔 때만 deopt된다</button>
+    <button class="opt">OSR일 때만 deopt된다</button>
+    <div class="explain">Sparkplug는 바이트코드를 기계어로 1:1 번역할 뿐 타입 가정을 넣지 않습니다. 그래서 컴파일이 매우 빠르고 안전하며, 피드백이 안정되기 전 구간을 메우는 역할을 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">핫 함수 A가 작은 유틸 함수 12개를 차례로 호출한다. TurboFan에서 관찰될 가능성이 가장 높은 것은?</div>
+    <button class="opt">12개 모두 인라이닝된다</button>
+    <button class="opt">하나도 인라이닝되지 않는다 (호출 수가 너무 많음)</button>
+    <button class="opt">앞쪽 몇 개만 인라이닝되고 누적 바이트코드 한도(기본 920)에 걸린 뒤쪽은 실제 호출로 남는다</button>
+    <button class="opt">가장 큰 함수부터 인라이닝된다</button>
+    <div class="explain"><code>--max-inlined-bytecode-size-cumulative</code>가 함수 하나에 인라이닝할 수 있는 총량을 제한합니다. <code>--trace-turbo-inlining</code>으로 어느 호출에서 멈췄는지 볼 수 있습니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>deopt 재현.</b> 아래를 <code>node --allow-natives-syntax --trace-deopt</code>로 실행해 <code>wrong map</code> bailout을 관찰하고, 두 번째 호출의 객체를 <code>{x:1, y:undefined}</code>처럼 같은 순서로 바꿔 deopt가 사라지는지 확인하세요.
+<pre><code>function getX(o) { return o.x; }
+%PrepareFunctionForOptimization(getX);
+getX({ x: 1, y: 2 }); getX({ x: 1, y: 2 });
+%OptimizeFunctionOnNextCall(getX); getX({ x: 1, y: 2 });
+getX({ y: 2, x: 1 });   // ← 순서가 다른 Map</code></pre>
+    기대: 첫 실행에서 <code>[bailout (kind: deopt-eager, reason: wrong map) …]</code> 1줄, 수정 후 없음.</li>
+    <li><b>elements kind 확인.</b> <code>node --allow-natives-syntax -e "const a=[1,2,3]; %DebugPrint(a); a.push(1.5); %DebugPrint(a); a[10]=1; %DebugPrint(a)"</code>를 실행해 출력의 <code>elements:</code> 줄이 PACKED_SMI → PACKED_DOUBLE → HOLEY_DOUBLE로 바뀌는지 확인하세요. 그다음 <code>a.push('s')</code>를 추가해 HOLEY_ELEMENTS가 되는 것도 확인합니다.</li>
+    <li><b>최적화 의존도 측정.</b> 여러분 서비스의 CPU 집약 핸들러 하나를 벤치마크(10장 도구 또는 <code>autocannon</code>)로 측정한 뒤 <code>node --no-opt</code>로 다시 측정하세요. 배율이 작으면(2배 미만) 그 핸들러는 JIT 친화적 코드가 아니라 I/O·GC·네이티브 호출이 지배적이라는 뜻이고, JS 미세 최적화는 우선순위가 아닙니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  // ===== 위젯 1: IC 시뮬레이터 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    const SHAPES = [["A", "{x}"], ["B", "{x, y}"], ["C", "{y, x}"], ["D", "{x, z}"], ["E", "{a, x}"], ["F", "{x, y, z}"]];
+    let maps = [], calls = 0, mega = false;
+    const btns = $("ic-btns");
+    SHAPES.forEach(s => {
+      const b = MM.el("button", { class: "btn", type: "button" }, `getX(${s[1]}) <small class="muted">Map ${s[0]}</small>`);
+      b.onclick = () => { calls++; if (!mega && !maps.includes(s[0])) { maps.push(s[0]); if (maps.length >= 5) mega = true; } render(); };
+      btns.append(b);
+    });
+    function render() {
+      const st = mega ? "mega" : maps.length === 0 ? "uninit" : maps.length === 1 ? "mono" : "poly";
+      $("ic-states").querySelectorAll(".ic-box").forEach(b => b.classList.toggle("on", b.dataset.s === st));
+      $("ic-slot").innerHTML = mega ? `<span>피드백 슬롯 [0]: <b class="c-bad">MEGAMORPHIC 센티널</b> → 전역 StubCache 조회 (개별 Map 기록 안 함)</span>`
+        : maps.length ? `<span>피드백 슬롯 [0]:</span>` + maps.map(m => `<span class="map-chip">Map ${m} → x@offset</span>`).join("")
+        : `<span class="muted">피드백 슬롯 [0]: (비어 있음)</span>`;
+      $("ic-calls").textContent = calls;
+      $("ic-cost").textContent = mega ? "~10–50×" : maps.length <= 1 ? "1×" : `~${maps.length}× (선형 비교)`;
+      $("ic-tf").textContent = mega ? "특화 불가 · 인라이닝 제외" : maps.length === 0 ? "피드백 없음 → soft deopt" : maps.length === 1 ? "Map 검사 1회 + 직접 로드" : `Map 분기 ${maps.length}개로 특화`;
+    }
+    $("ic-reset").onclick = () => { maps = []; calls = 0; mega = false; render(); };
+    render();
+  })();
+
+  // ===== 위젯 2: 히든 클래스 전이 트리 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    const PRESETS = {
+      same: "x,y,z\nx,y,z\nx,y,z\nx,y,z",
+      cond: "id,name\nid,name,email\nid,email\nid,name,email,phone\nid,phone,name",
+      del: "x,y\nx,y,-y\nx,y,-x\nx,y,-y,y",
+    };
+    function build() {
+      const lines = $("hc-in").value.split("\n").map(s => s.trim()).filter(Boolean);
+      // trie: node {id, label, children: Map<prop,node>, dict:false}
+      let nid = 0;
+      const root = { id: nid++, label: "Map0 {}", children: new Map(), depth: 0, dict: false };
+      const all = [root];
+      const objs = [];
+      let dictCount = 0;
+      lines.forEach((line, li) => {
+        let cur = root, dict = false, props = [];
+        for (const tok of line.split(",").map(s => s.trim()).filter(Boolean)) {
+          if (dict) { if (tok[0] === "-") props = props.filter(p => p !== tok.slice(1)); else if (!props.includes(tok)) props.push(tok); continue; }
+          if (tok[0] === "-") {
+            const p = tok.slice(1);
+            if (!props.includes(p)) continue;
+            if (props[props.length - 1] === p) { // 마지막 프로퍼티 삭제: 부모 Map으로 back-transition
+              props.pop();
+              cur = cur.parent || root;
+            } else {
+              dict = true; dictCount++; props = props.filter(x => x !== p);
+              if (!cur.dictChild) { cur.dictChild = { id: nid++, label: "dictionary", children: new Map(), depth: cur.depth + 1, dict: true, parent: cur }; all.push(cur.dictChild); }
+              cur = cur.dictChild;
+            }
+            continue;
+          }
+          if (props.includes(tok)) continue;
+          props.push(tok);
+          if (!cur.children.has(tok)) {
+            const n = { id: nid++, label: `Map${nid - 1} {${props.join(",")}}`, children: new Map(), depth: cur.depth + 1, dict: false, parent: cur, prop: tok };
+            cur.children.set(tok, n); all.push(n);
+          }
+          cur = cur.children.get(tok);
+        }
+        objs.push({ line: `obj${li + 1}: ${line}`, map: cur, dict });
+      });
+      // 레이아웃: 깊이별 열, 순서별 행
+      const cols = {}; all.forEach(n => (cols[n.depth] = cols[n.depth] || []).push(n));
+      const maxDepth = Math.max(...all.map(n => n.depth));
+      const W = Math.max(880, (maxDepth + 1) * 190), rowH = 44;
+      const maxRows = Math.max(...Object.values(cols).map(c => c.length));
+      const H = Math.max(120, maxRows * rowH + 30);
+      const svg = $("hc-svg"); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+      const NS = "http://www.w3.org/2000/svg";
+      const mk = (t, a, txt) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; return e; };
+      svg.innerHTML = "";
+      all.forEach(n => { const col = cols[n.depth]; const r = col.indexOf(n); n.x = 20 + n.depth * 190; n.y = 15 + r * rowH + (H - col.length * rowH) / 2; });
+      all.forEach(n => { if (n.parent) {
+        svg.append(mk("path", { d: `M${n.parent.x + 160} ${n.parent.y + 14} C ${n.parent.x + 175} ${n.parent.y + 14}, ${n.x - 15} ${n.y + 14}, ${n.x} ${n.y + 14}`, class: "line", style: n.dict ? "stroke:var(--bad)" : "" }));
+        svg.append(mk("text", { x: (n.parent.x + 160 + n.x) / 2, y: (n.parent.y + n.y) / 2 + 10, "text-anchor": "middle", style: `fill:${n.dict ? "var(--bad)" : "var(--violet)"}`, "font-size": "10.5" }, n.dict ? "delete" : "+" + n.prop));
+      } });
+      all.forEach(n => {
+        const used = objs.filter(o => o.map === n).length;
+        svg.append(mk("rect", { x: n.x, y: n.y, width: 160, height: 28, rx: 6, class: "mapnode" + (n === root ? " root" : "") + (n.dict ? " dict" : "") }));
+        svg.append(mk("text", { x: n.x + 6, y: n.y + 18 }, (n.label.length > 20 ? n.label.slice(0, 19) + "…" : n.label) + (used ? ` ×${used}` : "")));
+      });
+      $("hc-maps").textContent = all.filter(n => !n.dict).length + (dictCount ? ` (+dict)` : "");
+      $("hc-objs").textContent = objs.length;
+      $("hc-dict").textContent = dictCount;
+      const groups = new Map(); objs.forEach(o => { const k = o.map.id; (groups.get(k) || groups.set(k, []).get(k)).push(o); });
+      $("hc-list").innerHTML = objs.map(o => `<div><span class="m">${o.dict ? "dictionary" : "Map" + o.map.id}</span> ← ${MM.esc(o.line)}${o.dict ? ' <span class="c-bad">(slow mode: 해시 조회)</span>' : ""}</div>`).join("") +
+        (groups.size < objs.length ? `<div class="muted" style="margin-top:4px">같은 Map을 공유하는 객체는 같은 IC 경로를 탑니다. Map 수가 객체 종류보다 많으면 모양이 분기한 것입니다.</div>` : "");
+    }
+    $("hc-go").onclick = build;
+    document.querySelectorAll("[data-p]").forEach(b => { if (PRESETS[b.dataset.p]) b.onclick = () => { $("hc-in").value = PRESETS[b.dataset.p]; build(); }; });
+    build();
+  })();
+
+  // ===== 위젯 3: elements kind 스텝 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    const OPS = [
+      ["[]", "const a = []", s => ({ ...s, note: "빈 리터럴: PACKED_SMI로 시작(가장 특수한 종류)." })],
+      ["new Array(5)", "const a = new Array(5)", s => ({ elem: 0, holey: true, dict: false, len: 5, note: "길이만 있고 값이 없음 → 5개 모두 hole. 처음부터 HOLEY_SMI." })],
+      ["push(1)", "a.push(1)", s => ({ ...s, len: s.len + 1, note: s.elem === 0 ? "정수(Smi) 추가: 종류 유지." : "정수를 넣어도 이미 일반화된 종류는 유지(되돌아가지 않음)." })],
+      ["push(1.5)", "a.push(1.5)", s => ({ ...s, elem: Math.max(s.elem, 1), len: s.len + 1, note: s.elem === 0 ? "실수 추가: SMI → DOUBLE 전이. 기존 정수들도 double로 재저장." : s.elem === 1 ? "이미 DOUBLE: 유지." : "ELEMENTS에서는 1.5가 HeapNumber로 박싱되어 저장." })],
+      ["push('s')", "a.push('s')", s => ({ ...s, elem: 2, len: s.len + 1, note: s.elem < 2 ? "문자열 추가: → ELEMENTS(포인터 저장). DOUBLE이었다면 모든 실수가 HeapNumber로 박싱되며 백킹 스토어 재할당." : "이미 ELEMENTS: 유지." })],
+      ["a[len+2]=1", "a[a.length + 2] = 1", s => ({ ...s, holey: true, len: s.len + 3, note: "길이를 건너뛰어 대입: 사이에 hole 생성 → HOLEY 전이." })],
+      ["delete a[0]", "delete a[0]", s => ({ ...s, holey: true, note: s.len ? "요소 삭제: 그 자리가 hole이 됨 → HOLEY 전이. (length는 그대로)" : "빈 배열에서 delete: 변화 없음 (hole 생성 안 됨)" })],
+      ["a[1e6]=1", "a[1000000] = 1", s => ({ ...s, dict: true, holey: true, len: 1000001, note: "매우 희소한 인덱스: 백킹 스토어를 백만 개로 늘리는 대신 DICTIONARY_ELEMENTS(해시 테이블)로 전환. 이후 모든 인덱스 접근이 해시 조회." })],
+    ];
+    const PRE = { 1: [0, 2, 2, 3, 2, 4], 2: [1, 2, 2, 2, 2, 2], 3: [0, 2, 2, 2, 5, 2] };
+    let seq = [], stepper = null;
+    const ops = $("ek-ops");
+    OPS.forEach((o, i) => { const b = MM.el("button", { class: "btn", type: "button" }, MM.esc(o[0])); b.onclick = () => { seq.push(i); rebuild(); }; ops.append(b); });
+    $("ek-clear").onclick = () => { seq = []; rebuild(); };
+    document.querySelectorAll("#ek-ops ~ .controls [data-p]").forEach(b => b.onclick = () => { seq = PRE[b.dataset.p].slice(); rebuild(); });
+    function kindOf(s) { return s.dict ? "dict" : (s.holey ? "h" : "p") + ["s", "d", "e"][s.elem]; }
+    function kindName(s) { return s.dict ? "DICTIONARY_ELEMENTS" : (s.holey ? "HOLEY_" : "PACKED_") + ["SMI_ELEMENTS", "DOUBLE_ELEMENTS", "ELEMENTS"][s.elem]; }
+    function rebuild() {
+      const host = $("ek-step"); host.innerHTML = "";
+      const states = [{ elem: 0, holey: false, dict: false, len: 0, note: "시작 전" }];
+      seq.forEach(i => { const prev = states[states.length - 1]; const nx = OPS[i][2](prev); if (prev.dict) { nx.dict = true; nx.note = "이미 dictionary 모드: 종류 변화 없음. 접근은 계속 해시 조회."; } states.push(nx); });
+      if (!seq.length) { $("ek-seq").innerHTML = "<span class='muted'>위 버튼으로 연산을 추가하세요.</span>"; $("ek-lattice").querySelectorAll(".ek").forEach(e => e.classList.remove("on")); return; }
+      stepper = MM.stepper(host, { steps: states.length, interval: 1500, render(k) {
+        const s = states[k];
+        $("ek-seq").innerHTML = seq.map((i, j) => `<span class="${j === k - 1 ? "cur" : ""}">${MM.esc(OPS[i][1])}</span>`).join(" ; ");
+        $("ek-lattice").querySelectorAll(".ek").forEach(e => e.classList.toggle("on", e.dataset.k === kindOf(s)));
+        return k === 0 ? "초기 상태: 아직 배열 없음." : `<b>${MM.esc(OPS[seq[k - 1]][1])}</b> → <code>${kindName(s)}</code> (length ${s.len}). ${s.note}`;
+      } });
+    }
+    rebuild();
+  })();
+
+  // ===== 위젯 4: 티어 타임라인 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    const COST = { ig: 1, sp: 0.6, mg: 0.15, tf: 0.05 };
+    const LABEL = { ig: "Ignition", sp: "Sparkplug", mg: "Maglev", tf: "TurboFan" };
+    const COLOR = { ig: "var(--ok-soft)", sp: "var(--teal-soft)", mg: "var(--warn-soft)", tf: "var(--violet-soft)" };
+    function sim() {
+      const N = +$("tl-n").value, sp = +$("tl-sp").value, mg = +$("tl-mg").value, tf = +$("tl-tf").value;
+      const de = +$("tl-deopt").value, wait = +$("tl-wait").value, noMg = $("tl-nomaglev").checked;
+      $("tl-n-v").textContent = N;
+      // 세그먼트 생성
+      const segs = []; let tier = "ig", start = 1, since = 0; // since: 마지막 피드백 리셋 이후 호출 수
+      let total = 0, igCalls = 0, optCalls = 0, deopted = false;
+      for (let c = 1; c <= N; c++) {
+        since++;
+        let next = tier;
+        if (de && c === de && (tier === "mg" || tier === "tf")) { next = "ig"; since = 0; deopted = true; }
+        else {
+          const eff = (t) => deopted ? t + wait : t; // deopt 후에는 피드백 안정화 대기 추가
+          if (tier === "ig" && since >= sp) next = "sp";
+          if ((tier === "sp" || tier === "ig") && since >= eff(noMg ? tf : mg)) next = noMg ? "tf" : "mg";
+          if (tier === "mg" && since >= eff(tf)) next = "tf";
+        }
+        if (next !== tier) { segs.push({ tier, from: start, to: c - 1, deopt: next === "ig" }); tier = next; start = c; }
+        total += COST[tier]; if (tier === "ig") igCalls++; if (tier === "mg" || tier === "tf") optCalls++;
+      }
+      segs.push({ tier, from: start, to: N });
+      const bar = $("tl-bar");
+      bar.innerHTML = segs.filter(s => s.to >= s.from).map(s => `<div class="seg" style="left:${(s.from - 1) / N * 100}%;width:${(s.to - s.from + 1) / N * 100}%;background:${COLOR[s.tier]}" title="${LABEL[s.tier]}: 호출 ${s.from}~${s.to}">${(s.to - s.from + 1) / N > 0.07 ? LABEL[s.tier] : ""}</div>`).join("") +
+        (de && de <= N && deopted ? `<div class="mark" style="left:${(de - 1) / N * 100}%"></div>` : "");
+      $("tl-mid").textContent = `호출 ${Math.round(N / 2)}`; $("tl-end").textContent = `호출 ${N}`;
+      $("tl-ig").textContent = (igCalls / N * 100).toFixed(1) + "%";
+      $("tl-opt").textContent = (optCalls / N * 100).toFixed(1) + "%";
+      $("tl-time").textContent = (total / (N * COST.tf)).toFixed(1) + "× (전부 TurboFan 대비)";
+      $("tl-note").innerHTML = (de && !deopted && de <= N) ? "deopt 시점에 아직 최적화 코드가 아니어서 deopt가 일어나지 않았습니다(Ignition/Sparkplug는 deopt 없음)." :
+        deopted ? `호출 ${de}에서 역최적화 → Ignition으로 복귀. 피드백이 다시 안정될 때까지(+${wait}) 기다린 뒤 재승격. 이런 사이클이 반복되면 V8은 최적화를 포기합니다.` :
+        noMg ? "Maglev 없이는 Sparkplug에서 TurboFan 임계까지 머뭅니다. Node 22의 Maglev가 메우는 구간이 바로 이 틈입니다." : "상대 비용은 개념값(Ignition 1, Sparkplug 0.6, Maglev 0.15, TurboFan 0.05)입니다.";
+    }
+    ["tl-n", "tl-sp", "tl-mg", "tl-tf", "tl-deopt", "tl-wait", "tl-nomaglev"].forEach(id => $(id).oninput = $(id).onchange = sim);
+    sim();
+  })();
+})();
+</script>
+</body>
+</html>

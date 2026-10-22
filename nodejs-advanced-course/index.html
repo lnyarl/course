@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Node.js 전문가 코스</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .hero { padding: 24px 0 8px; }
+  .hero h1 { font-size: clamp(32px, 6vw, 48px); }
+  .hero .lead { max-width: 720px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; font-size: 14px; }
+  .meta span { background: var(--surface-2); border-radius: 999px; padding: 4px 12px; }
+  .map { margin: 28px 0; }
+  .progress-wrap { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }
+  .progress-wrap .bar { flex: 1; height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+  .progress-wrap .bar > div { height: 100%; background: var(--ok); width: 0; transition: width .4s; }
+  .howto { font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <span class="label" style="display:inline-block;font-size:13px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:2px 10px;border-radius:999px">심화 과정 · 20 챕터</span>
+    <h1>Node.js 전문가 코스<br><small style="font-size:.55em;color:var(--muted);font-weight:500">개발과 운영의 내부 메커니즘</small></h1>
+    <p class="lead">"동작하는 코드"를 넘어 "왜 그렇게 동작하는지"를 아는 엔지니어를 목표로 합니다. V8과 libuv의 내부, 성능 진단, 프로덕션 운영까지 도식과 시뮬레이터로 직접 만져 보며 배웁니다.</p>
+    <div class="meta">
+      <span>⬢ Node.js 22 / 24 LTS 기준</span><span>🧪 인터랙티브 시뮬레이터 60+</span><span>📐 SVG 도식</span><span>✅ 챕터별 확인 문제·실습</span><span>🌓 다크 모드</span>
+    </div>
+    <div class="progress-wrap"><span>학습 진도</span><div class="bar"><div id="pbar"></div></div><span id="ptext">0 / 20</span><button class="btn" id="preset" style="font-size:12px;padding:3px 8px">초기화</button></div>
+  </header>
+
+  <figure class="map">
+    <svg class="diagram" viewBox="0 0 900 300" role="img" aria-label="코스 구조도">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+      </defs>
+      <g>
+        <rect x="20" y="30" width="200" height="240" rx="12" class="box" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="120" y="60" text-anchor="middle" font-weight="700">Part 1 · 런타임 내부</text>
+        <text x="120" y="90" text-anchor="middle" class="muted" font-size="12">아키텍처 · 이벤트 루프</text>
+        <text x="120" y="110" text-anchor="middle" class="muted" font-size="12">libuv · V8 JIT · GC</text>
+        <text x="120" y="130" text-anchor="middle" class="muted" font-size="12">스트림 · 비동기 내부 · 모듈</text>
+        <text x="120" y="240" text-anchor="middle" font-size="12" style="fill:var(--accent)">Ch 01 – 08</text>
+      </g>
+      <g>
+        <rect x="250" y="30" width="200" height="240" rx="12" class="box" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="350" y="60" text-anchor="middle" font-weight="700">Part 2 · 성능과 진단</text>
+        <text x="350" y="90" text-anchor="middle" class="muted" font-size="12">멀티코어 · CPU 프로파일</text>
+        <text x="350" y="110" text-anchor="middle" class="muted" font-size="12">메모리 누수 · 네트워킹</text>
+        <text x="350" y="130" text-anchor="middle" class="muted" font-size="12">에러와 복원력</text>
+        <text x="350" y="240" text-anchor="middle" font-size="12" style="fill:var(--violet)">Ch 09 – 13</text>
+      </g>
+      <g>
+        <rect x="480" y="30" width="200" height="240" rx="12" class="box" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="580" y="60" text-anchor="middle" font-weight="700">Part 3 · 운영</text>
+        <text x="580" y="90" text-anchor="middle" class="muted" font-size="12">배포 · 관측성 · 보안</text>
+        <text x="580" y="110" text-anchor="middle" class="muted" font-size="12">테스트 · 아키텍처</text>
+        <text x="580" y="240" text-anchor="middle" font-size="12" style="fill:var(--ok)">Ch 14 – 18</text>
+      </g>
+      <g>
+        <rect x="710" y="30" width="170" height="240" rx="12" class="box" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="795" y="60" text-anchor="middle" font-weight="700">Part 4 · 확장·실전</text>
+        <text x="795" y="90" text-anchor="middle" class="muted" font-size="12">N-API · WASM</text>
+        <text x="795" y="110" text-anchor="middle" class="muted" font-size="12">진단 워크숍</text>
+        <text x="795" y="240" text-anchor="middle" font-size="12" style="fill:var(--warn)">Ch 19 – 20</text>
+      </g>
+      <path d="M220 150 H250" class="line flow" marker-end="url(#arr)"/>
+      <path d="M450 150 H480" class="line flow" marker-end="url(#arr)"/>
+      <path d="M680 150 H710" class="line flow" marker-end="url(#arr)"/>
+    </svg>
+    <figcaption>내부 메커니즘을 먼저 이해하고, 그 지식으로 성능을 진단하고, 운영 체계로 확장하는 순서입니다.</figcaption>
+  </figure>
+
+  <div id="chapters"></div>
+
+  <h2>이 코스를 보는 법</h2>
+  <div class="howto">
+    <ul>
+      <li><b>순서대로 보되, Part 2부터 역참조해도 됩니다.</b> 각 챕터는 필요한 선수 지식을 상단에 링크합니다.</li>
+      <li><b>위젯은 직접 조작하세요.</b> 모든 시뮬레이터는 실제 Node.js 동작 규칙을 그대로 구현했습니다. 예측한 뒤 돌려 보고, 틀리면 그 지점이 배울 지점입니다.</li>
+      <li><b>실습 과제는 로컬 Node 22+에서 실행</b>해 보세요. 기대 출력을 함께 적어 두었습니다.</li>
+      <li>진도(✓)는 이 브라우저에만 저장됩니다.</li>
+    </ul>
+  </div>
+</main>
+<script>
+(function () {
+  const parts = [...new Set(MM.CHAPTERS.map(c => c.part))];
+  const visited = MM.visited();
+  const root = document.getElementById("chapters");
+  parts.forEach((p, pi) => {
+    root.append(MM.el("div", { class: "part-title" }, `Part ${pi + 1} · ${p}`));
+    const grid = MM.el("div", { class: "card-grid" });
+    MM.CHAPTERS.filter(c => c.part === p).forEach(c => {
+      grid.append(MM.el("a", { class: "card" + (visited.has(c.id) ? " visited" : ""), href: c.file },
+        `<div class="num">Chapter ${c.id}</div><div class="t">${c.title}</div><div class="d">${c.desc}</div>`));
+    });
+    root.append(grid);
+  });
+  const n = MM.CHAPTERS.filter(c => visited.has(c.id)).length;
+  document.getElementById("pbar").style.width = (n / MM.CHAPTERS.length * 100) + "%";
+  document.getElementById("ptext").textContent = `${n} / ${MM.CHAPTERS.length}`;
+  document.getElementById("preset").onclick = () => { MM.resetVisited(); location.reload(); };
+})();
+</script>
+</body>
+</html>

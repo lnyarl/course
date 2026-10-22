@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05. 전송 계층 기초: UDP와 TCP · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.flags{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin:10px 0}
+.flags button{font:inherit;font-family:var(--mono);font-weight:700;padding:10px 4px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer}
+.flags button.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.flag-desc{background:var(--surface-2);border-radius:8px;padding:12px 14px;min-height:70px;font-size:.92rem}
+.combo{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.combo .btn{font-family:var(--mono)}
+.sm-node{cursor:pointer}
+.sm-node rect{fill:var(--surface);stroke:var(--border);stroke-width:1.5;transition:fill .15s,stroke .15s}
+.sm-node text{font-family:var(--mono);font-size:11px;font-weight:700}
+.sm-node:hover rect{stroke:var(--primary)}
+.sm-node.sel rect{fill:var(--primary-soft);stroke:var(--primary);stroke-width:2.5}
+.sm-edge line,.sm-edge path{fill:none;stroke-width:1.8;opacity:.55;transition:opacity .15s,stroke-width .15s}
+.sm-edge.hi line,.sm-edge.hi path{opacity:1;stroke-width:3}
+.sm-edge text{font-size:9.5px;fill:var(--text-2)}
+.sm-edge.dim{opacity:.18}
+.sm-edge .lbl-bg{fill:var(--surface);opacity:.9}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.82rem;margin:6px 0}
+.legend span::before{content:"";display:inline-block;width:18px;height:4px;border-radius:2px;margin-right:6px;vertical-align:middle;background:var(--c)}
+.sm-info{background:var(--surface-2);border-radius:10px;padding:12px 16px;min-height:90px;margin-top:10px;font-size:.92rem}
+.calc td input{width:90px}
+</style>
+</head>
+<body data-chapter="05">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 1 · 개론 — CHAPTER 05</div>
+  <h1>전송 계층 기초: UDP와 TCP</h1>
+  <p class="lead">IP는 패킷을 "호스트"까지만 데려다 줍니다. 그 호스트 안의 어떤 프로그램에게 줄지, 잃어버리면 어떻게 할지, 순서가 섞이면 어떻게 할지는 전송 계층의 몫입니다. 이 장에서는 UDP의 단순함과 TCP의 연결 수립·종료 절차, 그리고 TCP 상태 머신 전체를 다룹니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 70분</span><span class="chip l-tr">전송</span><span class="chip">RFC 768 · RFC 9293</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>포트 번호와 4-tuple로 소켓이 어떻게 식별되는지(다중화/역다중화) 설명할 수 있다.</li>
+    <li>UDP·TCP 헤더의 모든 필드와 TCP 플래그의 의미를 말할 수 있다.</li>
+    <li>3-way handshake와 4-way close에서 시퀀스/ACK 번호와 양측 상태 변화를 손으로 그릴 수 있다.</li>
+    <li>RFC 9293의 TCP 상태 머신 11개 상태와 전이 조건을 이해한다.</li>
+    <li>어떤 응용에 UDP를, 어떤 응용에 TCP를 써야 하는지 근거를 들어 판단할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="mux"><span class="num">5.1</span>전송 계층의 첫 번째 일: 다중화와 역다중화</h2>
+<p>한 호스트에서는 브라우저 탭 여러 개, SSH, 메일 클라이언트가 동시에 통신합니다. IP 계층은 이 모든 패킷을 "같은 IP 주소"로 받습니다. 전송 계층은 <b>포트 번호</b>로 패킷을 올바른 소켓에 배달합니다(역다중화, demultiplexing). 보낼 때는 반대로 여러 소켓의 데이터를 하나의 IP 흐름으로 합칩니다(다중화).</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 300" id="mux-svg">
+    <defs><marker id="m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <!-- host box -->
+    <rect x="40" y="20" width="520" height="260" rx="14" class="node"/>
+    <text x="60" y="44" font-weight="700">호스트 10.0.0.5</text>
+    <!-- sockets -->
+    <g font-size="11">
+      <rect x="60" y="60" width="150" height="40" rx="8" fill="var(--purple-soft)" stroke="var(--l-app)"/><text x="135" y="77" text-anchor="middle" font-weight="700">브라우저 탭 1</text><text x="135" y="92" text-anchor="middle" class="mono">:51234 → 93.184.216.34:443</text>
+      <rect x="60" y="110" width="150" height="40" rx="8" fill="var(--purple-soft)" stroke="var(--l-app)"/><text x="135" y="127" text-anchor="middle" font-weight="700">브라우저 탭 2</text><text x="135" y="142" text-anchor="middle" class="mono">:51235 → 93.184.216.34:443</text>
+      <rect x="60" y="160" width="150" height="40" rx="8" fill="var(--purple-soft)" stroke="var(--l-app)"/><text x="135" y="177" text-anchor="middle" font-weight="700">SSH 클라이언트</text><text x="135" y="192" text-anchor="middle" class="mono">:51300 → 203.0.113.7:22</text>
+      <rect x="60" y="210" width="150" height="40" rx="8" fill="var(--purple-soft)" stroke="var(--l-app)"/><text x="135" y="227" text-anchor="middle" font-weight="700">DNS 리졸버 (UDP)</text><text x="135" y="242" text-anchor="middle" class="mono">:49000 → 8.8.8.8:53</text>
+    </g>
+    <!-- transport -->
+    <rect x="260" y="60" width="120" height="190" rx="10" fill="var(--primary-soft)" stroke="var(--l-tr)"/>
+    <text x="320" y="150" text-anchor="middle" font-weight="700" fill="var(--l-tr)">전송 계층</text>
+    <text x="320" y="168" text-anchor="middle" font-size="10.5">TCP / UDP</text>
+    <text x="320" y="186" text-anchor="middle" font-size="10" class="muted">포트로 소켓 선택</text>
+    <!-- ip -->
+    <rect x="420" y="60" width="110" height="190" rx="10" fill="var(--green-soft)" stroke="var(--l-net)"/>
+    <text x="475" y="150" text-anchor="middle" font-weight="700" fill="var(--l-net)">IP 계층</text>
+    <text x="475" y="168" text-anchor="middle" font-size="10.5">10.0.0.5</text>
+    <text x="475" y="186" text-anchor="middle" font-size="10" class="muted">프로토콜 번호로 TCP/UDP 선택</text>
+    <!-- arrows -->
+    <g class="wire" marker-end="url(#m-ar)">
+      <line x1="210" y1="80" x2="258" y2="120"/><line x1="210" y1="130" x2="258" y2="140"/><line x1="210" y1="180" x2="258" y2="160"/><line x1="210" y1="230" x2="258" y2="180"/>
+      <line x1="380" y1="150" x2="418" y2="150"/>
+    </g>
+    <line x1="530" y1="150" x2="620" y2="150" class="wire flow" stroke="var(--l-net)"/>
+    <text x="700" y="140" text-anchor="middle" font-size="11" font-weight="700">네트워크</text>
+    <text x="700" y="160" text-anchor="middle" font-size="10" class="muted">하나의 IP 흐름</text>
+    <text x="60" y="270" font-size="10.5" class="muted">연결 식별자 = (src IP, src port, dst IP, dst port) + 프로토콜 → "4-tuple" (5-tuple)</text>
+  </svg>
+  <div class="cap">여러 소켓이 포트 번호로 구분되어 하나의 IP 흐름으로 합쳐진다. 역방향으로 받을 때는 4-tuple로 소켓을 찾는다.</div>
+</div>
+<div class="callout"><div class="t">📌 4-tuple이 "연결"의 정체</div><p>TCP 연결은 <code>(출발지 IP, 출발지 포트, 목적지 IP, 목적지 포트)</code> 네 값으로 유일하게 식별됩니다. 그래서 탭 1과 탭 2는 같은 서버의 같은 포트 443에 접속해도 <b>출발지 포트가 달라</b> 다른 연결이 됩니다. 서버 입장에서는 포트 443 하나로 수만 개 연결을 동시에 유지할 수 있는 이유이기도 합니다. "포트 하나에 연결 하나"라는 오해는 여기서 풀립니다.</p></div>
+
+<h2 id="ports"><span class="num">5.2</span>포트 번호 체계</h2>
+<table>
+  <thead><tr><th>범위</th><th>이름</th><th>용도</th><th>예</th></tr></thead>
+  <tbody>
+    <tr><td><code>0 – 1023</code></td><td>Well-known (system) ports</td><td>IANA가 지정. 유닉스 계열에서는 root 권한이 있어야 바인드 가능</td><td>22 SSH, 25 SMTP, 53 DNS, 80 HTTP, 443 HTTPS, 123 NTP</td></tr>
+    <tr><td><code>1024 – 49151</code></td><td>Registered ports</td><td>IANA 등록. 특정 서비스 관례</td><td>3306 MySQL, 5432 PostgreSQL, 6379 Redis, 8080 HTTP 대체</td></tr>
+    <tr><td><code>49152 – 65535</code></td><td>Dynamic / ephemeral (임시) ports</td><td>클라이언트 OS가 자동 할당. 리눅스 기본은 <code>32768–60999</code>(<code>net.ipv4.ip_local_port_range</code>)</td><td>브라우저가 연결마다 받는 출발지 포트</td></tr>
+  </tbody>
+</table>
+<div class="callout warn"><div class="t">⚠️ 임시 포트 고갈</div><p>한 클라이언트가 같은 서버(같은 dst IP:port)로 동시에 열 수 있는 연결 수는 임시 포트 범위에 묶입니다(리눅스 기본 약 28,000개). 프록시·로드밸런서·벤치마크 도구가 <code>EADDRNOTAVAIL</code>을 뱉는 흔한 원인입니다. TIME_WAIT 상태의 연결도 포트를 점유하므로 9장에서 다시 다룹니다.</p></div>
+
+<h2 id="udp"><span class="num">5.3</span>UDP: 최소한의 전송 계층 <small>(RFC 768)</small></h2>
+<p>UDP 헤더는 8바이트가 전부입니다. 연결도, 순서도, 재전송도 없습니다. 하는 일은 딱 두 가지, <b>포트로 역다중화</b>하고 <b>체크섬으로 손상 검출</b>하는 것뿐입니다. 필드를 클릭해 보세요.</p>
+<div id="udp-hdr"></div>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">의사 헤더(pseudo header)와 체크섬</h4><p>UDP·TCP 체크섬은 자기 헤더와 데이터뿐 아니라 IP 헤더에서 가져온 <b>의사 헤더</b>(src IP, dst IP, 프로토콜 번호, UDP 길이)까지 포함해 계산합니다. 계층 위반처럼 보이지만, 이렇게 해야 "IP 주소가 깨져 엉뚱한 호스트에 배달된 데이터그램"을 전송 계층이 걸러낼 수 있습니다. IPv4에서 UDP 체크섬은 선택(0이면 미계산)이지만 IPv6에서는 필수입니다(RFC 8200 §8.1).</p></div>
+  <div class="card"><h4 style="margin-top:0">UDP가 "나쁜" 것이 아니다</h4><p>UDP는 기능이 없는 것이 아니라 <b>정책을 응용에 위임</b>하는 것입니다. 실시간 음성(VoIP)에서는 늦게 온 재전송 패킷이 쓸모없고, DNS 질의는 한 번의 왕복으로 끝나야 하며, QUIC은 TCP를 커널 밖에서 다시 구현하기 위해 UDP를 운반체로 씁니다. 모두 "TCP의 정책이 맞지 않아서" UDP를 고른 사례입니다.</p></div>
+</div>
+
+<h2 id="tcp-hdr"><span class="num">5.4</span>TCP 헤더 해부 <small>(RFC 9293)</small></h2>
+<p>TCP 헤더는 기본 20바이트, 옵션 포함 최대 60바이트입니다. 각 필드는 뒤에서 배울 기능(순서 보장, 흐름 제어, 연결 관리)과 1:1로 대응합니다.</p>
+<div id="tcp-hdr"></div>
+<h3 id="flags">플래그 8개 <small>(클릭)</small></h3>
+<div class="flags" id="flags"></div>
+<div class="flag-desc" id="flag-desc">플래그를 클릭하면 설명이 표시됩니다.</div>
+<div class="combo" id="combos"><span class="small" style="align-self:center">자주 보는 조합:</span></div>
+
+<h2 id="handshake"><span class="num">5.5</span>연결 수립: 3-way handshake <small>(애니메이션)</small></h2>
+<p>TCP는 데이터를 보내기 전에 양쪽이 <b>초기 시퀀스 번호(ISN)</b>를 교환하고 서로 받을 준비가 됐음을 확인합니다. 왜 2번이 아니라 3번일까요? 양방향 각각에 대해 "내 ISN을 상대가 받았다"는 확인이 필요하기 때문입니다. 2번째 메시지가 서버의 SYN과 클라이언트 SYN에 대한 ACK를 겸하므로 4번이 아니라 3번이 됩니다.</p>
+<div class="anim" id="hs-anim">
+  <div class="stage"><svg viewBox="0 0 900 330" id="hs-svg"></svg></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: SYN은 왜 시퀀스 번호 1바이트를 "소비"하는가</div><p>SYN 세그먼트에는 데이터가 없는데도 상대는 <code>ack = ISN + 1</code>로 응답합니다. SYN과 FIN은 "시퀀스 공간에서 1바이트를 차지하는 제어 비트"로 정의되어 있기 때문입니다(RFC 9293 §3.4). 이렇게 해야 SYN 자체가 <b>신뢰성 있게 전달되었는지</b>를 일반 데이터와 똑같은 ACK 메커니즘으로 확인할 수 있습니다. 즉 SYN의 ACK 번호 = "당신의 SYN 1바이트를 받았으니 다음은 ISN+1부터 보내라"는 뜻입니다.</p></div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: ISN은 왜 0이 아니라 무작위인가</div><p>ISN이 항상 0이면 ① 이전 연결의 지연된 세그먼트(같은 4-tuple)가 새 연결의 데이터로 오인될 수 있고, ② 공격자가 시퀀스 번호를 추측해 연결에 데이터를 주입(blind injection)하거나 RST로 끊을 수 있습니다. RFC 6528은 <code>ISN = M + F(src IP, src port, dst IP, dst port, 비밀키)</code> 형태(M은 4µs마다 증가하는 시계, F는 해시)를 권고합니다. 리눅스도 이 방식을 씁니다.</p></div>
+
+<h2 id="data"><span class="num">5.6</span>데이터 전송: seq와 ack 계산 <small>(계산기)</small></h2>
+<p>TCP는 <b>바이트 단위</b>로 번호를 붙입니다. 세그먼트의 <code>seq</code>는 "이 세그먼트의 첫 바이트 번호", <code>ack</code>는 "내가 다음에 받기를 기대하는 바이트 번호"(= 지금까지 연속으로 받은 마지막 바이트 + 1)입니다. 값을 바꿔가며 확인해 보세요.</p>
+<div class="card">
+  <div class="row">
+    <label>클라이언트 ISN <input type="number" id="isn-c" value="1000"></label>
+    <label>서버 ISN <input type="number" id="isn-s" value="5000"></label>
+    <label>클라이언트 요청 바이트 <input type="number" id="req-len" value="120" min="0"></label>
+    <label>서버 응답 바이트 <input type="number" id="res-len" value="800" min="0"></label>
+  </div>
+  <table id="seq-table" style="margin-top:10px"></table>
+  <p class="small">ACK만 있는 세그먼트(데이터 0바이트)는 시퀀스 번호를 소비하지 않는다. SYN·FIN은 1바이트를 소비한다.</p>
+</div>
+
+<h2 id="close"><span class="num">5.7</span>연결 종료: 4-way close와 TIME_WAIT <small>(애니메이션)</small></h2>
+<p>종료는 <b>방향별로 따로</b> 이뤄집니다. "나는 더 보낼 게 없다"(FIN)를 각 방향에서 한 번씩 보내고 각각 ACK를 받으니 총 4번입니다. 먼저 FIN을 보낸 쪽(능동 종료)은 마지막 ACK를 보낸 뒤 <b>TIME_WAIT</b> 상태에서 2MSL(리눅스 60초) 동안 기다립니다.</p>
+<div class="anim" id="cl-anim">
+  <div class="stage"><svg viewBox="0 0 900 360" id="cl-svg"></svg></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: TIME_WAIT는 왜 능동 종료 쪽에만, 왜 2MSL인가</div><p>두 가지 이유입니다. ① <b>마지막 ACK가 유실되면</b> 상대(LAST_ACK)는 FIN을 재전송합니다. 그때 응답해 줄 누군가가 남아 있어야 하므로 ACK를 보낸 쪽이 기다립니다. 수동 종료 쪽은 ACK를 받으면 바로 CLOSED가 되어도 안전합니다. ② 같은 4-tuple의 새 연결이 즉시 생기면, 네트워크에 떠돌던 <b>이전 연결의 지연 세그먼트</b>가 새 연결에 섞일 수 있습니다. 세그먼트의 최대 생존 시간(MSL, Maximum Segment Lifetime)의 2배를 기다리면 "내가 보낸 ACK가 갔다가, 그에 대한 재전송 FIN이 오는" 왕복 동안 떠돌 수 있는 세그먼트가 모두 사라집니다. 서버가 능동 종료를 자주 하면 서버에 TIME_WAIT가 쌓이는 이유가 여기 있습니다(9장).</p></div>
+
+<h2 id="fsm"><span class="num">5.8</span>TCP 상태 머신 <small>(RFC 9293 §3.3.2 · 인터랙티브)</small></h2>
+<p>지금까지 본 handshake와 close를 하나의 그림에 합치면 TCP 상태 머신이 됩니다. 11개 상태를 클릭하면 의미와 전이 이벤트가 표시됩니다. 선 색은 어떤 경로인지 나타냅니다.</p>
+<div class="legend"><span style="--c:var(--l-tr)">능동 열기 (클라이언트)</span><span style="--c:var(--l-net)">수동 열기 (서버)</span><span style="--c:var(--l-app)">능동 종료</span><span style="--c:var(--l-link)">수동 종료</span><span style="--c:var(--muted)">기타 / 예외</span></div>
+<div class="card">
+  <svg viewBox="0 0 900 650" id="fsm-svg"><defs><marker id="f-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="context-stroke"/></marker></defs></svg>
+  <div class="sm-info" id="sm-info"><b>상태를 클릭하세요.</b> <span class="small">ESTABLISHED부터 시작해 보면 좋습니다.</span></div>
+</div>
+<h3 id="special">동시 열기 · 반쪽 닫기</h3>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">동시 열기 (simultaneous open)</h4><p>양쪽이 동시에 SYN을 보내면 둘 다 SYN_SENT → (SYN 수신) → SYN_RCVD → ESTABLISHED로 갑니다. 4번의 세그먼트가 오가며, 서버 없이도 연결이 됩니다. NAT 홀 펀칭(P2P)에서 실제로 쓰입니다.</p></div>
+  <div class="card"><h4 style="margin-top:0">반쪽 닫기 (half-close)</h4><p>FIN은 "내 쪽 송신만 끝"이라는 뜻입니다. FIN_WAIT_2 상태에서는 상대가 보내는 데이터를 계속 받을 수 있습니다. <code>shutdown(fd, SHUT_WR)</code>이 바로 이것으로, "요청을 다 보냈으니 응답을 끝까지 달라"는 패턴(예: <code>ssh host cmd &lt; file</code>)에 쓰입니다. <code>close()</code>는 양방향을 모두 닫습니다.</p></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: RST는 언제, 왜 나오는가</div><p>RST(reset)는 "이 연결은 존재하지 않거나 유효하지 않다"는 즉시 중단 신호입니다. 대표적 발생 조건: ① LISTEN 중인 소켓이 없는 포트로 SYN이 오면 → RST (포트 스캐너가 "closed"로 판정하는 근거). ② 상대가 모르는 연결(4-tuple)로 세그먼트가 오면 → RST(서버 재부팅 후 옛 연결의 데이터가 올 때). ③ 수신 버퍼에 읽지 않은 데이터가 남은 채 <code>close()</code>하면 FIN 대신 RST. ④ 방화벽·로드밸런서가 세션을 끊을 때(<code>Connection reset by peer</code>). RST는 ACK를 요구하지 않고 재전송되지도 않습니다. 또한 RST는 수신 윈도우 안의 시퀀스 번호를 가져야 받아들여지는데(RFC 5961), 이것이 blind RST 공격을 어렵게 만듭니다.</p></div>
+
+<h2 id="compare"><span class="num">5.9</span>UDP vs TCP: 무엇을 언제 쓰나</h2>
+<table>
+  <thead><tr><th></th><th>UDP</th><th>TCP</th></tr></thead>
+  <tbody>
+    <tr><td>연결</td><td>비연결 (handshake 없음)</td><td>연결 지향 (3-way handshake)</td></tr>
+    <tr><td>신뢰성 / 순서</td><td>없음 (손실·중복·순서 바뀜 그대로 전달)</td><td>ACK·재전송·시퀀스 번호로 보장</td></tr>
+    <tr><td>전달 단위</td><td>메시지 경계 유지 (데이터그램)</td><td>바이트 스트림 (경계 없음 — 응용이 프레이밍 필요)</td></tr>
+    <tr><td>흐름·혼잡 제어</td><td>없음 (응용 책임)</td><td>있음 (rwnd, cwnd)</td></tr>
+    <tr><td>헤더</td><td>8 B</td><td>20–60 B</td></tr>
+    <tr><td>HOL blocking</td><td>없음</td><td>있음 (손실 하나가 뒤 데이터 전체를 막음)</td></tr>
+    <tr><td>멀티캐스트/브로드캐스트</td><td>가능</td><td>불가</td></tr>
+    <tr><td>대표 응용</td><td>DNS, DHCP, NTP, SNMP, VoIP/RTP, 게임, QUIC(HTTP/3)</td><td>HTTP/1.1·2, SSH, SMTP, 데이터베이스, 파일 전송</td></tr>
+  </tbody>
+</table>
+<div class="grid-3">
+  <div class="card tight"><b>DNS가 UDP인 이유</b><p class="small" style="margin:.3rem 0 0">질의 1개 = 패킷 1개. handshake 1 RTT가 아까움. 응답이 512B(EDNS 시 4096B)를 넘거나 존 전송(AXFR)이면 TCP로 폴백.</p></div>
+  <div class="card tight"><b>VoIP가 UDP인 이유</b><p class="small" style="margin:.3rem 0 0">20ms 음성 프레임이 손실되면 재전송해 받아봐야 이미 늦음. 손실 은닉(PLC)이 낫다. 타이밍은 RTP가 처리.</p></div>
+  <div class="card tight"><b>QUIC이 UDP인 이유</b><p class="small" style="margin:.3rem 0 0">TCP는 커널·미들박스에 굳어 바꾸기 어렵다. UDP 위에 스트림·혼잡 제어·암호화를 사용자 공간에서 다시 만들어 HOL blocking을 없애고 0-RTT 연결을 구현.</p></div>
+</div>
+
+<h2 id="practice"><span class="num">5.10</span>실습: 연결 상태와 handshake 관찰</h2>
+<h3>ss로 상태별 연결 보기</h3>
+<pre><code># 상태별 TCP 소켓 (리눅스)
+ss -tan state established
+ss -tan state time-wait | wc -l     # TIME_WAIT 개수
+ss -tlnp                            # LISTEN 소켓과 프로세스
+# macOS
+netstat -an -p tcp | awk '{print $6}' | sort | uniq -c</code></pre>
+<h3>tcpdump로 handshake 읽기</h3>
+<pre><code>sudo tcpdump -n -i any 'tcp port 80 and host 93.184.216.34'</code></pre>
+<div class="term"><span class="c"># 3-way handshake</span>
+12:00:01.000 IP 10.0.0.5.<span class="y">51234</span> > 93.184.216.34.80: Flags [<span class="g">S</span>], seq <span class="y">2839461218</span>, win 65535, options [mss 1460,sackOK,TS val 1 ecr 0,wscale 7], length 0
+12:00:01.012 IP 93.184.216.34.80 > 10.0.0.5.51234: Flags [<span class="g">S.</span>], seq <span class="y">1177100325</span>, ack <span class="y">2839461219</span>, win 65160, options [mss 1460,sackOK,TS val 9 ecr 1,wscale 7], length 0
+12:00:01.012 IP 10.0.0.5.51234 > 93.184.216.34.80: Flags [<span class="g">.</span>], ack 1, win 512, length 0
+<span class="c"># 데이터: 요청 78바이트 → 응답</span>
+12:00:01.013 IP 10.0.0.5.51234 > 93.184.216.34.80: Flags [<span class="g">P.</span>], seq 1:79, ack 1, win 512, length <span class="y">78</span>
+12:00:01.025 IP 93.184.216.34.80 > 10.0.0.5.51234: Flags [<span class="g">.</span>], ack <span class="y">79</span>, win 510, length 0
+12:00:01.026 IP 93.184.216.34.80 > 10.0.0.5.51234: Flags [<span class="g">P.</span>], seq 1:1257, ack 79, win 510, length 1256
+<span class="c"># 종료</span>
+12:00:01.030 IP 10.0.0.5.51234 > 93.184.216.34.80: Flags [<span class="g">F.</span>], seq 79, ack 1257, win 510, length 0
+12:00:01.042 IP 93.184.216.34.80 > 10.0.0.5.51234: Flags [<span class="g">F.</span>], seq 1257, ack 80, win 510, length 0
+12:00:01.042 IP 10.0.0.5.51234 > 93.184.216.34.80: Flags [<span class="g">.</span>], ack 1258, win 510, length 0</div>
+<ul>
+  <li><b>Flags</b>: <code>S</code>=SYN, <code>.</code>=ACK, <code>P</code>=PSH, <code>F</code>=FIN, <code>R</code>=RST. <code>S.</code>은 SYN+ACK.</li>
+  <li>첫 두 줄만 절대 시퀀스 번호를 보여주고, 그 뒤부터 tcpdump는 <b>상대 시퀀스</b>(ISN 기준 0부터)로 표시합니다(<code>-S</code>로 절대값 표시). 세 번째 줄의 <code>ack 1</code>은 "ISN+1"입니다.</li>
+  <li><code>seq 1:79</code>는 바이트 1부터 78까지(끝 번호는 배타적), 그에 대한 ACK가 <code>ack 79</code>.</li>
+  <li>이 예시에서 서버는 FIN+ACK를 하나로 합쳐 보내 종료가 3개 세그먼트처럼 보입니다. 서버가 ACK를 보낼 때 이미 닫을 준비가 되어 있으면 흔히 보이는 패턴입니다.</li>
+  <li>options의 <code>wscale 7</code>, <code>sackOK</code>, <code>TS</code>는 7·9장에서 다룹니다.</li>
+</ul>
+
+<h2 id="quiz"><span class="num">5.11</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>전송 계층은 포트로 프로세스를 구분한다. TCP 연결은 4-tuple로 식별되며, 서버 포트 하나로 수많은 연결을 동시에 유지할 수 있다.</li>
+    <li>UDP는 8바이트 헤더로 역다중화와 체크섬만 제공한다. 정책을 응용에 위임하는 것이 장점이다.</li>
+    <li>TCP 헤더의 seq/ack는 바이트 단위이며, SYN·FIN은 시퀀스 1바이트를 소비한다.</li>
+    <li>3-way handshake로 ISN을 교환하고, 4-way close로 방향별로 종료한다. 능동 종료 쪽은 2MSL TIME_WAIT를 거친다.</li>
+    <li>RFC 9293 상태 머신 11개 상태는 ss/netstat 출력의 상태 칼럼 그 자체다. 이상한 상태가 쌓이면 어느 전이가 막혔는지 추적한다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz, HeaderDiagram} = TCPIP;
+
+  /* ---------- 5.3 UDP 헤더 ---------- */
+  HeaderDiagram('#udp-hdr',{fields:[
+    {name:'Source Port',bits:16,cls:'c1',desc:'송신 측 포트. 응답이 필요 없으면 0일 수 있다(RFC 768). 실무에서는 거의 항상 임시 포트.'},
+    {name:'Destination Port',bits:16,cls:'c1',desc:'수신 측 포트. 수신 호스트는 이 값으로 소켓을 찾고, 없으면 ICMP Port Unreachable(Type 3, Code 3)을 돌려준다 — traceroute가 UDP를 쓰는 이유.'},
+    {name:'Length',bits:16,cls:'c2',desc:'UDP 헤더 + 데이터의 바이트 길이. 최소 8. IP 헤더의 Total Length와 중복되는 정보지만 UDP가 IP에 독립적이도록 둔다. IPv6 점보그램에서는 0이 될 수 있다.'},
+    {name:'Checksum',bits:16,cls:'c5',desc:'의사 헤더 + UDP 헤더 + 데이터의 1의 보수 합. IPv4에서는 선택(0 = 계산 안 함), IPv6에서는 필수. 계산 결과가 0이면 0xFFFF로 보낸다(0과 구분).'},
+    {name:'Data',variable:true,cls:'',desc:'응용 데이터. 메시지 경계가 보존된다 — recvfrom() 한 번에 데이터그램 하나.'},
+  ],selected:3});
+
+  /* ---------- 5.4 TCP 헤더 ---------- */
+  HeaderDiagram('#tcp-hdr',{fields:[
+    {name:'Source Port',bits:16,cls:'c1',desc:'송신 포트.'},
+    {name:'Destination Port',bits:16,cls:'c1',desc:'수신 포트.'},
+    {name:'Sequence Number',bits:32,cls:'c2',desc:'이 세그먼트 데이터의 첫 바이트 번호(SYN이면 ISN). 2^32 = 4GB마다 순환(wrap-around)하므로 고속 링크에서는 Timestamps 옵션(PAWS)으로 보완한다(7장).'},
+    {name:'Acknowledgment Number',bits:32,cls:'c2',desc:'ACK 플래그가 켜져 있을 때 유효. "다음에 받기를 기대하는 바이트 번호" = 지금까지 연속으로 받은 마지막 바이트 + 1. 누적(cumulative) ACK.'},
+    {name:'Data Offset',bits:4,cls:'c3',desc:'헤더 길이를 32비트 워드 단위로. 최소 5(20B), 최대 15(60B). 옵션 길이를 알기 위해 필요.'},
+    {name:'Reserved',bits:4,cls:'',desc:'0으로 채움. 과거 6비트였으나 RFC 3168(ECN)이 CWR/ECE에 2비트를 가져갔고, RFC 9293은 4비트로 정의. (실험적 AccECN은 1비트를 더 쓴다.)'},
+    {name:'Flags',bits:8,cls:'c5',desc:'CWR, ECE, URG, ACK, PSH, RST, SYN, FIN. 아래 플래그 패널 참조.'},
+    {name:'Window',bits:16,cls:'c4',desc:'수신 윈도우(rwnd): "나는 지금 이만큼 더 받을 수 있다"(바이트). 최대 65535 — Window Scale 옵션으로 최대 2^14배 확장(9장). 흐름 제어의 핵심.'},
+    {name:'Checksum',bits:16,cls:'c5',desc:'의사 헤더 + TCP 헤더 + 데이터의 1의 보수 합. UDP와 달리 항상 필수.'},
+    {name:'Urgent Pointer',bits:16,cls:'',desc:'URG 플래그가 켜졌을 때 긴급 데이터의 끝 오프셋. 구현마다 해석이 달라 사실상 사용 금지(RFC 6093). telnet의 Ctrl-C 정도가 유일한 유산.'},
+    {name:'Options',variable:true,cls:'c3',desc:'MSS(종류 2), Window Scale(3), SACK Permitted(4), SACK(5), Timestamps(8), TCP Fast Open(34) 등. 각 옵션은 종류 1B + 길이 1B + 값. NOP(1)로 4바이트 정렬.'},
+    {name:'Data',variable:true,cls:'',desc:'바이트 스트림의 일부. 경계 없음 — 송신 측 write() 횟수와 수신 측 read() 횟수는 일치하지 않는다.'},
+  ],selected:2});
+
+  const FLAGS = [
+    ['CWR','Congestion Window Reduced. ECN(명시적 혼잡 통지)에서 송신자가 "ECE를 받아 cwnd를 줄였다"고 알림(RFC 3168). 8장.'],
+    ['ECE','ECN-Echo. 수신자가 IP 헤더의 CE(Congestion Experienced) 마크를 보고 송신자에게 혼잡을 되돌려 알림. handshake에서는 ECN 협상에 쓰임.'],
+    ['URG','Urgent Pointer 유효. 사실상 사용하지 않음(RFC 6093).'],
+    ['ACK','Acknowledgment 번호 유효. 첫 SYN을 제외한 모든 세그먼트에 켜져 있다. ACK가 꺼진 세그먼트가 보이면 SYN이거나 비정상.'],
+    ['PSH','Push. 수신 측에 "버퍼링하지 말고 즉시 응용에 넘겨라". 현대 스택은 송신 버퍼의 마지막 세그먼트에 자동으로 켠다. 수신 측 동작에 실질적 영향은 거의 없음.'],
+    ['RST','Reset. 연결 즉시 중단. 닫힌 포트로의 SYN, 알 수 없는 연결, 비정상 종료. 재전송·ACK 없음.'],
+    ['SYN','Synchronize. 연결 수립, ISN 전달. 시퀀스 1바이트 소비. SYN이 켜진 세그먼트는 데이터를 담을 수 있지만(TFO) 일반적으로 없음.'],
+    ['FIN','Finish. "내 쪽 송신 끝". 시퀀스 1바이트 소비. 반대 방향은 열려 있을 수 있음(half-close).'],
+  ];
+  const fl = $('#flags'), fd = $('#flag-desc');
+  FLAGS.forEach(([n,d])=>{ const b = el('button','',n); b.onclick=()=>{ $$('button',fl).forEach(x=>x.classList.toggle('on',x===b)); fd.innerHTML=`<b>${n}</b> — ${d}`; }; fl.appendChild(b); });
+  const COMBOS = [['SYN','연결 요청 (ACK 없음)'],['SYN+ACK','연결 수락'],['ACK','순수 확인응답 / handshake 3번째'],['PSH+ACK','데이터 전송 (tcpdump의 P.)'],['FIN+ACK','종료 요청'],['RST','거부 / 비정상 종료'],['RST+ACK','닫힌 포트로의 SYN에 대한 응답']];
+  COMBOS.forEach(([c,d])=>{ const b=el('button','btn sm',c); b.title=d; b.onclick=()=>{ const set=c.split('+'); $$('button',fl).forEach(x=>x.classList.toggle('on',set.includes(x.textContent))); fd.innerHTML=`<b>${c}</b> — ${d}`; }; $('#combos').appendChild(b); });
+
+  /* ---------- 시퀀스 다이어그램 헬퍼 ---------- */
+  function seqDiagram(svgEl, opt){
+    const L = opt.left, R = opt.right, XL = 230, XR = 670, top = 70, bottom = opt.h - 30;
+    const g = svg('g'); svgEl.appendChild(g);
+    const base = svg('g');
+    base.appendChild(svg('defs',{},[svg('marker',{id:opt.id+'-ar',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto'},svg('path',{d:'M0 0L10 5 0 10z',fill:'context-stroke'}))]));
+    [[XL,L],[XR,R]].forEach(([x,n])=>{
+      base.appendChild(svg('rect',{x:x-70,y:14,width:140,height:34,rx:8,class:'node'}));
+      base.appendChild(svg('text',{x,y:36,'text-anchor':'middle','font-weight':700,'font-size':13},n));
+      base.appendChild(svg('line',{x1:x,y1:48,x2:x,y2:bottom,class:'line',stroke:'var(--border)','stroke-dasharray':'4 4'}));
+    });
+    const stL = svg('text',{x:XL-80,y:top-6,'text-anchor':'end',class:'mono','font-size':11,'font-weight':700,fill:'var(--l-tr)'},'');
+    const stR = svg('text',{x:XR+80,y:top-6,'text-anchor':'start',class:'mono','font-size':11,'font-weight':700,fill:'var(--l-net)'},'');
+    base.append(stL,stR);
+    svgEl.appendChild(base); svgEl.appendChild(g);
+    const sideX = s => s==='L'?XL:XR;
+    let stateY = {L:top-6, R:top-6};
+    return {
+      msg(from,to,label,y,color,instant,sub){
+        const x1=sideX(from), x2=sideX(to), y1=y, y2=y+26;
+        const grp = svg('g',{class:'msg'});
+        const line = svg('line',{x1,y1,x2,y2,stroke:color,'stroke-width':2.5});
+        const len = Math.hypot(x2-x1,y2-y1);
+        line.style.strokeDasharray=len; line.style.strokeDashoffset=instant?0:len; line.style.transition='stroke-dashoffset .6s ease';
+        const ang = Math.atan2(y2-y1,x2-x1)*180/Math.PI;
+        const head = svg('path',{d:'M-10 -5 L0 0 L-10 5 z',fill:color,transform:`translate(${x2},${y2}) rotate(${ang})`});
+        head.style.opacity=instant?1:0; head.style.transition='opacity .2s .5s';
+        const mid = (x1+x2)/2, my = (y1+y2)/2;
+        const t = svg('text',{x:mid,y:my-8,'text-anchor':'middle',class:'mono','font-size':12,'font-weight':700,fill:color},label);
+        const t2 = sub? svg('text',{x:mid,y:my+16,'text-anchor':'middle','font-size':10.5,class:'muted'},sub):null;
+        [t,t2].forEach(e=>{ if(!e) return; e.style.opacity=instant?1:0; e.style.transition='opacity .3s .3s'; });
+        grp.append(line,head,t); if(t2) grp.appendChild(t2);
+        g.appendChild(grp);
+        requestAnimationFrame(()=>{ line.style.strokeDashoffset=0; head.style.opacity=1; t.style.opacity=1; if(t2) t2.style.opacity=1; });
+      },
+      state(side,text,y,instant){
+        const x = sideX(side); const el2 = svg('g',{class:'fade'});
+        el2.appendChild(svg('rect',{x:side==='L'?x-150:x+12,y:y-12,width:138,height:20,rx:5,fill:side==='L'?'var(--primary-soft)':'var(--green-soft)'}));
+        el2.appendChild(svg('text',{x:side==='L'?x-81:x+81,y:y+2,'text-anchor':'middle',class:'mono','font-size':10.5,'font-weight':700,fill:side==='L'?'var(--primary-text)':'var(--l-net)'},text));
+        el2.style.opacity=instant?1:0; g.appendChild(el2); requestAnimationFrame(()=>el2.style.opacity=1);
+      },
+      note(text,y,instant){ const t=svg('text',{x:450,y,'text-anchor':'middle','font-size':11,fill:'var(--red)','font-weight':700},text); t.style.opacity=instant?1:0; t.style.transition='opacity .3s'; g.appendChild(t); requestAnimationFrame(()=>t.style.opacity=1); },
+      clear(){ g.innerHTML=''; }
+    };
+  }
+
+  /* ---------- 5.5 3-way handshake ---------- */
+  const hs = seqDiagram($('#hs-svg'),{left:'클라이언트 (능동 열기)',right:'서버 (수동 열기)',h:330,id:'hs'});
+  const C='var(--l-tr)', S='var(--l-net)';
+  Stepper('#hs-anim',{intro:'클라이언트가 connect()를 호출하는 순간부터 시작합니다.',steps:[
+    {title:'초기 상태',text:'서버는 <code>listen()</code>을 호출해 <b>LISTEN</b> 상태로 SYN을 기다린다. 클라이언트는 아직 소켓만 만든 <b>CLOSED</b> 상태.',run(i,ins){ hs.state('L','CLOSED',70,ins); hs.state('R','LISTEN',70,ins); }},
+    {title:'① SYN',text:'클라이언트가 <code>connect()</code> → ISN <b>x</b>(예: 1000)를 담아 SYN 전송. 상태 <b>SYN_SENT</b>. MSS·Window Scale·SACK 허용 등 옵션도 이때 제안한다.',run(i,ins){ hs.msg('L','R','SYN  seq=x',100,C,ins,'옵션: MSS, WScale, SACK-OK, TS'); hs.state('L','SYN_SENT',100,ins); }},
+    {title:'② SYN+ACK',text:'서버가 SYN을 받고 자기 ISN <b>y</b>(예: 5000)를 담아 SYN을 보내면서, 동시에 <b>ack = x+1</b>로 클라이언트 SYN을 확인한다. 상태 <b>SYN_RCVD</b>. 이 시점에 서버 커널은 "SYN 큐"에 반쯤 열린 연결을 기록한다.',run(i,ins){ hs.msg('R','L','SYN+ACK  seq=y, ack=x+1',150,S,ins,'서버도 자기 옵션을 제시'); hs.state('R','SYN_RCVD',150,ins); }},
+    {title:'③ ACK',text:'클라이언트가 <b>ack = y+1</b>로 서버 SYN을 확인. 클라이언트는 즉시 <b>ESTABLISHED</b>가 되어 데이터를 보낼 수 있다(이 ACK에 데이터를 실어 보낼 수도 있다). 서버는 이 ACK를 받으면 ESTABLISHED가 되고 <code>accept()</code>가 연결을 반환한다.',run(i,ins){ hs.msg('L','R','ACK  seq=x+1, ack=y+1',200,C,ins); hs.state('L','ESTABLISHED',200,ins); hs.state('R','ESTABLISHED',230,ins); }},
+    {title:'왜 2-way로는 안 되는가',text:'양방향 각각 "내 ISN을 상대가 받았다"는 확인이 필요하다. ①만으로는 서버가 클라이언트 ISN을 알지만 클라이언트는 서버 ISN을 모르고, ②로 클라이언트는 알게 되지만 서버는 자기 ISN이 전달됐는지 모른다. ③이 그 확인이다. 또한 ③이 없으면 지연된 옛 SYN 하나로 서버에 연결이 만들어지는 문제가 생긴다.',run(i,ins){ hs.note('양방향 ISN 확인 완료 → 1 RTT 소요 (클라이언트 기준)',275,ins); }},
+  ],reset(){ hs.clear(); }});
+
+  /* ---------- 5.6 seq/ack 계산기 ---------- */
+  function calcSeq(){
+    const ic=+$('#isn-c').value||0, is=+$('#isn-s').value||0, rl=+$('#req-len').value||0, sl=+$('#res-len').value||0;
+    const rows = [
+      ['C→S','SYN',ic,'—',0,'ISN 교환. SYN이 1바이트 소비'],
+      ['S→C','SYN+ACK',is,ic+1,0,'ack = 클라이언트 ISN + 1'],
+      ['C→S','ACK',ic+1,is+1,0,'데이터 없음 → seq 소비 안 함'],
+      ['C→S','PSH+ACK (요청)',ic+1,is+1,rl,`바이트 ${ic+1} ~ ${ic+rl} 전송`],
+      ['S→C','ACK',is+1,ic+1+rl,0,`"${ic+1+rl}번 바이트부터 보내라"`],
+      ['S→C','PSH+ACK (응답)',is+1,ic+1+rl,sl,`바이트 ${is+1} ~ ${is+sl} 전송`],
+      ['C→S','ACK',ic+1+rl,is+1+sl,0,'응답 전체 수신 확인'],
+      ['C→S','FIN+ACK',ic+1+rl,is+1+sl,0,'FIN이 1바이트 소비'],
+      ['S→C','ACK',is+1+sl,ic+2+rl,0,'ack = FIN seq + 1'],
+      ['S→C','FIN+ACK',is+1+sl,ic+2+rl,0,''],
+      ['C→S','ACK',ic+2+rl,is+2+sl,0,'→ TIME_WAIT'],
+    ];
+    $('#seq-table').innerHTML = '<thead><tr><th>방향</th><th>세그먼트</th><th>seq</th><th>ack</th><th>길이</th><th>설명</th></tr></thead><tbody>' +
+      rows.map(r=>`<tr><td>${r[0]}</td><td class="mono">${r[1]}</td><td class="mono">${r[2]}</td><td class="mono">${r[3]}</td><td class="mono">${r[4]}</td><td class="small">${r[5]}</td></tr>`).join('') + '</tbody>';
+  }
+  ['isn-c','isn-s','req-len','res-len'].forEach(id=>$('#'+id).addEventListener('input',calcSeq)); calcSeq();
+
+  /* ---------- 5.7 4-way close ---------- */
+  const cl = seqDiagram($('#cl-svg'),{left:'클라이언트 (능동 종료)',right:'서버 (수동 종료)',h:360,id:'cl'});
+  const P='var(--l-app)', O='var(--l-link)';
+  Stepper('#cl-anim',{intro:'양쪽 모두 ESTABLISHED. 클라이언트가 먼저 close()를 호출합니다.',autoplayMs:2200,steps:[
+    {title:'초기 상태',text:'양쪽 ESTABLISHED. 지금까지 클라이언트는 u-1 바이트, 서버는 v-1 바이트를 보냈다고 하자.',run(i,ins){ cl.state('L','ESTABLISHED',70,ins); cl.state('R','ESTABLISHED',70,ins); }},
+    {title:'① FIN (클라이언트 → 서버)',text:'<code>close()</code> → FIN 전송(seq=u). 클라이언트 <b>FIN_WAIT_1</b>. "나는 더 보낼 게 없다." 단, 받는 것은 계속 가능.',run(i,ins){ cl.msg('L','R','FIN+ACK  seq=u, ack=v',100,P,ins); cl.state('L','FIN_WAIT_1',100,ins); }},
+    {title:'② ACK (서버 → 클라이언트)',text:'서버 커널이 즉시 ACK(ack=u+1). 서버는 <b>CLOSE_WAIT</b> — 응용이 <code>read()</code>하면 0(EOF)을 받는다. 클라이언트는 ACK를 받고 <b>FIN_WAIT_2</b>. 서버 응용이 아직 보낼 데이터가 있다면 이 사이에 계속 보낼 수 있다(half-close).',run(i,ins){ cl.msg('R','L','ACK  ack=u+1',140,O,ins,'서버 응용은 read()에서 EOF를 봄'); cl.state('R','CLOSE_WAIT',140,ins); cl.state('L','FIN_WAIT_2',165,ins); }},
+    {title:'③ FIN (서버 → 클라이언트)',text:'서버 응용이 <code>close()</code> → FIN(seq=v). 서버 <b>LAST_ACK</b>. 응용이 close()를 안 하면 CLOSE_WAIT가 영원히 남는다 — 서버에 CLOSE_WAIT가 쌓이면 <b>응용 버그</b>(소켓 누수)다.',run(i,ins){ cl.msg('R','L','FIN+ACK  seq=v, ack=u+1',200,O,ins); cl.state('R','LAST_ACK',200,ins); }},
+    {title:'④ ACK (클라이언트 → 서버)',text:'클라이언트가 ACK(ack=v+1)를 보내고 <b>TIME_WAIT</b>로. 서버는 ACK를 받자마자 <b>CLOSED</b>(소켓 자원 해제).',run(i,ins){ cl.msg('L','R','ACK  ack=v+1',240,P,ins); cl.state('L','TIME_WAIT',240,ins); cl.state('R','CLOSED',268,ins); }},
+    {title:'2MSL 대기',text:'클라이언트는 2×MSL(리눅스 60초, RFC 9293 권고 MSL=2분) 동안 TIME_WAIT를 유지한다. 이 동안 ④가 유실되어 서버가 FIN을 재전송하면 다시 ACK해 준다. 시간이 지나면 <b>CLOSED</b>.',run(i,ins){ cl.note('── 2MSL (예: 60s) 동안 같은 4-tuple 재사용 불가 ──',300,ins); cl.state('L','CLOSED',325,ins); }},
+  ],reset(){ cl.clear(); }});
+
+  /* ---------- 5.8 상태 머신 ---------- */
+  const SM = {
+    CLOSED:{x:450,y:40,d:'연결 없음. 가상의 시작·끝 상태. 소켓은 있지만 TCB(연결 제어 블록)가 없다.'},
+    LISTEN:{x:200,y:140,d:'서버가 listen() 호출. 원격 SYN을 기다린다. ss -tln 의 LISTEN.'},
+    SYN_SENT:{x:700,y:140,d:'클라이언트가 SYN을 보내고 SYN+ACK를 기다림. 여기서 오래 머물면 서버가 응답하지 않는 것(방화벽 DROP). connect()가 블록되는 구간.'},
+    SYN_RCVD:{x:450,y:240,d:'서버가 SYN을 받고 SYN+ACK를 보낸 뒤 ACK를 기다림(half-open). SYN flood 공격은 이 상태를 대량으로 만든다(12장).'},
+    ESTABLISHED:{x:450,y:330,d:'데이터 전송 가능한 정상 상태. 양방향 ISN 교환 완료.'},
+    FIN_WAIT_1:{x:200,y:420,d:'능동 종료: FIN을 보내고 그에 대한 ACK(또는 상대 FIN)를 기다림.'},
+    FIN_WAIT_2:{x:120,y:510,d:'내 FIN은 ACK됨. 상대 FIN을 기다림. 상대 응용이 close()를 안 하면 여기서 머문다(리눅스 tcp_fin_timeout 60s 후 정리 — 단, 소켓이 close()된 고아 연결일 때만).'},
+    CLOSING:{x:330,y:510,d:'동시 종료: FIN을 보냈는데 ACK 대신 상대 FIN이 먼저 옴. 둘 다 능동 종료한 경우. 드물다.'},
+    TIME_WAIT:{x:230,y:600,d:'마지막 ACK를 보낸 뒤 2MSL 대기. 능동 종료 측에만 생긴다. 많이 쌓여도 대개 정상이지만 임시 포트 고갈의 원인이 될 수 있다.'},
+    CLOSE_WAIT:{x:700,y:420,d:'수동 종료: 상대 FIN을 받고 ACK함. 응용이 close()를 호출하기를 기다리는 중. 이 상태가 쌓이면 응용이 소켓을 안 닫는 버그.'},
+    LAST_ACK:{x:700,y:510,d:'수동 종료 측이 FIN을 보내고 마지막 ACK를 기다림.'},
+  };
+  const EDGES = [
+    ['CLOSED','LISTEN','passive open (listen)','net'],
+    ['CLOSED','SYN_SENT','active open / snd SYN','tr'],
+    ['LISTEN','SYN_RCVD','rcv SYN / snd SYN,ACK','net'],
+    ['SYN_SENT','ESTABLISHED','rcv SYN,ACK / snd ACK','tr'],
+    ['SYN_RCVD','ESTABLISHED','rcv ACK of SYN','net'],
+    ['SYN_SENT','SYN_RCVD','rcv SYN / snd SYN,ACK (동시 열기)','muted'],
+    ['SYN_SENT','CLOSED','close / timeout / rcv RST','muted'],
+    ['SYN_RCVD','LISTEN','rcv RST','muted'],
+    ['ESTABLISHED','FIN_WAIT_1','close / snd FIN','app'],
+    ['ESTABLISHED','CLOSE_WAIT','rcv FIN / snd ACK','link'],
+    ['FIN_WAIT_1','FIN_WAIT_2','rcv ACK of FIN','app'],
+    ['FIN_WAIT_1','CLOSING','rcv FIN / snd ACK','muted'],
+    ['FIN_WAIT_1','TIME_WAIT','rcv FIN,ACK / snd ACK','app'],
+    ['FIN_WAIT_2','TIME_WAIT','rcv FIN / snd ACK','app'],
+    ['CLOSING','TIME_WAIT','rcv ACK of FIN','muted'],
+    ['CLOSE_WAIT','LAST_ACK','close / snd FIN','link'],
+    ['LAST_ACK','CLOSED','rcv ACK of FIN','link'],
+    ['TIME_WAIT','CLOSED','timeout 2MSL','app'],
+  ];
+  const COL = {tr:'var(--l-tr)',net:'var(--l-net)',app:'var(--l-app)',link:'var(--l-link)',muted:'var(--muted)'};
+  const fsm = $('#fsm-svg'); const W=130,H=34;
+  const eg = svg('g'), ng = svg('g'); fsm.append(eg,ng);
+  function edgePoint(a,b){ // a에서 b 방향으로 a 사각형 경계점
+    const dx=b.x-a.x, dy=b.y-a.y; const t=Math.min(Math.abs((W/2)/(dx||1e-9)),Math.abs((H/2)/(dy||1e-9)));
+    return {x:a.x+dx*t, y:a.y+dy*t};
+  }
+  const edgeEls = [];
+  EDGES.forEach(([f,t,lbl,k],i)=>{
+    const A=SM[f], B=SM[t]; const p1=edgePoint(A,B), p2=edgePoint(B,A);
+    const g = svg('g',{class:'sm-edge','data-f':f,'data-t':t});
+    const col = COL[k];
+    // 곡선: 양방향 겹침 회피를 위해 약간 휨
+    const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2; const nx=-(p2.y-p1.y), ny=(p2.x-p1.x); const nl=Math.hypot(nx,ny)||1;
+    const bend = (f==='TIME_WAIT'||f==='LAST_ACK'||f==='SYN_SENT'&&t==='CLOSED'||f==='SYN_RCVD'&&t==='LISTEN')? 60 : 14;
+    const cx=mx+nx/nl*bend, cy=my+ny/nl*bend;
+    const path = svg('path',{d:`M${p1.x} ${p1.y} Q${cx} ${cy} ${p2.x} ${p2.y}`,stroke:col,'marker-end':'url(#f-ar)'});
+    g.appendChild(path);
+    const lx=(p1.x+2*cx+p2.x)/4, ly=(p1.y+2*cy+p2.y)/4;
+    const tw = lbl.length*5.6+8;
+    g.appendChild(svg('rect',{x:lx-tw/2,y:ly-8,width:tw,height:14,rx:3,class:'lbl-bg'}));
+    g.appendChild(svg('text',{x:lx,y:ly+3,'text-anchor':'middle'},lbl));
+    eg.appendChild(g); edgeEls.push(g);
+  });
+  Object.entries(SM).forEach(([name,s])=>{
+    const g = svg('g',{class:'sm-node','data-n':name});
+    g.appendChild(svg('rect',{x:s.x-W/2,y:s.y-H/2,width:W,height:H,rx:9}));
+    g.appendChild(svg('text',{x:s.x,y:s.y+4,'text-anchor':'middle'},name));
+    g.addEventListener('click',()=>{
+      $$('.sm-node',fsm).forEach(n=>n.classList.toggle('sel',n===g));
+      edgeEls.forEach(e=>{ const on = e.dataset.f===name||e.dataset.t===name; e.classList.toggle('hi',on); e.classList.toggle('dim',!on); });
+      const outs = EDGES.filter(e=>e[0]===name).map(e=>`<li>→ <b>${e[1]}</b>: <code>${e[2]}</code></li>`).join('');
+      const ins = EDGES.filter(e=>e[1]===name).map(e=>`<li><b>${e[0]}</b> →: <code>${e[2]}</code></li>`).join('');
+      $('#sm-info').innerHTML=`<b style="font-family:var(--mono)">${name}</b><p style="margin:.3rem 0">${s.d}</p><div class="grid-2" style="gap:6px"><div><div class="small"><b>나가는 전이</b></div><ul style="margin:0;font-size:.85rem">${outs||'<li>—</li>'}</ul></div><div><div class="small"><b>들어오는 전이</b></div><ul style="margin:0;font-size:.85rem">${ins||'<li>—</li>'}</ul></div></div>`;
+    });
+    ng.appendChild(g);
+  });
+
+  /* ---------- 5.11 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'한 웹 서버가 포트 443으로 동시에 1만 개 연결을 유지할 수 있는 이유는?',options:['서버가 연결마다 다른 포트를 연다','연결이 4-tuple(양쪽 IP·포트)로 식별되어 클라이언트 측 IP·포트가 다르면 구분되므로','TCP는 포트를 사용하지 않는다','443은 특수 포트라서'],answer:1,explain:'서버 포트는 고정이어도 클라이언트 IP나 임시 포트가 다르면 다른 연결이다.'},
+    {q:'클라이언트 ISN=100, 서버 ISN=300일 때 handshake 3번째 세그먼트(ACK)의 seq와 ack는?',options:['seq=100, ack=300','seq=101, ack=301','seq=100, ack=301','seq=101, ack=300'],answer:1,explain:'SYN이 1바이트를 소비하므로 클라이언트 다음 seq는 101, 서버 SYN을 확인하는 ack는 301.'},
+    {q:'UDP 체크섬 계산에 의사 헤더(src/dst IP 등)를 포함하는 이유는?',options:['IP 헤더에 체크섬이 없어서','잘못된 호스트로 배달된 데이터그램을 전송 계층에서 검출하기 위해','암호화를 위해','길이를 줄이기 위해'],answer:1,explain:'IP 주소 손상으로 엉뚱한 곳에 도착한 세그먼트를 걸러낸다. IPv6는 IP 헤더에 체크섬이 없어 UDP 체크섬이 필수가 되었다.'},
+    {q:'서버에 CLOSE_WAIT 상태 연결이 수천 개 쌓여 있다. 가장 가능성 높은 원인은?',options:['네트워크 지연','클라이언트가 FIN을 보내지 않음','서버 응용이 소켓을 close()하지 않음(소켓 누수)','TIME_WAIT 설정 오류'],answer:2,explain:'CLOSE_WAIT는 상대 FIN을 받은 뒤 로컬 응용의 close()를 기다리는 상태다. 커널이 아닌 응용 문제.'},
+    {q:'TIME_WAIT 상태가 생기는 쪽은?',options:['항상 서버','항상 클라이언트','먼저 FIN을 보낸(능동 종료) 쪽','나중에 FIN을 보낸 쪽'],answer:2,explain:'마지막 ACK를 보내는 능동 종료 측이 ACK 유실에 대비해 2MSL 대기한다.'},
+    {q:'닫혀 있는(LISTEN 소켓 없는) 포트로 SYN이 도착하면 호스트는?',options:['SYN+ACK를 보낸다','아무 응답도 하지 않는다','RST(+ACK)를 보낸다','ICMP Echo Reply를 보낸다'],answer:2,explain:'RST로 거부한다. 응답이 아예 없다면 방화벽이 DROP한 것이고, 포트 스캐너는 이를 "filtered"로 구분한다.'},
+    {q:'tcpdump 출력 <code>Flags [P.], seq 1:79, ack 1</code>의 의미로 옳은 것은?',options:['79바이트를 보냈고 상대로부터 1바이트를 받았다','바이트 1~78(78바이트)을 보내며, 상대가 다음에 보낼 바이트는 1','PSH 없이 ACK만 보냈다','seq 79부터 데이터가 시작된다'],answer:1,explain:'seq a:b는 a부터 b-1까지. PSH+ACK 데이터 세그먼트이며 ack 1은 상대 ISN+1(아직 상대 데이터를 받지 않음).'},
+    {q:'VoIP가 UDP를 쓰는 핵심 이유는?',options:['UDP가 더 안전해서','TCP는 멀티캐스트만 지원해서','재전송된 늦은 패킷이 실시간 재생에 쓸모없고, 손실 은닉이 더 나아서','UDP 헤더가 커서'],answer:2,explain:'실시간 미디어는 지연이 손실보다 치명적이다. TCP의 재전송과 HOL blocking이 오히려 품질을 떨어뜨린다.'},
+    {q:'반쪽 닫기(half-close)에 대한 설명으로 옳은 것은?',options:['FIN을 보내면 양방향이 모두 닫힌다','FIN은 "내 송신 끝"만 의미하며, 상대 데이터는 계속 받을 수 있다','UDP에서만 가능하다','RST로 구현한다'],answer:1,explain:'shutdown(SHUT_WR)로 송신만 닫고 응답을 계속 읽는 패턴이 가능하다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

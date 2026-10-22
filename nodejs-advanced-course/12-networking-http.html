@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>네트워킹 심층</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .pool-stage { font-size: 11px; font-family: var(--mono); }
+  .pool-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .pool-row .n { min-width: 64px; color: var(--muted); }
+  .pool-row .timeline { flex: 1; height: 22px; margin: 0; }
+  .pool-row .seg.hs { background: var(--warn-soft); color: var(--warn); }
+  .pool-row .seg.rq { background: var(--accent-soft); }
+  .pool-row .seg.idle { background: var(--surface-2); color: var(--muted); border: 1px dashed var(--border); }
+  .race-svg text { font-size: 12px; }
+  .race-svg .bar { stroke: none; }
+  .verdict { padding: 12px 14px; border-radius: 10px; font-weight: 700; margin-top: 10px; }
+  .verdict.ok { background: var(--ok-soft); color: var(--ok); }
+  .verdict.bad { background: var(--bad-soft); color: var(--bad); }
+  .verdict.warn { background: var(--warn-soft); color: var(--warn); }
+  .h2-stage .pool-row .seg.h2 { background: var(--violet-soft); }
+  .to-tbl td:first-child { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+  .err-tbl td:first-child { font-family: var(--mono); font-weight: 700; }
+</style>
+</head>
+<body data-chapter="12">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">성능과 진단 · Chapter 12</span>
+    <h1>네트워킹 심층: HTTP/1.1·2, 커넥션 관리</h1>
+    <p class="lead">Node.js 서비스의 장애 중 가장 흔하면서 가장 오래 걸려 잡는 부류가 "간헐적 502", "ECONNRESET", "소켓 고갈"입니다. 모두 <b>커넥션의 수명</b>을 양쪽 끝(서버·클라이언트·중간의 로드밸런서)이 다르게 이해해서 생깁니다. 이 장은 TCP 커넥션이 태어나서 닫히기까지 Node.js가 관여하는 모든 타이머와 풀을 분해하고, HTTP/2·TLS·DNS까지 운영자가 손대야 하는 설정을 정리합니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>HTTP 서버의 타임아웃 7종이 커넥션 수명의 어느 구간에 적용되는지 설명하고 기본값을 안다.</li>
+      <li>keep-alive 커넥션에서 서버·LB 타임아웃 불일치가 502를 만드는 메커니즘을 재현하고 올바른 값을 정할 수 있다.</li>
+      <li>http.Agent와 undici의 커넥션 풀 동작(maxSockets, 스케줄링, 유휴 소켓 수명)을 이해하고 외부 호출 설정을 설계할 수 있다.</li>
+      <li>HTTP/2 멀티플렉싱, TLS 세션 재개, DNS 조회 경로의 비용을 알고 적절한 선택을 할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">커넥션의 일생</a></li>
+    <li><a href="#s2">서버 내부: llhttp 파서와 요청 객체</a></li>
+    <li><a href="#s3">서버 타임아웃 7종</a></li>
+    <li><a href="#s4">keep-alive와 로드밸런서: 간헐적 502의 해부</a></li>
+    <li><a href="#s5">클라이언트: http.Agent 커넥션 풀</a></li>
+    <li><a href="#s6">undici와 fetch</a></li>
+    <li><a href="#s7">HTTP/2</a></li>
+    <li><a href="#s8">TLS 핸드셰이크 비용과 세션 재개</a></li>
+    <li><a href="#s9">DNS: 캐시 없는 lookup의 함정</a></li>
+    <li><a href="#s10">소켓 옵션, 에러 코드, 한계값</a></li>
+    <li><a href="#s11">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 커넥션의 일생</h2>
+    <p>HTTP 요청 하나의 비용은 "서버가 핸들러를 실행하는 시간"보다 커넥션을 <em>만들고 유지하고 닫는</em> 비용에 좌우되는 경우가 많습니다. 아래 도식은 TLS를 쓰는 keep-alive 커넥션의 전형적인 일생이며, 각 구간에 어떤 Node.js 설정이 관여하는지 표시했습니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 900 330" role="img" aria-label="커넥션 수명 도식">
+        <defs><marker id="arrC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <line x1="40" y1="60" x2="880" y2="60" class="line" marker-end="url(#arrC)"/>
+        <text x="40" y="48" class="muted" font-size="11">시간 →</text>
+        <g>
+          <rect x="40" y="80" width="90" height="40" rx="7" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="85" y="98" text-anchor="middle" font-size="12">TCP 3-way</text><text x="85" y="112" text-anchor="middle" font-size="10.5" class="muted">1 RTT</text>
+          <rect x="135" y="80" width="110" height="40" rx="7" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="190" y="98" text-anchor="middle" font-size="12">TLS 핸드셰이크</text><text x="190" y="112" text-anchor="middle" font-size="10.5" class="muted">1 RTT (1.3) / 2 RTT (1.2)</text>
+          <rect x="250" y="80" width="80" height="40" rx="7" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="290" y="98" text-anchor="middle" font-size="12">요청 헤더</text><text x="290" y="112" text-anchor="middle" font-size="10.5" class="muted">headersTimeout</text>
+          <rect x="335" y="80" width="70" height="40" rx="7" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="370" y="98" text-anchor="middle" font-size="12">바디</text><text x="370" y="112" text-anchor="middle" font-size="10.5" class="muted">requestTimeout</text>
+          <rect x="410" y="80" width="80" height="40" rx="7" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="450" y="98" text-anchor="middle" font-size="12">핸들러</text><text x="450" y="112" text-anchor="middle" font-size="10.5" class="muted">앱 코드</text>
+          <rect x="495" y="80" width="70" height="40" rx="7" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="530" y="98" text-anchor="middle" font-size="12">응답</text><text x="530" y="112" text-anchor="middle" font-size="10.5" class="muted">server.timeout</text>
+          <rect x="570" y="80" width="130" height="40" rx="7" style="fill:var(--surface-2);stroke:var(--border);stroke-dasharray:4 3"/><text x="635" y="98" text-anchor="middle" font-size="12">유휴 (keep-alive)</text><text x="635" y="112" text-anchor="middle" font-size="10.5" class="muted">keepAliveTimeout 5s</text>
+          <rect x="705" y="80" width="80" height="40" rx="7" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="745" y="98" text-anchor="middle" font-size="12">요청 2 …</text>
+          <rect x="790" y="80" width="90" height="40" rx="7" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="835" y="98" text-anchor="middle" font-size="12">FIN / RST</text><text x="835" y="112" text-anchor="middle" font-size="10.5" class="muted">'close' 이벤트</text>
+        </g>
+        <g>
+          <text x="40" y="160" font-weight="700" font-size="13">비용의 실체</text>
+          <text x="40" y="182" font-size="12.5">• 핸드셰이크(주황)는 RTT에 비례: 같은 AZ 0.5ms, 리전 간 30~80ms, 모바일 100ms+. 요청 자체가 5ms라면 핸드셰이크가 요청의 10배일 수 있다.</text>
+          <text x="40" y="204" font-size="12.5">• keep-alive(점선)는 이 핸드셰이크를 '다음 요청'에 재사용하기 위한 투자. 유휴 소켓은 양쪽 모두 메모리(커널 버퍼 + Socket 객체 수십 KB)를 점유한다.</text>
+          <text x="40" y="226" font-size="12.5">• 종료는 공짜가 아니다: 능동 종료 측에 TIME_WAIT(60s)가 남는다. 클라이언트가 초당 수천 커넥션을 열고 닫으면 로컬 포트(약 28k개)가 고갈된다.</text>
+          <text x="40" y="260" font-weight="700" font-size="13">이 장의 한 줄</text>
+          <text x="40" y="282" font-size="12.5">커넥션을 '누가 언제 닫는가'를 양 끝과 중간(LB, 프록시)이 모두 같은 답을 갖도록 만드는 것이 네트워크 운영의 전부다.</text>
+        </g>
+      </svg>
+      <figcaption>각 구간마다 다른 타이머가 지키고 있고, 구간을 잘못 읽으면 엉뚱한 타이머를 조정하게 됩니다.</figcaption>
+    </figure>
+  </section>
+
+  <section id="s2">
+    <h2>2. 서버 내부: llhttp 파서와 요청 객체</h2>
+    <p><code>http.createServer()</code>가 만든 서버에 소켓이 들어오면(<code>net.Server</code>의 'connection'), Node.js는 소켓마다 <b>HTTP 파서</b>를 하나 붙입니다. 파서는 Node 12부터 <code>llhttp</code>(TypeScript로 기술한 상태 머신을 C로 생성)이며, 바이트가 도착할 때마다 <code>parser.execute(buf)</code>로 밀어 넣고, 파서는 헤더 완료·바디 청크·메시지 완료 시점에 C++→JS 콜백을 호출합니다. 파서 객체는 비싸서 <code>FreeList</code>(기본 1,000개)로 풀링합니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 200" role="img" aria-label="서버 요청 처리 경로">
+        <defs><marker id="arrD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="60" width="110" height="50" rx="8" class="box"/><text x="75" y="82" text-anchor="middle">epoll 읽기 준비</text><text x="75" y="98" text-anchor="middle" font-size="11" class="muted">poll 페이즈</text>
+        <rect x="160" y="60" width="110" height="50" rx="8" class="box"/><text x="215" y="82" text-anchor="middle">uv_read → Buffer</text><text x="215" y="98" text-anchor="middle" font-size="11" class="muted">64KiB 청크</text>
+        <rect x="300" y="60" width="130" height="50" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="365" y="82" text-anchor="middle">llhttp execute()</text><text x="365" y="98" text-anchor="middle" font-size="11" class="muted">상태 머신, 재진입 가능</text>
+        <rect x="460" y="20" width="150" height="40" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="535" y="45" text-anchor="middle" font-size="12">onHeadersComplete</text>
+        <rect x="460" y="80" width="150" height="40" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="535" y="105" text-anchor="middle" font-size="12">onBody (청크마다)</text>
+        <rect x="460" y="140" width="150" height="40" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="535" y="165" text-anchor="middle" font-size="12">onMessageComplete</text>
+        <rect x="650" y="20" width="210" height="40" rx="8" class="box"/><text x="755" y="45" text-anchor="middle" font-size="12">IncomingMessage 생성 → 'request' emit</text>
+        <rect x="650" y="80" width="210" height="40" rx="8" class="box"/><text x="755" y="105" text-anchor="middle" font-size="12">req.push(chunk) (Readable, 6장)</text>
+        <rect x="650" y="140" width="210" height="40" rx="8" class="box"/><text x="755" y="165" text-anchor="middle" font-size="12">req.push(null) → 'end'</text>
+        <path d="M130 85 H160" class="line" marker-end="url(#arrD)"/><path d="M270 85 H300" class="line" marker-end="url(#arrD)"/>
+        <path d="M430 75 L460 40" class="line" marker-end="url(#arrD)"/><path d="M430 85 H460" class="line" marker-end="url(#arrD)"/><path d="M430 95 L460 160" class="line" marker-end="url(#arrD)"/>
+        <path d="M610 40 H650" class="line" marker-end="url(#arrD)"/><path d="M610 100 H650" class="line" marker-end="url(#arrD)"/><path d="M610 160 H650" class="line" marker-end="url(#arrD)"/>
+      </svg>
+      <figcaption>'request' 이벤트는 <b>헤더가 끝난 시점</b>에 발화합니다. 바디는 그 뒤에 스트림으로 흘러옵니다. 핸들러가 바디를 읽지 않으면 소켓 읽기가 멈추고(백프레셔) 파이프라인된 다음 요청도 막힙니다.</figcaption>
+    </figure>
+    <p>파서 단계에서 적용되는 한계값은 다음과 같습니다. 이들은 애플리케이션 코드보다 <em>먼저</em> 요청을 거부하므로, 미들웨어에 로그가 남지 않아 "요청이 사라졌다"고 느끼기 쉽습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>한계</th><th>기본값</th><th>초과 시</th><th>조정</th></tr>
+      <tr><td>헤더 총 크기</td><td>16 KiB (<code>http.maxHeaderSize</code>)</td><td>431 응답 후 소켓 종료 (<code>HPE_HEADER_OVERFLOW</code>)</td><td><code>--max-http-header-size</code> 또는 <code>createServer({ maxHeaderSize })</code>. 큰 쿠키·JWT가 원인.</td></tr>
+      <tr><td>헤더 개수</td><td>제한 없음 (<code>server.maxHeadersCount</code> = null)</td><td>-</td><td>DoS 방어용으로 설정 가능. 크기 제한이 먼저 걸리므로 보통 불필요.</td></tr>
+      <tr><td>요청 라인·메서드</td><td>표준 메서드만</td><td>400 + 'clientError'</td><td><code>insecureHTTPParser</code>는 켜지 말 것(16장: request smuggling).</td></tr>
+      <tr><td>바디 크기</td><td><b>제한 없음</b></td><td>-</td><td>Node 코어는 바디 크기를 제한하지 않는다. 프레임워크(body-parser <code>limit</code> 기본 100kb, Fastify <code>bodyLimit</code> 1MiB)나 직접 구현 필수.</td></tr>
+    </table></div>
+    <div class="callout warn"><span class="title">'clientError'를 반드시 처리하라</span> 파서 오류·헤더 초과·타임아웃은 'request'가 아니라 서버의 <code>'clientError'</code> 이벤트로 옵니다. 기본 핸들러는 <code>400 Bad Request</code>(또는 431/408)를 쓰고 소켓을 닫습니다. 핸들러를 직접 달면 <b>소켓을 직접 닫을 책임</b>이 생깁니다. 로그만 찍고 <code>socket.destroy()</code>를 빼먹으면 소켓이 영원히 남습니다.</div>
+<pre><code>server.on('clientError', (err, socket) =&gt; {
+  if (err.code === 'ECONNRESET' || !socket.writable) return;     // 이미 닫힌 소켓에 쓰지 않기
+  metrics.inc('http_client_error', { code: err.code });           // HPE_HEADER_OVERFLOW, HPE_INVALID_METHOD, ERR_HTTP_REQUEST_TIMEOUT ...
+  const status = err.code === 'HPE_HEADER_OVERFLOW' ? 431 : err.code === 'ERR_HTTP_REQUEST_TIMEOUT' ? 408 : 400;
+  socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\n\r\n`);
+});</code></pre>
+  </section>
+
+  <section id="s3">
+    <h2>3. 서버 타임아웃 7종</h2>
+    <p><code>http.Server</code>에는 서로 다른 구간을 지키는 타이머가 일곱 개 있습니다. 이름이 비슷해 혼동하기 쉬우니, "커넥션 수명의 어느 구간"을 지키는지로 기억하세요. 기본값은 Node 22/24 기준이며 아래 실습에서 직접 확인합니다.</p>
+    <div class="tbl-wrap"><table class="to-tbl">
+      <tr><th>설정</th><th>기본값</th><th>지키는 구간</th><th>초과 시 동작</th><th>운영 메모</th></tr>
+      <tr><td>server.headersTimeout</td><td>60,000 ms</td><td>소켓에 첫 바이트가 온 뒤(또는 keep-alive 재사용 시작 뒤) <b>헤더가 완성</b>될 때까지</td><td>408 + 소켓 종료 (<code>'clientError'</code>, ERR_HTTP_REQUEST_TIMEOUT)</td><td>Slowloris 방어. keepAliveTimeout보다 커야 한다(아래).</td></tr>
+      <tr><td>server.requestTimeout</td><td>300,000 ms (Node 18+)</td><td>요청 시작부터 <b>바디 수신 완료</b>까지</td><td>408 + 소켓 종료</td><td>대용량 업로드 경로에서는 라우트별로 <code>req.setTimeout</code>으로 늘림. 0이면 무제한(권장 안 함).</td></tr>
+      <tr><td>server.keepAliveTimeout</td><td>5,000 ms</td><td>응답 완료 후 <b>다음 요청을 기다리는 유휴</b> 시간</td><td>서버가 소켓을 닫음(FIN)</td><td><b>LB/프록시 idle timeout보다 커야 함.</b> 4절의 핵심.</td></tr>
+      <tr><td>server.timeout</td><td>0 (Node 13+, 무제한)</td><td>소켓의 <b>비활성</b>(읽기·쓰기 모두 없음) 시간. <code>socket.setTimeout</code></td><td>'timeout' 이벤트만 emit. 핸들러가 없으면 소켓 destroy</td><td>Node 12까지는 120s였음. 응답을 오래 스트리밍하는 핸들러(SSE)에서 의도치 않게 끊지 않도록 주의.</td></tr>
+      <tr><td>server.connectionsCheckingInterval</td><td>30,000 ms</td><td>headersTimeout·requestTimeout을 <b>검사하는 주기</b></td><td>-</td><td>타이머가 소켓마다 있는 게 아니라 주기적으로 훑는다. 따라서 실제 만료는 설정값 + 최대 30s 늦을 수 있다.</td></tr>
+      <tr><td>server.maxRequestsPerSocket</td><td>0 (무제한)</td><td>한 keep-alive 커넥션에서 처리할 <b>최대 요청 수</b></td><td>초과 요청에 503 + <code>Connection: close</code></td><td>LB 뒤에서 커넥션을 주기적으로 재분배하고 싶을 때(롤링 배포 시 트래픽 균등화).</td></tr>
+      <tr><td>socket.setTimeout / req.setTimeout / res.setTimeout</td><td>없음</td><td>개별 소켓·요청·응답의 비활성</td><td>'timeout' emit</td><td>라우트별 미세 조정. 'timeout' 핸들러에서 반드시 응답하거나 destroy.</td></tr>
+    </table></div>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 900 240" role="img" aria-label="타임아웃 적용 구간">
+        <defs><marker id="arrE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <line x1="30" y1="40" x2="880" y2="40" class="line" marker-end="url(#arrE)"/>
+        <g font-size="11.5">
+          <rect x="30" y="52" width="100" height="26" rx="5" style="fill:var(--surface-2);stroke:var(--border)"/><text x="80" y="69" text-anchor="middle">connect</text>
+          <rect x="135" y="52" width="150" height="26" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="210" y="69" text-anchor="middle">헤더 수신</text>
+          <rect x="290" y="52" width="150" height="26" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="365" y="69" text-anchor="middle">바디 수신</text>
+          <rect x="445" y="52" width="110" height="26" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="500" y="69" text-anchor="middle">핸들러·응답</text>
+          <rect x="560" y="52" width="170" height="26" rx="5" style="fill:var(--surface-2);stroke:var(--border);stroke-dasharray:4 3"/><text x="645" y="69" text-anchor="middle">유휴</text>
+          <rect x="735" y="52" width="140" height="26" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="805" y="69" text-anchor="middle">요청 2 헤더…</text>
+        </g>
+        <g font-size="11.5">
+          <line x1="135" y1="100" x2="285" y2="100" style="stroke:var(--violet);stroke-width:3"/><text x="140" y="94" style="fill:var(--violet)">headersTimeout (60s)</text>
+          <line x1="735" y1="100" x2="875" y2="100" style="stroke:var(--violet);stroke-width:3"/><text x="740" y="94" style="fill:var(--violet)">headersTimeout (재사용 후 다시)</text>
+          <line x1="135" y1="130" x2="440" y2="130" style="stroke:var(--teal);stroke-width:3"/><text x="140" y="124" style="fill:var(--teal)">requestTimeout (300s)</text>
+          <line x1="560" y1="160" x2="730" y2="160" style="stroke:var(--warn);stroke-width:3"/><text x="565" y="154" style="fill:var(--warn)">keepAliveTimeout (5s)</text>
+          <line x1="30" y1="190" x2="875" y2="190" style="stroke:var(--muted);stroke-width:3;stroke-dasharray:6 4"/><text x="35" y="184" class="muted">server.timeout = 소켓 비활성 (기본 0 = 꺼짐). 읽기·쓰기가 하나라도 있으면 리셋</text>
+          <text x="30" y="225" font-size="12" class="muted">connectionsCheckingInterval(30s)마다 headers/requestTimeout 위반 소켓을 훑어 정리한다. 즉 실제 종료는 설정값 + 0~30s.</text>
+        </g>
+      </svg>
+      <figcaption>구간별 타이머. 같은 소켓에서 요청 2가 시작되면 headersTimeout이 다시 돌기 시작합니다.</figcaption>
+    </figure>
+
+    <div class="callout"><span class="title">headersTimeout &gt; keepAliveTimeout 이어야 하는 이유</span>
+      유휴 소켓에서 keepAliveTimeout이 끝나면 서버는 소켓을 닫습니다. 만약 headersTimeout이 더 짧으면, 유휴 중인 소켓이 "헤더가 안 온다"는 이유로 <em>먼저</em> 408을 받고 끊길 수 있습니다(구현상 헤더 타이머는 유휴 시작 시점부터 잽니다). Node 공식 문서도 두 값을 조정할 때 <code>headersTimeout</code>을 <code>keepAliveTimeout</code>보다 크게 두라고 안내하며, 흔한 관례는 <code>keepAliveTimeout + 1000</code>입니다.
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. keep-alive와 로드밸런서: 간헐적 502의 해부</h2>
+    <p>Node.js 운영에서 가장 자주 반복되는 장애입니다. 구조는 단순합니다. ALB·NGINX·Envoy 같은 중간자는 백엔드와의 커넥션을 <b>자기 idle timeout</b>(ALB 기본 60s, NGINX upstream <code>keepalive_timeout</code> 기본 60s)까지 유지하고 재사용합니다. 그런데 Node 서버의 <code>keepAliveTimeout</code>은 기본 5s입니다. 응답 후 5초가 지나면 Node가 FIN을 보내는데, LB는 "아직 60초 안 됐으니 살아 있는 커넥션"이라 믿고 다음 요청을 그 소켓에 씁니다. 결과는 LB 쪽에서 ECONNRESET 또는 "upstream prematurely closed connection"이고, 클라이언트는 <b>502</b>를 받습니다.</p>
+
+    <div class="widget">
+      <div class="w-title">keepAliveTimeout vs LB idle timeout 레이스</div>
+      <div class="w-desc">두 타임아웃과 "다음 요청까지의 간격"을 조정하고 재생하세요. 누가 먼저 끊는지, 그 결과 요청 2가 어떻게 되는지가 바뀝니다.</div>
+      <div class="controls">
+        <label>Node keepAliveTimeout <input type="range" id="ka-node" min="1" max="120" step="1" value="5"> <span id="ka-node-v">5s</span></label>
+        <label>LB idle timeout <input type="range" id="ka-lb" min="1" max="120" step="1" value="60"> <span id="ka-lb-v">60s</span></label>
+        <label>요청 2까지 간격 <input type="range" id="ka-gap" min="1" max="120" step="1" value="20"> <span id="ka-gap-v">20s</span></label>
+      </div>
+      <div class="stage"><svg class="diagram race-svg" id="ka-svg" viewBox="0 0 860 230"></svg></div>
+      <div id="ka-verdict" class="verdict"></div>
+      <div id="ka-step"></div>
+    </div>
+
+    <h3>올바른 설정</h3>
+<pre><code>const server = http.createServer(app);
+// LB idle timeout이 60s라면: 서버는 그보다 '더 오래' 기다려야 한다. 서버가 먼저 끊는 일이 없도록.
+server.keepAliveTimeout = 65_000;
+server.headersTimeout  = 66_000;   // keepAliveTimeout보다 크게
+server.listen(3000);</code></pre>
+    <p>원칙은 <b>"커넥션은 클라이언트 쪽(LB)이 먼저 닫는다"</b>입니다. LB가 닫으면 LB는 그 소켓을 다시 쓰지 않으므로 레이스가 없습니다. 반대로 서버가 먼저 닫으면 FIN이 날아가는 동안 LB가 요청을 써 버리는 수 ms의 창이 항상 존재합니다. 그래서 값을 같게 맞추는 것으로는 부족하고 서버 쪽이 <em>더 커야</em> 합니다. 그래도 완전히 0이 되지는 않습니다(서버가 <code>maxRequestsPerSocket</code>이나 재시작으로 닫는 경우). LB 측에서 멱등 요청(GET)에 한해 재시도를 켜 두는 것이 두 번째 방어선입니다.</p>
+    <div class="callout tip"><span class="title">Node 서비스 간 직접 호출에서도 같은 문제</span> 클라이언트 쪽 <code>http.Agent</code>의 유휴 소켓 타임아웃(Node 19+ 기본 5s)과 서버의 <code>keepAliveTimeout</code>(5s)이 같으면 레이스가 생깁니다. 서버 간 통신에서는 서버 keepAliveTimeout을 클라이언트 Agent timeout보다 크게 두거나, 클라이언트가 ECONNRESET을 받은 멱등 요청을 재시도하게 합니다. undici는 서버가 보내는 <code>Keep-Alive: timeout=N</code> 헤더를 읽어 자기 유휴 시간을 그보다 짧게 맞춥니다(6절). Node http 서버는 이 헤더를 응답에 자동으로 넣습니다.</div>
+  </section>
+
+  <section id="s5">
+    <h2>5. 클라이언트: http.Agent 커넥션 풀</h2>
+    <p><code>http.request</code>/<code>https.request</code>(그리고 axios, got 등 대부분의 라이브러리)는 <code>http.Agent</code>를 통해 소켓을 관리합니다. Agent는 <b>origin(host:port)별</b>로 활성 소켓·유휴 소켓·대기 요청 큐를 유지합니다. Node 19에서 기본 Agent의 동작이 크게 바뀌었습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>옵션</th><th>Node 18 이하 기본</th><th>Node 19+ 기본</th><th>의미</th></tr>
+      <tr><td><code>keepAlive</code></td><td>false</td><td><b>true</b></td><td>응답 후 소켓을 닫지 않고 유휴 풀에 보관</td></tr>
+      <tr><td><code>timeout</code></td><td>없음</td><td><b>5,000 ms</b></td><td>유휴 소켓이 풀에서 살아 있는 시간 (소켓 inactivity)</td></tr>
+      <tr><td><code>maxSockets</code></td><td>Infinity</td><td>Infinity</td><td>origin당 동시 소켓 상한. 넘으면 요청이 Agent 큐에서 대기</td></tr>
+      <tr><td><code>maxTotalSockets</code></td><td>Infinity</td><td>Infinity</td><td>모든 origin 합계 상한</td></tr>
+      <tr><td><code>maxFreeSockets</code></td><td>256</td><td>256</td><td>origin당 보관할 유휴 소켓 상한</td></tr>
+      <tr><td><code>scheduling</code></td><td>'lifo'</td><td>'lifo'</td><td>유휴 소켓 선택: lifo = 가장 최근 쓴 소켓(살아 있을 확률 높음). fifo는 서버 측 부하 분산에 유리</td></tr>
+      <tr><td><code>keepAliveMsecs</code></td><td>1,000</td><td>1,000</td><td>TCP keep-alive 프로브 초기 지연 (HTTP keep-alive와 무관!)</td></tr>
+    </table></div>
+    <div class="callout warn"><span class="title">maxSockets = Infinity의 양면</span> 상한이 없으면 갑작스런 동시 요청 1만 개가 소켓 1만 개가 되어 로컬 포트·fd·상대 서버를 고갈시킵니다. 반대로 너무 작으면 Agent 큐에서 대기하는 시간이 응답 지연에 그대로 더해지는데, 이 대기는 <b>어떤 타임아웃에도 걸리지 않습니다</b>(요청 타임아웃은 소켓이 배정된 뒤부터 잽니다). 큐 길이를 메트릭으로 내보내고(<code>agent.requests</code>), 상한은 상대 서버의 수용량과 합의해 정하세요.</div>
+
+    <div class="widget">
+      <div class="w-title">커넥션 풀 시뮬레이터</div>
+      <div class="w-desc">한 origin으로 요청을 보낼 때 Agent 설정에 따라 소켓이 어떻게 쓰이는지 봅니다. 주황 = 핸드셰이크(TCP+TLS), 파랑 = 요청/응답, 회색 점선 = 유휴. 요청 수와 동시성을 바꿔 총 소요 시간과 핸드셰이크 횟수를 비교하세요.</div>
+      <div class="controls">
+        <label>요청 수 <input type="range" id="pl-n" min="4" max="60" step="4" value="24"> <span id="pl-n-v">24</span></label>
+        <label>도착 간격 <input type="range" id="pl-gap" min="0" max="20" step="1" value="2"> <span id="pl-gap-v">2ms</span></label>
+        <label>maxSockets <input type="range" id="pl-max" min="1" max="16" step="1" value="6"> <span id="pl-max-v">6</span></label>
+        <label><input type="checkbox" id="pl-ka" checked> keepAlive</label>
+        <label>요청 시간 <input type="range" id="pl-rt" min="2" max="40" step="2" value="10"> <span id="pl-rt-v">10ms</span></label>
+        <label>핸드셰이크 <input type="range" id="pl-hs" min="1" max="60" step="1" value="15"> <span id="pl-hs-v">15ms</span></label>
+      </div>
+      <div class="stage pool-stage" id="pl-stage"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">총 소요</div><div class="v" id="pl-total">-</div></div>
+        <div class="stat"><div class="k">핸드셰이크 횟수</div><div class="v" id="pl-hsn">-</div></div>
+        <div class="stat"><div class="k">큐 대기 최대</div><div class="v" id="pl-qmax">-</div></div>
+        <div class="stat"><div class="k">평균 지연</div><div class="v" id="pl-avg">-</div></div>
+      </div>
+    </div>
+    <p>시뮬레이터에서 확인할 것: keep-alive를 끄면 모든 요청이 핸드셰이크를 치르고, 핸드셰이크가 요청 시간보다 길면 총 소요가 두 배 이상이 됩니다. maxSockets를 줄이면 핸드셰이크는 줄지만 큐 대기가 늘고, 늘리면 그 반대입니다. 최적점은 "요청 시간 ÷ 도착 간격" 근처, 즉 Little의 법칙으로 추정한 동시 요청 수입니다.</p>
+  </section>
+
+  <section id="s6">
+    <h2>6. undici와 fetch</h2>
+    <p>Node 18부터 전역 <code>fetch</code>는 <code>undici</code>로 구현되어 있습니다. undici는 <code>http.Agent</code>와 별개의 커넥션 풀을 가지며, HTTP/1.1 파이프라이닝과 더 엄격한 스펙 준수, 훨씬 빠른 처리량이 특징입니다. 핵심 추상은 <b>Dispatcher</b>입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>클래스</th><th>역할</th><th>주요 옵션 (undici 6 기준)</th></tr>
+      <tr><td><code>Client</code></td><td>origin 하나에 대한 <b>소켓 하나</b>. 파이프라이닝 지원</td><td><code>pipelining</code> (기본 1 = 파이프라이닝 없음), <code>keepAliveTimeout</code> 4s, <code>keepAliveMaxTimeout</code> 10분, <code>headersTimeout</code>/<code>bodyTimeout</code> 300s</td></tr>
+      <tr><td><code>Pool</code></td><td>origin 하나에 Client 여러 개</td><td><code>connections</code> (기본 null = 무제한)</td></tr>
+      <tr><td><code>Agent</code></td><td>origin별 Pool을 자동 생성. <code>fetch</code>의 기본 디스패처</td><td>Pool 옵션 전부 + <code>connect</code>(TLS, lookup 등)</td></tr>
+      <tr><td><code>BalancedPool</code></td><td>여러 upstream origin에 라운드로빈</td><td>-</td></tr>
+      <tr><td><code>RetryAgent</code>, <code>EnvHttpProxyAgent</code> 등</td><td>재시도, 프록시 등 데코레이터</td><td>-</td></tr>
+    </table></div>
+<pre><code>import { Agent, setGlobalDispatcher, fetch } from 'undici';     // Node 내장 fetch도 같은 전역 디스패처를 쓴다
+
+setGlobalDispatcher(new Agent({
+  connections: 64,                 // origin당 소켓 상한 (http.Agent의 maxSockets에 해당)
+  pipelining: 1,
+  keepAliveTimeout: 4_000,         // 서버의 Keep-Alive: timeout=N 헤더가 있으면 그보다 짧게 자동 조정
+  connect: { timeout: 3_000 },     // TCP+TLS 연결 타임아웃
+  headersTimeout: 10_000,
+  bodyTimeout: 30_000,
+}));
+
+const res = await fetch('https://api.example.com/x', { signal: AbortSignal.timeout(5_000) });</code></pre>
+    <div class="callout"><span class="title">fetch의 바디는 반드시 소비하라</span> 응답 바디를 읽지 않고(<code>res.json()</code>/<code>res.text()</code>/<code>res.body.cancel()</code>) 버리면 소켓이 재사용 가능 상태로 돌아가지 못합니다. undici는 일정 크기 이하면 남은 바디를 자동으로 비우지만, 큰 응답에서는 소켓이 새거나 닫힙니다. 상태 코드만 확인하는 경우에도 <code>await res.body?.cancel()</code>을 호출하세요.</div>
+    <p>파이프라이닝(<code>pipelining &gt; 1</code>)은 응답을 기다리지 않고 같은 소켓에 다음 요청을 쓰는 HTTP/1.1 기능입니다. 핸드셰이크 없이 동시성을 얻지만 <b>head-of-line blocking</b>(앞 응답이 늦으면 뒤도 늦음)이 있고, 중간 프록시가 지원하지 않는 경우가 많아 내부 서비스 간 통신에서 실측 후 쓰는 옵션입니다.</p>
+  </section>
+
+  <section id="s7">
+    <h2>7. HTTP/2</h2>
+    <p>HTTP/1.1의 "소켓 하나 = 동시 요청 하나" 제약을 깨는 것이 HTTP/2의 <b>멀티플렉싱</b>입니다. 한 TCP 커넥션 위에 여러 <b>스트림</b>을 프레임 단위로 섞어 보냅니다. 핸드셰이크 1번으로 수백 요청을 동시에 처리하고, 헤더는 HPACK으로 압축(반복되는 쿠키·UA가 수 바이트로)됩니다.</p>
+
+    <div class="widget h2-stage">
+      <div class="w-title">HTTP/1.1 (소켓 6개) vs HTTP/2 (소켓 1개, 멀티플렉싱)</div>
+      <div class="w-desc">N개의 리소스를 가져올 때의 타임라인입니다. HTTP/1.1은 소켓 수만큼만 동시에, HTTP/2는 한 소켓에서 전부 동시에 진행되지만 대역폭을 나눠 씁니다.</div>
+      <div class="controls">
+        <label>리소스 수 <input type="range" id="h2-n" min="2" max="40" step="2" value="20"> <span id="h2-n-v">20</span></label>
+        <label>RTT <input type="range" id="h2-rtt" min="5" max="100" step="5" value="30"> <span id="h2-rtt-v">30ms</span></label>
+        <label>리소스당 전송 <input type="range" id="h2-sz" min="2" max="40" step="2" value="10"> <span id="h2-sz-v">10ms</span></label>
+        <label>HTTP/1.1 소켓 <input type="range" id="h2-c" min="1" max="12" step="1" value="6"> <span id="h2-c-v">6</span></label>
+      </div>
+      <div class="stage" id="h2-stage"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">HTTP/1.1 완료</div><div class="v" id="h2-t1">-</div></div>
+        <div class="stat"><div class="k">HTTP/2 완료</div><div class="v" id="h2-t2">-</div></div>
+        <div class="stat"><div class="k">핸드셰이크 (TCP+TLS)</div><div class="v" id="h2-hs">-</div></div>
+      </div>
+    </div>
+    <p>모델에서 보이듯 HTTP/2의 이득은 <b>RTT가 클수록, 리소스가 많고 작을수록</b> 큽니다. 반대로 리소스가 크고 수가 적으면 대역폭을 나눠 쓰는 HTTP/2가 더 느릴 수도 있습니다. 또 하나의 TCP 위에 모든 스트림이 있으므로 패킷 손실 시 <b>TCP 레벨 head-of-line blocking</b>이 모든 스트림을 멈춥니다(HTTP/3·QUIC이 푸는 문제).</p>
+    <h3>Node.js에서</h3>
+<pre><code>const http2 = require('node:http2');
+// Compat API: 기존 (req, res) 핸들러 재사용. Express 등은 이 API로 http2를 탄다.
+const server = http2.createSecureServer({ key, cert, allowHTTP1: true }, (req, res) =&gt; {
+  res.end(`via ${req.httpVersion}`);     // '2.0' 또는 '1.1' (ALPN 협상 결과)
+});
+server.listen(8443);
+
+// Core API: 스트림을 직접 다룬다. 서버 푸시, 우선순위, 세션 설정 접근 가능
+server.on('stream', (stream, headers) =&gt; { stream.respond({ ':status': 200 }); stream.end('hi'); });</code></pre>
+    <ul>
+      <li>브라우저는 HTTP/2를 <b>TLS 위에서만</b>(ALPN으로 협상) 씁니다. 평문 <code>h2c</code>는 내부 서비스 간이나 gRPC에서 씁니다.</li>
+      <li>스트림 수 한계: Node는 기본적으로 <code>maxConcurrentStreams</code>를 광고하지 않아 사실상 무제한입니다. 운영에서는 세션당 100~250으로 명시해 한 클라이언트가 자원을 독점하지 못하게 하세요. 세션당 메모리(<code>maxSessionMemory</code>, 기본 10MiB)도 있습니다.</li>
+      <li>LB 뒤에서는 보통 LB가 HTTP/2를 종단하고 백엔드와는 HTTP/1.1로 통신합니다. 백엔드에서 http2를 켜도 이득이 없는 이유입니다. gRPC처럼 end-to-end h2가 필요하면 LB 설정(ALB의 "gRPC" 타깃 그룹 등)을 확인하세요.</li>
+      <li>http2 서버는 <code>http.Server</code>의 타임아웃 7종을 그대로 갖지 않습니다. <code>server.timeout</code>(세션 비활성, 기본 0), <code>session.setTimeout</code>, 스트림별 <code>setTimeout</code>으로 따로 설계해야 합니다.</li>
+    </ul>
+  </section>
+
+  <section id="s8">
+    <h2>8. TLS 핸드셰이크 비용과 세션 재개</h2>
+    <p>TLS 1.3 핸드셰이크는 1 RTT, TLS 1.2는 2 RTT입니다. RTT 외에 <b>CPU 비용</b>이 있습니다. 서버 인증서의 RSA-2048 서명 1회는 대략 1ms 안팎, ECDSA P-256은 그 1/10 수준이며, 키 교환(ECDHE)도 매번 듭니다. 초당 수천 개의 새 TLS 커넥션은 CPU 코어를 통째로 먹습니다. 이것이 TLS를 LB에서 종단하는 가장 큰 이유입니다.</p>
+    <p>Node.js 안에서 TLS를 직접 종단해야 한다면(mTLS 등) <b>세션 재개</b>가 핵심입니다. TLS 1.3의 PSK 기반 재개(세션 티켓)는 전체 키 교환을 생략합니다. 서버 쪽은 Node가 기본으로 티켓을 발급하며, 다중 프로세스·다중 인스턴스에서는 <b>티켓 키를 공유</b>해야 재개가 됩니다(<code>tls.createServer({ ticketKeys })</code>, <code>server.setTicketKeys()</code>; cluster에서는 primary가 자동 공유). 클라이언트 쪽 <code>https.Agent</code>는 <code>maxCachedSessions</code>(기본 100)만큼 세션을 캐시해 재개합니다.</p>
+<pre><code>// 서버: 여러 인스턴스가 같은 키로 티켓을 발급하도록 (48바이트, 주기적으로 회전)
+const server = https.createServer({ key, cert, ticketKeys: loadSharedTicketKeys(), minVersion: 'TLSv1.2' }, app);
+server.on('newSession', (id, data, cb) =&gt; cb());     // TLS1.2 세션 ID 캐시를 직접 구현할 때
+
+// 관측: 재개 비율이 낮으면 티켓 키 불일치 의심
+server.on('secureConnection', (sock) =&gt; metrics.inc('tls_handshake', { resumed: sock.isSessionReused() }));</code></pre>
+    <p>또한 <code>https.Agent</code>의 keep-alive는 TLS에서 더욱 중요합니다. 핸드셰이크를 아끼는 효과가 평문보다 2~3배 크기 때문입니다. 외부 API 호출에서 Node 18 이하의 기본 Agent(keepAlive false)를 그대로 쓰고 있다면 지금 바로 바꿀 가치가 있는 항목입니다.</p>
+  </section>
+
+  <section id="s9">
+    <h2>9. DNS: 캐시 없는 lookup의 함정</h2>
+    <p><code>http.request('https://api.example.com')</code>는 매 커넥션마다 <code>dns.lookup()</code>을 호출하고, 이것은 libuv 스레드풀에서 <code>getaddrinfo(3)</code>를 실행합니다(3장). 두 가지 문제가 있습니다.</p>
+    <ol>
+      <li><b>Node.js는 DNS 응답을 캐시하지 않습니다.</b> OS 리졸버(systemd-resolved, nscd)가 캐시할 수도 있지만 컨테이너 기본 이미지에는 대개 없습니다. 커넥션마다 UDP 왕복이 추가되고, DNS 서버가 느려지면 모든 외부 호출이 느려집니다.</li>
+      <li><b>스레드풀 점유.</b> 기본 4개 스레드가 getaddrinfo로 막히면 fs·crypto·zlib까지 함께 기다립니다. DNS 서버가 응답하지 않을 때(타임아웃 5s × 재시도) 스레드풀 전체가 몇 초씩 멈추는 증상이 "파일 읽기가 갑자기 느려졌다"로 보고됩니다.</li>
+    </ol>
+<pre><code>// 대안 1: 캐시하는 lookup을 Agent에 주입 (cacheable-lookup 등, 또는 직접 구현)
+const CacheableLookup = require('cacheable-lookup');
+const cacheable = new CacheableLookup({ maxTtl: 60 });
+const agent = new https.Agent({ keepAlive: true, lookup: cacheable.lookup });
+// undici: new Agent({ connect: { lookup: cacheable.lookup } })
+
+// 대안 2: dns.resolve4()는 c-ares로 비동기 처리되어 스레드풀을 쓰지 않는다.
+// 단 /etc/hosts와 nsswitch를 무시하므로 컨테이너 내부 서비스 이름 해석에서 차이가 날 수 있다.</code></pre>
+    <p>Node 20부터 기본인 <b>autoSelectFamily</b>(Happy Eyeballs: IPv6/IPv4 주소를 번갈아 시도, 기본 250ms 간격)는 듀얼 스택 환경에서 연결 지연을 줄이지만, IPv6가 라우팅되지 않는 환경에서 첫 시도 250ms가 그대로 지연으로 보이기도 합니다. <code>--network-family-autoselection-attempt-timeout</code>이나 Agent의 <code>family: 4</code>로 조정합니다.</p>
+  </section>
+
+  <section id="s10">
+    <h2>10. 소켓 옵션, 에러 코드, 한계값</h2>
+    <h3>소켓 옵션</h3>
+    <ul>
+      <li><b>TCP_NODELAY</b>(<code>socket.setNoDelay</code>): Nagle 알고리즘 비활성. 작은 쓰기를 모으지 않고 즉시 보냄. <code>http.createServer</code>는 기본 <code>noDelay: true</code>이고, <code>net</code> 소켓은 기본 false입니다. 지연에 민감한 RPC에서 켭니다.</li>
+      <li><b>SO_KEEPALIVE</b>(<code>socket.setKeepAlive(true, initialDelay)</code>): HTTP keep-alive와 <em>다른</em> TCP 레벨 프로브. 상대가 조용히 사라졌을 때(NAT 테이블 만료, 전원 차단) 죽은 커넥션을 감지합니다. 장시간 유휴 커넥션(DB, 메시지 큐)에 필수. 프로브 간격은 OS <code>tcp_keepalive_intvl</code>에 의존.</li>
+      <li><b>backlog</b>: <code>server.listen(port, host, backlog)</code> 기본 511. 커널의 accept 큐 길이이며 <code>net.core.somaxconn</code>(Linux 5.4+ 기본 4096)으로 상한이 잘립니다. 큐가 차면 SYN이 버려지고 클라이언트는 연결 지연 또는 ECONNREFUSED를 봅니다. 루프가 블로킹돼 accept를 못 하는 동안 차오릅니다.</li>
+    </ul>
+    <h3>에러 코드 읽기</h3>
+    <div class="tbl-wrap"><table class="err-tbl">
+      <tr><th>코드</th><th>의미</th><th>흔한 원인</th></tr>
+      <tr><td>ECONNRESET</td><td>상대가 RST를 보냄 (정상 FIN이 아님)</td><td>서버가 keep-alive 소켓을 닫은 뒤 클라이언트가 씀(4절), 프로세스 크래시, LB idle 종료, 방화벽 세션 만료</td></tr>
+      <tr><td>EPIPE</td><td>이미 닫힌 소켓에 쓰기</td><td>클라이언트가 응답 도중 떠남. 스트리밍 응답에서 흔함. 'error' 핸들러 없으면 프로세스 크래시</td></tr>
+      <tr><td>ETIMEDOUT</td><td>TCP 연결 시도 또는 keep-alive 프로브 타임아웃</td><td>보안 그룹이 SYN을 드롭(REJECT가 아니라 DROP), 상대 호스트 다운</td></tr>
+      <tr><td>ECONNREFUSED</td><td>포트에 리스너가 없음 (RST 응답)</td><td>서비스 미기동, 잘못된 포트, 로컬 backlog 초과(일부 OS)</td></tr>
+      <tr><td>EADDRINUSE</td><td>bind 실패</td><td>이전 프로세스 생존, TIME_WAIT(<code>SO_REUSEADDR</code>는 Node가 기본 적용)</td></tr>
+      <tr><td>EMFILE / ENFILE</td><td>프로세스 / 시스템 fd 한도</td><td><code>ulimit -n</code>(컨테이너 기본 1024인 경우 있음), 소켓·파일 누수. Node는 EMFILE 시 accept를 잠시 멈췄다 재시도</td></tr>
+      <tr><td>EAI_AGAIN</td><td>DNS 일시 실패</td><td>DNS 서버 무응답, 스레드풀 점유(9절)</td></tr>
+      <tr><td>HPE_*</td><td>llhttp 파서 오류</td><td>잘못된 요청, 헤더 초과, 프로토콜 불일치(HTTPS 포트에 평문)</td></tr>
+    </table></div>
+  </section>
+
+  <section id="s11">
+    <h2>11. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: 0.1%의 502, 야간에만 증가</span>
+      <p>ALB(idle 60s) 뒤 Node 18(keepAliveTimeout 5s). 트래픽이 많을 땐 소켓이 5초 안에 재사용되어 문제가 없었고, 야간에 요청 간격이 5초를 넘기 시작하자 서버가 먼저 끊은 소켓에 ALB가 요청을 써 502 발생. ALB 액세스 로그의 <code>target_status_code = "-"</code>와 Node 쪽 <code>'clientError'</code> ECONNRESET 로그가 시각이 일치. <code>keepAliveTimeout=65s, headersTimeout=66s</code>로 즉시 소멸. 교훈: <b>"트래픽이 적을 때 늘어나는 에러"는 타임아웃 레이스</b>.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: 외부 API 지연이 전체 서비스를 멈춤 (소켓 고갈)</span>
+      <p>결제 API 호출에 keep-alive 없는 기본 Agent(Node 16) + 타임아웃 없음. 결제사 장애로 응답이 30초씩 걸리자 미완 요청이 쌓여 소켓 수천 개 → <code>EMFILE</code> → 로그 파일조차 못 열어 프로세스 크래시. 해결: Agent에 <code>maxSockets: 100</code>, 요청에 <code>AbortSignal.timeout(3000)</code>, Agent 큐 길이 메트릭·알람, 13장의 서킷 브레이커. 교훈: <b>외부 호출에는 동시성 상한과 데드라인이 모두 있어야</b>.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: DNS 장애가 파일 업로드 실패로 보고됨</span>
+      <p>사내 DNS가 간헐적으로 5초 지연. 외부 API 호출의 <code>getaddrinfo</code>가 스레드풀 4개를 모두 점유, 같은 풀을 쓰는 <code>fs.writeFile</code>(업로드 저장)이 5초씩 밀려 클라이언트 타임아웃. 증상과 원인이 완전히 다른 서브시스템이라 진단에 이틀 소요. 캐시형 lookup 주입 + <code>UV_THREADPOOL_SIZE=16</code>으로 해결. 교훈: <b>스레드풀은 공용 자원</b>이며 DNS도 그 사용자다.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>커넥션 비용 = 핸드셰이크(RTT·CPU) + 유휴 유지(메모리) + 종료(TIME_WAIT). keep-alive는 첫 비용을 아끼기 위한 투자다.</li>
+    <li>서버 타임아웃 7종의 구간: headersTimeout(60s, 헤더) → requestTimeout(300s, 바디) → keepAliveTimeout(5s, 유휴). server.timeout은 비활성(기본 0). 검사 주기는 30s.</li>
+    <li><b>서버 keepAliveTimeout &gt; LB idle timeout &gt; …, headersTimeout &gt; keepAliveTimeout.</b> 커넥션은 클라이언트 쪽이 먼저 닫아야 레이스가 없다.</li>
+    <li>http.Agent는 Node 19부터 keepAlive true, 유휴 5s. maxSockets는 Infinity라 상한을 직접 정해야 하며, Agent 큐 대기는 어떤 타임아웃에도 안 잡힌다.</li>
+    <li>fetch = undici. Dispatcher(Agent/Pool/Client)로 풀을 제어하고 바디는 반드시 소비한다.</li>
+    <li>HTTP/2는 RTT가 크고 작은 리소스가 많을 때 유리. LB가 종단하면 백엔드 h2는 무의미. 스트림 상한을 명시.</li>
+    <li>TLS는 세션 재개(티켓 키 공유)와 keep-alive로 비용을 줄인다. DNS는 캐시가 없고 스레드풀을 쓰므로 캐시형 lookup을 주입한다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">NGINX(upstream keepalive_timeout 60s) 뒤의 Node 서버에서 간헐적 502가 난다. 가장 올바른 조치는?</div>
+    <button class="opt">Node의 keepAliveTimeout을 0으로 해서 keep-alive를 끈다</button>
+    <button class="opt">Node의 keepAliveTimeout을 60s보다 크게(예: 65s), headersTimeout을 그보다 더 크게 설정한다</button>
+    <button class="opt">NGINX의 keepalive_timeout을 5s로 낮춰 Node와 같게 맞춘다</button>
+    <button class="opt">Node의 requestTimeout을 늘린다</button>
+    <div class="explain">서버가 먼저 끊지 않도록 서버 유휴 타임아웃을 LB보다 크게 둡니다. 같게 맞추면 FIN 전송 중의 수 ms 레이스가 남습니다. keep-alive를 끄면 502는 사라지지만 모든 요청이 핸드셰이크를 치릅니다. requestTimeout은 바디 수신 구간이라 무관합니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">http.Agent에 maxSockets: 10을 설정했고 동시에 요청 100개를 보냈다. 요청 타임아웃을 2초로 걸었는데 일부 요청은 10초 뒤에야 실패했다. 왜인가?</div>
+    <button class="opt">Agent가 요청을 lifo로 처리해서</button>
+    <button class="opt">DNS lookup이 스레드풀에서 밀려서</button>
+    <button class="opt">Agent 큐에서 소켓을 기다리는 시간은 요청 타임아웃에 포함되지 않기 때문</button>
+    <button class="opt">keepAliveTimeout이 5초라서</button>
+    <div class="explain">요청 타임아웃(socket timeout)은 소켓이 배정된 뒤부터 잽니다. 큐 대기는 어떤 타이머에도 잡히지 않으므로 전체 데드라인은 AbortSignal.timeout처럼 요청 생성 시점부터 재는 수단으로 따로 걸어야 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">다음 중 Node.js HTTP 서버가 기본적으로 <em>제한하지 않는</em> 것은?</div>
+    <button class="opt">요청 바디 크기</button>
+    <button class="opt">요청 헤더 총 크기</button>
+    <button class="opt">헤더 수신 시간</button>
+    <button class="opt">바디 수신 시간</button>
+    <div class="explain">헤더 크기(16KiB), 헤더 시간(60s), 바디 시간(300s)은 기본값이 있지만 바디 크기는 코어가 제한하지 않습니다. 프레임워크나 직접 구현으로 반드시 제한해야 합니다(16장 DoS).</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">ECONNRESET과 EPIPE의 차이로 옳은 것은?</div>
+    <button class="opt">둘 다 DNS 실패다</button>
+    <button class="opt">ECONNRESET은 쓰기 실패, EPIPE는 읽기 실패다</button>
+    <button class="opt">EPIPE는 TLS에서만 난다</button>
+    <button class="opt">ECONNRESET은 상대가 RST를 보낸 것, EPIPE는 이미 닫힌 소켓에 쓰려 한 것이다</button>
+    <div class="explain">ECONNRESET은 상대 측에서 비정상 종료(RST)가 왔다는 뜻이고(keep-alive 레이스, 크래시 등), EPIPE는 로컬에서 닫힌 파이프/소켓에 write한 것입니다(클라이언트가 떠난 뒤 응답 스트리밍 등).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">HTTP/2가 HTTP/1.1보다 뚜렷이 유리한 조건은?</div>
+    <button class="opt">리소스가 적고 각각 매우 클 때</button>
+    <button class="opt">RTT가 크고, 작은 리소스를 많이 요청할 때</button>
+    <button class="opt">LB가 HTTP/2를 종단하고 백엔드와는 1.1로 통신할 때 백엔드에서 켜면</button>
+    <button class="opt">패킷 손실이 매우 심한 네트워크에서</button>
+    <div class="explain">멀티플렉싱과 HPACK의 이득은 요청 수가 많고 RTT가 클 때 극대화됩니다. 큰 리소스 소수에서는 대역폭 분할로 오히려 불리할 수 있고, 패킷 손실에서는 단일 TCP의 HOL 블로킹이 약점입니다. LB가 종단하면 백엔드 h2는 효과가 없습니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>502 재현.</b> Node 서버를 <code>keepAliveTimeout = 2000</code>으로 띄우고, 아래 클라이언트처럼 keep-alive Agent로 요청 1을 보낸 뒤 2.0~2.1초 후 요청 2를 보내세요(수십 번 반복). 기대: 일부 시도에서 <code>ECONNRESET</code>. 그다음 서버를 <code>keepAliveTimeout = 10000</code>으로 바꾸면 사라지고, 반대로 클라이언트 Agent의 <code>timeout</code>을 1500으로 두면(클라이언트가 먼저 닫음) 역시 사라지는지 확인.
+<pre><code>const http = require('node:http');
+const agent = new http.Agent({ keepAlive: true, timeout: 30_000, maxSockets: 1 });
+const get = () =&gt; new Promise((ok, no) =&gt; http.get({ port: 3000, agent }, r =&gt; { r.resume(); r.on('end', ok); }).on('error', no));
+(async () =&gt; { for (let i = 0; i &lt; 30; i++) { await get(); await new Promise(r =&gt; setTimeout(r, 2000 + Math.random() * 100)); try { await get(); } catch (e) { console.log(i, e.code); } } })();</code></pre></li>
+    <li><b>기본값 확인.</b> 다음을 실행해 이 장의 표와 비교하세요. 기대: 표와 동일(Node 22/24).
+<pre><code>node -e "const h=require('http');const s=h.createServer();console.log({timeout:s.timeout,ka:s.keepAliveTimeout,hdr:s.headersTimeout,req:s.requestTimeout,chk:s.connectionsCheckingInterval,maxHdr:h.maxHeaderSize});const a=h.globalAgent;console.log({keepAlive:a.keepAlive,maxSockets:a.maxSockets,maxFree:a.maxFreeSockets,timeout:a.options.timeout,sched:a.scheduling})"</code></pre></li>
+    <li><b>keep-alive의 효과 측정.</b> <code>https://example.com</code>(또는 사내 HTTPS 엔드포인트)에 같은 요청 50개를 (a) <code>new https.Agent({ keepAlive: false })</code>, (b) <code>keepAlive: true</code>로 순차 전송하고 총 시간을 비교하세요. 기대: (b)가 핸드셰이크 49회분(RTT × 2~3 × 49) 빠름. <code>socket.isSessionReused()</code>로 TLS 재개 여부도 로그에 남겨 보세요.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg";
+  const mk = (t, a) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+  // ===================== 위젯 1: keepAlive vs LB idle 레이스 =====================
+  (function () {
+    const svg = $("ka-svg");
+    let stepper = null;
+    function model() {
+      const node = +$("ka-node").value, lb = +$("ka-lb").value, gap = +$("ka-gap").value;
+      $("ka-node-v").textContent = node + "s"; $("ka-lb-v").textContent = lb + "s"; $("ka-gap-v").textContent = gap + "s";
+      // 응답 1 완료 = t0. 서버는 t0+node에 FIN. LB는 t0+lb에 소켓 폐기. 요청 2는 t0+gap에 도착.
+      let outcome, firstCloser = node < lb ? "node" : node > lb ? "lb" : "tie";
+      if (gap < Math.min(node, lb)) outcome = "reuse";
+      else if (firstCloser === "node" && gap >= node && gap < lb) outcome = "502";
+      else if (firstCloser === "lb" && gap >= lb) outcome = "newconn";
+      else if (firstCloser === "node" && gap >= lb) outcome = "newconn";
+      else outcome = "tie"; // node === lb and gap >= both
+      return { node, lb, gap, outcome, firstCloser };
+    }
+    function draw(m, stepIdx) {
+      const tmax = Math.max(m.node, m.lb, m.gap) * 1.15 + 2;
+      const X = t => 120 + (820 - 120) * t / tmax;
+      svg.innerHTML = '<defs><marker id="arrK" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>';
+      const rows = [["클라이언트", 40], ["LB", 95], ["Node 서버", 150]];
+      rows.forEach(([l, y]) => { const t = mk("text", { x: 10, y: y + 4, "font-weight": "700" }); t.textContent = l; svg.append(t); svg.append(mk("line", { x1: 120, y1: y, x2: 830, y2: y, class: "line", style: "stroke:var(--border)" })); });
+      // 시간 눈금
+      for (let t = 0; t <= tmax; t += Math.max(1, Math.round(tmax / 8))) { const tx = mk("text", { x: X(t), y: 200, "text-anchor": "middle", class: "muted", "font-size": "10.5" }); tx.textContent = "+" + t + "s"; svg.append(tx); }
+      // LB-Node 유휴 커넥션 바: t0 ~ min(close)
+      const nodeClose = m.node, lbClose = m.lb;
+      const aliveUntil = Math.min(nodeClose, lbClose);
+      svg.append(mk("rect", { x: X(0), y: 110, width: X(aliveUntil) - X(0), height: 25, rx: 4, style: "fill:var(--ok-soft);stroke:var(--ok)" }));
+      const lt = mk("text", { x: X(0) + 6, y: 127, "font-size": "11" }); lt.textContent = X(aliveUntil) - X(0) > 150 ? "LB↔Node keep-alive 유휴" : "유휴"; svg.append(lt);
+      if (stepIdx >= 1) {
+        // 서버 FIN
+        const fx = X(nodeClose);
+        svg.append(mk("line", { x1: fx, y1: 150, x2: fx, y2: 95, style: `stroke:var(--bad);stroke-width:2;stroke-dasharray:4 3` }));
+        const ft = mk("text", { x: fx + 4, y: 165, "font-size": "11", style: "fill:var(--bad)" }); ft.textContent = `Node FIN @${nodeClose}s`; svg.append(ft);
+        const lx = X(lbClose);
+        svg.append(mk("line", { x1: lx, y1: 95, x2: lx, y2: 80, style: `stroke:var(--warn);stroke-width:2` }));
+        const ltt = mk("text", { x: lx + 4, y: 78, "font-size": "11", style: "fill:var(--warn)" }); ltt.textContent = `LB idle 만료 @${lbClose}s`; svg.append(ltt);
+      }
+      if (stepIdx >= 2) {
+        const gx = X(m.gap);
+        svg.append(mk("line", { x1: gx, y1: 40, x2: gx, y2: 95, class: "line", style: "stroke:var(--accent);stroke-width:2", "marker-end": "url(#arrK)" }));
+        const gt = mk("text", { x: gx + 4, y: 60, "font-size": "11", style: "fill:var(--accent)" }); gt.textContent = `요청 2 @${m.gap}s`; svg.append(gt);
+      }
+      if (stepIdx >= 3) {
+        const gx = X(m.gap);
+        const color = m.outcome === "502" ? "var(--bad)" : m.outcome === "tie" ? "var(--warn)" : "var(--ok)";
+        svg.append(mk("line", { x1: gx, y1: 95, x2: gx + 20, y2: 150, style: `stroke:${color};stroke-width:2${m.outcome === "newconn" ? ";stroke-dasharray:3 3" : ""}` }));
+        const rt = mk("text", { x: gx + 24, y: 140, "font-size": "11.5", "font-weight": "700", style: `fill:${color}` });
+        rt.textContent = m.outcome === "502" ? "죽은 소켓에 전송 → RST → 502" : m.outcome === "reuse" ? "소켓 재사용 OK" : m.outcome === "newconn" ? "새 커넥션 (핸드셰이크) OK" : "동시 만료: 수 ms 레이스";
+        svg.append(rt);
+      }
+    }
+    function verdict(m) {
+      const v = $("ka-verdict");
+      if (m.outcome === "502") { v.className = "verdict bad"; v.textContent = `❌ 502. Node(${m.node}s)가 LB(${m.lb}s)보다 먼저 끊었고, 요청 2(${m.gap}s)가 그 사이에 도착했다. 위험 창 = ${m.node}s ~ ${m.lb}s.`; }
+      else if (m.outcome === "reuse") { v.className = "verdict ok"; v.textContent = `✅ 재사용. 요청 2가 양쪽 타임아웃(${Math.min(m.node, m.lb)}s) 전에 도착.` + (m.node < m.lb ? ` 단 간격이 ${m.node}s~${m.lb}s이면 502가 난다.` : ""); }
+      else if (m.outcome === "newconn") { v.className = "verdict ok"; v.textContent = m.firstCloser === "lb" ? `✅ LB(${m.lb}s)가 먼저 닫고 새 커넥션을 연다. 레이스 없음. 이것이 올바른 설정(Node > LB).` : `✅ 양쪽 다 만료 후 도착 → LB가 새 커넥션. 단 ${m.node}s~${m.lb}s 구간은 여전히 위험.`; }
+      else { v.className = "verdict warn"; v.textContent = `⚠️ 두 타임아웃이 같다. 서버 FIN이 전달되는 수 ms 동안 LB가 요청을 쓰면 502. '같게'가 아니라 '서버가 더 크게'.`; }
+    }
+    const caps = [
+      "① 요청 1의 응답이 끝났다(t=0). LB↔Node 소켓은 keep-alive로 유휴 상태에 들어간다. 양쪽이 각자의 타이머를 시작한다.",
+      "② Node는 keepAliveTimeout에 FIN을 보낸다. LB는 자기 idle timeout까지 소켓을 '사용 가능'으로 본다. 둘이 다르면 그 사이가 위험 창이다.",
+      "③ 클라이언트의 요청 2가 LB에 도착한다. LB는 풀에서 소켓을 꺼내 쓴다.",
+      "④ 결과. 서버가 먼저 닫은 소켓이면 RST가 돌아오고 LB는 502를 응답한다(멱등 재시도가 꺼져 있다면).",
+    ];
+    function rebuild() {
+      const m = model();
+      $("ka-step").innerHTML = "";
+      stepper = MM.stepper($("ka-step"), { steps: caps.length, interval: 1500, render(i) { draw(m, i); if (i === caps.length - 1) verdict(m); else { $("ka-verdict").className = "verdict"; $("ka-verdict").textContent = ""; } return caps[i]; } });
+      stepper.go(caps.length - 1);
+    }
+    ["ka-node", "ka-lb", "ka-gap"].forEach(id => $(id).oninput = rebuild);
+    rebuild();
+  })();
+
+  // ===================== 위젯 2: 커넥션 풀 시뮬레이터 =====================
+  (function () {
+    function sim() {
+      const n = +$("pl-n").value, gap = +$("pl-gap").value, max = +$("pl-max").value, ka = $("pl-ka").checked, rt = +$("pl-rt").value, hs = +$("pl-hs").value;
+      $("pl-n-v").textContent = n; $("pl-gap-v").textContent = gap + "ms"; $("pl-max-v").textContent = max; $("pl-rt-v").textContent = rt + "ms"; $("pl-hs-v").textContent = hs + "ms";
+      // 이산 이벤트: 요청 i 도착 t=i*gap. 소켓 slot: {freeAt, connected}
+      const sockets = []; const segs = []; let hsCount = 0, qmax = 0, latSum = 0, tEnd = 0;
+      const queue = [];
+      const reqs = Array.from({ length: n }, (_, i) => ({ id: i, at: i * gap }));
+      // 이벤트 기반 단순화: 요청을 시간순으로 처리, 각 요청은 가장 빨리 비는 소켓(또는 새 소켓)을 택함
+      for (const r of reqs) {
+        // 소켓 후보: 유휴(freeAt <= at) 소켓 중 가장 최근 사용(lifo). 없으면 max 미만이면 새 소켓. 아니면 가장 빨리 비는 소켓 대기.
+        let s = null, start;
+        const idle = sockets.filter(x => x.freeAt <= r.at && x.connected).sort((a, b) => b.freeAt - a.freeAt);
+        if (ka && idle.length) { s = idle[0]; start = r.at; }
+        else if (sockets.length < max) { s = { id: sockets.length, freeAt: 0, connected: false }; sockets.push(s); start = r.at; }
+        else { s = sockets.slice().sort((a, b) => a.freeAt - b.freeAt)[0]; start = Math.max(r.at, s.freeAt); }
+        const wait = start - r.at; qmax = Math.max(qmax, wait);
+        let t = start;
+        if (!s.connected) { segs.push({ s: s.id, a: t, b: t + hs, k: "hs" }); t += hs; hsCount++; s.connected = true; }
+        segs.push({ s: s.id, a: t, b: t + rt, k: "rq", id: r.id }); t += rt;
+        latSum += t - r.at; tEnd = Math.max(tEnd, t);
+        if (!ka) { s.connected = false; }
+        s.freeAt = t;
+      }
+      // 렌더
+      const W = tEnd || 1;
+      let html = "";
+      sockets.forEach(s => {
+        html += `<div class="pool-row"><span class="n">socket ${s.id}</span><div class="timeline">`;
+        segs.filter(x => x.s === s.id).forEach(x => { html += `<div class="seg ${x.k}" style="left:${x.a / W * 100}%;width:${(x.b - x.a) / W * 100}%">${x.k === "hs" ? "hs" : "#" + x.id}</div>`; });
+        html += `</div></div>`;
+      });
+      html += `<div class="pool-row"><span class="n"></span><div style="flex:1;display:flex;justify-content:space-between;color:var(--muted)"><span>0</span><span>${Math.round(W / 2)}ms</span><span>${Math.round(W)}ms</span></div></div>`;
+      $("pl-stage").innerHTML = html;
+      $("pl-total").textContent = Math.round(tEnd) + " ms"; $("pl-hsn").textContent = hsCount; $("pl-qmax").textContent = Math.round(qmax) + " ms"; $("pl-avg").textContent = (latSum / n).toFixed(1) + " ms";
+    }
+    ["pl-n", "pl-gap", "pl-max", "pl-rt", "pl-hs"].forEach(id => $(id).oninput = sim); $("pl-ka").onchange = sim;
+    sim();
+  })();
+
+  // ===================== 위젯 3: HTTP/1.1 vs HTTP/2 =====================
+  (function () {
+    function sim() {
+      const n = +$("h2-n").value, rtt = +$("h2-rtt").value, sz = +$("h2-sz").value, c = +$("h2-c").value;
+      $("h2-n-v").textContent = n; $("h2-rtt-v").textContent = rtt + "ms"; $("h2-sz-v").textContent = sz + "ms"; $("h2-c-v").textContent = c;
+      const hs = rtt * 2; // TCP 1RTT + TLS1.3 1RTT
+      // HTTP/1.1: c개 소켓, 각 소켓 핸드셰이크 후 요청을 순차(요청당 rtt + sz)
+      const s1 = []; const free = Array.from({ length: Math.min(c, n) }, (_, i) => ({ id: i, t: hs }));
+      for (let i = 0; i < Math.min(c, n); i++) s1.push({ s: i, a: 0, b: hs, k: "hs" });
+      for (let i = 0; i < n; i++) { free.sort((a, b) => a.t - b.t); const s = free[0]; s1.push({ s: s.id, a: s.t, b: s.t + rtt + sz, k: "rq", id: i }); s.t += rtt + sz; }
+      const t1 = Math.max(...s1.map(x => x.b));
+      // HTTP/2: 소켓 1개, 핸드셰이크 1회, 모든 요청 동시 시작(rtt) 후 대역폭을 n개가 나눠 씀 → 전송 완료 = hs + rtt + n*sz (처리기 공유 모델)
+      const t2 = hs + rtt + n * sz;
+      const W = Math.max(t1, t2);
+      let html = `<div class="pool-row"><span class="n" style="min-width:90px;font-weight:700">HTTP/1.1</span><div style="flex:1"></div></div>`;
+      for (let i = 0; i < Math.min(c, n); i++) {
+        html += `<div class="pool-row"><span class="n" style="min-width:90px">socket ${i}</span><div class="timeline">`;
+        s1.filter(x => x.s === i).forEach(x => html += `<div class="seg ${x.k}" style="left:${x.a / W * 100}%;width:${(x.b - x.a) / W * 100}%">${x.k === "hs" ? "hs" : "#" + x.id}</div>`);
+        html += `</div></div>`;
+      }
+      html += `<div class="pool-row" style="margin-top:10px"><span class="n" style="min-width:90px;font-weight:700">HTTP/2</span><div style="flex:1"></div></div>`;
+      html += `<div class="pool-row"><span class="n" style="min-width:90px">socket 0</span><div class="timeline"><div class="seg hs" style="left:0;width:${hs / W * 100}%">hs</div><div class="seg h2" style="left:${hs / W * 100}%;width:${rtt / W * 100}%">hdr×${n}</div><div class="seg h2" style="left:${(hs + rtt) / W * 100}%;width:${(n * sz) / W * 100}%">${n}개 스트림 인터리브</div></div></div>`;
+      html += `<div class="pool-row"><span class="n" style="min-width:90px"></span><div style="flex:1;display:flex;justify-content:space-between;color:var(--muted)"><span>0</span><span>${Math.round(W / 2)}ms</span><span>${Math.round(W)}ms</span></div></div>`;
+      $("h2-stage").innerHTML = html;
+      $("h2-t1").textContent = Math.round(t1) + " ms"; $("h2-t2").textContent = Math.round(t2) + " ms"; $("h2-hs").textContent = `${Math.min(c, n)}회 vs 1회`;
+    }
+    ["h2-n", "h2-rtt", "h2-sz", "h2-c"].forEach(id => $(id).oninput = sim);
+    sim();
+  })();
+})();
+</script>
+</body>
+</html>

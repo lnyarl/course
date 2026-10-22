@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPU 프로파일링</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .flame { width: 100%; display: block; font-family: var(--mono); }
+  .flame rect { stroke: var(--bg); stroke-width: 1; cursor: pointer; transition: opacity .15s; }
+  .flame rect.dim { opacity: .25; }
+  .flame text { font-size: 11px; pointer-events: none; fill: var(--text); }
+  .flame-tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12.5px; font-family: var(--mono); box-shadow: var(--shadow); z-index: 5; max-width: 320px; white-space: pre-wrap; }
+  .flame-wrap { position: relative; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .legend .js::before { background: var(--accent); } .legend .native::before { background: var(--violet); } .legend .gc::before { background: var(--bad); } .legend .idle::before { background: var(--border); } .legend .lib::before { background: var(--teal); }
+  .samp-row { display: grid; grid-template-columns: 110px 1fr 1fr; gap: 10px; align-items: center; font-size: 12.5px; margin: 4px 0; }
+  .samp-row .n { font-family: var(--mono); text-align: right; color: var(--muted); }
+  .samp-row .b { height: 18px; border-radius: 3px; background: var(--accent); position: relative; }
+  .samp-row .b.est { background: var(--warn); }
+  .samp-row .b span { position: absolute; left: 100%; margin-left: 6px; top: 0; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+  .bench-chart { width: 100%; height: 180px; display: block; }
+  .bench-chart .pt { fill: var(--accent); }
+  .bench-chart .gc { fill: var(--bad); }
+  .bench-chart .axis { stroke: var(--border); }
+  .bench-chart text { font-size: 10.5px; fill: var(--muted); }
+  .ph-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 8px 0; background: var(--surface); }
+  .ph-card h4 { margin: 0 0 4px; font-size: 15px; }
+</style>
+</head>
+<body data-chapter="10">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">성능과 진단 · Chapter 10</span>
+    <h1>CPU 프로파일링과 핫패스 최적화</h1>
+    <p class="lead">"느리다"는 증상이고, 프로파일은 진단입니다. 추측으로 최적화하면 90%는 엉뚱한 곳을 고칩니다. 이 장은 V8 샘플링 프로파일러의 원리부터 플레임 그래프를 읽는 눈, 벤치마크가 거짓말하는 방식, 그리고 프로덕션에서 안전하게 프로파일을 뜨는 운영 절차까지 다룹니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>샘플링 프로파일러의 원리와 오차를 이해하고, <code>--cpu-prof</code>/<code>--prof</code>/inspector 세션 중 상황에 맞는 것을 고를 수 있다.</li>
+      <li>플레임 그래프에서 핫패스, (program)/(garbage collector)/(idle)의 의미, 인라이닝으로 사라진 프레임을 읽어낼 수 있다.</li>
+      <li>JIT 워밍업, 죽은 코드 제거, GC 노이즈 같은 벤치마크 함정을 피해 유의미한 측정을 설계할 수 있다.</li>
+      <li>프로덕션에서 오버헤드 예산 안에서 지속 프로파일링을 운영할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">측정의 원칙</a></li>
+    <li><a href="#s2">샘플링 프로파일러의 원리와 오차</a></li>
+    <li><a href="#s3">--cpu-prof와 .cpuprofile 포맷</a></li>
+    <li><a href="#s4">플레임 그래프 읽기</a></li>
+    <li><a href="#s5">--prof: V8 틱 프로세서와 네이티브 프레임</a></li>
+    <li><a href="#s6">Linux perf와 eBPF</a></li>
+    <li><a href="#s7">흔한 핫스팟 카탈로그</a></li>
+    <li><a href="#s8">마이크로벤치마크와 그 함정</a></li>
+    <li><a href="#s9">프로덕션 지속 프로파일링</a></li>
+    <li><a href="#s10">현업 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 측정의 원칙</h2>
+    <ol>
+      <li><b>먼저 "어디가" 느린지 측정한다.</b> 전체 응답 시간에서 DB 대기가 80%라면 JS 최적화는 상한이 20%입니다(Amdahl). 15장의 트레이스로 구간을 나누고, CPU 구간이 지배적일 때만 이 장의 도구를 씁니다.</li>
+      <li><b>프로덕션과 같은 조건에서 잰다.</b> 개발 머신의 M-시리즈 CPU, 빈 캐시, 작은 데이터셋은 전혀 다른 프로파일을 냅니다. 최소한 같은 Node 메이저 버전과 같은 플래그(<code>--max-old-space-size</code> 등)로.</li>
+      <li><b>한 번 재지 않는다.</b> 샘플링 프로파일은 통계입니다. 짧은 프로파일은 노이즈이고, 부하 패턴에 따라 핫스팟이 바뀝니다. 여러 번, 충분히 길게(최소 수십 초, 수천 샘플).</li>
+      <li><b>바꾼 뒤 다시 잰다.</b> 최적화 전후 프로파일을 같은 방법으로 비교하고, 개선이 측정 오차보다 큰지 확인합니다. "빨라진 것 같다"는 데이터가 아닙니다.</li>
+      <li><b>처리량과 지연을 따로 본다.</b> 워커로 보내면 지연은 좋아지지만 처리량은 그대로(9장). 캐시는 평균은 좋아지지만 미스 시 꼬리 지연은 그대로.</li>
+    </ol>
+    <div class="callout warn"><span class="title">최적화 전 체크리스트</span>
+      <ul class="checklist">
+        <li>이 코드가 전체 CPU 시간의 몇 %를 차지하는가? (프로파일 수치)</li>
+        <li>그 %가 사용자 체감(p99 지연, 비용)에 연결되는가?</li>
+        <li>알고리즘/데이터 구조 수준의 개선 여지가 먼저 없는가? (O(n²) → O(n log n)이 마이크로 최적화 100개보다 낫다)</li>
+        <li>측정 방법이 재현 가능하게 기록되어 있는가?</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2>2. 샘플링 프로파일러의 원리와 오차</h2>
+    <p>프로파일러는 두 종류입니다. <b>계측(instrumentation)</b>은 모든 함수 진입·탈출에 코드를 끼워 넣어 정확하지만 느리고(수 배) 결과를 왜곡합니다. <b>샘플링(sampling)</b>은 일정 간격(V8 기본 1000µs = 1ms)마다 "지금 콜 스택이 뭐지?"를 기록합니다. 오버헤드가 작고(보통 수 % 이내) 프로덕션에서 쓸 수 있지만, <b>통계적 추정</b>입니다.</p>
+    <p>V8의 CPU 프로파일러는 별도 샘플러 스레드가 주기적으로 메인 스레드에 시그널(Linux에서 <code>SIGPROF</code>)을 보내거나 스레드를 잠시 멈추고, 현재 JS 스택을 걷어(walk) 기록합니다. 결과는 "함수 F가 샘플 N개에 등장" 형태이고, 시간은 <code>N × 간격</code>으로 추정됩니다.</p>
+
+    <div class="widget">
+      <div class="w-title">샘플링 프로파일러 원리 시뮬레이터</div>
+      <div class="w-desc">가상의 실행 타임라인(함수별 실제 CPU 시간)에 일정 간격으로 샘플을 찍어 추정치를 만듭니다. 간격을 늘리면 짧은 함수가 사라지거나 과대평가되는 것을 보세요.</div>
+      <div class="controls">
+        <label>샘플 간격 <input type="range" id="sp-int" min="0.1" max="5" step="0.1" value="1"> <span id="sp-int-v">1.0ms</span></label>
+        <label>타이머 지터 <input type="range" id="sp-jit" min="0" max="50" step="5" value="10"> <span id="sp-jit-v">10%</span></label>
+        <label>시나리오 <select id="sp-scn"><option value="mixed">긴 함수 + 짧은 함수 혼합</option><option value="periodic">주기적 짧은 함수 (앨리어싱)</option><option value="many">아주 짧은 함수 다수</option></select></label>
+        <button class="btn" id="sp-re">다시 샘플링</button>
+      </div>
+      <div class="stage" id="sp-timeline"></div>
+      <div id="sp-rows"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">총 실행</div><div class="v" id="sp-total">-</div></div>
+        <div class="stat"><div class="k">샘플 수</div><div class="v" id="sp-n">-</div></div>
+        <div class="stat"><div class="k">최대 상대 오차</div><div class="v" id="sp-err">-</div></div>
+      </div>
+      <div class="callout" style="margin-bottom:0"><span class="title">읽는 법</span> 파란 막대가 실제, 주황이 샘플링 추정입니다. 함수 하나의 추정 오차는 대략 <code>1/√(그 함수의 샘플 수)</code>에 비례합니다. 샘플 100개면 ±10%, 샘플 4개면 ±50%. "전체의 0.5%인 함수"에 대한 프로파일 수치는 믿지 마세요. "주기적" 시나리오는 샘플 간격과 함수 주기가 맞물려 체계적으로 틀리는 앨리어싱을 보여줍니다(V8은 이를 줄이려 간격에 약간의 무작위성을 둡니다).</div>
+    </div>
+  </section>
+
+  <section id="s3">
+    <h2>3. --cpu-prof와 .cpuprofile 포맷</h2>
+<pre><code># 프로세스 시작부터 종료까지 프로파일. 종료 시 파일 기록 (SIGKILL 되면 안 남는다!)
+node --cpu-prof --cpu-prof-dir=./prof --cpu-prof-interval=500 app.js
+#   → ./prof/CPU.20261021.172541.13896.0.001.cpuprofile
+#   --cpu-prof-name=app.cpuprofile 로 이름 지정 가능. 워커 스레드도 각각 파일을 만든다.
+
+# 실행 중인 프로세스에서 구간 프로파일 (프로덕션용). 재시작·플래그 불필요
+node -e "
+const inspector = require('node:inspector/promises');
+const s = new inspector.Session(); s.connect();
+await s.post('Profiler.enable');
+await s.post('Profiler.setSamplingInterval', { interval: 1000 });
+await s.post('Profiler.start');
+await new Promise(r =&gt; setTimeout(r, 10_000));            // 10초간
+const { profile } = await s.post('Profiler.stop');
+require('fs').writeFileSync('p.cpuprofile', JSON.stringify(profile));
+"
+# 위 코드를 앱 안의 관리용 엔드포인트/시그널 핸들러에 넣어 두는 것이 운영 표준 (9절)</code></pre>
+    <p><code>.cpuprofile</code>은 JSON이며 Chrome DevTools(Performance 탭 → Load profile, 또는 <code>chrome://inspect</code>), VS Code(파일을 열면 바로 플레임 뷰), <a href="https://www.speedscope.app">speedscope</a>에서 엽니다. 구조를 알면 직접 분석 스크립트를 짤 수 있습니다.</p>
+<pre><code>{
+  "nodes": [                                 // 호출 트리 노드 (함수 × 호출 경로)
+    { "id": 1, "callFrame": { "functionName": "(root)", "url": "", "lineNumber": -1, "columnNumber": -1, "scriptId": "0" },
+      "hitCount": 0, "children": [2, 3] },
+    { "id": 2, "callFrame": { "functionName": "(program)", ... }, "hitCount": 12 },
+    { "id": 3, "callFrame": { "functionName": "handler", "url": "file:///app/server.js", "lineNumber": 41, ... },
+      "hitCount": 8, "children": [4], "positionTicks": [{ "line": 42, "ticks": 5 }, ...] },   // 줄 단위 히트
+    ...
+  ],
+  "startTime": 1234567890,  "endTime": 1234667890,     // µs
+  "samples":    [2, 3, 3, 4, 3, 2, ...],                 // 샘플마다 "그때 맨 위 노드"의 id
+  "timeDeltas": [1002, 998, 1050, 970, ...]              // 샘플 간 간격 µs (누적하면 각 샘플의 시각)
+}</code></pre>
+    <ul>
+      <li><b>self time</b> = 그 노드가 <code>samples</code>에 직접 등장한 횟수 × 간격. <b>total time</b> = self + 자식들의 total. 플레임 그래프의 폭은 total, "Bottom-up" 뷰의 정렬 기준은 self입니다.</li>
+      <li>같은 함수가 다른 경로로 호출되면 노드가 여럿입니다(호출 트리). 함수 기준으로 합치려면 <code>callFrame</code>으로 그룹화합니다.</li>
+      <li><code>timeDeltas</code>를 보면 실제 간격이 요청한 값과 다른 것을 알 수 있습니다. GC나 긴 네이티브 호출 중엔 샘플이 밀리고, 그 시간은 다음 샘플에 뭉쳐 귀속됩니다.</li>
+    </ul>
+  </section>
+
+  <section id="s4">
+    <h2>4. 플레임 그래프 읽기</h2>
+    <p>플레임 그래프는 샘플 스택들을 병합한 그림입니다. <b>x축은 시간이 아니라 샘플 비율(알파벳순 정렬)</b>, y축은 스택 깊이, 각 막대의 폭이 그 함수가 스택에 있었던 샘플의 비율(total)입니다. 가장 위에 있는 넓은 막대(자식이 없는 평평한 윗면)가 <b>self time이 큰 함수 = 실제로 CPU를 태운 곳</b>입니다.</p>
+
+    <div class="widget">
+      <div class="w-title">인터랙티브 플레임 그래프</div>
+      <div class="w-desc">가상 프로파일 3종. 막대에 마우스를 올리면 샘플 수와 비율, 클릭하면 그 서브트리로 줌인(다시 클릭하거나 "루트로" 버튼으로 복귀). 아래쪽이 (root), 위로 갈수록 호출된 함수입니다.</div>
+      <div class="controls">
+        <label>프로파일 <select id="fg-data">
+          <option value="json">HTTP 서버: JSON 직렬화 핫스팟</option>
+          <option value="regex">정규식 백트래킹 (ReDoS 의심)</option>
+          <option value="gc">GC 압박: 할당 과다</option>
+        </select></label>
+        <label>검색 <input type="text" id="fg-search" placeholder="함수명 일부" size="14"></label>
+        <button class="btn" id="fg-root">루트로</button>
+      </div>
+      <div class="legend"><span class="js">JS (앱 코드)</span><span class="lib">JS (node_modules/코어 lib)</span><span class="native">네이티브/빌트인</span><span class="gc">(garbage collector)</span><span class="idle">(idle)/(program)</span></div>
+      <div class="flame-wrap stage"><svg class="flame" id="fg-svg"></svg><div class="flame-tip" id="fg-tip" style="display:none"></div></div>
+      <div class="log" id="fg-top" style="margin-top:10px;max-height:160px"></div>
+    </div>
+
+    <h3>4.1 특수 프레임의 의미</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>프레임</th><th>의미</th><th>클 때 의심할 것</th></tr>
+      <tr><td><code>(root)</code></td><td>모든 샘플의 뿌리</td><td>-</td></tr>
+      <tr><td><code>(program)</code></td><td>V8이 JS 스택을 귀속시키지 못한 시간: 네이티브 코드(libuv, 바인딩), JIT 컴파일, 일부 내장 함수</td><td>네이티브 애드온, 과도한 JIT 재컴파일(deopt 루프, 4장), 동기 fs/zlib</td></tr>
+      <tr><td><code>(garbage collector)</code></td><td>GC 일시정지</td><td>할당률 과다, 큰 힙, 누수(5·11장). 10%를 넘으면 메모리 문제가 CPU 문제로 보이는 것</td></tr>
+      <tr><td><code>(idle)</code></td><td>루프가 poll에서 잠든 시간</td><td>크면 CPU가 병목이 아니라는 뜻. 그래프에서 제외하고 보는 것이 보통</td></tr>
+      <tr><td>이름 없는 <code>(anonymous)</code></td><td>익명 함수</td><td>콜백·화살표 함수에 이름을 붙여야 읽을 수 있음</td></tr>
+    </table></div>
+
+    <h3>4.2 사라진 프레임: 인라이닝</h3>
+    <p>TurboFan이 작은 함수를 호출자에 인라이닝하면(4장) 프로파일에서 그 함수는 <b>호출자의 self time으로 흡수</b>됩니다. "핫스팟이 <code>handler</code>인데 handler 자체는 별것 안 하는데?"라면 인라인된 피호출자를 의심하세요. 확인: <code>--no-turbo-inlining</code>으로 다시 프로파일(성능 특성이 바뀌므로 진단용으로만), 또는 소스 줄 단위 히트(<code>positionTicks</code>, DevTools에서 소스 뷰의 줄 옆 숫자)를 봅니다.</p>
+
+    <h3>4.3 도구</h3>
+    <ul>
+      <li><b>Chrome DevTools</b>: Performance 패널의 플레임 차트(이것은 <em>시간순</em> 차트), Bottom-up/Call tree 테이블. 프로파일 파일을 드래그해 로드.</li>
+      <li><b>speedscope</b>: 플레임 그래프/시간순/샌드위치 뷰를 브라우저에서. <code>.cpuprofile</code>, <code>perf script</code> 출력, <code>--prof</code> 로그까지 읽음.</li>
+      <li><b>0x</b>: <code>npx 0x app.js</code>로 실행 → 종료 시 HTML 플레임 그래프. 내부적으로 <code>--cpu-prof</code> 또는 perf 사용.</li>
+      <li><b>clinic flame / doctor / bubbleprof</b>: 플레임 그래프 + 자동 진단 힌트(이벤트 루프 지연, GC, 핸들 수). 입문에 좋지만 유지보수 상태를 확인하고 쓰세요.</li>
+    </ul>
+  </section>
+
+  <section id="s5">
+    <h2>5. --prof: V8 틱 프로세서와 네이티브 프레임</h2>
+    <p><code>--cpu-prof</code>가 JS 스택만 본다면, <code>--prof</code>는 V8의 로거로 <b>JS 코드 주소 공간 + 공유 라이브러리의 틱</b>을 기록합니다. C++ 바인딩, libc, OpenSSL 안에서 시간을 쓰는지 알고 싶을 때 씁니다.</p>
+<pre><code>node --prof app.js                      # isolate-0x....-v8.log 생성 (수십 MB까지 커질 수 있음)
+node --prof-process --preprocess isolate*.log &gt; p.json   # speedscope용 JSON
+node --prof-process isolate*.log                        # 텍스트 리포트:
+
+ [Summary]:
+   ticks  total  nonlib   name
+   4210   61.2%   78.9%  JavaScript
+    512    7.4%    9.6%  C++
+    380    5.5%    7.1%  GC
+   1560   22.7%          Shared libraries      ← libc, libssl, node 바이너리의 C++ 등
+    210    3.1%          Unaccounted
+
+ [JavaScript]:
+   ticks  total  nonlib   name
+   1820   26.5%   34.1%  LazyCompile: *serialize /app/lib/json.js:12:21   ← * = 최적화됨(TurboFan), ~ = 인터프리터
+ [Bottom up (heavy) profile]:                                            ← 호출자 역추적. 가장 유용한 섹션
+   ...</code></pre>
+    <p>이름 앞의 <code>*</code>는 최적화된 코드, <code>~</code>는 Ignition 바이트코드(인터프리터)에서 돈 것입니다. 핫 함수가 계속 <code>~</code>라면 4장의 deopt 원인을 찾으세요. Node 22의 <code>--prof</code> 리포트는 Maglev 코드를 별도로 표시하지 않을 수 있습니다(V8 버전에 따름).</p>
+  </section>
+
+  <section id="s6">
+    <h2>6. Linux perf와 eBPF</h2>
+    <p>커널·시스템 전체를 함께 보려면 <code>perf</code>입니다. 문제는 JIT 코드에 심볼이 없다는 것인데, Node는 <b>perf map</b>을 써 줄 수 있습니다.</p>
+<pre><code>node --perf-basic-prof app.js            # /tmp/perf-&lt;pid&gt;.map 에 "주소 크기 함수명" 기록 (JIT 코드 생성 때마다 추가 → 파일이 계속 커짐)
+node --perf-basic-prof-only-functions    # 함수만(스텁·IC 제외). 운영에서는 이쪽
+node --interpreted-frames-native-stack   # 인터프리터 프레임도 네이티브 스택에서 구분 (perf에서 JS 프레임이 보이려면 필요)
+
+perf record -F 99 -g -p &lt;pid&gt; -- sleep 30        # 99Hz, 콜 그래프, 30초
+perf script | stackcollapse-perf.pl | flamegraph.pl &gt; flame.svg      # Brendan Gregg의 FlameGraph 스크립트</code></pre>
+    <ul>
+      <li>장점: 커널 함수(네트워크 스택, 페이지 폴트), libuv, OpenSSL, GC 내부까지 한 그림. <b>off-CPU 분석</b>(<code>perf sched</code>, eBPF <code>offcputime</code>)으로 "왜 기다렸나"도 볼 수 있습니다. JS 프로파일러로는 불가능.</li>
+      <li>단점: 프레임 포인터가 필요(Node 바이너리는 기본 포함), 컨테이너에서는 <code>CAP_PERFMON</code>/<code>CAP_SYS_ADMIN</code>과 호스트 커널 심볼 접근 필요, perf map 파일이 무한히 커짐(주기적 정리 또는 <code>--perf-basic-prof-only-functions</code>).</li>
+      <li>eBPF 기반 지속 프로파일러(Parca, Pyroscope eBPF, Elastic Universal Profiling)는 프로세스에 플래그 없이도 perf map을 읽어 JS 프레임을 복원하려 시도합니다. 지원 수준은 도구별로 확인.</li>
+    </ul>
+  </section>
+
+  <section id="s7">
+    <h2>7. 흔한 핫스팟 카탈로그</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>프로파일에서 보이는 모습</th><th>원인</th><th>처방</th></tr>
+      <tr><td><code>JSON.stringify</code>/<code>JSON.parse</code>가 넓다</td><td>큰 응답/요청 본문, 로깅에서 객체를 매번 직렬화</td><td>응답 크기 줄이기(필드 선택, 페이지네이션), 스키마 기반 직렬화(fast-json-stringify), 로그 샘플링, 스트리밍 파서</td></tr>
+      <tr><td><code>RegExp.prototype.exec</code>/<code>String.prototype.replace</code>가 넓고 입력 길이에 따라 폭발</td><td>백트래킹 정규식(중첩 수량자, <code>(a+)+</code>), 매 호출 정규식 재생성</td><td>정규식 단순화·앵커링, 입력 길이 제한, <code>RE2</code>(선형 시간), 정규식 상수화(16장)</td></tr>
+      <tr><td><code>(garbage collector)</code> &gt; 10%</td><td>단명 객체 폭증(스프레드, map/filter 체인, 클로저, 문자열 조각), 큰 힙</td><td>할당 줄이기(5장), 객체 풀은 신중히, 힙 크기 조정</td></tr>
+      <tr><td><code>(program)</code>이 넓다</td><td>동기 네이티브: <code>fs.*Sync</code>, <code>zlib.*Sync</code>, <code>crypto.pbkdf2Sync</code>, 네이티브 애드온, 지속적 재컴파일</td><td>비동기 API(스레드풀로), <code>--trace-deopt</code>로 deopt 루프 확인</td></tr>
+      <tr><td>로거 함수(<code>write</code>, <code>format</code>)가 핫</td><td>동기 stdout, 문자열 포맷팅, 매 요청 큰 컨텍스트 객체</td><td>pino + 비동기 transport, 로그 레벨, 샘플링(15장)</td></tr>
+      <tr><td><code>Array.prototype.sort</code>, 중첩 루프</td><td>O(n log n) 이상이 핫패스에</td><td>인덱스/Map 사용, 정렬된 상태 유지, 상위 k만 필요하면 힙</td></tr>
+      <tr><td><code>Buffer.toString</code>/<code>Buffer.from</code>, <code>TextDecoder</code></td><td>바이너리↔문자열 반복 변환</td><td>변환 횟수 줄이기, Buffer 그대로 전달, latin1/base64 비용 인지</td></tr>
+      <tr><td>템플릿 렌더링 함수</td><td>SSR 템플릿, 매 요청 컴파일</td><td>템플릿 컴파일 캐시, 부분 캐시, 스트리밍 렌더</td></tr>
+      <tr><td><code>Object.keys</code>/<code>for...in</code>/스프레드가 넓다</td><td>큰 객체를 매번 복사·순회(불변 업데이트 남용)</td><td>필요한 필드만, 구조적 공유 라이브러리, Map</td></tr>
+      <tr><td>특정 함수가 <code>~</code>(인터프리터)로만 돈다</td><td>deopt 반복, 거대 함수(최적화 상한), try/catch 안의 핫루프(구버전)</td><td>4장: 모노모픽 유지, 함수 분할</td></tr>
+    </table></div>
+  </section>
+
+  <section id="s8">
+    <h2>8. 마이크로벤치마크와 그 함정</h2>
+    <p>"A 방식이 B보다 빠른가?"를 재는 마이크로벤치마크는 <b>JIT가 있는 언어에서 가장 틀리기 쉬운 측정</b>입니다. 아래 데모는 전형적인 함정을 모사합니다.</p>
+    <div class="widget">
+      <div class="w-title">벤치마크 함정 데모</div>
+      <div class="w-desc">같은 함수를 반복 호출할 때 회차별 실행 시간(모사)입니다. 워밍업·GC·죽은 코드 제거·측정 횟수가 "결론"을 어떻게 바꾸는지 보세요.</div>
+      <div class="controls">
+        <label>반복 횟수 <input type="range" id="bm-n" min="20" max="2000" step="20" value="300"> <span id="bm-n-v">300</span></label>
+        <label><input type="checkbox" id="bm-warm" checked> 워밍업 구간 제외</label>
+        <label><input type="checkbox" id="bm-dce"> 결과를 쓰지 않음 (DCE 가능)</label>
+        <label><input type="checkbox" id="bm-gc" checked> GC 노이즈</label>
+        <label><input type="checkbox" id="bm-deopt"> 중간에 타입 변경 (deopt)</label>
+        <button class="btn" id="bm-re">다시 측정</button>
+      </div>
+      <svg class="bench-chart" id="bm-chart" viewBox="0 0 880 180" preserveAspectRatio="none"></svg>
+      <div class="stat-row">
+        <div class="stat"><div class="k">첫 1회</div><div class="v" id="bm-first">-</div></div>
+        <div class="stat"><div class="k">평균</div><div class="v" id="bm-mean">-</div></div>
+        <div class="stat"><div class="k">중앙값</div><div class="v" id="bm-med">-</div></div>
+        <div class="stat"><div class="k">p99</div><div class="v" id="bm-p99">-</div></div>
+        <div class="stat"><div class="k">최솟값</div><div class="v" id="bm-min">-</div></div>
+      </div>
+      <div class="log" id="bm-note"></div>
+    </div>
+
+    <h3>8.1 함정 목록</h3>
+    <ul>
+      <li><b>JIT 워밍업</b>: 처음 수십~수백 회는 인터프리터(Ignition) → Sparkplug → Maglev → TurboFan 단계를 거치며 점점 빨라집니다. 첫 측정은 "컴파일 시간"입니다. 워밍업 후 측정하고, 보고서에는 중앙값과 분포를.</li>
+      <li><b>죽은 코드 제거(DCE)</b>: 결과를 쓰지 않으면 TurboFan이 계산 자체를 지웁니다. "0.001ns per op"은 측정이 아니라 삭제입니다. 결과를 누적하거나 외부로 내보내세요(benchmark 도구의 <code>do_not_optimize</code> 류).</li>
+      <li><b>상수 접기·루프 불변 호이스팅</b>: 입력이 상수면 컴파일러가 미리 계산합니다. 입력을 매 회 다르게, 혹은 불투명하게.</li>
+      <li><b>모노모픽 편향</b>: 벤치에서는 한 타입만 넘겨 IC가 모노모픽이지만 실제 코드는 메가모픽(4장). 실제 입력 분포를 흉내 내세요.</li>
+      <li><b>GC 노이즈</b>: 할당하는 코드는 간헐적으로 GC 일시정지가 섞여 평균이 왜곡됩니다. 중앙값·최솟값을 함께 보고, <code>--expose-gc</code>로 측정 전 <code>gc()</code>를 호출하거나 충분히 많이 반복.</li>
+      <li><b>측정 자체의 비용</b>: <code>performance.now()</code>는 수십 ns, <code>process.hrtime.bigint()</code>도 비슷. 1µs 이하 연산은 수천 회 묶어 재야 합니다.</li>
+      <li><b>CPU 주파수·전원 관리·noisy neighbor</b>: 노트북 터보부스트, 클라우드 VM의 CPU 스틸. 여러 번 반복해 분산을 보고하세요.</li>
+    </ul>
+
+    <h3>8.2 도구</h3>
+    <div class="tabs">
+      <div class="tab-bar"><button class="tab" data-tab="a">tinybench</button><button class="tab" data-tab="b">perf_hooks</button><button class="tab" data-tab="c">node:test 와 CI</button></div>
+      <div class="tab-pane" data-tab="a"><pre><code>import { Bench } from 'tinybench';
+const bench = new Bench({ time: 1000, warmupTime: 200 });   // 워밍업 후 1초씩
+let sink = 0;                                                  // DCE 방지용 싱크
+bench
+  .add('JSON.stringify', () =&gt; { sink += JSON.stringify(obj).length; })
+  .add('fast-json-stringify', () =&gt; { sink += stringify(obj).length; });
+await bench.run();
+console.table(bench.table());    // ops/sec, 평균, 마진(±%), 샘플 수
+// benchmark.js 도 같은 역할(오래됨). Node 코어 자체의 벤치는 벤치마크 러너(benchmark/ 디렉터리)를 씀.</code></pre></div>
+      <div class="tab-pane" data-tab="b"><pre><code>const { performance, PerformanceObserver } = require('node:perf_hooks');
+
+// 함수 래핑: 호출마다 'function' 엔트리 생성
+const wrapped = performance.timerify(parseBody);
+new PerformanceObserver(list =&gt; {
+  for (const e of list.getEntries()) console.log(e.name, e.duration.toFixed(3), 'ms');
+}).observe({ entryTypes: ['function'] });
+
+// 구간 측정
+performance.mark('db-start');
+await db.query(sql);
+performance.mark('db-end');
+performance.measure('db', 'db-start', 'db-end');   // 'measure' 엔트리 → observer 또는 getEntriesByName('db')
+
+// 고해상도 단일 측정
+const t0 = process.hrtime.bigint();
+work();
+console.log(Number(process.hrtime.bigint() - t0) / 1e6, 'ms');</code></pre></div>
+      <div class="tab-pane" data-tab="c"><pre><code>// 성능 회귀 테스트: 절대값이 아니라 "기준 대비 비율"로 검사해야 CI 머신 차이에 견딘다
+import { test } from 'node:test';
+import assert from 'node:assert';
+test('serialize는 baseline의 1.3배 이내', () =&gt; {
+  const ratio = median(timeIt(newSerialize)) / median(timeIt(baselineSerialize));
+  assert.ok(ratio &lt; 1.3, `ratio ${ratio.toFixed(2)}`);
+});
+// 더 좋은 방법: 벤치 결과를 아티팩트로 저장하고 추세를 대시보드로(17장). 단건 임계치는 플래키하다.</code></pre></div>
+    </div>
+  </section>
+
+  <section id="s9">
+    <h2>9. 프로덕션 지속 프로파일링</h2>
+    <p>개발 환경 프로파일은 프로덕션의 핫스팟을 놓칩니다(데이터 분포, 캐시 상태, 트래픽 믹스). 그래서 성숙한 조직은 <b>프로덕션에서 항상 낮은 빈도로 프로파일을 뜹니다</b>.</p>
+    <ol>
+      <li><b>오버헤드 예산</b>: 샘플링 간격 10ms(100Hz)면 CPU 오버헤드는 보통 1~2% 이내. 1ms(1000Hz)는 부하가 높은 서비스에서 5%+를 볼 수 있습니다. 메모리: 프로파일 버퍼는 작지만 긴 프로파일은 노드 수가 커집니다.</li>
+      <li><b>주기적 스냅샷</b>: 예를 들어 1분마다 10초 프로파일을 떠서 압축·업로드. inspector 세션 방식(3절)이면 플래그·재시작 없음.</li>
+      <li><b>트리거 기반</b>: ELU &gt; 0.8이 30초 지속, 또는 루프 지연 p99 &gt; 200ms일 때 자동으로 30초 프로파일. 장애 중의 프로파일이 가장 가치 있습니다.</li>
+      <li><b>온디맨드</b>: <code>SIGUSR2</code> 핸들러나 관리 엔드포인트(인증 필수)로 "지금 20초 프로파일". <code>SIGUSR1</code>은 Node가 inspector 활성화용으로 예약하므로 쓰지 마세요.</li>
+      <li><b>집계</b>: 같은 버전·같은 엔드포인트의 프로파일을 병합해 "서비스 전체 플레임 그래프"를 봅니다. Pyroscope, Parca, Datadog/Google Cloud/Elastic의 Continuous Profiler가 이 역할. 배포 전후 차이(diff flame graph)가 회귀 탐지의 핵심.</li>
+    </ol>
+<pre><code>// 최소 구현: 시그널로 20초 프로파일을 떠서 파일로
+const inspector = require('node:inspector/promises');
+process.on('SIGUSR2', async () =&gt; {
+  const s = new inspector.Session(); s.connect();
+  await s.post('Profiler.enable'); await s.post('Profiler.setSamplingInterval', { interval: 10_000 }); // 10ms
+  await s.post('Profiler.start');
+  setTimeout(async () =&gt; {
+    const { profile } = await s.post('Profiler.stop'); s.disconnect();
+    await fs.promises.writeFile(`/tmp/prof-${process.pid}-${Date.now()}.cpuprofile`, JSON.stringify(profile));
+  }, 20_000).unref();
+});</code></pre>
+    <div class="callout tip"><span class="title">--cpu-prof를 프로덕션에서 쓰지 않는 이유</span> 종료 시에만 파일을 쓰므로 OOMKilled·SIGKILL이면 아무것도 남지 않고, 긴 수명 프로세스에서는 파일이 거대해지며, 간격·구간을 런타임에 바꿀 수 없습니다. 부팅 시간 분석(스크립트 시작~listen)에는 적합합니다.</div>
+  </section>
+
+  <section id="s10">
+    <h2>10. 현업 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: "DB가 느리다"가 실은 JSON이었다</span>
+      <p>API p99 2초. 팀은 DB 인덱스를 두 주 동안 손봄. 프로덕션 프로파일을 뜨자 <code>JSON.stringify</code>가 self time 38%: 응답에 불필요한 중첩 객체(관계 전체)를 포함해 평균 응답 4MB. 필드 선택으로 응답을 120KB로 줄이자 p99 300ms. 교훈: 측정 전에 고치지 말 것.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: 벤치에서 3배 빨랐던 라이브러리가 프로덕션에서 느려짐</span>
+      <p>마이크로벤치에서 새 직렬화 라이브러리가 3배 빠름. 배포 후 CPU 20% 상승. 원인: 벤치는 한 가지 객체 모양(모노모픽)만 썼고, 실제 트래픽은 수백 가지 모양 → 라이브러리 내부 IC가 메가모픽으로 전락. 교훈: 벤치 입력을 프로덕션 샘플에서 추출.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: (program) 45%의 정체</span>
+      <p>플레임 그래프에서 (program)이 절반. JS 핫스팟이 안 보여 포기할 뻔. <code>--prof</code>로 보니 Shared libraries의 libz: 요청마다 <code>zlib.gzipSync</code>로 응답 압축. 비동기 <code>zlib.gzip</code>(스레드풀)으로 바꾸고, 이후 압축을 리버스 프록시로 이관. 교훈: (program)이 크면 네이티브 측 프로파일러로 한 단계 내려갈 것.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>측정 → 변경 → 재측정. 프로덕션과 같은 조건에서, 충분한 샘플로, 여러 번.</li>
+    <li>V8 CPU 프로파일러는 샘플링(기본 1ms). 오차 ≈ 1/√샘플수. 전체의 1% 미만 함수 수치는 노이즈.</li>
+    <li><code>--cpu-prof</code>는 부팅/CLI용, 프로덕션은 <code>inspector</code> 세션으로 구간 프로파일. .cpuprofile = nodes + samples + timeDeltas.</li>
+    <li>플레임 그래프: x = 샘플 비율(시간순 아님), 윗면이 넓은 곳이 self time. (program)=네이티브/JIT, (garbage collector)=GC, (idle)=대기. 인라이닝은 프레임을 숨긴다.</li>
+    <li><code>--prof</code>/<code>perf</code>는 네이티브·커널까지. perf에는 <code>--perf-basic-prof-only-functions</code> + <code>--interpreted-frames-native-stack</code>.</li>
+    <li>벤치 함정: 워밍업, DCE, 상수 접기, 모노모픽 편향, GC 노이즈, 측정 비용. 중앙값·분포·실제 입력으로.</li>
+    <li>지속 프로파일링: 10ms 간격, 주기+트리거+온디맨드, 버전 간 diff가 회귀 탐지의 핵심.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">플레임 그래프에서 함수 X의 막대가 가장 넓지만 그 위에 자식 막대들이 거의 전부를 덮고 있다. 해석은?</div>
+    <button class="opt">X가 CPU를 가장 많이 쓰는 함수이므로 X를 최적화한다</button>
+    <button class="opt">X의 total은 크지만 self는 작다. 실제 CPU는 자식들이 쓴다</button>
+    <button class="opt">X가 인라이닝되었다</button>
+    <button class="opt">X가 GC를 유발한다</button>
+    <div class="explain">폭은 total time(스택에 있었던 샘플 비율)입니다. 자식이 덮고 있으면 그 시간은 자식의 것입니다. 최적화 대상은 "윗면이 노출된 넓은 막대"(self time)입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">1ms 간격 10초 프로파일에서 함수 F가 샘플 9개(0.09%)에 나타났다. F가 전체 CPU의 0.09%를 쓴다고 결론 내릴 수 있는가?</div>
+    <button class="opt">그렇다, 샘플링은 정확하다</button>
+    <button class="opt">아니다, F는 실제로 0%일 가능성이 높다</button>
+    <button class="opt">아니다, 샘플 9개의 상대 오차는 ±30% 이상이라 0.06~0.12% 어디든 가능하며, 더 중요한 건 어차피 최적화 가치가 없다</button>
+    <button class="opt">간격을 0.1ms로 줄이면 정확해진다</button>
+    <div class="explain">오차는 1/√n ≈ 1/3. 또한 0.1% 수준의 함수는 최적화해도 체감이 없습니다. 간격을 줄이면 샘플은 늘지만 오버헤드와 관측자 효과가 커집니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">마이크로벤치에서 어떤 함수가 "0.3ns/op"로 측정되었다. 가장 가능성 높은 설명은?</div>
+    <button class="opt">결과를 쓰지 않아 TurboFan이 계산을 제거했다(DCE)</button>
+    <button class="opt">CPU가 매우 빠르다</button>
+    <button class="opt">performance.now()의 해상도 문제</button>
+    <button class="opt">GC가 한 번도 안 돌았다</button>
+    <div class="explain">0.3ns는 CPU 사이클 1개 수준입니다. 의미 있는 연산이 이 시간에 끝날 수 없으므로 컴파일러가 코드를 지운 것입니다. 결과를 싱크 변수에 누적하거나 외부로 내보내야 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">프로덕션 서비스가 간헐적으로 CPU 100%를 찍는다. 원인 파악에 가장 적절한 방법은?</div>
+    <button class="opt">--cpu-prof로 재시작한다</button>
+    <button class="opt">개발 환경에서 같은 요청을 재현해 프로파일한다</button>
+    <button class="opt">--prof로 재시작하고 하루 뒤 로그를 분석한다</button>
+    <button class="opt">ELU/루프 지연 임계치를 트리거로 inspector 세션 프로파일을 자동으로 뜨게 한다</button>
+    <div class="explain">간헐적 문제는 "그 순간"의 프로파일이 필요합니다. 재시작 없이 런타임에 켤 수 있는 inspector 세션을 트리거 기반으로 돌리는 것이 정답입니다. --cpu-prof는 종료 시에만 기록하고 --prof 로그는 하루면 수 GB가 됩니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">(program) 프레임이 전체의 40%를 차지한다. 다음 단계로 적절한 것은?</div>
+    <button class="opt">JS 코드에 문제가 없다는 뜻이므로 종료</button>
+    <button class="opt">--prof 또는 perf로 네이티브 측(바인딩, 공유 라이브러리, JIT)을 본다</button>
+    <button class="opt">샘플 간격을 늘린다</button>
+    <button class="opt">GC 튜닝을 한다</button>
+    <div class="explain">(program)은 V8이 JS 스택에 귀속시키지 못한 시간입니다. 동기 네이티브 호출, 애드온, 재컴파일 등이 후보이며 JS 프로파일러로는 더 내려갈 수 없으므로 네이티브 프로파일러가 필요합니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>플레임 그래프 만들기.</b> 2장 실습의 서버에 <code>/slow</code>(동기 300ms) 외에 <code>/json</code>(큰 객체를 stringify)을 추가하고 autocannon으로 부하를 주면서 3절의 inspector 세션 코드로 20초 프로파일을 뜨세요. speedscope에서 열어 self time 상위 3개를 적고, (program)과 (garbage collector) 비율을 기록하세요. 기대: <code>JSON.stringify</code>가 상위, (idle)은 부하에 따라 변동.</li>
+    <li><b>샘플링 오차 체감.</b> 같은 부하에서 간격 100µs, 1ms, 10ms로 각각 프로파일을 뜨고 상위 함수의 비율이 어떻게 달라지는지, 프로파일 중 서버 처리량이 얼마나 떨어지는지(오버헤드) 표로 정리하세요.</li>
+    <li><b>DCE 재현.</b> tinybench로 <code>Math.sqrt(i)</code>를 ① 결과를 버리고 ② 싱크에 더하며 측정해 ops/sec 차이를 보세요. 그다음 <code>--no-opt</code>(TurboFan 비활성, 진단용 V8 플래그)로 다시 돌려 차이가 사라지는지 확인하세요.</li>
+    <li><b>perf 맵.</b> Linux에서 <code>node --perf-basic-prof-only-functions --interpreted-frames-native-stack app.js</code>를 띄우고 <code>perf record -F 99 -g -p &lt;pid&gt; -- sleep 15</code> → FlameGraph로 SVG를 만들어 JS 프레임과 libuv/커널 프레임이 함께 보이는지 확인하세요.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+
+  // ===================== 위젯 1: 샘플링 원리 =====================
+  (function () {
+    const SCN = {
+      mixed: () => { const segs = []; const fns = [["handler", 3.0], ["serialize", 1.2], ["validate", 0.3], ["log", 0.15], ["dbMap", 0.6]]; let seed = 3; const r = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648; for (let i = 0; i < 40; i++) { const f = fns[Math.floor(r() * fns.length)]; segs.push([f[0], f[1] * (0.6 + r() * 0.8)]); } return segs; },
+      periodic: () => { const segs = []; for (let i = 0; i < 30; i++) { segs.push(["work", 0.85]); segs.push(["tick", 0.15]); } return segs; },
+      many: () => { const segs = []; const fns = ["parse", "format", "check", "emit", "route", "auth", "hash"]; let seed = 11; const r = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648; for (let i = 0; i < 300; i++) segs.push([fns[Math.floor(r() * fns.length)], 0.05 + r() * 0.2]); return segs; },
+    };
+    const COLORS = ["var(--accent)", "var(--violet)", "var(--teal)", "var(--ok)", "var(--warn)", "var(--bad)", "var(--muted)"];
+    function run() {
+      const interval = +$("sp-int").value, jit = +$("sp-jit").value / 100; $("sp-int-v").textContent = interval.toFixed(1) + "ms"; $("sp-jit-v").textContent = (jit * 100) + "%";
+      const segs = SCN[$("sp-scn").value]();
+      const total = segs.reduce((s, x) => s + x[1], 0);
+      const names = [...new Set(segs.map(s => s[0]))];
+      const truth = {}; names.forEach(n => truth[n] = 0); segs.forEach(s => truth[s[0]] += s[1]);
+      // 샘플링
+      const counts = {}; names.forEach(n => counts[n] = 0); let n = 0; const marks = [];
+      let t = Math.random() * interval;
+      while (t < total) { let acc = 0; for (const s of segs) { if (t < acc + s[1]) { counts[s[0]]++; break; } acc += s[1]; } marks.push(t); n++; t += interval * (1 + (Math.random() * 2 - 1) * jit); }
+      // 타임라인
+      let acc = 0; let html = `<div class="timeline" style="height:34px">`;
+      segs.forEach(s => { const i = names.indexOf(s[0]); html += `<div class="seg" style="left:${acc / total * 100}%;width:${s[1] / total * 100}%;background:${COLORS[i % COLORS.length]};opacity:.55" title="${s[0]} ${s[1].toFixed(2)}ms"></div>`; acc += s[1]; });
+      marks.forEach(m => html += `<div style="position:absolute;left:${m / total * 100}%;top:0;height:100%;border-left:1px solid var(--text);opacity:.8"></div>`);
+      html += `</div><div style="font-size:11px;color:var(--muted)">세로선 = 샘플 시점 (${n}개). 색 = 함수.</div>`;
+      $("sp-timeline").innerHTML = html;
+      // 막대
+      let maxErr = 0; const max = Math.max(...names.map(k => truth[k]));
+      $("sp-rows").innerHTML = names.sort((a, b) => truth[b] - truth[a]).map((k, i) => {
+        const est = counts[k] * interval; const err = truth[k] > 0 ? Math.abs(est - truth[k]) / truth[k] : 0; if (truth[k] / total > 0.03) maxErr = Math.max(maxErr, err);
+        return `<div class="samp-row"><div class="n">${k}</div><div><div class="b" style="width:${truth[k] / max * 52}%;background:${COLORS[i % COLORS.length]}"><span>실제 ${truth[k].toFixed(2)}ms (${(truth[k] / total * 100).toFixed(1)}%)</span></div></div><div><div class="b est" style="width:${est / max * 52}%"><span>추정 ${est.toFixed(2)}ms · 샘플 ${counts[k]} · 오차 ${(err * 100).toFixed(0)}%</span></div></div></div>`;
+      }).join("");
+      $("sp-total").textContent = total.toFixed(1) + " ms"; $("sp-n").textContent = n; $("sp-err").textContent = (maxErr * 100).toFixed(0) + "% (3%↑ 함수)";
+    }
+    ["sp-int", "sp-jit"].forEach(id => $(id).oninput = run); $("sp-scn").onchange = run; $("sp-re").onclick = run; run();
+  })();
+
+  // ===================== 위젯 2: 플레임 그래프 =====================
+  (function () {
+    // 스택 샘플: "a;b;c" 형식과 샘플 수
+    const DATA = {
+      json: [
+        ["(root);(idle)", 220], ["(root);(program)", 60], ["(root);(garbage collector)", 45],
+        ["(root);processTicksAndRejections lib;handler app;serialize app;JSON.stringify native", 310],
+        ["(root);processTicksAndRejections lib;handler app;serialize app;toPlain app", 40],
+        ["(root);processTicksAndRejections lib;handler app;serialize app", 15],
+        ["(root);processTicksAndRejections lib;handler app;validate app;ajvValidate lib", 55],
+        ["(root);processTicksAndRejections lib;handler app;validate app", 8],
+        ["(root);processTicksAndRejections lib;handler app;dbMap app;Array.map native", 30],
+        ["(root);processTicksAndRejections lib;handler app;dbMap app", 12],
+        ["(root);processTicksAndRejections lib;handler app;log app;pino.write lib;JSON.stringify native", 48],
+        ["(root);processTicksAndRejections lib;handler app", 10],
+        ["(root);emit lib;parserOnIncoming lib;onRequest app;router lib", 25],
+        ["(root);emit lib;onWriteComplete lib;Socket.write lib;writeGeneric native", 22],
+      ],
+      regex: [
+        ["(root);(idle)", 80], ["(root);(program)", 20], ["(root);(garbage collector)", 15],
+        ["(root);processTicksAndRejections lib;handler app;sanitize app;String.replace native;RegExp.exec native", 640],
+        ["(root);processTicksAndRejections lib;handler app;sanitize app;String.replace native", 20],
+        ["(root);processTicksAndRejections lib;handler app;sanitize app", 6],
+        ["(root);processTicksAndRejections lib;handler app;serialize app;JSON.stringify native", 60],
+        ["(root);processTicksAndRejections lib;handler app;validate app;ajvValidate lib", 25],
+        ["(root);processTicksAndRejections lib;handler app", 8],
+        ["(root);emit lib;parserOnIncoming lib;onRequest app;router lib", 20],
+      ],
+      gc: [
+        ["(root);(idle)", 100], ["(root);(program)", 40], ["(root);(garbage collector)", 330],
+        ["(root);processTicksAndRejections lib;handler app;transform app;Array.map native;(anonymous) app", 120],
+        ["(root);processTicksAndRejections lib;handler app;transform app;Array.filter native;(anonymous) app", 90],
+        ["(root);processTicksAndRejections lib;handler app;transform app;Object.assign native", 70],
+        ["(root);processTicksAndRejections lib;handler app;transform app;spread app", 60],
+        ["(root);processTicksAndRejections lib;handler app;transform app", 25],
+        ["(root);processTicksAndRejections lib;handler app;serialize app;JSON.stringify native", 80],
+        ["(root);processTicksAndRejections lib;handler app", 10],
+        ["(root);emit lib;parserOnIncoming lib;onRequest app;router lib", 25],
+      ],
+    };
+    const svg = $("fg-svg"), tip = $("fg-tip"), NS = "http://www.w3.org/2000/svg";
+    function build(rows) {
+      const root = { name: "(root)", kind: "root", total: 0, self: 0, children: new Map() };
+      rows.forEach(([stack, n]) => {
+        const frames = stack.split(";").slice(1); let node = root; root.total += n;
+        frames.forEach((f, i) => { const [name, kind] = f.split(" "); if (!node.children.has(name)) node.children.set(name, { name, kind: kind || (name.startsWith("(") ? "special" : "app"), total: 0, self: 0, children: new Map() }); node = node.children.get(name); node.total += n; if (i === frames.length - 1) node.self += n; });
+        if (frames.length === 0) root.self += n;
+      });
+      return root;
+    }
+    function color(node) {
+      if (node.name === "(garbage collector)") return "var(--bad)";
+      if (node.name === "(idle)" || node.name === "(program)" || node.kind === "root") return "var(--border)";
+      if (node.kind === "native") return "var(--violet)";
+      if (node.kind === "lib") return "var(--teal)";
+      return "var(--accent)";
+    }
+    let root, zoom, grand;
+    function depth(n) { let d = 1; for (const c of n.children.values()) d = Math.max(d, 1 + depth(c)); return d; }
+    function render() {
+      const q = $("fg-search").value.trim().toLowerCase();
+      const W = 880, H = 20, D = depth(zoom); svg.setAttribute("viewBox", `0 0 ${W} ${D * H + 4}`); svg.style.height = (D * H + 4) + "px"; svg.innerHTML = "";
+      const mk = (t, a) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+      function draw(node, x, level) {
+        const w = node.total / zoom.total * W; if (w < 0.5) return;
+        const y = (D - 1 - level) * H + 2;
+        const r = mk("rect", { x, y, width: w, height: H - 1, rx: 2, fill: color(node) });
+        if (q && !node.name.toLowerCase().includes(q)) r.classList.add("dim");
+        r.onmousemove = e => { tip.style.display = ""; const wrap = svg.parentElement.getBoundingClientRect(); tip.style.left = (e.clientX - wrap.left + 12) + "px"; tip.style.top = (e.clientY - wrap.top + 12) + "px"; tip.textContent = `${node.name}\ntotal ${node.total} 샘플 (${(node.total / grand * 100).toFixed(1)}% / 줌 기준 ${(node.total / zoom.total * 100).toFixed(1)}%)\nself  ${node.self} 샘플 (${(node.self / grand * 100).toFixed(1)}%)`; };
+        r.onmouseleave = () => tip.style.display = "none";
+        r.onclick = () => { zoom = node === zoom ? root : node; render(); };
+        svg.append(r);
+        if (w > 30) { const t = mk("text", { x: x + 4, y: y + 14 }); t.textContent = node.name.length * 6.5 > w - 8 ? node.name.slice(0, Math.max(1, Math.floor((w - 8) / 6.5) - 1)) + "…" : node.name; svg.append(t); }
+        let cx = x; [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach(c => { draw(c, cx, level + 1); cx += c.total / zoom.total * W; });
+      }
+      draw(zoom, 0, 0);
+      // self 상위
+      const all = []; (function walk(n) { all.push(n); n.children.forEach(walk); })(root);
+      const byName = new Map(); all.forEach(n => { if (n.kind === "root") return; const e = byName.get(n.name) || { self: 0, total: 0 }; e.self += n.self; byName.set(n.name, e); });
+      const top = [...byName.entries()].sort((a, b) => b[1].self - a[1].self).slice(0, 7);
+      $("fg-top").textContent = "self time 상위 (함수 기준 합산, 전체 " + grand + " 샘플 = " + (grand / 1000).toFixed(1) + "초 @1ms):\n" + top.map(([k, v], i) => `${String(i + 1).padStart(2)}. ${k.padEnd(28)} ${String(v.self).padStart(5)} 샘플  ${(v.self / grand * 100).toFixed(1).padStart(5)}%`).join("\n");
+    }
+    function load() { root = build(DATA[$("fg-data").value]); zoom = root; grand = root.total; render(); }
+    $("fg-data").onchange = load; $("fg-search").oninput = render; $("fg-root").onclick = () => { zoom = root; render(); }; load();
+  })();
+
+  // ===================== 위젯 3: 벤치마크 함정 =====================
+  (function () {
+    function run() {
+      const N = +$("bm-n").value, warm = $("bm-warm").checked, dce = $("bm-dce").checked, gc = $("bm-gc").checked, deopt = $("bm-deopt").checked;
+      $("bm-n-v").textContent = N;
+      const times = [], isGc = [];
+      let tier = 0; // 0 interp, 1 sparkplug, 2 maglev, 3 turbofan
+      for (let i = 0; i < N; i++) {
+        if (i === 0) tier = 0; if (i >= 8) tier = 1; if (i >= 40) tier = 2; if (i >= 120) tier = 3;
+        if (deopt && i === Math.floor(N * 0.6)) tier = 0; // 타입 변경 → deopt → 재워밍업
+        if (deopt && i > Math.floor(N * 0.6)) { const k = i - Math.floor(N * 0.6); tier = k >= 120 ? 3 : k >= 40 ? 2 : k >= 8 ? 1 : 0; }
+        const base = [12, 6, 2.5, 1][tier] * (dce && tier === 3 ? 0.02 : 1);
+        let t = base * (0.9 + Math.random() * 0.2) + (i === 0 ? 25 : 0); // 첫 호출: 파싱/컴파일
+        let g = false; if (gc && Math.random() < 0.02) { t += 15 + Math.random() * 30; g = true; }
+        times.push(t); isGc.push(g);
+      }
+      const used = warm ? times.slice(Math.min(150, Math.floor(N / 2))) : times;
+      const sorted = used.slice().sort((a, b) => a - b);
+      const mean = used.reduce((s, x) => s + x, 0) / used.length;
+      $("bm-first").textContent = times[0].toFixed(1) + " µs"; $("bm-mean").textContent = mean.toFixed(2) + " µs";
+      $("bm-med").textContent = sorted[Math.floor(sorted.length / 2)].toFixed(2) + " µs"; $("bm-p99").textContent = sorted[Math.floor(sorted.length * 0.99)].toFixed(1) + " µs"; $("bm-min").textContent = sorted[0].toFixed(2) + " µs";
+      // 차트
+      const W = 880, H = 180, max = Math.max(...times) * 1.05;
+      let s = `<line x1="40" y1="${H - 20}" x2="${W}" y2="${H - 20}" class="axis"/><line x1="40" y1="0" x2="40" y2="${H - 20}" class="axis"/>`;
+      s += `<text x="2" y="12">${max.toFixed(0)}µs</text><text x="2" y="${H - 24}">0</text>`;
+      if (warm) { const wx = 40 + (N - used.length) / N * (W - 40); s += `<rect x="40" y="0" width="${wx - 40}" height="${H - 20}" style="fill:var(--warn-soft);opacity:.6"/><text x="44" y="${H - 28}">워밍업 (제외)</text>`; }
+      if (deopt) { const dx = 40 + 0.6 * (W - 40); s += `<line x1="${dx}" y1="0" x2="${dx}" y2="${H - 20}" style="stroke:var(--bad);stroke-dasharray:4 3"/><text x="${dx + 4}" y="12" style="fill:var(--bad)">deopt</text>`; }
+      times.forEach((t, i) => { const x = 40 + i / N * (W - 40), y = (H - 20) - t / max * (H - 24); s += `<circle class="${isGc[i] ? "gc" : "pt"}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${N > 800 ? 1.2 : 2}"/>`; });
+      s += `<text x="${W - 60}" y="${H - 6}">회차 →</text>`;
+      $("bm-chart").innerHTML = s;
+      const notes = [];
+      notes.push(`첫 호출 ${times[0].toFixed(1)}µs vs 안정 상태 중앙값 ${sorted[Math.floor(sorted.length / 2)].toFixed(2)}µs: ${(times[0] / sorted[Math.floor(sorted.length / 2)]).toFixed(0)}배 차이. 1회 측정은 컴파일 비용을 잰다.`);
+      if (!warm) notes.push("워밍업을 제외하지 않아 평균이 인터프리터 구간에 끌려 올라감. 반복 횟수를 늘리면 희석되지만 중앙값이 더 안정적.");
+      if (dce) notes.push("DCE: 결과를 쓰지 않아 최적화 단계에서 계산이 제거됨 → 1µs 미만의 비현실적 수치. 벤치가 아니라 '아무것도 안 하는 함수'를 잰 것.");
+      if (gc) notes.push("빨간 점 = GC 일시정지가 섞인 회차. 평균과 p99를 끌어올리지만 중앙값·최솟값은 영향이 작다. 어느 통계를 보고할지 명시할 것.");
+      if (deopt) notes.push("deopt 후 다시 인터프리터부터 워밍업. 실제 서비스에서 입력 타입이 바뀌면 벤치와 다른 성능을 낸다(4장).");
+      $("bm-note").textContent = notes.join("\n");
+    }
+    ["bm-n"].forEach(id => $(id).oninput = run); ["bm-warm", "bm-dce", "bm-gc", "bm-deopt"].forEach(id => $(id).onchange = run); $("bm-re").onclick = run; run();
+  })();
+})();
+</script>
+</body>
+</html>

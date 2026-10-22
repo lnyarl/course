@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows Kernel Deep Dive</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 6px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; min-width: 120px; box-shadow: var(--shadow); }
+  .stat b { display: block; font: 800 1.5rem var(--mono); color: var(--head); }
+  .stat span { font-size: .8rem; color: var(--muted); }
+  #map a { cursor: pointer; }
+  #map a:hover .box { stroke: var(--acc); stroke-width: 2.6; }
+  #map .node.done .box { fill: var(--ok-bg); stroke: var(--ok); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .82rem; color: var(--muted); margin-top: 8px; justify-content: center; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+  .reset { font-size: .8rem; }
+</style>
+</head>
+<body data-chapter="index">
+<main>
+
+<header class="course-hero">
+  <div class="hero"><div class="kicker">Windows NT Kernel · 개론부터 전문가까지</div></div>
+  <h1>Windows Kernel Deep Dive</h1>
+  <p class="sub" style="font-size:1.15rem;color:var(--muted)">
+    유저 모드와 커널 모드의 경계에서 시작해 스케줄러, 메모리 관리자, I/O 시스템, 보안 모델을 지나
+    드라이버 개발·크래시 분석·커널 보안 메커니즘까지. 도식과 단계별 애니메이션, 직접 조작하는 시뮬레이터로 커널을 "보면서" 배웁니다.
+  </p>
+  <div class="stats">
+    <div class="stat"><b id="stCh">17</b><span>챕터</span></div>
+    <div class="stat"><b id="stHr">-</b><span>예상 학습 시간</span></div>
+    <div class="stat"><b id="stDone">0</b><span>완료한 챕터</span></div>
+    <div class="stat"><b id="stNext" style="font-size:1rem;line-height:2.2">-</b><span>다음 추천</span></div>
+  </div>
+</header>
+
+<h2 id="map-sec">코스 지도</h2>
+<p>각 노드를 클릭하면 해당 챕터로 이동합니다. 화살표는 권장 선수 관계입니다. 완료한 챕터는 초록색으로 표시됩니다.</p>
+<figure class="fig">
+  <svg class="dia" id="map" viewBox="0 0 880 340" role="img" aria-label="코스 지도"></svg>
+  <div class="legend">
+    <span><i style="background:var(--ok)"></i>입문</span>
+    <span><i style="background:var(--acc)"></i>핵심</span>
+    <span><i style="background:var(--kernel)"></i>심화</span>
+    <span><i style="background:var(--hv)"></i>전문가</span>
+  </div>
+</figure>
+
+<h2 id="how">이 코스를 공부하는 법</h2>
+<div class="grid3">
+  <div class="card"><h4>1. 그림을 먼저</h4><p>각 챕터의 도식은 클릭(🔍 explore)하거나 단계별로 재생(▶ stepper)할 수 있습니다. 글보다 그림을 먼저 따라가며 큰 흐름을 잡으세요.</p></div>
+  <div class="card"><h4>2. 직접 조작</h4><p>시뮬레이터에서 값을 바꿔 보며 "왜 이렇게 되는가"를 예측한 뒤 확인하세요. 예측이 틀린 지점이 진짜 학습 지점입니다.</p></div>
+  <div class="card"><h4>3. 디버거로 검증</h4><p>모든 챕터에 WinDbg 실습이 있습니다. 가상 머신에 커널 디버깅 환경을 만들고(15·17장) 구조체와 함수를 직접 확인하세요.</p></div>
+</div>
+
+<div class="callout note">
+  <div class="callout-title">선수 지식</div>
+  <p><b>C 언어</b>(포인터, 구조체, 비트 연산), <b>운영체제 기초</b>(프로세스, 가상 메모리, 인터럽트 개념), <b>x86-64 어셈블리 읽기</b> 정도면 충분합니다.
+  어셈블리가 낯설다면 01·02장을 진행하며 필요한 만큼 익혀도 됩니다.</p>
+</div>
+
+<h3>권장 학습 경로</h3>
+<div class="tabs">
+  <div class="tab-bar"><button>정석 (전체)</button><button>드라이버 개발자</button><button>장애 분석가</button><button>보안 연구자</button></div>
+  <div class="tab-panel"><p>01 → 17 순서대로. Part I·II로 실행 모델을, Part III로 메모리를, Part IV로 객체·I/O·보안을 익힌 뒤 Part V에서 실전 기술을 종합합니다. 약 6~10주(주 5~8시간) 분량입니다.</p></div>
+  <div class="tab-panel"><p><b>01 → 02 → 04 → 06 → 07 → 08 → 10 → 11 → 14 → 12 → 15</b>. IRQL과 동기화(06·07), IRP(11)가 드라이버 품질의 핵심입니다. 14장을 마치면 Driver Verifier를 켠 채로 직접 드라이버를 작성해 보세요.</p></div>
+  <div class="tab-panel"><p><b>01 → 04 → 05 → 06 → 07 → 08 → 09 → 11 → 15</b>. 덤프 분석은 결국 "스레드가 무엇을 기다리는가, 메모리가 왜 이 상태인가"를 읽는 일입니다. 15장의 워크스루를 반복하세요.</p></div>
+  <div class="tab-panel"><p><b>01 → 02 → 03 → 04 → 08 → 09 → 10 → 13 → 16</b>. 보안 모델(13)과 커널 보호 메커니즘(16)은 메모리·객체 관리자에 대한 이해 위에서만 제대로 보입니다.</p></div>
+</div>
+
+<h2 id="chapters">전체 챕터</h2>
+<div id="cards"></div>
+
+<p style="margin-top:30px"><a href="glossary.html">📖 용어집</a> · <button class="btn reset" id="resetBtn">진도 초기화</button></p>
+
+</main>
+
+<script>
+(function () {
+  const { PARTS, CHAPTERS, LEVEL, getDone, store } = window.WK;
+  const done = getDone();
+  const lvColor = { basic: 'ok', core: 'acc', adv: 'kernel', expert: 'hv' };
+  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // 통계
+  const mins = CHAPTERS.reduce((a, c) => a + c.min, 0);
+  document.getElementById('stCh').textContent = CHAPTERS.length;
+  document.getElementById('stHr').textContent = Math.round(mins / 60) + 'h';
+  document.getElementById('stDone').textContent = CHAPTERS.filter(c => done[c.id]).length + '/' + CHAPTERS.length;
+  const next = CHAPTERS.find(c => !done[c.id]);
+  const stNext = document.getElementById('stNext');
+  stNext.innerHTML = next ? `<a href="${next.file}">${next.id}. ${esc(next.title)}</a>` : '🎉 완주';
+
+  // 카드
+  const cards = document.getElementById('cards');
+  PARTS.forEach(p => {
+    const blk = document.createElement('div');
+    blk.className = 'part-block';
+    blk.innerHTML = `<h3>${esc(p.title)}</h3><div class="ch-grid">` +
+      CHAPTERS.filter(c => c.part === p.id).map(c => `
+        <a class="ch-card${done[c.id] ? ' done' : ''}" href="${c.file}">
+          <div class="top"><span class="num">${c.id}</span><span class="pill lv-${c.level}">${LEVEL[c.level]}</span><span class="pill">⏱ ${c.min}분</span>${done[c.id] ? '<span class="ck">✓</span>' : ''}</div>
+          <h4>${esc(c.title)}</h4><p>${esc(c.summary)}</p></a>`).join('') + '</div>';
+    cards.appendChild(blk);
+  });
+
+  // 코스 지도 (파트별 열)
+  const svg = document.getElementById('map');
+  const colW = 176, x0 = 8, nodeW = 160, nodeH = 52, gapY = 18, y0 = 54;
+  const pos = {};
+  let s = '';
+  PARTS.forEach((p, pi) => {
+    const x = x0 + pi * colW;
+    s += `<rect class="zone" x="${x - 2}" y="8" width="${nodeW + 4}" height="324" rx="12"/>`;
+    s += `<text x="${x + nodeW / 2}" y="32" text-anchor="middle" class="sm b">${esc(p.title.replace('Part ', ''))}</text>`;
+    CHAPTERS.filter(c => c.part === p.id).forEach((c, i) => {
+      const y = y0 + i * (nodeH + gapY);
+      pos[c.id] = { x, y };
+    });
+  });
+  // 파트 내 순서 화살표 + 파트 간 흐름 화살표
+  PARTS.forEach((p, pi) => {
+    const chs = CHAPTERS.filter(c => c.part === p.id);
+    chs.slice(1).forEach((c, i) => {
+      const A = pos[chs[i].id], B = pos[c.id];
+      s += `<path class="ln" style="opacity:.6" d="M${A.x + nodeW / 2} ${A.y + nodeH} L${B.x + nodeW / 2} ${B.y - 2}"/>`;
+    });
+    if (pi < PARTS.length - 1) {
+      const x = x0 + pi * colW + nodeW + 2;
+      s += `<path class="ln acc" d="M${x} 28 L${x + colW - nodeW - 6} 28"/>`;
+    }
+  });
+  CHAPTERS.forEach(c => {
+    const { x, y } = pos[c.id];
+    const col = lvColor[c.level];
+    const t = c.title.length > 11 ? c.title.slice(0, 11) + '…' : c.title;
+    s += `<a href="${c.file}" class="node${done[c.id] ? ' done' : ''}"><title>${esc(c.title)}</title>
+      <rect class="box" x="${x}" y="${y}" width="${nodeW}" height="${nodeH}" rx="10"/>
+      <rect x="${x}" y="${y + 8}" width="4" height="${nodeH - 16}" rx="2" style="fill:var(--${col})"/>
+      <text x="${x + 14}" y="${y + 21}" class="mono sm" style="fill:var(--${col});font-weight:700">${c.id}${done[c.id] ? '  ✓' : ''}</text>
+      <text x="${x + 14}" y="${y + 40}" style="font-size:12.5px;font-weight:600">${esc(t)}</text></a>`;
+  });
+  svg.innerHTML = s;
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    if (confirm('완료 표시를 모두 지울까요?')) { store.set('wk-done', {}); location.reload(); }
+  });
+})();
+</script>
+</body>
+</html>

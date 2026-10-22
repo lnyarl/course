@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux 회수와 OOM</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 12장 전용 */
+main p, main li, main td { overflow-wrap:anywhere; }
+main :not(pre) > code { overflow-wrap:anywhere; }
+.sl-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(210px,1fr)); gap:4px 16px; font-size:14px; }
+.sl-grid label { display:flex; flex-direction:column; gap:2px; }
+.sl-grid label > span { display:flex; justify-content:space-between; gap:8px; }
+.sl-grid input[type=range] { width:100%; }
+.membar { display:flex; height:26px; border-radius:6px; overflow:hidden; border:1px solid var(--border); margin:8px 0 4px; font-size:12px; }
+.membar > div { display:flex; align-items:center; justify-content:center; white-space:nowrap; overflow:hidden; transition: width .2s; }
+.legend { display:flex; flex-wrap:wrap; gap:12px; font-size:12.5px; color:var(--muted); }
+.legend i { display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:4px; vertical-align:-1px; border:1px solid var(--border); }
+.lru-row { display:grid; grid-template-columns: 118px 1fr; gap:8px; align-items:center; margin:6px 0; }
+.lru-row .nm { font-size:13px; font-weight:700; }
+.lru-row .nm small { display:block; font-weight:400; color:var(--muted); font-size:11.5px; }
+.lru-list { display:flex; gap:4px; flex-wrap:wrap; min-height:38px; padding:3px; border-radius:8px; background:var(--surface-2); align-items:center; }
+.lru-list .ends { font-size:11px; color:var(--muted); padding:0 4px; }
+.pg { font:inherit; font-family:var(--mono); font-size:12.5px; min-width:40px; height:32px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; position:relative; padding:0 6px; transition: transform .2s, background .2s; }
+.pg.anon { border-color:var(--warn); background:var(--warn-soft); }
+.pg.file { border-color:var(--ok); background:var(--ok-soft); }
+.pg.ref::after { content:"R"; position:absolute; top:-7px; right:-6px; font-size:10px; font-weight:700; background:var(--accent); color:var(--surface); border-radius:999px; width:15px; height:15px; line-height:15px; text-align:center; }
+.pg.flash { transform:scale(1.15); box-shadow:0 0 0 2px var(--accent); }
+.pg.gone { opacity:.55; border-style:dashed; }
+.oom-tbl input[type=number] { width:86px; }
+.oom-tbl input[type=text] { width:130px; }
+.oom-tbl tr.victim td { background:var(--bad-soft); }
+.oom-tbl tr.immune td { color:var(--muted); }
+.cg-out { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap:10px; }
+.verdict { padding:10px 14px; border-radius:8px; font-weight:700; }
+.free-out { font-family:var(--mono); font-size:13px; background:var(--code-bg); border-radius:8px; padding:10px 12px; overflow-x:auto; border:1px solid var(--border); }
+.free-out table { border-collapse:collapse; width:auto; font-size:13px; }
+.free-out th, .free-out td { border:none; padding:2px 8px; text-align:right; background:none; white-space:nowrap; }
+.free-out th button { font:inherit; font-weight:700; background:none; border:none; border-bottom:2px dotted var(--accent); color:var(--accent); cursor:pointer; padding:0; }
+.free-out th button.sel { color:var(--text); border-bottom-style:solid; }
+.free-exp { margin-top:10px; padding:10px 14px; background:var(--surface-2); border-radius:8px; font-size:14.5px; }
+.chg-up { color:var(--bad); } .chg-down { color:var(--ok); }
+</style>
+</head>
+<body data-chapter="12">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">심화 · Chapter 12</span>
+    <h1>Linux 메모리 회수, swap, OOM, cgroup</h1>
+    <p class="lead">Linux는 남는 메모리를 놀리지 않고 캐시로 채웁니다. 그래서 진짜 질문은 "메모리가 얼마나 남았나"가 아니라 <b>"필요할 때 얼마나 빨리, 싸게 되찾을 수 있나"</b>입니다. 이 장은 그 회수 장치들, 즉 워터마크, kswapd, LRU, swap, OOM killer, cgroup을 하나의 그림으로 묶고, 운영에서 보는 숫자를 읽는 법까지 다룹니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>존 워터마크(min/low/high)와 kswapd 백그라운드 회수, direct reclaim, OOM으로 이어지는 단계를 설명할 수 있다.</li>
+      <li>익명 페이지와 파일 페이지의 회수 비용 차이, LRU 리스트(active/inactive × anon/file)의 이동 규칙, MGLRU의 아이디어를 안다.</li>
+      <li>swappiness의 정확한 의미와 swap, swap cache, zswap/zram의 역할을 구분한다.</li>
+      <li>OOM killer의 점수 계산(oom_badness, oom_score, oom_score_adj)으로 희생자를 예측할 수 있다.</li>
+      <li>cgroup v2 메모리 컨트롤(memory.min/low/high/max, memory.events)과 컨테이너 OOMKilled, 쿠버네티스 requests/limits의 연결을 이해한다.</li>
+      <li>free, /proc/meminfo, vmstat를 해석하고 drop_caches를 언제 쓰면 안 되는지 안다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">회수의 전체 그림</a></li>
+    <li><a href="#s2">워터마크와 kswapd, direct reclaim</a></li>
+    <li><a href="#s3">익명 페이지 vs 파일 페이지</a></li>
+    <li><a href="#s4">LRU 리스트와 workingset</a></li>
+    <li><a href="#s5">MGLRU (multi-gen LRU)</a></li>
+    <li><a href="#s6">swappiness의 진짜 의미</a></li>
+    <li><a href="#s7">swap, swap cache, zswap/zram</a></li>
+    <li><a href="#s8">OOM killer</a></li>
+    <li><a href="#s9">cgroup v2 메모리 컨트롤과 쿠버네티스</a></li>
+    <li><a href="#s10">관측: free, /proc/meminfo, vmstat, drop_caches</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 회수의 전체 그림</h2>
+    <p>"free 메모리가 200 MB밖에 없어요!"라는 경보는 Linux에서 대개 오경보입니다. 커널은 빈 메모리를 페이지 캐시로 적극 채우고, 메모리가 필요해지면 그 캐시를 되찾아(<b>회수, reclaim</b>) 씁니다. 회수할 수 있는 것은 다음과 같습니다.</p>
+    <ul>
+      <li><b>clean 파일 페이지</b>: 디스크에 원본이 있으므로 그냥 버리면 된다. 가장 싸다.</li>
+      <li><b>dirty 파일 페이지</b>: 먼저 writeback한 뒤 버린다.</li>
+      <li><b>익명 페이지</b>(힙, 스택, shmem/tmpfs): 원본이 없으므로 swap 영역에 써야만 버릴 수 있다. swap이 없으면 회수할 수 없다.</li>
+      <li><b>커널 캐시</b>: dentry·inode 캐시 같은 slab 객체는 각 서브시스템의 <i>shrinker</i>가 줄인다(<code>SReclaimable</code>).</li>
+    </ul>
+    <p>회수는 압박 정도에 따라 단계적으로 강해집니다.</p>
+    <ol>
+      <li><b>kswapd</b>(백그라운드): 여유 메모리가 low 워터마크 아래로 내려가면 깨어나 high까지 회수한다. 할당하는 쪽은 기다리지 않는다.</li>
+      <li><b>direct reclaim</b>(동기): 여유가 min 아래로 떨어지면 메모리를 요청한 스레드가 <b>직접</b> 회수한다. 이 동안 애플리케이션이 멈추므로 지연 스파이크가 생긴다. 고차(연속 페이지) 할당이면 compaction도 함께 시도한다.</li>
+      <li><b>OOM killer</b>: 회수를 반복해도 진전이 없으면 프로세스 하나를 골라 죽인다. cgroup 한도에 걸린 경우에는 그 cgroup 안에서만 고른다.</li>
+    </ol>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 워터마크와 kswapd, direct reclaim</h2>
+    <p>각 메모리 존(Normal, DMA32 등)에는 세 개의 워터마크가 있습니다. 모두 "여유 페이지 수"에 대한 기준선입니다.</p>
+    <figure>
+      <div class="stage"><svg class="diagram" viewBox="0 0 660 270" style="min-width:520px" role="img" aria-label="존 워터마크와 동작">
+        <rect x="40" y="20" width="70" height="230" rx="6" class="box"/>
+        <rect x="41" y="200" width="68" height="49" style="fill:var(--bad-soft)"/>
+        <rect x="41" y="150" width="68" height="50" style="fill:var(--warn-soft)"/>
+        <rect x="41" y="100" width="68" height="50" style="fill:var(--accent-soft)"/>
+        <rect x="41" y="21" width="68" height="79" style="fill:var(--ok-soft)"/>
+        <text x="75" y="14" text-anchor="middle" font-size="12" class="muted">여유 페이지</text>
+        <line x1="30" x2="130" y1="100" y2="100" style="stroke:var(--ok);stroke-width:2"/>
+        <line x1="30" x2="130" y1="150" y2="150" style="stroke:var(--accent);stroke-width:2"/>
+        <line x1="30" x2="130" y1="200" y2="200" style="stroke:var(--bad);stroke-width:2"/>
+        <text x="136" y="104" font-weight="700" style="fill:var(--ok)">high</text>
+        <text x="136" y="154" font-weight="700" style="fill:var(--accent)">low</text>
+        <text x="136" y="204" font-weight="700" style="fill:var(--bad)">min</text>
+        <text x="190" y="58">high 위: 정상. kswapd는 잠들어 있다.</text>
+        <text x="190" y="118">low~high: kswapd가 이미 깨어 있다면 high에 닿을 때까지 회수 후 잠듦.</text>
+        <text x="190" y="164">min~low: 할당은 성공하지만 kswapd를 깨운다 (비동기 회수 시작).</text>
+        <text x="190" y="212">min 아래: 일반 할당은 실패 → 할당자가 <tspan font-weight="700" style="fill:var(--bad)">direct reclaim</tspan>.</text>
+        <text x="190" y="232" class="muted" font-size="12">min 아래 일부는 GFP_ATOMIC 등 잠들 수 없는 할당을 위한 예비분.</text>
+        <path d="M120 175 C160 175 165 120 125 112" style="stroke:var(--accent);fill:none;stroke-width:1.5;stroke-dasharray:4 3"/>
+        <text x="150" y="140" font-size="11" style="fill:var(--accent)">kswapd</text>
+      </svg></div>
+      <figcaption>그림 12-1. 존 워터마크. low에서 깨우고 high까지 채우는 히스테리시스로 kswapd가 자주 깨었다 잠들지 않게 한다.</figcaption>
+    </figure>
+    <p>워터마크는 두 sysctl로 정해집니다.</p>
+    <ul>
+      <li><code>vm.min_free_kbytes</code>: 모든 존의 min 워터마크 합. 기본값은 커널이 저메모리 크기로 계산하며(대략 4·√(lowmem KiB)), THP가 켜져 있으면 khugepaged가 더 크게 올리기도 합니다.</li>
+      <li><code>vm.watermark_scale_factor</code>(기본 10, 단위 0.01%): 간격 <i>d</i> = max(min/4, 존 크기 × factor / 10000)로 정해지고 <b>low = min + d, high = min + 2d</b>입니다. 이 값을 키우면 kswapd가 더 일찍 깨어 더 많이 회수하므로 direct reclaim을 줄일 수 있습니다. 메모리가 크고 할당 폭주가 잦은 서버에서 쓰는 튜닝입니다.</li>
+    </ul>
+    <p>현재 값은 <code>/proc/zoneinfo</code>에서 존별로 <code>min</code>, <code>low</code>, <code>high</code>(페이지 단위)로 볼 수 있습니다.</p>
+
+    <div class="widget" id="wmW">
+      <div class="w-title">시뮬레이션: 워터마크를 넘을 때 일어나는 일</div>
+      <div class="w-desc">4 GiB 존 하나를 단순화한 모델입니다. 파일 읽기는 여유 메모리를 페이지 캐시로 바꾸고(회수 가능), 익명 할당은 swap이 없으면 회수할 수 없는 메모리를 늘립니다. 파일 읽기만 늘려서는 OOM이 나지 않는다는 점, 그리고 익명 할당을 계속하면 결국 어떻게 되는지 확인해 보세요.</div>
+      <div class="sl-grid">
+        <label><span>익명 할당 속도 <b id="wmAv"></b></span><input type="range" id="wmA" min="0" max="300" step="5" value="0"></label>
+        <label><span>파일 읽기(캐시 증가) 속도 <b id="wmFv"></b></span><input type="range" id="wmF" min="0" max="400" step="5" value="80"></label>
+        <label><span>kswapd 회수 속도 <b id="wmKv"></b></span><input type="range" id="wmK" min="20" max="400" step="10" value="150"></label>
+        <label><span>vm.min_free_kbytes <b id="wmMv"></b></span><input type="range" id="wmM" min="16384" max="131072" step="4096" value="65536"></label>
+        <label><span>vm.watermark_scale_factor <b id="wmSv"></b></span><input type="range" id="wmS" min="10" max="500" step="10" value="10"></label>
+        <label><span>swap (1 GiB) / swappiness <b id="wmWv"></b></span><span style="gap:6px;display:flex;align-items:center"><input type="checkbox" id="wmSwap"><input type="range" id="wmSw" min="0" max="200" step="10" value="60" style="flex:1"></span></label>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="wmRun">⏸ 정지</button>
+        <button class="btn" id="wmFreeBtn">프로세스 종료(익명 500 MiB 해제)</button>
+        <button class="btn" id="wmReset">초기화</button>
+      </div>
+      <div class="stage"><svg class="diagram" id="wmSvg" viewBox="0 0 640 240" style="min-width:480px"></svg></div>
+      <div class="membar" id="wmBar"></div>
+      <div class="legend"><span><i style="background:var(--surface-2)"></i>free</span><span><i style="background:var(--ok-soft)"></i>페이지 캐시(회수 가능)</span><span><i style="background:var(--warn-soft)"></i>익명 (swap으로 나간 양은 아래 통계)</span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">상태</div><div class="v" id="wmSt" style="font-size:16px">정상</div></div>
+        <div class="stat"><div class="k">kswapd 깨움</div><div class="v" id="wmSk">0</div></div>
+        <div class="stat"><div class="k">할당 지연(stall) 누적</div><div class="v" id="wmSs">0 s</div></div>
+        <div class="stat"><div class="k">swap out 누적</div><div class="v" id="wmSo">0</div></div>
+        <div class="stat"><div class="k">OOM kill</div><div class="v" id="wmSoom">0</div></div>
+      </div>
+      <div class="log" id="wmLog"></div>
+    </div>
+    <div class="callout warn"><span class="title">현업에서 direct reclaim이 보이는 모습</span>
+      평소엔 빠르던 서비스가 메모리 사용이 높을 때 p99 지연이 튀고, CPU 프로파일에 <code>shrink_node</code>, <code>try_to_free_pages</code> 같은 회수 함수가 보입니다. <code>/proc/vmstat</code>의 <code>allocstall_*</code>(direct reclaim 진입 횟수)와 <code>pgscan_direct</code>/<code>pgsteal_direct</code>가 늘고 있다면 확실합니다. 대응은 다음과 같습니다. (1) 메모리 여유 자체를 늘린다. (2) <code>watermark_scale_factor</code>를 키워 kswapd가 더 일찍 일하게 한다. (3) 대량 파일 I/O가 캐시를 휘젓지 않게 <code>POSIX_FADV_DONTNEED</code>나 O_DIRECT를 쓴다. (4) cgroup으로 배치 작업의 캐시 사용을 가둔다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. 익명 페이지 vs 파일 페이지</h2>
+    <p>회수 정책의 핵심은 "어떤 페이지를 내보내는 게 가장 싼가"입니다. 두 종류의 비용은 비대칭입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>파일 페이지 (clean)</th><th>파일 페이지 (dirty)</th><th>익명 페이지</th></tr>
+      <tr><td>내보낼 때</td><td>그냥 버림 (I/O 0)</td><td>writeback 후 버림</td><td>swap에 쓰고 버림 (swap 필요)</td></tr>
+      <tr><td>다시 필요할 때</td><td>파일에서 다시 읽기 (major fault 또는 read miss)</td><td>파일에서 다시 읽기</td><td>swap에서 읽기 (swap-in)</td></tr>
+      <tr><td>swap이 없으면</td><td>회수 가능</td><td>회수 가능</td><td><b>회수 불가</b></td></tr>
+      <tr><td>대표 예</td><td>읽기 위주 데이터 파일, 실행 코드(.text)</td><td>로그·DB 파일 쓰기 버퍼</td><td>JVM 힙, malloc 메모리, tmpfs, 공유 메모리</td></tr>
+    </table></div>
+    <div class="callout danger"><span class="title">"swap을 끄면 안전하다"는 착각</span>
+      swap이 없으면 익명 페이지는 고정된 것과 같아서, 메모리 압박이 오면 커널은 <b>파일 페이지만</b> 계속 쥐어짭니다. 그중에는 지금 실행 중인 프로그램의 코드 페이지도 있습니다. 결과는 OOM이 아니라, 코드 페이지를 버렸다 다시 읽기를 반복하는 <b>스래싱</b>입니다. 시스템이 수 분간 응답하지 않다가 한참 뒤에야 OOM killer가 동작하기도 합니다(8장). 작은 swap(또는 zram)이 있으면 오래 쓰이지 않은 익명 페이지를 내보낼 수 있어서 오히려 활성 파일 캐시를 지킬 수 있습니다. 응답 불능 상태를 빨리 끊으려면 PSI 기반의 사용자 공간 OOM 도구(<code>systemd-oomd</code> 등)를 함께 쓰는 것이 현대적인 해법입니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. LRU 리스트와 workingset</h2>
+    <p>7장의 교과서 LRU는 모든 접근마다 리스트를 갱신해야 해서 커널에 그대로 쓸 수 없습니다. Linux의 전통적 회수(MGLRU 이전)는 <b>두 단계 리스트</b>로 근사합니다. 메모리 cgroup과 NUMA 노드마다 다음 리스트가 있습니다.</p>
+    <ul>
+      <li><code>inactive_anon</code>, <code>active_anon</code>, <code>inactive_file</code>, <code>active_file</code></li>
+      <li><code>unevictable</code>: <code>mlock</code>된 페이지, ramfs, <code>SHM_LOCK</code> 세그먼트 등 회수 대상이 아닌 페이지</li>
+    </ul>
+    <p>아이디어는 이렇습니다. 새 페이지는 inactive에서 시작하고, 거기 있는 동안 <b>한 번 더 접근되면</b> active로 승격됩니다. 회수는 inactive의 꼬리에서만 일어나고, active가 너무 커지면 active 꼬리를 inactive로 강등해 다시 한 번 기회를 줍니다. 한 번 읽고 마는 스트리밍 데이터는 inactive를 거쳐 빠져나가므로 active의 작업 집합을 밀어내지 못합니다(스캔 저항성).</p>
+
+    <figure>
+      <div class="stage"><svg class="diagram" viewBox="0 0 660 300" style="min-width:520px" role="img" aria-label="LRU 리스트 상태 전이">
+        <defs>
+          <marker id="ar12a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker>
+          <marker id="ar12m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+          <marker id="ar12b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--bad)"/></marker>
+        </defs>
+        <rect x="200" y="30" width="200" height="56" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="300" y="54" text-anchor="middle" font-weight="700">active 리스트</text>
+        <text x="300" y="73" text-anchor="middle" class="muted" font-size="12">작업 집합으로 판단된 페이지</text>
+        <rect x="200" y="170" width="200" height="56" rx="8" style="fill:var(--surface-2);stroke:var(--border)"/>
+        <text x="300" y="194" text-anchor="middle" font-weight="700">inactive 리스트</text>
+        <text x="300" y="213" text-anchor="middle" class="muted" font-size="12">회수 후보 (꼬리부터)</text>
+        <rect x="20" y="170" width="120" height="56" rx="8" class="box"/>
+        <text x="80" y="194" text-anchor="middle">새 페이지</text>
+        <text x="80" y="213" text-anchor="middle" class="muted" font-size="11.5">폴트/read로 생성</text>
+        <path d="M140 198 H198" style="stroke:var(--muted);stroke-width:1.6;fill:none" marker-end="url(#ar12m)"/>
+        <path d="M260 170 V88" style="stroke:var(--accent);stroke-width:1.8;fill:none" marker-end="url(#ar12a)"/>
+        <text x="200" y="134" text-anchor="end" font-size="12" style="fill:var(--accent)">inactive에서 다시 접근</text>
+        <text x="200" y="150" text-anchor="end" font-size="12" style="fill:var(--accent)">→ 승격(activate)</text>
+        <path d="M340 88 V168" style="stroke:var(--muted);stroke-width:1.8;fill:none" marker-end="url(#ar12m)"/>
+        <text x="350" y="124" font-size="12" class="muted">active가 너무 크면</text>
+        <text x="350" y="140" font-size="12" class="muted">꼬리를 강등(deactivate)</text>
+        <rect x="490" y="170" width="150" height="56" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="565" y="192" text-anchor="middle" font-weight="700">회수(evict)</text>
+        <text x="565" y="211" text-anchor="middle" font-size="11.5" class="muted">file: 버림 / anon: swap out</text>
+        <path d="M400 198 H488" style="stroke:var(--bad);stroke-width:1.8;fill:none" marker-end="url(#ar12b)"/>
+        <text x="444" y="190" text-anchor="middle" font-size="11.5" style="fill:var(--bad)">꼬리</text>
+        <path d="M565 170 C565 60 480 50 402 55" style="stroke:var(--violet);stroke-width:1.6;fill:none;stroke-dasharray:6 4" marker-end="url(#ar12a)"/>
+        <text x="560" y="96" text-anchor="middle" font-size="12" style="fill:var(--violet)">refault 거리가 짧으면</text>
+        <text x="560" y="112" text-anchor="middle" font-size="12" style="fill:var(--violet)">바로 active로 (workingset)</text>
+        <rect x="200" y="250" width="200" height="40" rx="8" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <text x="300" y="275" text-anchor="middle">unevictable (mlock 등)</text>
+        <text x="420" y="275" font-size="12" class="muted">회수 대상 아님</text>
+      </svg></div>
+      <figcaption>그림 12-2. 두 단계 LRU. anon과 file이 각각 이 구조를 따로 가진다.</figcaption>
+    </figure>
+
+    <p>몇 가지 실제 구현 디테일이 있습니다.</p>
+    <ul>
+      <li><b>접근 감지</b>: read()로 접근한 페이지 캐시는 커널이 직접 표시합니다(<code>PG_referenced</code>, <code>folio_mark_accessed</code>). 매핑된 페이지는 CPU가 PTE의 Accessed 비트를 세우고, 회수 스캔이 rmap(11장)으로 그 비트를 모아 봅니다.</li>
+      <li><b>익명 페이지의 시작 위치</b>: 과거엔 새 익명 페이지가 active에서 시작했지만, 5.9 이후 커널은 익명 페이지에도 workingset 감지를 적용하면서 inactive에서 시작시킵니다.</li>
+      <li><b>workingset refault 감지</b>: 파일 페이지가 회수될 때 XArray의 그 자리에 "언제 쫓겨났는지"를 담은 <i>shadow entry</i>를 남깁니다. 다시 읽히면(refault) 그 사이 회수된 양(refault distance)을 계산하고, active 리스트 크기 안쪽이었다면 "작업 집합인데 공간이 부족해 밀려났다"고 판단해 곧바로 active로 넣습니다. <code>/proc/vmstat</code>의 <code>workingset_refault_*</code>, <code>workingset_activate_*</code>가 이 카운터입니다. refault가 많다면 메모리가 작업 집합보다 작다는 신호입니다.</li>
+    </ul>
+
+    <div class="widget" id="lruW">
+      <div class="w-title">LRU 상태 전이 위젯</div>
+      <div class="w-desc">페이지 버튼을 누르면 그 페이지에 <b>접근</b>합니다. 왼쪽이 리스트 머리(최근), 오른쪽이 꼬리입니다. <span class="c-accent">R</span>은 참조(referenced) 표시입니다. 회수된 페이지를 누르면 refault가 일어납니다. 학습용으로 단순화한 second-chance 모델입니다(실제 커널은 매핑 수, 실행 코드 여부, 리스트 비율 등을 더 따집니다).</div>
+      <div class="controls">
+        <button class="btn" id="lruNewF">새 파일 페이지 read()</button>
+        <button class="btn" id="lruNewA">새 익명 페이지 할당</button>
+        <button class="btn" id="lruDeact">active 꼬리 스캔 (강등)</button>
+        <button class="btn primary" id="lruReclaim">회수 스캔 4페이지</button>
+        <button class="btn" id="lruReset">초기화</button>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="lruSwap" checked> swap 있음</label>
+        <label>swappiness <input type="range" id="lruSw" min="0" max="200" step="10" value="60"> <b id="lruSwv">60</b></label>
+        <span class="muted" style="color:var(--muted)" id="lruSplit"></span>
+      </div>
+      <div id="lruLists"></div>
+      <div class="log" id="lruLog"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. MGLRU (multi-gen LRU)</h2>
+    <p>두 단계 LRU는 "active냐 inactive냐"라는 1비트짜리 나이 정보만 가집니다. 또 매핑된 페이지의 접근 여부를 알려면 rmap으로 페이지마다 PTE를 찾아가야 해서, 메모리가 크고 매핑이 많을수록 CPU를 많이 씁니다. Google이 주도해 Linux 6.1에 들어간 <b>MGLRU</b>는 이 두 문제를 다른 방식으로 풉니다.</p>
+    <ul>
+      <li><b>세대(generation)</b>: 페이지를 여러 세대(최소 2, 최대 4)로 나눕니다. 최근 접근된 페이지는 가장 젊은 세대로, 회수는 가장 늙은 세대에서 합니다. 나이 정보가 1비트보다 풍부해집니다.</li>
+      <li><b>aging은 페이지 테이블 워크로</b>: 페이지마다 rmap을 타는 대신 프로세스의 페이지 테이블을 순서대로 훑어 Accessed 비트를 한꺼번에 모읍니다. 접근된 PTE가 몰려 있는 영역은 효율이 좋습니다.</li>
+      <li><b>tier</b>: fd로 여러 번 접근된 파일 페이지를 구분하고, refault 비율을 피드백 삼아 어느 쪽을 보호할지 조정합니다.</li>
+      <li><b>thrashing 방지</b>: <code>/sys/kernel/mm/lru_gen/min_ttl_ms</code>로 "이 시간 안에 만들어진 세대는 쫓아내지 않는다"를 지정할 수 있습니다. 그래도 회수할 수 없으면 OOM으로 빨리 넘어가 장시간 무응답을 피합니다.</li>
+    </ul>
+    <p>사용 여부는 <code>cat /sys/kernel/mm/lru_gen/enabled</code>로 확인합니다(0이 아니면 켜짐). 기본 활성화 여부는 커널 빌드 설정(<code>CONFIG_LRU_GEN_ENABLED</code>)과 배포판에 따라 다릅니다. 켜져 있으면 <code>/proc/meminfo</code>의 Active/Inactive 구분은 세대에서 근사한 값이 됩니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. swappiness의 진짜 의미</h2>
+    <p><code>vm.swappiness</code>(기본 60, 범위 0~200)는 흔히 "swap을 얼마나 자주 쓸지"로 오해되지만, 커널 문서의 정의는 <b>익명 페이지 회수(swap I/O)와 파일 페이지 회수(파일 I/O)의 상대적 비용</b>입니다.</p>
+    <ul>
+      <li>100: 두 I/O의 비용이 같다고 보고 양쪽을 대등하게 압박한다.</li>
+      <li>100보다 작음: swap I/O가 더 비싸다고 보고 파일 페이지를 우선 회수한다. 기본값 60은 회전 디스크 시절 기준이다.</li>
+      <li>100보다 큼: swap이 더 싸다(예: zram처럼 메모리 내 압축 swap)고 보고 익명 페이지를 우선 회수한다.</li>
+      <li>0: 익명 페이지 스캔을 최대한 피하지만, 파일 페이지가 바닥나는 극한 상황에서는 여전히 swap할 수 있다. 0은 "swap 금지"가 아니다. 확실히 막으려면 swap을 끄거나 <code>mlock</code>을 쓴다.</li>
+    </ul>
+    <p>내부적으로 anon 쪽 우선순위는 swappiness, file 쪽은 200 − swappiness로 놓고, 여기에 각 리스트의 최근 refault 비용을 곱해 스캔 비율을 정합니다. 위 LRU 위젯은 그중 첫 번째 요소만 반영해 4페이지 중 anon 몫을 정합니다. 참고로 cgroup v1에는 cgroup별 <code>memory.swappiness</code>가 있었지만 cgroup v2에는 같은 파일이 없습니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. swap, swap cache, zswap/zram</h2>
+    <h3>swap 영역</h3>
+    <p>swap은 전용 파티션이나 swap 파일입니다(<code>mkswap</code> → <code>swapon</code>, 확인은 <code>swapon --show</code> 또는 <code>/proc/swaps</code>). 영역마다 우선순위(<code>swapon -p</code>)가 있어 높은 쪽부터 쓰고, 같은 우선순위끼리는 번갈아 씁니다. 익명 페이지가 swap out되면 PTE에는 물리 주소 대신 <b>swap 엔트리</b>(영역 번호 + 슬롯 오프셋)가 들어가고 present 비트가 꺼집니다. 다시 접근하면 페이지 폴트가 나고 swap-in이 일어납니다.</p>
+    <h3>swap cache</h3>
+    <p>swap cache는 swap 공간을 위한 페이지 캐시입니다. 다음 두 문제를 해결합니다.</p>
+    <ul>
+      <li><b>공유된 익명 페이지</b>(fork 후 COW 공유 중): 여러 PTE가 같은 swap 엔트리를 가리킵니다. 첫 swap-in이 페이지를 swap cache에 올려 두면, 다른 프로세스의 폴트는 I/O 없이 같은 페이지를 찾습니다.</li>
+      <li><b>불필요한 재기록 방지</b>: swap-in된 페이지가 수정되지 않았다면 swap 슬롯의 사본이 아직 유효합니다. 다시 회수할 때 쓰기 없이 버릴 수 있습니다. <code>/proc/meminfo</code>의 <code>SwapCached</code>가 이렇게 메모리와 swap 양쪽에 있는 페이지의 양입니다.</li>
+    </ul>
+    <h3>압축 swap: zswap과 zram</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>zswap</th><th>zram</th></tr>
+      <tr><td>정체</td><td>swap 장치 <b>앞에 놓인</b> 압축 캐시</td><td>RAM에 압축 저장하는 <b>블록 장치</b>(<code>/dev/zram0</code>)를 swap으로 사용</td></tr>
+      <tr><td>디스크 swap</td><td>필요. 풀이 차면 오래된 항목을 실제 swap 장치로 내보냄</td><td>불필요 (디스크 없이 동작)</td></tr>
+      <tr><td>설정</td><td><code>/sys/module/zswap/parameters/</code> (<code>enabled</code>, <code>compressor</code>, <code>max_pool_percent</code> 기본 20)</td><td><code>zramctl</code>, systemd의 <code>zram-generator</code></td></tr>
+      <tr><td>쓰이는 곳</td><td>디스크 swap이 있는 서버·데스크톱의 swap I/O 절감</td><td>Android, ChromeOS, Fedora 기본 swap(Fedora 33부터) 등 메모리가 작거나 디스크 swap이 부담스러운 환경</td></tr>
+    </table></div>
+    <p>압축 swap은 "swap = 느린 디스크"라는 등식을 깹니다. 압축·해제에 CPU를 쓰는 대신 I/O를 없애므로 swappiness를 100 이상으로 올리는 근거가 됩니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. OOM killer</h2>
+    <p>회수를 여러 번 시도해도 진전이 없으면 커널은 <code>out_of_memory()</code>를 호출해 희생자를 고릅니다. 그 전에 알아 둘 배경이 하나 있습니다. Linux는 기본적으로 메모리를 <b>오버커밋</b>합니다. malloc이나 mmap은 가상 주소만 예약하고 물리 메모리는 첫 쓰기 때 줍니다. 그래서 "할당은 성공했는데 나중에 메모리가 없는" 상황이 생길 수 있고, OOM killer는 그 상황의 안전장치입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th><code>vm.overcommit_memory</code></th><th>동작</th></tr>
+      <tr><td>0 (기본)</td><td>휴리스틱. 명백히 불가능한 요청만 거부</td></tr>
+      <tr><td>1</td><td>항상 허용 (Redis 권장값 등)</td></tr>
+      <tr><td>2</td><td>엄격. 커밋 총량(<code>Committed_AS</code>)이 <code>CommitLimit</code> = swap + RAM × <code>overcommit_ratio</code>/100(기본 50)을 넘으면 할당 실패(ENOMEM)</td></tr>
+    </table></div>
+
+    <h3>희생자 선택: oom_badness</h3>
+    <p>현재 커널의 점수 계산은 단순합니다. 오래전 커널에는 실행 시간, nice 값, root 여부 같은 복잡한 휴리스틱이 있었지만 대부분 제거되었습니다.</p>
+<pre><code>points = RSS 페이지 수 + swap으로 나간 페이지 수 + 페이지 테이블 페이지 수
+adj    = oom_score_adj × (totalpages / 1000)      // totalpages = RAM + swap (cgroup OOM이면 cgroup 한도)
+badness = points + adj                            // oom_score_adj == -1000 이면 아예 제외
+→ badness가 가장 큰 프로세스를 죽인다 (그 mm을 공유하는 프로세스도 함께)</code></pre>
+    <ul>
+      <li><code>/proc/PID/oom_score_adj</code>: −1000~1000. −1000이면 OOM killer 대상에서 제외됩니다. +1000이면 메모리 전체에 해당하는 가산점이 붙어 사실상 가장 먼저 죽습니다. 값을 낮추려면 <code>CAP_SYS_RESOURCE</code>가 필요합니다. systemd에서는 <code>OOMScoreAdjust=</code>로 지정합니다.</li>
+      <li><code>/proc/PID/oom_score</code>: 현재 점수를 사람이 보기 좋게 바꾼 값입니다. 현재 커널은 (1000 + badness × 1000 / totalpages) × 2/3로 계산해 0~2000 범위로 보여 줍니다. adj가 0인 작은 프로세스는 666 근처로 보입니다.</li>
+      <li>init(PID 1)과 커널 스레드는 대상이 아닙니다. 이미 죽어 가는 프로세스가 있으면 새 희생자를 고르지 않고 기다립니다. <code>oom_reaper</code> 커널 스레드는 희생자의 익명 메모리를 비동기로 먼저 해제해, 희생자가 커널 안에서 막혀 있어도 메모리가 돌아오게 합니다.</li>
+      <li>관련 sysctl: <code>vm.panic_on_oom</code>(기본 0, 1이면 OOM 시 커널 패닉), <code>vm.oom_kill_allocating_task</code>(기본 0, 1이면 점수 계산 없이 할당을 시도한 태스크를 죽임).</li>
+    </ul>
+
+    <div class="widget" id="oomW">
+      <div class="w-title">OOM 점수 계산기: 누가 죽나</div>
+      <div class="w-desc">각 프로세스의 RSS, swap 사용량, oom_score_adj를 바꿔 보세요. 페이지 테이블은 RSS/512 페이지로 근사했습니다(4 KiB 페이지, PTE 8바이트 기준). 계산은 커널의 정수 연산을 따릅니다.</div>
+      <div class="controls">
+        <label>RAM <input type="number" id="oomRam" value="16384" min="512" step="512"> MiB</label>
+        <label>swap <input type="number" id="oomSwap" value="0" min="0" step="512"> MiB</label>
+        <button class="btn" id="oomAdd">프로세스 추가</button>
+      </div>
+      <div class="tbl-wrap"><table class="oom-tbl">
+        <thead><tr><th>프로세스</th><th>RSS (MiB)</th><th>swap (MiB)</th><th>oom_score_adj</th><th>badness (페이지)</th><th>oom_score</th><th></th></tr></thead>
+        <tbody id="oomBody"></tbody>
+      </table></div>
+      <div class="verdict bg-bad" id="oomVerdict"></div>
+    </div>
+    <p>OOM이 일어나면 커널 로그(<code>dmesg</code>, <code>journalctl -k</code>)에 메모리 상태 덤프와 함께 <code>Out of memory: Killed process 1234 (java) total-vm:..., anon-rss:..., file-rss:..., shmem-rss:..., oom_score_adj:0</code> 같은 줄이 남습니다. cgroup 한도 때문이면 앞에 <code>Memory cgroup out of memory</code>가 붙습니다. 어느 쪽인지가 원인 분석의 첫 갈림길입니다. 노드 전체 메모리가 부족했는지, 한 컨테이너가 자기 한도를 넘었는지가 여기서 갈립니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. cgroup v2 메모리 컨트롤과 쿠버네티스</h2>
+    <p>cgroup v2의 메모리 컨트롤러는 프로세스 묶음 단위로 메모리를 <b>계량</b>하고 <b>제한·보호</b>합니다. 계량에는 익명 메모리뿐 아니라 그 cgroup이 처음 읽어 들인 <b>페이지 캐시</b>, tmpfs/shmem, 커널 메모리(slab, 소켓 버퍼 등)가 포함됩니다. "컨테이너 메모리 사용량에 캐시가 들어가 있다"는 점이 수많은 오해의 출발점입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>파일</th><th>의미</th></tr>
+      <tr><td><code>memory.current</code></td><td>현재 사용량 (캐시 포함)</td></tr>
+      <tr><td><code>memory.min</code></td><td><b>하드 보호</b>. 이 양 이하로는 어떤 상황에서도 회수되지 않음(보호량을 지킬 수 없으면 다른 곳에서 OOM)</td></tr>
+      <tr><td><code>memory.low</code></td><td><b>최선 노력 보호</b>. 보호받지 않는 메모리를 먼저 회수하고, 그래도 부족할 때만 건드림</td></tr>
+      <tr><td><code>memory.high</code></td><td><b>스로틀 한도</b>. 넘으면 해당 cgroup의 할당자가 직접 회수하고 지연(sleep)됨. OOM killer는 부르지 않음. 주된 사용량 조절 수단</td></tr>
+      <tr><td><code>memory.max</code></td><td><b>하드 한도</b>. 넘을 수 없음. 회수로도 못 맞추면 cgroup 안에서 OOM kill</td></tr>
+      <tr><td><code>memory.swap.max</code> / <code>memory.swap.current</code></td><td>swap 사용 한도 / 사용량</td></tr>
+      <tr><td><code>memory.events</code></td><td>누적 카운터: <code>low</code>, <code>high</code>, <code>max</code>, <code>oom</code>, <code>oom_kill</code> (최근 커널은 <code>oom_group_kill</code>도). 하위 cgroup 포함. 자기 것만 보려면 <code>memory.events.local</code></td></tr>
+      <tr><td><code>memory.stat</code></td><td><code>anon</code>, <code>file</code>, <code>shmem</code>, <code>active_file</code>, <code>inactive_file</code>, <code>pgfault</code>, <code>workingset_refault_*</code> 등 상세 분해</td></tr>
+      <tr><td><code>memory.oom.group</code></td><td>1이면 OOM 시 cgroup 안의 프로세스를 하나만이 아니라 전부 함께 죽임(부분적으로만 죽은 서비스 방지)</td></tr>
+      <tr><td><code>memory.pressure</code></td><td>이 cgroup의 PSI (메모리 때문에 멈춘 시간 비율)</td></tr>
+    </table></div>
+
+    <figure>
+      <div class="stage"><svg class="diagram" viewBox="0 0 660 250" style="min-width:520px" role="img" aria-label="cgroup 메모리 보호와 한도">
+        <text x="20" y="24" font-weight="700">한 cgroup의 memory.current가 늘어날 때</text>
+        <rect x="20" y="50" width="620" height="40" rx="6" class="box"/>
+        <rect x="21" y="51" width="119" height="38" style="fill:var(--teal-soft)"/>
+        <rect x="140" y="51" width="140" height="38" style="fill:var(--ok-soft)"/>
+        <rect x="280" y="51" width="190" height="38" style="fill:var(--surface)"/>
+        <rect x="470" y="51" width="110" height="38" style="fill:var(--warn-soft)"/>
+        <rect x="580" y="51" width="59" height="38" style="fill:var(--bad-soft)"/>
+        <line x1="140" x2="140" y1="40" y2="100" style="stroke:var(--teal);stroke-width:2"/>
+        <line x1="280" x2="280" y1="40" y2="100" style="stroke:var(--ok);stroke-width:2"/>
+        <line x1="470" x2="470" y1="40" y2="100" style="stroke:var(--warn);stroke-width:2"/>
+        <line x1="580" x2="580" y1="40" y2="100" style="stroke:var(--bad);stroke-width:2.5"/>
+        <text x="140" y="116" text-anchor="middle" font-size="12" style="fill:var(--teal);font-weight:700">memory.min</text>
+        <text x="280" y="116" text-anchor="middle" font-size="12" style="fill:var(--ok);font-weight:700">memory.low</text>
+        <text x="470" y="116" text-anchor="middle" font-size="12" style="fill:var(--warn);font-weight:700">memory.high</text>
+        <text x="580" y="116" text-anchor="middle" font-size="12" style="fill:var(--bad);font-weight:700">memory.max</text>
+        <text x="80" y="75" text-anchor="middle" font-size="11.5">절대 보호</text>
+        <text x="210" y="75" text-anchor="middle" font-size="11.5">최선 보호</text>
+        <text x="375" y="75" text-anchor="middle" font-size="11.5">보호 없음 · 자유</text>
+        <text x="525" y="75" text-anchor="middle" font-size="11.5">회수+스로틀</text>
+        <text x="610" y="75" text-anchor="middle" font-size="11.5">OOM</text>
+        <text x="20" y="150" font-weight="700">계층: 부모의 한도는 자식 합계에도 적용된다</text>
+        <rect x="250" y="160" width="160" height="30" rx="6" class="box"/><text x="330" y="180" text-anchor="middle" font-size="12.5">/sys/fs/cgroup (root)</text>
+        <rect x="70" y="210" width="170" height="30" rx="6" class="box"/><text x="155" y="230" text-anchor="middle" font-size="12.5">system.slice</text>
+        <rect x="420" y="210" width="190" height="30" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="515" y="230" text-anchor="middle" font-size="12.5">kubepods.slice → pod → 컨테이너</text>
+        <path class="line" d="M300 190 L160 210 M360 190 L510 210"/>
+      </svg></div>
+      <figcaption>그림 12-3. cgroup v2 메모리 경계. min/low는 다른 cgroup의 압박으로부터의 보호, high/max는 자기 자신에 대한 제한이다.</figcaption>
+    </figure>
+
+    <div class="widget" id="cgW">
+      <div class="w-title">컨테이너 메모리 한도 시뮬레이터</div>
+      <div class="w-desc">한 cgroup 안의 워크로드가 익명 메모리와 페이지 캐시를 이만큼 원한다고 할 때, 한도 설정에 따라 결과가 어떻게 달라지는지 봅니다. 회수는 싼 것(캐시)부터, 그다음 swap 순으로 한다고 단순화했습니다.</div>
+      <div class="sl-grid">
+        <label><span>memory.max <b id="cgMaxv"></b></span><input type="range" id="cgMax" min="256" max="4096" step="64" value="1024"></label>
+        <label><span>memory.high <b id="cgHighv"></b></span><span style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cgHighOn"><input type="range" id="cgHigh" min="128" max="4096" step="64" value="896" style="flex:1"></span></label>
+        <label><span>익명 메모리 수요 (힙 등) <b id="cgAnonv"></b></span><input type="range" id="cgAnon" min="0" max="4096" step="32" value="640"></label>
+        <label><span>페이지 캐시 수요 (파일 I/O) <b id="cgFilev"></b></span><input type="range" id="cgFile" min="0" max="4096" step="32" value="1536"></label>
+        <label><span>memory.swap.max <b id="cgSwapv"></b></span><input type="range" id="cgSwap" min="0" max="2048" step="64" value="0"></label>
+      </div>
+      <div class="membar" id="cgBar"></div>
+      <div class="legend"><span><i style="background:var(--warn-soft)"></i>익명(RAM)</span><span><i style="background:var(--ok-soft)"></i>페이지 캐시</span><span><i style="background:var(--violet-soft)"></i>swap</span><span><i style="background:var(--bad-soft)"></i>한도 초과(OOM)</span></div>
+      <div class="cg-out">
+        <div><div class="verdict" id="cgVerdict"></div><div class="log" id="cgDetail" style="margin-top:8px"></div></div>
+        <div><b style="font-size:14px">대응되는 쿠버네티스 설정</b><pre id="cgK8s" style="margin-top:6px;font-size:12.5px"></pre></div>
+      </div>
+    </div>
+
+    <h3>컨테이너가 OOMKilled 되는 원리</h3>
+    <ol>
+      <li>쿠버네티스 <code>resources.limits.memory</code>는 컨테이너 cgroup의 <code>memory.max</code>가 됩니다.</li>
+      <li>컨테이너가 한도에 닿으면 커널은 그 cgroup 안에서 먼저 회수합니다. 페이지 캐시는 여기서 버려지므로, 캐시만 많은 컨테이너는 죽지 않습니다.</li>
+      <li>회수할 것이 없으면(대부분 익명 메모리) cgroup OOM이 일어나 그 cgroup 안에서 badness가 가장 큰 프로세스가 SIGKILL을 받습니다. <code>memory.events</code>의 <code>oom_kill</code>이 증가합니다.</li>
+      <li>컨테이너 메인 프로세스가 죽으면 런타임이 이를 감지해 상태를 <code>OOMKilled</code>, 종료 코드 <b>137</b>(128 + SIGKILL 9)로 보고합니다. 쿠버네티스 1.28부터 kubelet은 cgroup v2에서 컨테이너에 <code>memory.oom.group</code>을 켜서 컨테이너 안의 프로세스를 함께 죽입니다.</li>
+    </ol>
+    <div class="tbl-wrap"><table>
+      <tr><th>쿠버네티스</th><th>커널/cgroup에서 일어나는 일</th></tr>
+      <tr><td><code>requests.memory</code></td><td>기본적으로 <b>스케줄링(노드 배치) 계산에만</b> 쓰입니다. cgroup 한도는 아닙니다. (알파 기능 MemoryQoS를 켜면 <code>memory.min</code>과 <code>memory.high</code> 설정에 활용)</td></tr>
+      <tr><td><code>limits.memory</code></td><td>컨테이너 cgroup의 <code>memory.max</code></td></tr>
+      <tr><td>QoS 클래스</td><td>컨테이너 프로세스의 <code>oom_score_adj</code>: Guaranteed −997, BestEffort 1000, Burstable은 1000 − 1000×request/노드 메모리 용량을 [2, 999]로 제한한 값. 노드 전체 OOM 때 누가 먼저 죽을지가 여기서 정해집니다.</td></tr>
+      <tr><td>kubelet eviction</td><td>커널 OOM과 별개입니다. 노드의 <code>memory.available</code>(용량 − working set)이 임계(기본 hard 임계 <code>memory.available&lt;100Mi</code>) 아래로 가면 kubelet이 파드를 축출합니다. 상태는 <code>Evicted</code>로 남습니다.</td></tr>
+      <tr><td>working set 지표</td><td>cAdvisor의 <code>container_memory_working_set_bytes</code> = 사용량 − <code>inactive_file</code>. 쉽게 버릴 수 있는 캐시를 뺀 값이며 <code>kubectl top</code>이 보여 주는 값도 이것입니다. 이 값도 active 파일 캐시는 포함하므로 한도에 가까워 보여도 꼭 위험한 것은 아닙니다.</td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">실무 체크리스트</span>
+      <ul>
+        <li>JVM·Go 런타임처럼 자체 힙 한도가 있는 프로그램은 컨테이너 한도를 인식시켜야 합니다(JVM은 컨테이너 인식이 기본 동작이며 <code>-XX:MaxRAMPercentage</code>로 비율 지정, Go는 <code>GOMEMLIMIT</code>). 힙 외에 스레드 스택, 메타스페이스, 직접 버퍼, 페이지 캐시도 한도 안에 들어간다는 것을 잊지 마세요.</li>
+        <li>OOMKilled가 났다면 <code>memory.stat</code>에서 <code>anon</code>이 컸는지, <code>shmem</code>(tmpfs, <code>/dev/shm</code>, <code>emptyDir: Memory</code>)이 컸는지 먼저 봅니다. shmem은 캐시처럼 보이지만 swap 없이는 회수되지 않습니다.</li>
+        <li>사용량이 한도 근처에서 오래 머문다면 <code>memory.events</code>의 <code>max</code>와 <code>memory.pressure</code>를 확인하세요. OOM이 나지 않더라도 계속된 회수로 느려질 수 있습니다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. 관측: free, /proc/meminfo, vmstat, drop_caches</h2>
+    <h3>free -m 해부</h3>
+    <div class="widget" id="freeW">
+      <div class="w-title">free -m 출력 해부</div>
+      <div class="w-desc">열 이름을 누르면 그 값이 <code>/proc/meminfo</code>의 어느 필드에서 계산되는지 보여 줍니다. 아래 버튼으로 상황을 바꿔 각 값이 어떻게 움직이는지 보세요(값은 예시 시스템 기준, MemAvailable은 커널 계산을 단순화해 근사).</div>
+      <div class="controls">
+        <button class="btn primary" data-sc="init">초기 상태</button>
+        <button class="btn" data-sc="tmpfs">tmpfs에 2 GiB 파일 쓰기</button>
+        <button class="btn" data-sc="drop">echo 3 &gt; drop_caches</button>
+        <button class="btn" data-sc="anon">앱이 익명 3 GiB 할당</button>
+      </div>
+      <div class="free-out" id="freeOut"></div>
+      <div class="free-exp" id="freeExp"></div>
+      <div class="tbl-wrap"><table id="freeMi" style="font-size:13px"></table></div>
+    </div>
+    <ul>
+      <li><b>buff/cache</b> = <code>Buffers</code> + <code>Cached</code> + <code>SReclaimable</code>. 이름과 달리 "전부 버릴 수 있는 캐시"가 아닙니다. <code>Cached</code>에는 tmpfs·공유 메모리(<code>Shmem</code>)가 들어 있고, 지금 매핑되어 쓰이는 실행 코드나 dirty 페이지도 있습니다.</li>
+      <li><b>available</b> = <code>MemAvailable</code>(3.14+). 커널이 "swap 없이 새 작업에 줄 수 있는 메모리"를 추정한 값입니다. free + 회수 가능한 파일 캐시 + 회수 가능한 slab에서 워터마크 예비분 등을 뺍니다. <b>모니터링 경보는 free가 아니라 이 값에 걸어야 합니다.</b></li>
+      <li><b>used</b>의 계산식은 procps 버전에 따라 다릅니다(total − free − buff/cache 또는 total − available). 버전마다 숫자가 다르게 보이는 이유입니다.</li>
+    </ul>
+
+    <h3>/proc/meminfo 주요 필드</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>필드</th><th>의미 / 해석 포인트</th></tr>
+      <tr><td><code>MemTotal</code></td><td>커널이 관리하는 RAM (펌웨어·커널 이미지 예약분 제외라 실제 RAM보다 작음)</td></tr>
+      <tr><td><code>MemFree</code></td><td>전혀 쓰이지 않는 페이지. 작아도 정상</td></tr>
+      <tr><td><code>MemAvailable</code></td><td>새 작업에 줄 수 있는 추정치. 실질적인 "남은 메모리"</td></tr>
+      <tr><td><code>Buffers</code></td><td>블록 장치 자체의 페이지 캐시(파일시스템 메타데이터 등). 보통 작음</td></tr>
+      <tr><td><code>Cached</code></td><td>페이지 캐시 + Shmem (SwapCached 제외)</td></tr>
+      <tr><td><code>SwapCached</code></td><td>RAM과 swap 양쪽에 있는 페이지 (7절)</td></tr>
+      <tr><td><code>Active</code>/<code>Inactive</code> <code>(anon)</code>/<code>(file)</code></td><td>LRU 리스트별 크기. <code>Inactive(file)</code>이 크면 쉽게 회수할 여지가 큼</td></tr>
+      <tr><td><code>Unevictable</code>, <code>Mlocked</code></td><td>회수 불가 페이지 (mlock, ramfs 등)</td></tr>
+      <tr><td><code>SwapTotal</code>/<code>SwapFree</code></td><td>swap 용량/여유</td></tr>
+      <tr><td><code>Dirty</code>, <code>Writeback</code></td><td>기록 대기 중 / 기록 중인 페이지 (11장)</td></tr>
+      <tr><td><code>AnonPages</code></td><td>사용자 공간 익명 페이지(LRU에 있는 것). tmpfs/shm은 제외</td></tr>
+      <tr><td><code>Mapped</code></td><td>페이지 캐시 중 어딘가에 mmap된 양 (실행 파일, 라이브러리 포함)</td></tr>
+      <tr><td><code>Shmem</code></td><td>tmpfs, POSIX/SysV 공유 메모리, 공유 익명 매핑. <b>Cached에 포함되지만 swap 없이 회수 불가</b></td></tr>
+      <tr><td><code>Slab</code> = <code>SReclaimable</code> + <code>SUnreclaim</code></td><td>커널 slab 할당자(9장). SUnreclaim이 계속 늘면 커널 메모리 누수 의심 (<code>slabtop</code>)</td></tr>
+      <tr><td><code>KernelStack</code>, <code>PageTables</code></td><td>커널 스택, 페이지 테이블. PageTables가 크면 프로세스 수·매핑 크기를 의심 (Huge page 고려, 13장)</td></tr>
+      <tr><td><code>CommitLimit</code>, <code>Committed_AS</code></td><td>overcommit 한도(모드 2에서만 강제)와 현재 커밋 총량</td></tr>
+      <tr><td><code>AnonHugePages</code>, <code>HugePages_*</code></td><td>THP로 쓰인 익명 메모리 / hugetlbfs 풀 (13장)</td></tr>
+    </table></div>
+
+    <h3>vmstat 읽기</h3>
+<pre><code>$ vmstat 1
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+ 3  0      0 412340 210112 9822980    0    0     4   120 1520 3010 12  3 84  1  0
+ 9  6 524288  98112  10240 1203400 8120 15360 45210  9800 8800 9100 15 42  8 35  0</code></pre>
+    <ul>
+      <li><b>r</b>: 실행 대기 태스크, <b>b</b>: 끊을 수 없는 잠(대개 I/O) 상태 태스크. 메모리 압박 때 b가 늘어납니다.</li>
+      <li><b>si/so</b>: 초당 swap-in/out 양(KiB). 산발적인 so보다 <b>지속적인 si</b>가 위험 신호입니다. 내보낸 페이지를 계속 다시 필요로 한다는 뜻이기 때문입니다.</li>
+      <li><b>bi/bo</b>: 블록 장치 읽기/쓰기(블록/초). swap 없이 bi가 치솟고 cache가 줄어든다면 파일 페이지 스래싱(코드 페이지 재읽기)일 수 있습니다.</li>
+      <li><b>sy</b>가 높고 <b>wa</b>도 높다면 회수(커널 CPU) + I/O 대기가 겹친 상태입니다. 위 예시의 두 번째 줄이 전형적인 메모리 압박입니다.</li>
+    </ul>
+    <p>더 정밀하게 보려면 <code>/proc/vmstat</code>의 누적 카운터를 시간 차분으로 봅니다. <code>pgscan_kswapd</code>/<code>pgscan_direct</code>(스캔), <code>pgsteal_*</code>(실제 회수), <code>allocstall_*</code>(direct reclaim 진입), <code>pgmajfault</code>(디스크 I/O를 동반한 폴트), <code>workingset_refault_*</code>, <code>oom_kill</code> 등이 있습니다. <code>sar -B</code>는 이를 보기 좋게 보여 줍니다. 압박의 "체감"은 PSI <code>/proc/pressure/memory</code>로 봅니다. <code>some</code>은 일부 태스크가, <code>full</code>은 모든 비유휴 태스크가 메모리 때문에 멈춘 시간 비율입니다.</p>
+
+    <h3>drop_caches 주의점</h3>
+    <p><code>sync; echo 3 &gt; /proc/sys/vm/drop_caches</code>(1 = 페이지 캐시, 2 = dentry·inode 등 회수 가능 slab, 3 = 둘 다)는 다음 성질을 가집니다.</p>
+    <ul>
+      <li>clean이고 사용 중이 아닌 캐시만 버립니다. dirty 페이지는 남으므로 먼저 <code>sync</code>합니다. 매핑된 페이지와 <b>Shmem은 버려지지 않습니다.</b></li>
+      <li>메모리를 "확보"해 주지 않습니다. 그 캐시는 원래 필요할 때 커널이 알아서 회수할 수 있었으므로 <code>MemAvailable</code>은 거의 변하지 않고 <code>MemFree</code>만 커집니다.</li>
+      <li>대신 이후 모든 파일 접근이 디스크로 가서 일시적으로 성능이 떨어지고, 운영 중인 DB라면 지연이 폭증합니다. 커널 로그에 실행 기록(<code>drop_caches: 3</code>)이 남습니다.</li>
+      <li>정당한 용도는 <b>콜드 캐시 벤치마크</b>와 디버깅 정도입니다. cron으로 주기 실행하는 "메모리 최적화"는 안티패턴입니다.</li>
+    </ul>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>여유 메모리가 low 아래면 kswapd가 깨어 high까지 비동기 회수하고, min 아래면 할당 스레드가 direct reclaim으로 멈춘다. 그래도 진전이 없으면 OOM killer가 동작한다.</li>
+    <li>watermark 간격은 max(min/4, 존 크기 × watermark_scale_factor/10000)이며, 키우면 kswapd가 일찍 일해 direct reclaim이 준다.</li>
+    <li>clean 파일 페이지는 버리기만 하면 되고, 익명 페이지는 swap이 있어야 회수된다. swap이 없으면 압박이 파일 페이지(실행 코드 포함)에 몰려 스래싱이 생긴다.</li>
+    <li>2단계 LRU: 새 페이지는 inactive에서 시작, 다시 접근되면 active로, 회수는 inactive 꼬리에서. shadow entry 기반 refault 감지가 작업 집합을 보호한다. MGLRU(6.1+)는 여러 세대와 페이지 테이블 워크로 이를 개선한다.</li>
+    <li>swappiness(0~200, 기본 60)는 swap I/O와 파일 I/O의 상대 비용이다. 0도 swap 금지가 아니다.</li>
+    <li>OOM badness = RSS + swap + 페이지 테이블 + oom_score_adj × totalpages/1000. adj −1000은 제외, +1000은 사실상 1순위다.</li>
+    <li>cgroup v2: min(절대 보호) &lt; low(최선 보호) &lt; high(스로틀) &lt; max(하드 한도, OOM). 페이지 캐시도 cgroup에 계량되지만 한도에서 먼저 회수된다. 쿠버네티스 limits = memory.max, OOMKilled = exit 137.</li>
+    <li>free의 buff/cache는 전부 회수 가능한 것이 아니다(Shmem 포함). 판단 기준은 MemAvailable과 PSI·vmstat의 si, allocstall이다. drop_caches는 메모리 문제의 해결책이 아니다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">존의 여유 페이지가 low와 min 사이에 있을 때 일반적인(GFP_KERNEL) 할당 요청은 어떻게 처리되나?</div>
+    <button class="opt">즉시 direct reclaim을 수행한 뒤 할당한다.</button>
+    <button class="opt">할당은 성공하고, kswapd가 깨어나 백그라운드에서 high까지 회수한다.</button>
+    <button class="opt">OOM killer가 호출된다.</button>
+    <button class="opt">kswapd가 high까지 회수를 끝낼 때까지 할당이 대기한다.</button>
+    <div class="explain">fast path는 low 워터마크를 기준으로 하고, 실패하면 slow path에서 kswapd를 깨운 뒤 min 워터마크 기준으로 다시 시도합니다. min 위라면 성공하므로 요청자는 멈추지 않습니다. direct reclaim은 min 아래로 떨어질 때 시작됩니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">swap이 전혀 없는 서버에서 메모리 압박이 심해질 때 가장 먼저 나타나기 쉬운 증상은?</div>
+    <button class="opt">익명 페이지가 디스크로 빠르게 나가며 vmstat의 so가 급증한다.</button>
+    <button class="opt">즉시 OOM killer가 동작해 문제가 빨리 끝난다.</button>
+    <button class="opt">커널이 페이지 캐시를 늘려 성능이 좋아진다.</button>
+    <button class="opt">파일 페이지(실행 코드 포함)만 반복 회수되어 디스크 읽기가 폭증하고 시스템이 한동안 응답하지 않는다.</button>
+    <div class="explain">swap이 없으면 익명 페이지는 회수 불가라서, 커널은 남은 파일 페이지를 쥐어짭니다. 실행 중인 프로그램의 코드 페이지까지 버렸다 다시 읽는 스래싱이 일어나고, 회수가 "약간씩 진전"하는 동안에는 OOM이 늦게 옵니다. PSI 기반 사용자 공간 OOM 도구가 필요한 이유입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">RAM 16 GiB, swap 0인 노드에서 RSS 6 GiB, adj 0인 java와 RSS 300 MiB, adj 1000인 BestEffort 파드 프로세스가 있다. 노드 전체 OOM 시 희생자는?</div>
+    <button class="opt">java. RSS가 가장 크기 때문</button>
+    <button class="opt">둘 다 동시에 죽는다</button>
+    <button class="opt">BestEffort 프로세스. adj 1000 × (totalpages/1000)이 메모리 전체에 해당하는 가산점이 되기 때문</button>
+    <button class="opt">아무도 죽지 않고 커널 패닉이 난다</button>
+    <div class="explain">adj는 totalpages/1000 단위로 환산됩니다. adj 1000이면 RAM+swap 전체에 해당하는 약 16 GiB 상당의 점수가 붙으므로 RSS 300 MiB여도 java(6 GiB)보다 큽니다. panic_on_oom 기본값은 0입니다. 위 계산기로 직접 확인해 보세요.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">limits.memory가 1 GiB인 컨테이너가 로그 파일을 대량으로 읽고 쓰면서 memory.current가 1 GiB 근처에 계속 붙어 있다. 익명 메모리는 300 MiB다. 가장 가능성 높은 결과는?</div>
+    <button class="opt">한도에서 페이지 캐시가 회수되며 계속 동작한다. memory.events의 max 카운터는 늘 수 있지만 OOMKilled는 되지 않는다.</button>
+    <button class="opt">memory.current가 한도에 닿았으므로 곧 OOMKilled 된다.</button>
+    <button class="opt">페이지 캐시는 cgroup에 계량되지 않으므로 실제 사용량은 300 MiB다.</button>
+    <button class="opt">kubelet이 즉시 파드를 Evicted 처리한다.</button>
+    <div class="explain">페이지 캐시도 cgroup에 계량되므로 memory.current는 한도 근처까지 찹니다. 하지만 캐시는 한도에서 먼저 회수되므로 익명 메모리가 한도를 넘지 않는 한 OOM은 나지 않습니다. 다만 회수가 잦으면 I/O가 늘어 느려질 수 있으니 memory.pressure를 확인하세요.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">vm.swappiness에 대한 설명으로 옳은 것은?</div>
+    <button class="opt">swap 사용률(%) 상한이다. 60이면 swap의 60%까지만 쓴다.</button>
+    <button class="opt">익명 페이지 회수(swap I/O)와 파일 페이지 회수의 상대 비용을 나타내며, 100이면 둘을 대등하게 본다.</button>
+    <button class="opt">0으로 설정하면 어떤 경우에도 swap이 일어나지 않는다.</button>
+    <button class="opt">메모리 사용률이 (100 − swappiness)%를 넘으면 swap을 시작한다.</button>
+    <div class="explain">커널 문서의 정의대로 0~200 범위에서 두 I/O의 상대 비용입니다. 0은 익명 스캔을 최대한 피하는 것일 뿐, 극한 상황에서는 여전히 swap할 수 있습니다. "사용률 임계" 해석은 흔한 오해입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>free -m</code>에서 buff/cache가 9 GiB, available이 6 GiB로 나왔다. 둘의 차이를 설명할 수 있는 가장 그럴듯한 원인은?</div>
+    <button class="opt">커널 버그로 available이 잘못 계산됐다.</button>
+    <button class="opt">drop_caches를 실행하지 않아서다.</button>
+    <button class="opt">tmpfs·공유 메모리(Shmem)나 사용 중인 매핑·dirty 페이지처럼 Cached에 포함되지만 쉽게 회수할 수 없는 메모리가 있기 때문이다.</button>
+    <button class="opt">buff/cache는 swap 영역의 크기를 뜻하기 때문이다.</button>
+    <div class="explain">Cached에는 Shmem이 포함되고, 모든 캐시를 공짜로 버릴 수는 없습니다(워터마크 예비분, 활성 작업 집합 등). MemAvailable은 이를 감안한 추정치입니다. drop_caches는 MemFree만 바꿀 뿐 available은 거의 그대로입니다.</div>
+  </div>
+</main>
+
+<script>
+// ==LOGIC== (node 검증용으로 분리된 순수 로직)
+// ---- 워터마크 모델 (단위 MiB, 초) ----
+function wmCalc(minKB, wsf, managedMiB) {
+  const min = minKB / 1024;
+  const d = Math.max(min / 4, managedMiB * wsf / 10000);
+  return { min, low: min + d, high: min + 2 * d };
+}
+function wmNew() {
+  return { t: 0, free: 380, cache: 2200, anon: 1516, swap: 0, kswapd: false, state: "ok", noProg: 0,
+    stats: { wake: 0, ksw: 0, direct: 0, stallT: 0, oom: 0, swapout: 0 }, events: [] };
+}
+function wmReclaim(st, amt, p) {
+  const swapRoom = p.swapOn ? Math.max(0, p.swapSize - st.swap) : 0;
+  let ra = Math.min(p.swapOn ? amt * p.swappiness / 200 : 0, st.anon, swapRoom);
+  let rf = Math.min(amt - ra, st.cache);
+  let short = amt - ra - rf;
+  if (short > 0 && p.swapOn) { const extra = Math.min(short, st.anon - ra, swapRoom - ra); if (extra > 0) { ra += extra; short -= extra; } }
+  st.cache -= rf; st.anon -= ra; st.swap += ra; st.free += rf + ra; st.stats.swapout += ra;
+  return rf + ra;
+}
+function wmStep(st, p, dt) {
+  st.t += dt; st.events = [];
+  const wm = p.wm;
+  if (!st.kswapd && st.free < wm.low) { st.kswapd = true; st.stats.wake++; st.events.push("wake"); }
+  if (st.kswapd) {
+    const r = wmReclaim(st, p.kswapdRate * dt, p);
+    st.stats.ksw += r;
+    if (st.free >= wm.high) { st.kswapd = false; st.events.push("sleep"); }
+  }
+  const needA = p.anonRate * dt, needF = p.fileRate * dt, need = needA + needF;
+  st.state = st.kswapd ? "kswapd" : "ok";
+  if (need <= 0) { st.noProg = 0; return st; }
+  let frac = 1;
+  if (st.free - need < wm.min) {
+    st.state = "direct";
+    if (st.prevState !== "direct") st.events.push("direct");
+    const r = wmReclaim(st, p.directRate * dt, p);
+    st.stats.direct += r;
+    frac = Math.max(0, Math.min(1, (st.free - wm.min) / need));
+    st.stats.stallT += dt * (1 - frac);
+    if (r < 1e-9 && frac < 1) st.noProg += dt; else st.noProg = 0;
+    if (st.noProg >= 1) {               // 회수 진전 없음이 지속 → OOM kill
+      const va = st.anon * 0.5, vs = st.swap * 0.5;
+      st.anon -= va; st.swap -= vs; st.free += va;
+      st.stats.oom++; st.noProg = 0; st.state = "oom";
+      st.events.push("oom:" + Math.round(va));
+    }
+  } else st.noProg = 0;
+  st.free -= need * frac; st.anon += needA * frac; st.cache += needF * frac;
+  st.prevState = st.state;
+  return st;
+}
+
+// ---- LRU 모델 (head = index 0, tail = 끝) ----
+function lruNew() {
+  const st = { L: { aa: [], ia: [], af: [], if: [] }, ev: [], na: 0, nf: 0 };
+  const mk = (type, ref) => ({ id: (type === "anon" ? "a" : "f") + (type === "anon" ? ++st.na : ++st.nf), type, ref });
+  st.L.af.push(mk("file", 1), mk("file", 0));
+  st.L.if.push(mk("file", 1), mk("file", 0), mk("file", 0));
+  st.L.aa.push(mk("anon", 0));
+  st.L.ia.push(mk("anon", 1), mk("anon", 0));
+  return st;
+}
+const LRU_NAMES = { aa: "active_anon", ia: "inactive_anon", af: "active_file", if: "inactive_file" };
+function lruKey(type, active) { return (active ? "a" : "i") + (type === "anon" ? "a" : "f"); }
+function lruFind(st, id) {
+  for (const k in st.L) { const i = st.L[k].findIndex(p => p.id === id); if (i >= 0) return { k, i }; }
+  const i = st.ev.findIndex(p => p.id === id); if (i >= 0) return { k: "ev", i };
+  return null;
+}
+function lruAdd(st, type) {
+  const p = { id: (type === "anon" ? "a" + ++st.na : "f" + ++st.nf), type, ref: 1 };
+  st.L[lruKey(type, false)].unshift(p);
+  return { id: p.id, msg: `${p.id}: 새 ${type === "anon" ? "익명" : "파일"} 페이지 → ${LRU_NAMES[lruKey(type, false)]} 머리 (첫 접근으로 R 표시)` };
+}
+function lruAccess(st, id) {
+  const loc = lruFind(st, id); if (!loc) return { msg: "없는 페이지" };
+  if (loc.k === "ev") {
+    const p = st.ev.splice(loc.i, 1)[0];
+    p.ref = 0; delete p.how;
+    st.L[lruKey(p.type, true)].unshift(p);
+    return { id, msg: `${id}: refault! ${p.type === "anon" ? "swap-in" : "파일에서 다시 읽기"}. 최근에 쫓겨난 페이지(refault 거리 짧음) → 작업 집합으로 판단해 바로 ${LRU_NAMES[lruKey(p.type, true)]}로`, cls: "c-violet" };
+  }
+  const p = st.L[loc.k][loc.i];
+  if (loc.k[0] === "a") { p.ref = 1; return { id, msg: `${id}: active에서 접근 → R 표시 (위치는 그대로)` }; }
+  if (p.ref) {
+    st.L[loc.k].splice(loc.i, 1); p.ref = 0;
+    st.L[lruKey(p.type, true)].unshift(p);
+    return { id, msg: `${id}: inactive에서 두 번째 접근 → ${LRU_NAMES[lruKey(p.type, true)]}로 승격`, cls: "c-accent" };
+  }
+  p.ref = 1;
+  return { id, msg: `${id}: inactive에서 첫 접근 → R 표시 (한 번 더 접근하면 승격)` };
+}
+function lruScanActive(st, type) {
+  const A = st.L[lruKey(type, true)];
+  if (!A.length) return { msg: `${LRU_NAMES[lruKey(type, true)]} 비어 있음` };
+  const p = A.pop();
+  if (p.ref) { p.ref = 0; A.unshift(p); return { id: p.id, msg: `${p.id}: active 꼬리, R 있음 → R 지우고 active 머리로 회전` }; }
+  st.L[lruKey(type, false)].unshift(p);
+  return { id: p.id, msg: `${p.id}: active 꼬리, R 없음 → ${LRU_NAMES[lruKey(type, false)]} 머리로 강등`, cls: "c-warn" };
+}
+function lruScanInactive(st, type) {
+  const I = st.L[lruKey(type, false)];
+  if (!I.length) return { msg: `${LRU_NAMES[lruKey(type, false)]} 비어 있음`, none: true };
+  const p = I.pop();
+  if (p.ref) { p.ref = 0; st.L[lruKey(type, true)].unshift(p); return { id: p.id, msg: `${p.id}: inactive 꼬리, R 있음 → 최근 사용됨, active로 (second chance)`, cls: "c-accent" }; }
+  p.how = type === "anon" ? "swap out" : "버림";
+  st.ev.unshift(p);
+  if (st.ev.length > 8) st.ev.pop();
+  return { id: p.id, msg: `${p.id}: inactive 꼬리, R 없음 → 회수 (${p.how})`, cls: "c-bad", evicted: true };
+}
+function lruSplit(n, swappiness, swapOn) {
+  const anon = swapOn ? Math.round(n * swappiness / 200) : 0;
+  return { anon, file: n - anon };
+}
+function lruReclaim(st, n, swappiness, swapOn) {
+  const sp = lruSplit(n, swappiness, swapOn), out = [];
+  const run = (type, cnt) => {
+    for (let k = 0; k < cnt; k++) {
+      if (!st.L[lruKey(type, false)].length) {
+        if (!st.L[lruKey(type, true)].length) { out.push({ msg: `${type} 리스트가 모두 비어 회수할 것이 없음` }); return; }
+        out.push(lruScanActive(st, type));   // inactive가 비면 active에서 강등 먼저
+        k--; if (out.length > 40) return; continue;
+      }
+      out.push(lruScanInactive(st, type));
+    }
+  };
+  run("file", sp.file); run("anon", sp.anon);
+  return out;
+}
+
+// ---- OOM 점수 (커널 oom_badness / proc_oom_score를 정수 연산으로 재현) ----
+function oomTotalPages(ramMiB, swapMiB) { return (ramMiB + swapMiB) * 256; }
+function oomBadness(pr, totalpages) {
+  if (pr.adj <= -1000) return null;                         // OOM_SCORE_ADJ_MIN: 제외
+  const rss = Math.round(pr.rssMiB * 256), swp = Math.round(pr.swapMiB * 256);
+  const pt = Math.ceil(rss / 512);                         // 페이지 테이블 근사
+  const adj = pr.adj * Math.floor(totalpages / 1000);
+  return rss + swp + pt + adj;
+}
+function oomScoreShown(b, totalpages) {
+  if (b === null) return 0;
+  return Math.trunc((1000 + Math.trunc(b * 1000 / totalpages)) * 2 / 3);
+}
+function oomVictim(procs, totalpages) {
+  let best = -1, bestPts = -Infinity;
+  procs.forEach((p, i) => { const b = oomBadness(p, totalpages); if (b !== null && b >= bestPts) { bestPts = b; best = i; } });
+  return best;
+}
+
+// ---- cgroup 한도 모델 (MiB) ----
+function cgEval(c) {
+  const high = c.highOn ? c.high : Infinity;
+  const limit = Math.min(c.max, high);
+  let anonRAM = c.anon, swapped = 0;
+  if (anonRAM > limit && c.swapMax > 0) { swapped = Math.min(anonRAM - limit, c.swapMax); anonRAM -= swapped; }
+  const oom = anonRAM > c.max;
+  const fileRAM = oom ? Math.max(0, Math.min(c.file, c.max - Math.min(anonRAM, c.max))) : Math.max(0, Math.min(c.file, limit - anonRAM));
+  const total = c.anon + c.file;
+  const ev = { high: total > high ? 1 : 0, max: total > c.max ? 1 : 0, oom: oom ? 1 : 0, oom_kill: oom ? 1 : 0 };
+  const throttled = !oom && anonRAM > high;
+  return { anonRAM, fileRAM, swapped, current: Math.min(anonRAM, c.max) + fileRAM, ev, oom, throttled, fileReclaimed: c.file - fileRAM, high };
+}
+
+// ---- free / meminfo 모델 (kB) ----
+function memInit() {
+  return { MemTotal: 16303428, MemFree: 512340, Buffers: 210112, Cached: 9204876, SReclaimable: 618204, Shmem: 1452780, Mapped: 702112, AnonPages: 4805200 };
+}
+function memAvailable(m) {
+  const reserve = 150000, low = 100000;                    // 예시 시스템의 예비분/low 워터마크 합 (근사)
+  const pagecache = m.Buffers + m.Cached - m.Shmem;         // 파일 LRU 근사 (Shmem은 회수 불가)
+  const avail = m.MemFree - reserve + (pagecache - Math.min(pagecache / 2, low)) + (m.SReclaimable - Math.min(m.SReclaimable / 2, low));
+  return Math.max(0, Math.round(avail));
+}
+function memApply(m, sc) {
+  m = Object.assign({}, m);
+  const floor = 200000;
+  const take = need => {                                    // free에서 먼저, 모자라면 파일 캐시 회수
+    const fromFree = Math.min(need, Math.max(0, m.MemFree - floor));
+    m.MemFree -= fromFree;
+    let rest = need - fromFree;
+    const fileCache = m.Cached - m.Shmem - m.Mapped;
+    const fromCache = Math.min(rest, Math.max(0, fileCache));
+    m.Cached -= fromCache; rest -= fromCache;
+    return rest;                                            // 남으면 (swap 없으면) 부족
+  };
+  if (sc === "tmpfs") { const X = 2097152; take(X); m.Shmem += X; m.Cached += X; }
+  if (sc === "anon") { const X = 3145728; take(X); m.AnonPages += X; }
+  if (sc === "drop") {
+    const droppable = m.Cached - m.Shmem - m.Mapped;
+    const dropBuf = m.Buffers - 20000, dropSlab = m.SReclaimable - 60000;
+    m.Cached -= droppable; m.Buffers -= dropBuf; m.SReclaimable -= dropSlab;
+    m.MemFree += droppable + dropBuf + dropSlab;
+  }
+  return m;
+}
+function freeCols(m) {
+  const avail = memAvailable(m);
+  const bc = m.Buffers + m.Cached + m.SReclaimable;
+  return { total: m.MemTotal, usedOld: m.MemTotal - m.MemFree - bc, usedNew: m.MemTotal - avail, free: m.MemFree, shared: m.Shmem, buffcache: bc, available: avail };
+}
+// ==END LOGIC==
+
+(function () {
+  if (typeof document === "undefined") return;
+  const $ = id => document.getElementById(id);
+  const mib = v => Math.round(v) + " MiB";
+
+  // ---------- 워터마크 시뮬레이션 ----------
+  (function () {
+    const MANAGED = 4096, DT = 0.1, WIN = 40;
+    let st = wmNew(), hist = [], running = true, timer = null;
+    const p = { swapSize: 1024, directRate: 100 };
+    const svg = $("wmSvg"), log = $("wmLog");
+    function addLog(m, cls) { log.innerHTML = `<div class="${cls || ""}">[${st.t.toFixed(1)}s] ${m}</div>` + log.innerHTML; }
+    function readP() {
+      p.anonRate = +$("wmA").value; p.fileRate = +$("wmF").value; p.kswapdRate = +$("wmK").value;
+      p.swapOn = $("wmSwap").checked; p.swappiness = +$("wmSw").value;
+      p.wm = wmCalc(+$("wmM").value, +$("wmS").value, MANAGED);
+      $("wmAv").textContent = p.anonRate + " MiB/s"; $("wmFv").textContent = p.fileRate + " MiB/s"; $("wmKv").textContent = p.kswapdRate + " MiB/s";
+      $("wmMv").textContent = (+$("wmM").value) + " kB"; $("wmSv").textContent = $("wmS").value;
+      $("wmWv").textContent = p.swapOn ? "swap 켬 · " + p.swappiness : "swap 없음";
+      $("wmSw").disabled = !p.swapOn;
+    }
+    function draw() {
+      const wm = p.wm;
+      const x0 = 50, x1 = 628, y0 = 12, y1 = 206;
+      const ymax = Math.max(420, wm.high * 1.4);
+      const X = t => x0 + (x1 - x0) * (t - Math.max(0, st.t - WIN)) / WIN;
+      const Y = v => y1 - (y1 - y0) * Math.max(0, Math.min(v, ymax)) / ymax;
+      let o = `<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" style="fill:var(--surface-2)"/>`;
+      o += `<rect x="${x0}" y="${Y(wm.min)}" width="${x1 - x0}" height="${y1 - Y(wm.min)}" style="fill:var(--bad-soft)"/>`;
+      o += `<rect x="${x0}" y="${Y(wm.low)}" width="${x1 - x0}" height="${Y(wm.min) - Y(wm.low)}" style="fill:var(--warn-soft)"/>`;
+      o += `<rect x="${x0}" y="${Y(wm.high)}" width="${x1 - x0}" height="${Y(wm.low) - Y(wm.high)}" style="fill:var(--accent-soft)"/>`;
+      const hl = (v, c, t) => `<line x1="${x0}" x2="${x1}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(${c});stroke-width:1.5"/><text x="${x1 - 4}" y="${Y(v) - 3}" text-anchor="end" font-size="11" style="fill:var(${c});font-weight:700">${t} ${v.toFixed(0)} MiB</text>`;
+      o += hl(wm.high, "--ok", "high") + hl(wm.low, "--accent", "low") + hl(wm.min, "--bad", "min");
+      for (let k = 0; k <= 4; k++) { const v = ymax * k / 4; o += `<text x="${x0 - 5}" y="${Y(v) + 4}" text-anchor="end" font-size="10.5" class="muted">${Math.round(v)}</text>`; }
+      o += `<text x="${x0 - 5}" y="${y0 - 2}" text-anchor="end" font-size="10" class="muted">MiB</text>`;
+      // 상태 띠
+      const colors = { ok: "--ok", kswapd: "--accent", direct: "--bad", oom: "--violet" };
+      hist.forEach((h, i) => { if (i) { const xa = X(hist[i - 1].t), xb = X(h.t); o += `<rect x="${xa}" y="${y1 + 4}" width="${Math.max(0.6, xb - xa)}" height="7" style="fill:var(${colors[h.s]})"/>`; } });
+      o += `<text x="${x0}" y="236" font-size="11"><tspan style="fill:var(--ok)">■ 정상</tspan>  <tspan style="fill:var(--accent)">■ kswapd 회수 중</tspan>  <tspan style="fill:var(--bad)">■ direct reclaim(할당 지연)</tspan>  <tspan style="fill:var(--violet)">■ OOM kill</tspan></text>`;
+      const pts = hist.map(h => `${X(h.t).toFixed(1)},${Y(h.f).toFixed(1)}`).join(" ");
+      o += `<polyline points="${pts}" style="fill:none;stroke:var(--text);stroke-width:2"/>`;
+      svg.innerHTML = o;
+      const tot = MANAGED;
+      const seg = (v, bg, label) => `<div style="width:${(100 * Math.max(0, v) / tot).toFixed(2)}%;background:var(${bg})">${v / tot > 0.09 ? label + " " + Math.round(v) : ""}</div>`;
+      $("wmBar").innerHTML = seg(st.free, "--surface-2", "free") + seg(st.cache, "--ok-soft", "cache") + seg(st.anon, "--warn-soft", "anon");
+      const stName = { ok: "정상", kswapd: "kswapd 회수", direct: "direct reclaim", oom: "OOM kill!" };
+      $("wmSt").textContent = stName[st.state]; $("wmSt").className = "v " + (st.state === "ok" ? "c-ok" : st.state === "kswapd" ? "c-accent" : "c-bad");
+      $("wmSk").textContent = st.stats.wake; $("wmSs").textContent = st.stats.stallT.toFixed(1) + " s";
+      $("wmSo").textContent = mib(st.stats.swapout) + (st.swap > 0 ? ` (현재 ${mib(st.swap)})` : "");
+      $("wmSoom").textContent = st.stats.oom;
+    }
+    function tick() {
+      wmStep(st, p, DT);
+      st.events.forEach(e => {
+        if (e === "wake") addLog(`free ${st.free.toFixed(0)} MiB < low → kswapd 깨움`, "c-accent");
+        else if (e === "sleep") addLog("free ≥ high → kswapd 잠듦 (균형 회복)", "c-ok");
+        else if (e === "direct") addLog("할당 후 free < min → 할당 스레드가 직접 회수 (direct reclaim, 지연 발생)", "c-bad");
+        else if (e.startsWith("oom")) addLog(`회수할 페이지가 없음 → OOM killer: 가장 큰 프로세스 kill, 익명 ${e.split(":")[1]} MiB 해제`, "c-violet");
+      });
+      hist.push({ t: st.t, f: st.free, s: st.state });
+      while (hist.length && hist[0].t < st.t - WIN) hist.shift();
+      draw();
+    }
+    ["wmA", "wmF", "wmK", "wmM", "wmS", "wmSwap", "wmSw"].forEach(id => $(id).addEventListener("input", () => { readP(); draw(); }));
+    $("wmRun").onclick = () => { if (running) { clearInterval(timer); timer = null; running = false; $("wmRun").textContent = "▶ 재생"; } else { running = true; timer = timer || setInterval(tick, 100); $("wmRun").textContent = "⏸ 정지"; } };
+    $("wmFreeBtn").onclick = () => { const v = Math.min(500, st.anon); st.anon -= v; st.free += v; addLog(`프로세스 종료: 익명 ${v.toFixed(0)} MiB 해제`); draw(); };
+    $("wmReset").onclick = () => { st = wmNew(); hist = []; log.innerHTML = ""; draw(); };
+    readP(); hist.push({ t: 0, f: st.free, s: "ok" }); draw();
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { if (running && !timer) timer = setInterval(tick, 100); } else { clearInterval(timer); timer = null; } })).observe($("wmW"));
+    } else timer = setInterval(tick, 100);
+  })();
+
+  // ---------- LRU 위젯 ----------
+  (function () {
+    let st = lruNew();
+    const host = $("lruLists"), log = $("lruLog");
+    function opts() { return { sw: +$("lruSw").value, swapOn: $("lruSwap").checked }; }
+    function addLog(r) { if (r && r.msg) log.innerHTML = `<div class="${r.cls || ""}">${r.msg}</div>` + log.innerHTML; }
+    function pgBtn(p, extra) { return `<button class="pg ${p.type}${p.ref ? " ref" : ""}${extra || ""}" data-id="${p.id}" title="${p.id} 접근">${p.id}</button>`; }
+    function render(flashIds) {
+      const f = flashIds || [];
+      const row = (k, sub) => `<div class="lru-row"><div class="nm">${LRU_NAMES[k]}<small>${sub}</small></div><div class="lru-list"><span class="ends">머리</span>${st.L[k].map(p => pgBtn(p, f.includes(p.id) ? " flash" : "")).join("")}<span class="ends">꼬리 →</span></div></div>`;
+      host.innerHTML = row("aa", "작업 집합(익명)") + row("ia", "회수 후보(익명)") + row("af", "작업 집합(파일)") + row("if", "회수 후보(파일)") +
+        `<div class="lru-row"><div class="nm">회수됨<small>swap/섀도 엔트리</small></div><div class="lru-list">${st.ev.length ? st.ev.map(p => pgBtn(p, " gone") + `<span class="ends">${p.how}</span>`).join("") : '<span class="ends">없음</span>'}</div></div>`;
+      const o = opts(), sp = lruSplit(4, o.sw, o.swapOn);
+      $("lruSwv").textContent = o.sw;
+      $("lruSplit").textContent = `→ 회수 스캔 4페이지 중 file ${sp.file} / anon ${sp.anon}`;
+      $("lruSw").disabled = !o.swapOn;
+    }
+    host.addEventListener("click", e => { const b = e.target.closest(".pg"); if (!b) return; const r = lruAccess(st, b.dataset.id); addLog(r); render([r.id]); });
+    $("lruNewF").onclick = () => { const r = lruAdd(st, "file"); addLog(r); render([r.id]); };
+    $("lruNewA").onclick = () => { const r = lruAdd(st, "anon"); addLog(r); render([r.id]); };
+    $("lruDeact").onclick = () => { const o = opts(); const r1 = lruScanActive(st, "file"); addLog(r1); const ids = [r1.id]; if (o.swapOn) { const r2 = lruScanActive(st, "anon"); addLog(r2); ids.push(r2.id); } render(ids); };
+    $("lruReclaim").onclick = () => {
+      const o = opts();
+      const rs = lruReclaim(st, 4, o.sw, o.swapOn);
+      addLog({ msg: `── 회수 스캔 (swappiness ${o.sw}${o.swapOn ? "" : ", swap 없음 → anon 스캔 안 함"}) ──` });
+      rs.forEach(addLog); render(rs.map(r => r.id));
+    };
+    $("lruReset").onclick = () => { st = lruNew(); log.innerHTML = ""; render(); };
+    $("lruSw").addEventListener("input", () => render());
+    $("lruSwap").addEventListener("change", () => render());
+    addLog({ msg: "페이지를 눌러 접근하거나, 새 페이지를 만들고 회수 스캔을 실행해 보세요. inactive_file의 f4를 두 번 눌러 보는 것부터 시작해도 좋습니다." });
+    render();
+  })();
+
+  // ---------- OOM 계산기 ----------
+  (function () {
+    let procs = [
+      { name: "sshd", rssMiB: 8, swapMiB: 0, adj: -1000 },
+      { name: "java (API 서버)", rssMiB: 6144, swapMiB: 0, adj: 0 },
+      { name: "postgres 백엔드", rssMiB: 2048, swapMiB: 0, adj: 0 },
+      { name: "chrome 렌더러", rssMiB: 700, swapMiB: 0, adj: 300 },
+      { name: "BestEffort 파드", rssMiB: 300, swapMiB: 0, adj: 1000 },
+    ];
+    const body = $("oomBody");
+    const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+    function build() {
+      body.innerHTML = procs.map((p, i) => `<tr data-i="${i}">
+        <td><input type="text" data-f="name" value="${esc(p.name)}"></td>
+        <td><input type="number" data-f="rssMiB" value="${p.rssMiB}" min="0" step="64"></td>
+        <td><input type="number" data-f="swapMiB" value="${p.swapMiB}" min="0" step="64"></td>
+        <td><input type="number" data-f="adj" value="${p.adj}" min="-1000" max="1000" step="50"></td>
+        <td class="b" style="font-family:var(--mono)"></td><td class="s" style="font-family:var(--mono)"></td>
+        <td><button class="btn" data-del="${i}" title="삭제">✕</button></td></tr>`).join("");
+      calc();
+    }
+    function calc() {
+      const total = oomTotalPages(Math.max(1, +$("oomRam").value || 0), Math.max(0, +$("oomSwap").value || 0));
+      const v = oomVictim(procs, total);
+      [...body.rows].forEach((tr, i) => {
+        const b = oomBadness(procs[i], total);
+        tr.querySelector(".b").textContent = b === null ? "제외(−1000)" : b.toLocaleString();
+        tr.querySelector(".s").textContent = oomScoreShown(b, total);
+        tr.classList.toggle("victim", i === v);
+        tr.classList.toggle("immune", b === null);
+      });
+      $("oomVerdict").innerHTML = v < 0 ? "죽일 수 있는 프로세스가 없습니다 → 커널은 \"Out of memory and no killable processes\"로 패닉합니다."
+        : `희생자: <b>${esc(procs[v].name)}</b> (badness ${oomBadness(procs[v], total).toLocaleString()} 페이지, totalpages ${total.toLocaleString()}, adj 1당 ${Math.floor(total / 1000).toLocaleString()} 페이지 ≈ ${(Math.floor(total / 1000) / 256).toFixed(1)} MiB)`;
+    }
+    body.addEventListener("input", e => {
+      const f = e.target.dataset.f; if (!f) return;
+      const i = +e.target.closest("tr").dataset.i;
+      if (f === "name") procs[i].name = e.target.value;
+      else if (f === "adj") procs[i].adj = Math.max(-1000, Math.min(1000, Math.round(+e.target.value || 0)));
+      else procs[i][f] = Math.max(0, +e.target.value || 0);
+      calc();
+    });
+    body.addEventListener("click", e => { const d = e.target.dataset.del; if (d != null) { procs.splice(+d, 1); build(); } });
+    $("oomAdd").onclick = () => { procs.push({ name: "새 프로세스", rssMiB: 512, swapMiB: 0, adj: 0 }); build(); };
+    $("oomRam").addEventListener("input", calc); $("oomSwap").addEventListener("input", calc);
+    build();
+  })();
+
+  // ---------- cgroup 시뮬레이터 ----------
+  (function () {
+    const ids = ["cgMax", "cgHigh", "cgHighOn", "cgAnon", "cgFile", "cgSwap"];
+    function run() {
+      const c = { max: +$("cgMax").value, high: +$("cgHigh").value, highOn: $("cgHighOn").checked, anon: +$("cgAnon").value, file: +$("cgFile").value, swapMax: +$("cgSwap").value };
+      $("cgHigh").disabled = !c.highOn;
+      $("cgMaxv").textContent = mib(c.max); $("cgHighv").textContent = c.highOn ? mib(c.high) : "max (미설정)";
+      $("cgAnonv").textContent = mib(c.anon); $("cgFilev").textContent = mib(c.file); $("cgSwapv").textContent = c.swapMax ? mib(c.swapMax) : "0";
+      const r = cgEval(c);
+      const scale = Math.max(c.max, c.anon + c.file, 1) * 1.05;
+      const seg = (v, bg, label) => v > 0 ? `<div style="width:${(100 * v / scale).toFixed(2)}%;background:var(${bg})">${v / scale > 0.12 ? label : ""}</div>` : "";
+      const anonShown = Math.min(r.anonRAM, c.max), over = r.oom ? r.anonRAM - c.max : 0;
+      $("cgBar").innerHTML = seg(anonShown, "--warn-soft", "anon " + Math.round(anonShown)) + seg(r.fileRAM, "--ok-soft", "cache " + Math.round(r.fileRAM)) + seg(over, "--bad-soft", "초과 " + Math.round(over)) + seg(r.swapped, "--violet-soft", "swap " + Math.round(r.swapped));
+      const v = $("cgVerdict");
+      if (r.oom) { v.className = "verdict bg-bad"; v.innerHTML = "OOM: 회수할 수 없는 익명 메모리가 memory.max를 넘음 → cgroup 안에서 SIGKILL. 쿠버네티스 상태 OOMKilled, exit code 137"; }
+      else if (r.throttled) { v.className = "verdict bg-warn"; v.innerHTML = "스로틀: 익명 메모리가 memory.high를 넘었지만 max 아래 → 할당마다 회수 시도와 sleep. 죽지는 않지만 심하게 느려짐"; }
+      else if (r.fileReclaimed > 0 || r.swapped > 0) { v.className = "verdict bg-accent"; v.innerHTML = "정상 동작 + 회수: 한도에서 페이지 캐시" + (r.swapped > 0 ? "와 익명 메모리 일부(swap)" : "") + "를 내보내며 계속 실행. 캐시 미스로 I/O가 늘 수 있음"; }
+      else { v.className = "verdict bg-ok"; v.innerHTML = "여유: 모든 수요가 한도 안에 들어감"; }
+      const lines = [
+        `memory.current ≈ ${mib(r.current)} (anon ${mib(Math.min(r.anonRAM, c.max))} + file ${mib(r.fileRAM)})`,
+        `회수된 페이지 캐시: ${mib(r.fileReclaimed)}${r.swapped ? `, swap으로 나간 익명: ${mib(r.swapped)}` : ""}`,
+        `memory.events 증가: ${Object.entries(r.ev).filter(([, n]) => n).map(([k]) => k).join(", ") || "없음"}`,
+      ];
+      $("cgDetail").textContent = lines.join("\n");
+      $("cgK8s").textContent = `resources:\n  requests:\n    memory: "${Math.min(c.anon, c.max)}Mi"   # 스케줄링용 (cgroup 한도 아님)\n  limits:\n    memory: "${c.max}Mi"   # → memory.max = ${c.max * 1048576}` +
+        (c.highOn ? `\n# memory.high는 쿠버네티스가 기본으로 설정하지 않음\n# (MemoryQoS 알파 기능에서 limits 기반으로 설정)` : "");
+    }
+    ids.forEach(id => $(id).addEventListener("input", run));
+    run();
+  })();
+
+  // ---------- free -m 해부 ----------
+  (function () {
+    const base = memInit();
+    const scen = { init: base, tmpfs: memApply(base, "tmpfs"), drop: memApply(base, "drop"), anon: memApply(base, "anon") };
+    const scLabel = { init: "초기 상태", tmpfs: "tmpfs 2 GiB 쓰기 후", drop: "drop_caches 3 후", anon: "익명 3 GiB 할당 후" };
+    let cur = "init", sel = "buffcache";
+    const M = v => Math.round(v / 1024);
+    const exp = {
+      total: { f: "MemTotal", t: "커널이 관리하는 전체 RAM. 펌웨어 예약·커널 이미지 등을 뺀 값이라 장착 RAM보다 작다." },
+      used: { f: "MemTotal − MemFree − buff/cache (procps 구버전) 또는 MemTotal − MemAvailable (일부 신버전)", t: "\"애플리케이션이 쓰는 양\"을 근사하는 파생값. 버전마다 정의가 달라 비교에 주의. 여기서는 두 정의를 모두 보여 준다." },
+      free: { f: "MemFree", t: "어디에도 쓰이지 않는 페이지. Linux는 이 값을 작게 유지하는 것이 정상이다. 경보 기준으로 쓰면 안 된다." },
+      shared: { f: "Shmem", t: "tmpfs·/dev/shm·SysV/POSIX 공유 메모리·공유 익명 매핑. buff/cache에도 포함되지만 swap 없이는 회수되지 않는다." },
+      buffcache: { f: "Buffers + Cached + SReclaimable", t: "페이지 캐시 + 블록 장치 버퍼 + 회수 가능 slab. Cached 안에 Shmem이 들어 있어서 이 값 전부를 \"버릴 수 있는 캐시\"로 보면 틀린다." },
+      available: { f: "MemAvailable (커널 추정)", t: "swap 없이 새 작업에 줄 수 있는 양. MemFree + 회수 가능 파일 캐시 + 회수 가능 slab의 일부 − 워터마크 예비분. 실질적인 \"남은 메모리\"이며 경보는 이 값에 건다." },
+    };
+    function render() {
+      const m = scen[cur], c = freeCols(m), c0 = freeCols(base);
+      const d = (k, v) => { if (cur === "init") return ""; const dv = M(v) - M(c0[k]); return dv ? ` <span class="${dv > 0 ? "chg-up" : "chg-down"}">(${dv > 0 ? "+" : ""}${dv})</span>` : ""; };
+      const th = (k, t) => `<th><button data-k="${k}" class="${sel === k ? "sel" : ""}">${t}</button></th>`;
+      $("freeOut").innerHTML = `<div style="color:var(--muted);margin-bottom:4px">$ free -m    # ${scLabel[cur]}</div><table><tr><th></th>${th("total", "total")}${th("used", "used")}${th("free", "free")}${th("shared", "shared")}${th("buffcache", "buff/cache")}${th("available", "available")}</tr>
+        <tr><td style="text-align:left">Mem:</td><td>${M(c.total)}</td><td>${M(c.usedOld)}${d("usedOld", c.usedOld)}<br><small style="color:var(--muted)">또는 ${M(c.usedNew)}</small></td><td>${M(c.free)}${d("free", c.free)}</td><td>${M(c.shared)}${d("shared", c.shared)}</td><td>${M(c.buffcache)}${d("buffcache", c.buffcache)}</td><td>${M(c.available)}${d("available", c.available)}</td></tr>
+        <tr><td style="text-align:left">Swap:</td><td>0</td><td>0</td><td>0</td><td></td><td></td><td></td></tr></table>`;
+      const e = exp[sel];
+      const notes = {
+        init: "",
+        tmpfs: "<br><b>관찰:</b> shared와 buff/cache가 함께 늘었지만 available은 줄었다. tmpfs 데이터는 \"캐시처럼 보이는 회수 불가 메모리\"다. free가 부족한 만큼은 파일 캐시를 회수해 충당했다. 구버전 used 정의(total − free − buff/cache)로는 used가 <b>전혀 변하지 않는다</b>는 점도 눈여겨보자. 2 GiB가 실제로 점유되었는데도 그렇다.",
+        drop: "<br><b>관찰:</b> free가 크게 늘고 buff/cache가 줄었지만 <b>available은 거의 그대로</b>다. 원래 회수 가능했던 캐시를 미리 버렸을 뿐이다. Shmem과 매핑된 페이지는 남아 있다.",
+        anon: "<br><b>관찰:</b> 익명 할당은 free를 쓰고, 모자라면 커널이 파일 캐시를 회수해 충당한다. buff/cache가 줄고 available도 그만큼 줄었다.",
+      };
+      $("freeExp").innerHTML = `<b>${sel === "buffcache" ? "buff/cache" : sel}</b> = <code>${e.f}</code><br>${e.t}${notes[cur]}`;
+      const keys = ["MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached", "Shmem", "SReclaimable", "Mapped", "AnonPages"];
+      const vals = Object.assign({}, m, { MemAvailable: memAvailable(m) });
+      const v0 = Object.assign({}, base, { MemAvailable: memAvailable(base) });
+      $("freeMi").innerHTML = `<tr><th>/proc/meminfo</th>${keys.map(k => `<th>${k}</th>`).join("")}</tr><tr><td>kB</td>${keys.map(k => { const dv = vals[k] - v0[k]; return `<td style="font-family:var(--mono)">${vals[k].toLocaleString()}${cur !== "init" && dv ? `<br><span class="${dv > 0 ? "chg-up" : "chg-down"}">${dv > 0 ? "+" : ""}${dv.toLocaleString()}</span>` : ""}</td>`; }).join("")}</tr>`;
+    }
+    $("freeOut").addEventListener("click", e => { const b = e.target.closest("button[data-k]"); if (b) { sel = b.dataset.k; render(); } });
+    document.querySelectorAll("#freeW [data-sc]").forEach(b => b.onclick = () => {
+      cur = b.dataset.sc; document.querySelectorAll("#freeW [data-sc]").forEach(x => x.classList.toggle("primary", x === b)); render();
+    });
+    render();
+  })();
+})();
+</script>
+</body>
+</html>

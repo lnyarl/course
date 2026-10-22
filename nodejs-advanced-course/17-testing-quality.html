@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>테스트 전략과 품질</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .runs { display: grid; grid-template-columns: repeat(auto-fill, minmax(14px, 1fr)); gap: 3px; margin: 10px 0; }
+  .run { height: 14px; border-radius: 3px; background: var(--ok-soft); border: 1px solid var(--ok); }
+  .run.fail { background: var(--bad-soft); border-color: var(--bad); }
+  .cause-bar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; margin: 8px 0; background: var(--surface-2); }
+  .cause-bar > div { display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: var(--mono); white-space: nowrap; overflow: hidden; }
+  .tree-q { background: var(--surface-2); border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+  .tree-q .qt { font-weight: 700; margin-bottom: 8px; }
+  .tree-path { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .tree-path span { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 1px 8px; margin-right: 4px; }
+  .result { border: 2px solid var(--ok); border-radius: 10px; padding: 12px 16px; background: var(--ok-soft); }
+  .pyr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .pyr-grid { grid-template-columns: 1fr; } }
+  .pyr-row { display: grid; grid-template-columns: 80px 1fr 1fr 1fr; gap: 6px; align-items: center; font-size: 13px; margin: 4px 0; }
+  .pyr-row input { width: 100%; }
+  .hang-stage { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 700px) { .hang-stage { grid-template-columns: 1fr; } }
+  .hang-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface-2); min-height: 150px; font-size: 13.5px; }
+  .hang-box .t { font-weight: 700; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
+  .hang-box .item { padding: 3px 8px; border-radius: 6px; margin: 3px 0; background: var(--surface); border: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; }
+  .hang-box .item.on { border-color: var(--accent); background: var(--accent-soft); }
+  .hang-box .item.bad { border-color: var(--bad); background: var(--bad-soft); }
+  .hang-box .item.ok { border-color: var(--ok); background: var(--ok-soft); }
+</style>
+</head>
+<body data-chapter="17">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">운영 · Chapter 17</span>
+    <h1>테스트 전략과 품질 게이트</h1>
+    <p class="lead">테스트는 "코드가 맞다"를 증명하지 못합니다. 테스트가 하는 일은 <em>회귀를 싸게 잡는 것</em>이고, 그래서 테스트 전략의 핵심 질문은 "무엇을 어느 층에서 얼마의 비용으로 잡을 것인가"입니다. 이 장은 Node.js 내장 러너 <code>node:test</code>의 실행 모델부터 모킹 경계, 플래키 테스트의 원인 분류, 계약·성능 회귀 테스트, 그리고 CI 품질 게이트의 순서까지 다룹니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li><code>node:test</code>의 프로세스·동시성 모델을 알고, 파일 병렬/테스트 직렬 규칙이 격리와 속도에 미치는 영향을 설명할 수 있다.</li>
+      <li>의존성 주입, 모듈 모킹, 네트워크 인터셉트, 가짜 시계 중 어떤 모킹 기법을 어느 경계에 쓸지 결정할 수 있다.</li>
+      <li>플래키 테스트를 타이밍·순서·공유 상태·포트·외부 의존 다섯 가지 원인으로 분류하고 재현·수정할 수 있다.</li>
+      <li>계약 테스트와 성능 회귀 테스트를 CI에 넣을 때의 변동성 문제를 다룰 수 있고, 품질 게이트의 순서를 비용 기준으로 설계할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">테스트는 무엇을 사는가: 피라미드와 트로피</a></li>
+    <li><a href="#s2">node:test의 실행 모델</a></li>
+    <li><a href="#s3">모킹 경계: 무엇을 어디서 가짜로 만들 것인가</a></li>
+    <li><a href="#s4">비동기 테스트 함정과 러너 행(hang)</a></li>
+    <li><a href="#s5">플래키 테스트의 다섯 원인</a></li>
+    <li><a href="#s6">통합 테스트와 계약 테스트</a></li>
+    <li><a href="#s7">성능 회귀 테스트</a></li>
+    <li><a href="#s8">품질 게이트 설계</a></li>
+    <li><a href="#s9">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 테스트는 무엇을 사는가: 피라미드와 트로피</h2>
+    <p>테스트 한 개의 가치는 <b>잡아내는 결함의 기대값 − (작성 비용 + 실행 비용 × 실행 횟수 + 유지보수 비용)</b>입니다. 단위 테스트는 실행이 ms 단위라 수천 번 돌려도 싸지만, 모듈 경계 바깥의 결함(잘못된 SQL, 직렬화 불일치, 타임아웃 설정)은 못 잡습니다. E2E는 그런 결함을 잡지만 느리고, 깨지는 이유가 결함이 아닌 경우(환경, 타이밍)가 많아 신호 대 잡음비가 낮습니다.</p>
+    <p>"피라미드"(단위 다수, 통합 소수, E2E 극소수)는 2009년의 비용 구조를 반영합니다. 당시 통합 테스트는 실제 DB를 띄우기 어려워 비쌌습니다. 컨테이너로 DB를 초 단위로 띄우고, HTTP 인터셉트로 외부 API를 결정적으로 만들 수 있는 지금은 "트로피"(통합 테스트가 가장 두꺼운 형태)가 Node.js 백엔드에 더 맞는 경우가 많습니다. 백엔드 결함의 대부분이 <em>모듈 사이</em>에서 나기 때문입니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="테스트 피라미드와 트로피">
+        <g>
+          <text x="200" y="24" text-anchor="middle" font-weight="700">피라미드 (2009)</text>
+          <polygon points="200,50 120,160 280,160" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+          <text x="200" y="130" text-anchor="middle" font-size="12">E2E 소수</text>
+          <polygon points="110,170 290,170 330,230 70,230" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+          <text x="200" y="205" text-anchor="middle" font-size="12">통합 일부</text>
+          <polygon points="60,240 340,240 370,290 30,290" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="200" y="270" text-anchor="middle" font-size="12">단위 다수 (빠르고 싸다)</text>
+        </g>
+        <g>
+          <text x="640" y="24" text-anchor="middle" font-weight="700">트로피 (컨테이너·인터셉트 시대)</text>
+          <polygon points="640,50 600,110 680,110" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+          <text x="640" y="95" text-anchor="middle" font-size="12">E2E</text>
+          <polygon points="500,120 780,120 760,220 520,220" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+          <text x="640" y="160" text-anchor="middle" font-size="12">통합 (실제 DB + 네트워크 인터셉트)</text>
+          <text x="640" y="180" text-anchor="middle" font-size="11" class="muted">모듈 사이의 결함을 잡는다</text>
+          <polygon points="570,230 710,230 700,270 580,270" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="640" y="255" text-anchor="middle" font-size="12">단위 (순수 로직)</text>
+          <rect x="540" y="280" width="200" height="16" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="640" y="292" text-anchor="middle" font-size="10">정적 검사 (lint · 타입)</text>
+        </g>
+      </svg>
+      <figcaption>모양은 "결함이 어디서 나는가"와 "그 층의 테스트가 얼마나 싸졌는가"로 결정됩니다. 정답 모양은 없고, 팀의 결함 분포에 맞춰야 합니다.</figcaption>
+    </figure>
+
+    <div class="widget">
+      <div class="w-title">테스트 포트폴리오 계산기</div>
+      <div class="w-desc">각 층의 테스트 수, 평균 실행 시간, 그 층이 잡을 수 있는 결함 비율(해당 층 테스트가 존재할 때 잡히는 결함 종류의 비율)을 넣으면 총 실행 시간과 기대 탐지율을 계산합니다. 결함 분포는 백엔드 서비스의 전형적 값(로직 30% / 경계 55% / 흐름 15%)을 기본으로 둡니다.</div>
+      <div class="pyr-grid">
+        <div>
+          <div class="pyr-row" style="font-weight:700;color:var(--muted);font-size:12px"><span></span><span>개수</span><span>평균 ms</span><span>층 탐지율 %</span></div>
+          <div class="pyr-row"><span>단위</span><input type="number" id="py-u-n" value="800"><input type="number" id="py-u-t" value="3"><input type="number" id="py-u-d" value="90"></div>
+          <div class="pyr-row"><span>통합</span><input type="number" id="py-i-n" value="150"><input type="number" id="py-i-t" value="120"><input type="number" id="py-i-d" value="80"></div>
+          <div class="pyr-row"><span>E2E</span><input type="number" id="py-e-n" value="20"><input type="number" id="py-e-t" value="4000"><input type="number" id="py-e-d" value="60"></div>
+          <div class="controls" style="margin-top:10px">
+            <label>병렬 워커 <input type="number" id="py-w" value="4" min="1" max="64" style="width:64px"></label>
+            <label>결함 분포 로직/경계/흐름 <input type="text" id="py-dist" value="30/55/15" style="width:90px"></label>
+          </div>
+        </div>
+        <div>
+          <div class="stat-row">
+            <div class="stat"><div class="k">직렬 총 시간</div><div class="v" id="py-serial">-</div></div>
+            <div class="stat"><div class="k">병렬 시간(이상적)</div><div class="v" id="py-par">-</div></div>
+            <div class="stat"><div class="k">기대 결함 탐지율</div><div class="v" id="py-det">-</div></div>
+          </div>
+          <div id="py-bars"></div>
+          <div class="callout tip" style="margin:8px 0 0;font-size:13.5px" id="py-advice"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2>2. node:test의 실행 모델</h2>
+    <p>Node 20부터 안정화된 내장 러너는 Jest/Mocha와 다른 실행 모델을 가집니다. 이 모델을 모르면 "왜 전역 설정이 안 먹지", "왜 테스트가 끝나도 프로세스가 안 죽지"가 설명되지 않습니다.</p>
+<pre><code>$ node --test                     # 기본 패턴: **/*.test.{js,mjs,cjs}, **/*-test.*, **/*_test.*,
+                                  #            **/test-*.*, **/test.*, **/test/**/*.{js,mjs,cjs}
+$ node --test tests/unit/         # 디렉터리 지정
+$ node --test --watch             # 변경 감지 재실행
+$ node --test --test-concurrency=4            # 동시에 실행할 파일 수 (기본: os.availableParallelism() - 1)
+$ node --test --test-name-pattern="결제"      # 이름으로 필터
+$ node --test --test-reporter=spec --test-reporter-destination=stdout \
+              --test-reporter=junit --test-reporter-destination=report.xml   # 리포터 다중 지정
+$ node --test --test-timeout=10000            # 테스트당 타임아웃 (기본 무한)
+$ node --test --test-force-exit               # 완료 후 남은 핸들 무시하고 종료</code></pre>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="node:test 프로세스 모델">
+        <defs><marker id="a17" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="110" width="170" height="80" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="105" y="140" text-anchor="middle" font-weight="700">러너 (부모 프로세스)</text>
+        <text x="105" y="160" text-anchor="middle" font-size="11.5" class="muted">파일 탐색 · 스케줄 · 리포터</text>
+        <text x="105" y="176" text-anchor="middle" font-size="11.5" class="muted">--test-concurrency 만큼 동시</text>
+        <g>
+          <rect x="260" y="20" width="200" height="70" rx="8" class="box"/><text x="360" y="45" text-anchor="middle" font-size="12.5">자식 프로세스: a.test.js</text>
+          <rect x="275" y="55" width="50" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="300" y="70" text-anchor="middle" font-size="10">t1</text>
+          <rect x="330" y="55" width="50" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="355" y="70" text-anchor="middle" font-size="10">t2</text>
+          <rect x="385" y="55" width="50" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="410" y="70" text-anchor="middle" font-size="10">t3</text>
+          <rect x="260" y="115" width="200" height="70" rx="8" class="box"/><text x="360" y="140" text-anchor="middle" font-size="12.5">자식 프로세스: b.test.js</text>
+          <rect x="275" y="150" width="50" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="300" y="165" text-anchor="middle" font-size="10">t1</text>
+          <rect x="330" y="150" width="50" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="355" y="165" text-anchor="middle" font-size="10">t2</text>
+          <rect x="260" y="210" width="200" height="70" rx="8" class="box"/><text x="360" y="235" text-anchor="middle" font-size="12.5">자식 프로세스: c.test.js</text>
+          <rect x="275" y="245" width="50" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="300" y="260" text-anchor="middle" font-size="10">t1</text>
+        </g>
+        <path d="M190 150 L260 55" class="line" marker-end="url(#a17)"/>
+        <path d="M190 150 L260 150" class="line" marker-end="url(#a17)"/>
+        <path d="M190 150 L260 245" class="line" marker-end="url(#a17)"/>
+        <text x="620" y="50" font-size="13" font-weight="700">파일 사이: 병렬 · 프로세스 격리</text>
+        <text x="620" y="70" font-size="12" class="muted">전역 변수·모듈 캐시·환경이 분리됨</text>
+        <text x="620" y="90" font-size="12" class="muted">포트·파일·DB는 공유됨 (OS 자원!)</text>
+        <text x="620" y="130" font-size="13" font-weight="700">파일 안: 직렬 (기본)</text>
+        <text x="620" y="150" font-size="12" class="muted">describe/test에 { concurrency: N }을</text>
+        <text x="620" y="168" font-size="12" class="muted">주면 그 안에서만 동시 실행</text>
+        <text x="620" y="208" font-size="13" font-weight="700">--test-isolation=none (22.8+)</text>
+        <text x="620" y="228" font-size="12" class="muted">모든 파일을 러너 프로세스 하나에서 실행.</text>
+        <text x="620" y="246" font-size="12" class="muted">빠르지만 전역 상태가 새어 나간다.</text>
+        <text x="620" y="264" font-size="12" class="muted">전역 setup/teardown은 이 모드에서 가능</text>
+      </svg>
+      <figcaption>기본 모드에서 테스트 파일은 각자 다른 프로세스입니다. 메모리는 격리되지만 OS 자원(포트, 파일, DB 행)은 격리되지 않습니다.</figcaption>
+    </figure>
+
+    <h3>2.1 파일 안에서의 구조와 수명주기</h3>
+<pre><code>import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+
+describe('OrderService', { concurrency: 1 }, () =&gt; {
+  let db;
+  before(async () =&gt; { db = await connect(); });        // describe 단위 1회
+  after(async () =&gt; { await db.close(); });             // 반드시 정리 → 안 하면 프로세스가 안 끝난다
+  beforeEach(async () =&gt; { await db.query('BEGIN'); });
+  afterEach(async () =&gt; { await db.query('ROLLBACK'); }); // 트랜잭션 롤백으로 격리
+
+  test('총액은 수량×단가의 합', async (t) =&gt; {
+    t.diagnostic('fixture: 3 items');                   // 리포터에 메모
+    const svc = new OrderService(db);
+    assert.equal(await svc.total(orderId), 12_000);
+  });
+
+  test('재고 부족이면 거부', { skip: process.env.CI === 'true' &amp;&amp; 'CI에서는 외부 재고 API 없음' }, async () =&gt; {
+    await assert.rejects(() =&gt; svc.place(order), { code: 'OUT_OF_STOCK' });
+  });
+
+  test.todo('부분 환불');                                // 리포트에 TODO로 표시
+});</code></pre>
+    <ul>
+      <li><b>서브테스트</b>: <code>test('부모', async (t) =&gt; { await t.test('자식', ...) })</code>. 자식을 <code>await</code>하지 않으면 부모가 먼저 끝나 "test did not finish before its parent" 에러가 납니다(4절).</li>
+      <li><b><code>t.plan(n)</code></b>(22.2+): 이 테스트가 정확히 n개의 단언/서브테스트를 수행해야 함을 선언. 콜백 안의 단언이 실행조차 안 되는 "조용한 통과"를 잡습니다.</li>
+      <li><b>only</b>: <code>test('x', { only: true })</code> + <code>--test-only</code>. 플래그 없이 <code>only</code>만 붙이면 무시됩니다(실수로 커밋돼도 CI가 전체를 돌리게 하는 설계).</li>
+    </ul>
+
+    <h3>2.2 리포터와 커버리지</h3>
+    <p>리포터는 <code>spec</code>(TTY 기본), <code>tap</code>(비TTY 기본), <code>dot</code>, <code>junit</code>, <code>lcov</code>가 내장이며 <code>--test-reporter=./my-reporter.mjs</code>로 커스텀 가능합니다(이벤트 스트림을 받는 async generator 또는 Transform). 커버리지는 V8의 내장 커버리지(<code>NODE_V8_COVERAGE</code>와 같은 메커니즘)를 쓰므로 계측 도구가 필요 없고 소스를 변형하지 않습니다.</p>
+<pre><code>$ node --test --experimental-test-coverage \
+    --test-coverage-include='src/**' --test-coverage-exclude='src/**/*.test.js' \
+    --test-coverage-lines=80 --test-coverage-branches=70      # 임계치 미달 시 실패 (22.x 기준 플래그명)</code></pre>
+    <div class="callout warn"><span class="title">버전 주의</span> 커버리지 기능은 Node 22 문서에서도 실험(Stability 1)으로 표기되어 있습니다. 플래그 이름이 마이너 버전에서 바뀐 적이 있으니(<code>--test-coverage-include</code>는 22.5 무렵 추가) 사용하는 정확한 버전의 문서로 확인하세요. 모듈 모킹(<code>mock.module</code>, 22.3+ <code>--experimental-test-module-mocks</code>)과 스냅샷(<code>t.assert.snapshot</code>, 22.3+ <code>--experimental-test-snapshots</code>)도 같은 처지입니다.</div>
+  </section>
+
+  <section id="s3">
+    <h2>3. 모킹 경계: 무엇을 어디서 가짜로 만들 것인가</h2>
+    <p>모킹의 목적은 두 가지뿐입니다. <b>결정성</b>(시간·랜덤·네트워크를 고정) 과 <b>속도/격리</b>(비싼 외부 자원 제거). 그 외의 모킹, 특히 "내 코드의 다른 모듈"을 모킹하는 것은 테스트를 구현에 결합시켜 리팩터링 때마다 테스트가 깨지게 만듭니다. 경계는 <em>내 프로세스가 통제하지 못하는 것</em>에 그어야 합니다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>대상</th><th>권장 기법</th><th>이유</th></tr>
+      <tr><td>시간 (<code>Date</code>, 타이머)</td><td><code>t.mock.timers.enable({ apis: ['setTimeout','Date'] })</code></td><td>실제 대기 없이 <code>tick()</code>으로 전진. 타임아웃·재시도 로직을 ms 단위로 검증</td></tr>
+      <tr><td>랜덤 (<code>Math.random</code>, <code>crypto.randomUUID</code>)</td><td><code>t.mock.method(Math, 'random', () =&gt; 0.42)</code> 또는 주입된 RNG</td><td>시드 고정. 속성 기반 테스트는 시드를 로그에 남겨 재현</td></tr>
+      <tr><td>외부 HTTP</td><td>undici <code>MockAgent</code> / msw</td><td>fetch·undici 레벨에서 가로채므로 코드 변경 없음. 요청 내용까지 검증 가능</td></tr>
+      <tr><td>DB</td><td><b>모킹하지 않음.</b> 실제 DB(컨테이너) + 트랜잭션 롤백</td><td>SQL·제약·직렬화 결함이 가장 흔한 결함. 모킹하면 그 층을 통째로 못 봄</td></tr>
+      <tr><td>내 코드의 협력 객체</td><td>생성자/팩토리 의존성 주입</td><td>모듈 모킹보다 명시적. ESM에서는 모듈 모킹이 원래 어렵다(라이브 바인딩)</td></tr>
+      <tr><td>어쩔 수 없는 모듈 경계</td><td><code>t.mock.module()</code> (22.3+, 실험)</td><td>서드파티 SDK처럼 주입 지점이 없을 때의 최후 수단</td></tr>
+      <tr><td>메시지 큐·캐시</td><td>인메모리 구현체(같은 인터페이스) 또는 컨테이너</td><td>인터페이스 계약이 있으면 가짜 구현을 바꿔 끼우기 쉽다</td></tr>
+    </table></div>
+
+<pre><code>import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { MockAgent, setGlobalDispatcher } from 'undici';
+
+test('재시도: 503 두 번 뒤 성공', async (t) =&gt; {
+  t.mock.timers.enable({ apis: ['setTimeout'] });            // 백오프 대기를 가짜 시계로
+  const agent = new MockAgent(); agent.disableNetConnect();  // 실제 네트워크 차단 → 빠진 모킹이 즉시 드러남
+  setGlobalDispatcher(agent);
+  const pool = agent.get('https://api.example.com');
+  pool.intercept({ path: '/v1/items' }).reply(503, {}).times(2);
+  pool.intercept({ path: '/v1/items' }).reply(200, { ok: true });
+
+  const p = fetchWithRetry('https://api.example.com/v1/items', { retries: 3, baseMs: 100 });
+  t.mock.timers.tick(100);      // 1차 백오프
+  t.mock.timers.tick(200);      // 2차 백오프 (지수)
+  assert.deepEqual(await p, { ok: true });
+  agent.assertNoPendingInterceptors();
+});</code></pre>
+
+    <div class="widget">
+      <div class="w-title">모킹 경계 결정 트리</div>
+      <div class="w-desc">테스트하려는 코드가 의존하는 것 하나를 떠올리고 질문에 답하세요. 권장 기법과 그 이유, 그리고 피해야 할 선택을 알려 줍니다.</div>
+      <div id="tree"></div>
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. 비동기 테스트 함정과 러너 행(hang)</h2>
+    <p>Node.js 테스트의 실패 모드 중 가장 시간을 잡아먹는 것은 "실패"가 아니라 <b>"끝나지 않음"</b>입니다. 러너는 테스트 함수가 반환한 Promise를 기다리고, 테스트가 모두 끝난 뒤에는 프로세스가 자연 종료되기를 기다립니다(2장의 <code>uv__loop_alive</code>). 어느 한 쪽이 영원히 기다리면 CI는 타임아웃까지 멈춥니다.</p>
+
+    <div class="widget">
+      <div class="w-title">러너가 멈추는 네 가지 방식</div>
+      <div class="w-desc">각 시나리오에서 러너·테스트 함수·이벤트 루프 핸들의 상태가 어떻게 흘러가는지 단계별로 봅니다.</div>
+      <div class="controls">
+        <label>시나리오 <select id="hang-sel">
+          <option value="0">await 누락 → 조용한 통과</option>
+          <option value="1">미해결 Promise → 테스트 영원히 대기</option>
+          <option value="2">서버/타이머 미정리 → 테스트는 끝나도 프로세스 안 죽음</option>
+          <option value="3">서브테스트 await 누락 → 부모 먼저 종료 에러</option>
+        </select></label>
+      </div>
+      <pre id="hang-code" style="font-size:12.5px"></pre>
+      <div class="hang-stage">
+        <div class="hang-box"><div class="t">러너 / 테스트 상태</div><div id="hang-runner"></div></div>
+        <div class="hang-box"><div class="t">이벤트 루프 활성 핸들 (getActiveResourcesInfo)</div><div id="hang-handles"></div></div>
+      </div>
+      <div id="hang-step"></div>
+    </div>
+
+    <h3>대응 규칙</h3>
+    <ul class="checklist">
+      <li>테스트 함수는 <b>항상 async</b>이거나 Promise를 반환한다. 콜백 스타일 API는 <code>util.promisify</code> 또는 <code>events.once</code>로 감싼다.</li>
+      <li><code>--test-timeout</code>을 CI에서 반드시 설정한다(기본은 무한). 로컬 개발의 디버깅을 위해 로컬에서는 끈다.</li>
+      <li>열었으면 닫는다: 서버 <code>close()</code>, DB 풀 <code>end()</code>, 인터벌 <code>clearInterval</code>, 워커 <code>terminate()</code>. <code>t.after()</code>에 등록하면 실패해도 실행된다.</li>
+      <li>그래도 안 끝나면 <code>--test-force-exit</code>이 아니라 원인을 찾는다: <code>process.getActiveResourcesInfo()</code>를 <code>after</code>에서 출력하거나 <code>why-is-node-running</code> 류 도구.</li>
+      <li>단언이 실행됐는지 확신이 없으면 <code>t.plan(n)</code>(22.2+) 또는 <code>assert.rejects</code>처럼 Promise를 반환하는 단언을 <code>await</code>한다.</li>
+    </ul>
+  </section>
+
+  <section id="s5">
+    <h2>5. 플래키 테스트의 다섯 원인</h2>
+    <p>플래키(간헐 실패) 테스트는 재시도로 덮는 순간 테스트 스위트 전체의 신뢰가 무너집니다. 원인은 거의 예외 없이 아래 다섯 범주에 들어가며, 범주별로 재현 방법이 다릅니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>원인</th><th>증상</th><th>재현</th><th>수정</th></tr>
+      <tr><td><b>타이밍 의존</b></td><td>느린 CI에서만 실패. <code>setTimeout(…, 50)</code>으로 "기다렸다가" 확인</td><td>CPU 부하 걸고 실행(<code>stress</code>), 워커 수 늘리기</td><td>이벤트/Promise를 await. 가짜 시계</td></tr>
+      <tr><td><b>순서 의존</b></td><td>단독 실행은 통과, 전체 실행은 실패(또는 반대)</td><td>테스트 순서 섞기, 해당 테스트만 실행</td><td>beforeEach에서 상태 초기화. 모듈 레벨 싱글턴 제거</td></tr>
+      <tr><td><b>공유 상태</b></td><td>병렬 실행에서만 실패. 같은 DB 행/파일/환경 변수</td><td><code>--test-concurrency</code> 올리기</td><td>테스트별 고유 키(uuid), 트랜잭션 롤백, 임시 디렉터리</td></tr>
+      <tr><td><b>포트 충돌</b></td><td><code>EADDRINUSE</code>, 또는 다른 테스트의 서버에 연결</td><td>같은 파일을 두 프로세스로 동시 실행</td><td><code>listen(0)</code>으로 OS가 포트를 주게 하고 <code>server.address().port</code> 사용</td></tr>
+      <tr><td><b>외부 의존</b></td><td>네트워크·시간대·로케일·DNS에 따라 실패</td><td>네트워크 끊고 실행, <code>TZ=UTC</code> vs 다른 TZ</td><td><code>disableNetConnect()</code>, TZ·LANG 고정, 날짜는 주입</td></tr>
+    </table></div>
+
+    <div class="widget">
+      <div class="w-title">플래키 테스트 시뮬레이터</div>
+      <div class="w-desc">20개의 테스트를 N개 워커로 M회 실행합니다. 원인을 켜고 끄며 실패율이 어떻게 변하는지, 그리고 각 원인이 실패에 얼마나 기여하는지 봅니다. (시드 고정 의사난수라 같은 설정은 같은 결과를 냅니다.)</div>
+      <div class="controls">
+        <label><input type="checkbox" id="fl-port" checked> 고정 포트 3000 사용 (테스트 4개)</label>
+        <label><input type="checkbox" id="fl-global" checked> 전역 상태 의존 (테스트 3개, 순서 의존)</label>
+        <label><input type="checkbox" id="fl-timing" checked> setTimeout(50) 대기 후 검증 (테스트 5개)</label>
+        <label><input type="checkbox" id="fl-ext"> 외부 API 실제 호출 (테스트 2개)</label>
+      </div>
+      <div class="controls">
+        <label>워커 수 <input type="range" id="fl-w" min="1" max="8" value="1"> <span id="fl-w-v">1</span></label>
+        <label>순서 섞기 <input type="checkbox" id="fl-shuffle"></label>
+        <label>실행 횟수 <input type="range" id="fl-runs" min="20" max="200" step="20" value="100"> <span id="fl-runs-v">100</span></label>
+        <label>CI 부하 <input type="range" id="fl-load" min="0" max="100" step="10" value="30"> <span id="fl-load-v">30%</span></label>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">실행 실패율</div><div class="v" id="fl-rate">-</div></div>
+        <div class="stat"><div class="k">실패한 실행 수</div><div class="v" id="fl-fails">-</div></div>
+        <div class="stat"><div class="k">3회 재시도 후 통과율</div><div class="v" id="fl-retry">-</div></div>
+      </div>
+      <div class="runs" id="fl-runs-grid"></div>
+      <div class="tl-lbl" style="font-size:12px;color:var(--muted)">실패 원인 기여도</div>
+      <div class="cause-bar" id="fl-cause"></div>
+      <div class="callout" id="fl-note" style="margin-bottom:0;font-size:13.5px"></div>
+    </div>
+
+    <details class="deep"><summary>시뮬레이터 모델 (어떤 규칙으로 실패를 만드나)</summary><div>
+      <ul>
+        <li><b>포트</b>: 고정 포트 테스트 두 개가 서로 다른 워커에서 시간이 겹치면 늦게 시작한 쪽이 <code>EADDRINUSE</code>. 워커 1개면 절대 안 난다.</li>
+        <li><b>전역 상태</b>: 테스트 G1이 전역 카운터를 올리고, G2·G3는 "카운터가 0"을 가정. 파일 순서상 G2, G3, G1 순이라 섞지 않으면 통과하고, 순서를 섞어 G1이 같은 워커에서 먼저 오면 실패. (프로세스 격리라 다른 워커에는 영향 없음)</li>
+        <li><b>타이밍</b>: 50ms 뒤 검증. 실제 완료 시간은 부하에 비례해 늘어나며, 부하 × 워커 수 / 코어 수가 임계치를 넘는 확률만큼 실패.</li>
+        <li><b>외부 API</b>: 호출당 1.5% 확률로 네트워크 오류. 워커와 무관.</li>
+        <li><b>3회 재시도 후 통과율</b>: 재시도로 숨겨지는 비율. 이 숫자가 높을수록 "재시도가 문제를 감추고 있다"는 뜻.</li>
+      </ul>
+    </div></details>
+  </section>
+
+  <section id="s6">
+    <h2>6. 통합 테스트와 계약 테스트</h2>
+    <h3>6.1 실제 DB를 쓰는 통합 테스트</h3>
+    <p>DB를 모킹하면 가장 흔한 결함(잘못된 JOIN, 제약 위반, 타입 캐스팅, 트랜잭션 격리)을 전부 놓칩니다. 컨테이너(testcontainers 류 라이브러리 또는 <code>docker compose</code>)로 실제 DB를 띄우고, <b>격리는 트랜잭션 롤백</b>으로, <b>속도는 스키마 1회 생성 + 테스트별 고유 키</b>로 확보합니다.</p>
+<pre><code>// 전역 1회: 컨테이너 기동 (--test-isolation=none 이거나, 파일별이라면 재사용 가능한 외부 컨테이너)
+// 파일별 before: 풀 연결. beforeEach: BEGIN. afterEach: ROLLBACK.
+// 주의: 트랜잭션 안에서 커밋되는 로직(별도 커넥션, 외부 큐 발행)은 롤백으로 못 되돌린다 → 이런 테스트는 고유 키 + 명시적 삭제
+beforeEach(async (t) =&gt; {
+  const client = await pool.connect();
+  await client.query('BEGIN');
+  t.ctx = { client, tenant: `t_${randomUUID()}` };   // 테스트 간 충돌 없는 테넌트 키
+});
+afterEach(async (t) =&gt; { await t.ctx.client.query('ROLLBACK'); t.ctx.client.release(); });</code></pre>
+    <div class="callout warn"><span class="title">파일 병렬 × 공유 DB</span> 2절에서 본 대로 파일은 병렬로 돕니다. 같은 DB를 쓰면 트랜잭션끼리는 격리되지만, 유니크 제약이 걸린 고정 값(이메일 <code>test@example.com</code>)을 두 파일이 동시에 넣으면 한쪽이 블록되거나 데드락이 납니다. 고정 값 대신 생성된 값을 쓰거나, 파일마다 스키마(<code>search_path</code>)를 분리하세요.</div>
+
+    <h3>6.2 계약 테스트</h3>
+    <p>서비스 A가 서비스 B의 API를 호출할 때, A의 테스트는 B를 모킹하고 B의 테스트는 자기 API만 검증합니다. 둘 다 통과해도 <b>A가 기대하는 응답과 B가 실제로 주는 응답이 다를 수 있습니다</b>. 계약 테스트는 이 틈을 메웁니다.</p>
+    <ul>
+      <li><b>소비자 주도(Pact 방식)</b>: A가 "나는 이런 요청을 보내고 이런 응답을 기대한다"를 계약 파일로 기록 → B의 CI가 그 계약을 자기 서버에 재생해 검증. 양쪽 배포 전에 "이 버전 조합이 호환되는가"를 브로커가 답합니다.</li>
+      <li><b>스키마 기반(OpenAPI)</b>: B가 OpenAPI 명세를 공개 → A의 모킹 응답과 B의 실제 응답을 모두 명세로 검증. Pact보다 가볍지만 "A가 실제로 쓰는 필드"까지는 보장하지 않습니다.</li>
+      <li>둘 다 <b>직렬화 수준</b>(날짜 포맷, null vs 누락, 숫자 정밀도)을 잡는 것이 핵심입니다. TypeScript 타입 공유는 컴파일 타임 보장일 뿐 런타임 직렬화는 못 봅니다.</li>
+    </ul>
+  </section>
+
+  <section id="s7">
+    <h2>7. 성능 회귀 테스트</h2>
+    <p>"이 PR이 p99를 20% 올렸다"를 머지 전에 알고 싶다면 벤치마크를 CI에 넣어야 하는데, 문제는 <b>CI 러너의 변동성이 보통 회귀 크기보다 큽니다</b>(공유 머신, 터보 부스트, 노이즈 네이버). 다루는 원칙:</p>
+    <ol>
+      <li><b>절대값이 아니라 같은 러너에서의 상대값</b>: 기준 브랜치와 PR 브랜치를 같은 잡에서 번갈아(ABAB) 측정하고 비율을 본다.</li>
+      <li><b>중앙값·최소값</b>을 쓰고 평균은 버린다. 10장의 벤치마크 함정(워밍업, GC, deopt)을 그대로 적용.</li>
+      <li><b>임계치보다 추세</b>: 한 번의 5% 변화는 노이즈일 수 있지만, 5커밋 연속 상승은 회귀다. 결과를 시계열로 저장해 그래프로 본다.</li>
+      <li><b>마이크로벤치보다 시나리오 벤치</b>: 함수 하나의 ns는 전체 요청 지연과 상관이 약하다. <code>autocannon</code>으로 실제 엔드포인트를 때리고 p50/p99/처리량을 기록.</li>
+      <li>신뢰 구간이 겹치면 "변화 없음"으로 판정하고, 겹치지 않을 때만 사람에게 알린다. 경보 피로를 막는 것이 지속의 조건.</li>
+    </ol>
+<pre><code>// 간단한 상대 비교 스크립트의 골격 (CI 잡 안에서 실행)
+import { spawnSync } from 'node:child_process';
+const run = (ref) =&gt; JSON.parse(spawnSync('node', ['bench/scenario.mjs', '--ref', ref], { encoding: 'utf8' }).stdout);
+const samples = { base: [], pr: [] };
+for (let i = 0; i &lt; 5; i++) { samples.base.push(run('main').p99); samples.pr.push(run('HEAD').p99); }  // ABAB 교차
+const med = a =&gt; a.toSorted((x, y) =&gt; x - y)[Math.floor(a.length / 2)];
+const ratio = med(samples.pr) / med(samples.base);
+console.log(`p99 ratio ${ratio.toFixed(3)}`);
+if (ratio &gt; 1.15) process.exitCode = 1;   // 15%는 노이즈 상한을 측정해 정한 값이어야 한다</code></pre>
+  </section>
+
+  <section id="s8">
+    <h2>8. 품질 게이트 설계</h2>
+    <p>게이트는 <b>싼 것부터, 실패 확률이 높은 것부터</b> 배치합니다. 10분짜리 E2E 뒤에 10초짜리 lint 실패를 보는 것은 10분 낭비입니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 170" role="img" aria-label="품질 게이트 순서">
+        <defs><marker id="a17b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <g>
+          <rect x="10" y="40" width="120" height="60" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="70" y="65" text-anchor="middle" font-size="12.5" font-weight="700">lint · format</text><text x="70" y="85" text-anchor="middle" font-size="11" class="muted">~10s</text>
+          <rect x="150" y="40" width="120" height="60" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="210" y="65" text-anchor="middle" font-size="12.5" font-weight="700">타입 검사</text><text x="210" y="85" text-anchor="middle" font-size="11" class="muted">~30s</text>
+          <rect x="290" y="40" width="120" height="60" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="350" y="65" text-anchor="middle" font-size="12.5" font-weight="700">단위 테스트</text><text x="350" y="85" text-anchor="middle" font-size="11" class="muted">~1min</text>
+          <rect x="430" y="40" width="120" height="60" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="490" y="65" text-anchor="middle" font-size="12.5" font-weight="700">통합 테스트</text><text x="490" y="85" text-anchor="middle" font-size="11" class="muted">~5min</text>
+          <rect x="570" y="40" width="120" height="60" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="630" y="65" text-anchor="middle" font-size="12.5" font-weight="700">E2E · 성능</text><text x="630" y="85" text-anchor="middle" font-size="11" class="muted">~15min, 머지 큐</text>
+          <rect x="710" y="40" width="160" height="60" rx="8" class="box"/><text x="790" y="65" text-anchor="middle" font-size="12.5" font-weight="700">audit · SBOM</text><text x="790" y="85" text-anchor="middle" font-size="11" class="muted">병렬, 비차단→차단</text>
+        </g>
+        <path d="M130 70 H150" class="line" marker-end="url(#a17b)"/><path d="M270 70 H290" class="line" marker-end="url(#a17b)"/><path d="M410 70 H430" class="line" marker-end="url(#a17b)"/><path d="M550 70 H570" class="line" marker-end="url(#a17b)"/>
+        <text x="440" y="140" text-anchor="middle" font-size="12" class="muted">앞 단계가 실패하면 뒤는 돌리지 않는다. 느린 단계는 머지 큐(merge queue)에서 배치로.</text>
+      </svg>
+      <figcaption>비용 오름차순. 보안 감사(16장)는 병렬로 돌리되, 처음엔 경고만 내고 팀이 익숙해진 뒤 차단으로 전환합니다.</figcaption>
+    </figure>
+
+    <h3>커버리지 숫자의 함정</h3>
+    <p>라인 커버리지 90%는 "코드의 90%가 <em>실행됐다</em>"이지 "검증됐다"가 아닙니다. 단언 없는 테스트도 커버리지를 올립니다. 커버리지는 <b>하한 게이트</b>(예: 신규 코드 70% 미만이면 경고)로만 쓰고, 목표 수치로 쓰지 마세요. 목표가 되면 사람들은 숫자를 맞추는 테스트를 씁니다. 더 유용한 지표는 <b>변경된 라인의 커버리지</b>(diff coverage)와 <b>뮤테이션 점수</b>(코드를 일부러 망가뜨렸을 때 테스트가 잡는 비율. Stryker 같은 도구)입니다.</p>
+
+    <h3>테스트 속도</h3>
+    <ul>
+      <li>프로세스 격리 비용: 파일당 Node 부팅 ~40ms + 모듈 로딩. 파일이 500개면 격리만으로 20초. 작은 파일을 합치거나 <code>--test-isolation=none</code>(전역 누수 감수)을 검토.</li>
+      <li>워커 수는 코어 수가 아니라 <b>병목 자원</b>으로 정한다. DB 통합 테스트는 DB 커넥션·CPU가 병목이라 코어 수만큼 늘려도 느려진다.</li>
+      <li>가장 느린 테스트 10개를 리포터로 뽑아 주기적으로 본다(junit 리포트의 time 속성 정렬).</li>
+    </ul>
+  </section>
+
+  <section id="s9">
+    <h2>9. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: 재시도 3회로 덮은 플래키가 실제 결함을 숨김</span>
+      <p>CI에 "실패 시 3회 재시도"가 있었고, 결제 테스트가 가끔 실패했지만 재시도로 통과. 원인은 금액 반올림 로직이 특정 랜덤 수량에서 1원 차이를 내는 <em>진짜 버그</em>였습니다. 랜덤 시드를 로그에 남기지 않아 재현도 못 했고, 재시도 통과율 98%라는 숫자에 가려 6개월 뒤 고객 민원으로 발견. 교훈: 재시도는 금지하거나 "재시도로 통과한 테스트"를 별도 보고하고, 랜덤은 시드를 출력한다.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: 모킹한 DB 드라이버와 실제 드라이버의 null 처리 차이</span>
+      <p>단위 테스트는 DB 드라이버를 모킹해 <code>{ deletedAt: null }</code>을 돌려줬습니다. 실제 드라이버는 컬럼이 없으면 키 자체를 생략해 <code>undefined</code>. 코드의 <code>row.deletedAt === null</code> 체크가 프로덕션에서 항상 false → 삭제된 계정이 로그인됨. 통합 테스트가 하나라도 실제 DB를 거쳤다면 잡혔을 결함.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 테스트가 끝났는데 CI가 60분 타임아웃</span>
+      <p>한 통합 테스트가 Redis 클라이언트를 열고 닫지 않았습니다. 테스트는 모두 통과했지만 프로세스가 종료되지 않아 러너가 기다리다 잡 타임아웃. 누군가 <code>--test-force-exit</code>을 추가해 "해결"했고, 그 뒤로 커넥션 누수 테스트가 전부 통과. 6개월 뒤 프로덕션에서 같은 패턴의 커넥션 누수(11장)로 장애. <code>after</code>에서 <code>getActiveResourcesInfo()</code>를 검사하는 가드가 답이었습니다.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>테스트 전략은 결함 분포 × 층별 비용. Node 백엔드는 결함 대부분이 경계에서 나므로 실제 DB를 쓰는 통합 테스트가 두꺼운 트로피형이 맞는 경우가 많다.</li>
+    <li><code>node:test</code>: 파일은 프로세스 격리 + 병렬(<code>--test-concurrency</code>), 파일 안은 직렬. 메모리는 격리되지만 포트·DB·파일은 공유된다.</li>
+    <li>모킹 경계는 "내 프로세스가 통제 못 하는 것"(시간, 랜덤, 외부 네트워크). DB는 모킹하지 말고 트랜잭션 롤백. 내 모듈은 주입.</li>
+    <li>행(hang)은 await 누락, 미해결 Promise, 미정리 핸들, 서브테스트 await 누락. <code>--test-timeout</code>과 <code>t.after</code> 정리, <code>getActiveResourcesInfo</code> 가드.</li>
+    <li>플래키 다섯 원인: 타이밍, 순서, 공유 상태, 포트, 외부 의존. 재시도로 덮지 말고 원인별 재현법으로 잡는다.</li>
+    <li>성능 회귀는 같은 러너에서 ABAB 상대 비교, 중앙값, 추세. 게이트는 싼 것부터, 커버리지는 하한으로만.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>node --test</code> 기본 설정에서 두 테스트 파일이 모두 포트 3000에 서버를 띄운다. 어떤 일이 일어나는가?</div>
+    <button class="opt">파일이 직렬로 실행되므로 문제없다</button>
+    <button class="opt">프로세스가 격리되므로 각자 3000번을 쓸 수 있다</button>
+    <button class="opt">파일이 병렬로 실행되고 포트는 OS 자원이라 한쪽이 EADDRINUSE로 실패할 수 있다</button>
+    <button class="opt">러너가 포트 충돌을 감지해 자동으로 직렬화한다</button>
+    <div class="explain">파일은 기본적으로 별도 프로세스에서 병렬(<code>availableParallelism() - 1</code>)로 돕니다. 프로세스 격리는 메모리만 격리하고 포트·파일·DB는 공유됩니다. <code>listen(0)</code>으로 OS가 포트를 배정하게 하세요.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">재시도 로직(지수 백오프 100ms, 200ms, 400ms)을 테스트할 때 가장 적절한 방법은?</div>
+    <button class="opt">실제로 700ms를 기다린다. 가장 정확하다</button>
+    <button class="opt"><code>t.mock.timers.enable({ apis: ['setTimeout'] })</code>로 가짜 시계를 켜고 <code>tick()</code>으로 전진시킨다</button>
+    <button class="opt">백오프 함수를 모킹해 0ms를 반환하게 한다</button>
+    <button class="opt">재시도 횟수를 1로 줄여 테스트한다</button>
+    <div class="explain">가짜 시계는 대기 없이 "정확히 100ms 뒤에 재시도했는가"까지 검증합니다. 3번은 백오프가 올바른지 검증하지 못하고, 4번은 테스트 대상을 바꿔 버립니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">테스트가 모두 통과했는데 <code>node --test</code> 프로세스가 종료되지 않는다. 가장 먼저 할 일은?</div>
+    <button class="opt"><code>--test-force-exit</code>을 추가한다</button>
+    <button class="opt"><code>process.exit(0)</code>을 마지막 테스트에 넣는다</button>
+    <button class="opt">타임아웃을 늘린다</button>
+    <button class="opt"><code>after</code> 훅에서 <code>process.getActiveResourcesInfo()</code>를 출력해 어떤 핸들이 살아있는지 확인한다</button>
+    <div class="explain">살아있는 핸들(서버, 풀, 인터벌)이 원인입니다. 강제 종료는 리소스 누수 테스트를 전부 무력화합니다(사례 3).</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">단독 실행하면 통과하고 전체 스위트에서 실행하면 실패하는 테스트가 있다. 가장 유력한 원인은?</div>
+    <button class="opt">순서 의존 또는 공유 상태: 앞선 테스트가 남긴 상태(모듈 싱글턴, 전역, DB 행)에 영향받는다</button>
+    <button class="opt">타이밍 의존: 단독 실행이 더 빠르다</button>
+    <button class="opt">외부 의존: 네트워크가 불안정하다</button>
+    <button class="opt">포트 충돌</button>
+    <div class="explain">단독/전체 차이는 전형적인 순서·공유 상태 신호입니다. 재현은 테스트 순서를 섞거나 의심되는 테스트를 앞뒤로 배치해서 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">CI에서 벤치마크 p99가 PR 브랜치에서 8% 높게 나왔다. 올바른 해석은?</div>
+    <button class="opt">8% 회귀이므로 머지를 막는다</button>
+    <button class="opt">CI는 신뢰할 수 없으므로 무시한다</button>
+    <button class="opt">같은 러너에서 기준 브랜치와 번갈아 여러 번 측정한 중앙값 비율과 노이즈 상한을 비교해 판단하고, 시계열 추세도 본다</button>
+    <button class="opt">평균으로 다시 계산한다</button>
+    <div class="explain">CI 변동성은 보통 수 %에서 수십 %입니다. ABAB 교차 측정, 중앙값, 사전에 측정한 노이즈 상한, 그리고 여러 커밋에 걸친 추세가 판단 근거입니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>행(hang) 재현과 진단.</b> 서버를 띄우고 닫지 않는 테스트를 작성해 <code>node --test</code>가 종료되지 않음을 확인하세요. 그다음 <code>after(() =&gt; console.log(process.getActiveResourcesInfo()))</code>를 추가해 <code>['TCPServerWrap', ...]</code>이 출력되는지 보고, <code>t.after(() =&gt; server.close())</code>로 고치세요. 기대: 수정 후 즉시 종료, 출력에 서버 핸들 없음.</li>
+    <li><b>플래키 재현.</b> <code>setTimeout(check, 50)</code>으로 검증하는 테스트를 하나 만들고, 같은 머신에서 CPU 부하(<code>node -e "while(1){}"</code> 코어 수만큼)를 건 채 <code>for i in $(seq 20); do node --test flaky.test.js || echo FAIL; done</code>로 실패를 유도하세요. 그다음 이벤트/Promise를 await하는 방식으로 고쳐 20회 모두 통과하는지 확인합니다.</li>
+    <li><b>undici MockAgent.</b> 외부 API를 호출하는 함수에 <code>disableNetConnect()</code>를 적용한 테스트를 작성하고, 인터셉트를 하나 빠뜨렸을 때 어떤 에러가 나는지 확인하세요(기대: <code>MockNotMatchedError</code>). 마지막에 <code>assertNoPendingInterceptors()</code>가 미사용 인터셉트를 잡는지도 확인합니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+
+  // ========== 위젯 1: 포트폴리오 계산기 ==========
+  (function () {
+    const ids = ["py-u-n","py-u-t","py-u-d","py-i-n","py-i-t","py-i-d","py-e-n","py-e-t","py-e-d","py-w","py-dist"];
+    function calc() {
+      const L = [
+        { name: "단위", n: +$("py-u-n").value || 0, t: +$("py-u-t").value || 0, d: Math.min(100, +$("py-u-d").value || 0) / 100, cls: "ok" },
+        { name: "통합", n: +$("py-i-n").value || 0, t: +$("py-i-t").value || 0, d: Math.min(100, +$("py-i-d").value || 0) / 100, cls: "violet" },
+        { name: "E2E", n: +$("py-e-n").value || 0, t: +$("py-e-t").value || 0, d: Math.min(100, +$("py-e-d").value || 0) / 100, cls: "warn" },
+      ];
+      const w = Math.max(1, +$("py-w").value || 1);
+      let dist = ($("py-dist").value || "30/55/15").split("/").map(Number);
+      if (dist.length !== 3 || dist.some(isNaN)) dist = [30, 55, 15];
+      const ds = dist.reduce((a, b) => a + b, 0) || 1; dist = dist.map(x => x / ds);
+      const serial = L.reduce((a, l) => a + l.n * l.t, 0);
+      // 이상적 병렬: 각 층을 워커로 나눔. E2E는 보통 병렬도가 낮아 min(w, 2)로 제한
+      const par = L[0].n * L[0].t / w + L[1].n * L[1].t / w + L[2].n * L[2].t / Math.min(w, 2);
+      // 탐지: 로직 결함은 단위가 주로, 경계 결함은 통합, 흐름 결함은 E2E. 각 층은 "존재할 때" 탐지율 d, 테스트 수가 적으면 커버 범위 축소(포화 곡선)
+      const cover = l => 1 - Math.exp(-l.n / (l.name === "단위" ? 300 : l.name === "통합" ? 60 : 10));
+      const det = [
+        dist[0] * (1 - (1 - L[0].d * cover(L[0])) * (1 - 0.4 * L[1].d * cover(L[1]))),
+        dist[1] * (1 - (1 - 0.15 * L[0].d * cover(L[0])) * (1 - L[1].d * cover(L[1])) * (1 - 0.5 * L[2].d * cover(L[2]))),
+        dist[2] * (1 - (1 - 0.3 * L[1].d * cover(L[1])) * (1 - L[2].d * cover(L[2]))),
+      ];
+      const total = det.reduce((a, b) => a + b, 0);
+      $("py-serial").textContent = MM.ms(serial);
+      $("py-par").textContent = MM.ms(par);
+      $("py-det").textContent = (total * 100).toFixed(0) + "%";
+      const names = ["로직 결함", "경계 결함", "흐름 결함"];
+      $("py-bars").innerHTML = det.map((v, i) => `<div style="font-size:12px;color:var(--muted);margin-top:6px">${names[i]} (전체의 ${(dist[i]*100).toFixed(0)}%) → 탐지 ${(v / (dist[i] || 1) * 100).toFixed(0)}%</div>
+        <div class="timeline" style="height:14px"><div class="seg" style="left:0;width:${v / (dist[i] || 1) * 100}%;background:var(--${["ok","violet","warn"][i]}-soft);border-right:2px solid var(--${["ok","violet","warn"][i]})"></div></div>`).join("");
+      const worst = det.map((v, i) => ({ i, r: v / (dist[i] || 1) })).sort((a, b) => a.r - b.r)[0];
+      const adv = ["단위 테스트를 늘리거나 순수 로직을 더 분리하세요.", "실제 DB/네트워크 인터셉트를 쓰는 통합 테스트를 늘리세요. 백엔드에서 가장 흔한 결함층입니다.", "핵심 사용자 흐름 몇 개만 E2E로 고정하세요. 수십 개를 넘기면 유지 비용이 급증합니다."][worst.i];
+      $("py-advice").innerHTML = `<span class="title">가장 약한 층: ${names[worst.i]}</span>${adv} 병렬 시간이 ${par > 600000 ? "10분을 넘습니다. 머지 큐 배치로 옮기세요." : par > 120000 ? "2분을 넘습니다. PR마다 돌리기엔 부담스러운 경계입니다." : "PR마다 돌리기 적당합니다."}`;
+    }
+    ids.forEach(id => $(id).oninput = calc); calc();
+  })();
+
+  // ========== 위젯 2: 모킹 결정 트리 ==========
+  (function () {
+    const root = $("tree");
+    const NODES = {
+      q0: { q: "테스트 대상 코드가 의존하는 것은 무엇인가요?", opts: [["시간·타이머·날짜", "r_time"], ["랜덤·UUID", "r_rand"], ["외부 HTTP API", "r_http"], ["데이터베이스", "q_db"], ["내 코드의 다른 모듈/클래스", "q_mine"], ["메시지 큐·캐시·파일시스템", "q_infra"]] },
+      q_db: { q: "테스트에서 실제 DB를 띄울 수 있나요? (컨테이너, 로컬 인스턴스)", opts: [["예", "r_db_real"], ["아니오 (CI 제약·시간)", "q_db_no"]] },
+      q_db_no: { q: "DB 접근이 리포지토리/DAO 인터페이스 뒤에 있나요?", opts: [["예", "r_db_fake"], ["아니오 (쿼리가 코드 곳곳에)", "r_db_refactor"]] },
+      q_mine: { q: "그 의존 객체를 생성자/함수 인자로 받을 수 있나요?", opts: [["예 (또는 바꿀 수 있음)", "r_di"], ["아니오 (모듈 최상위에서 import해 직접 사용)", "q_mine_esm"]] },
+      q_mine_esm: { q: "그 의존 모듈은 순수 계산인가요, 아니면 I/O를 하나요?", opts: [["순수 계산 (느리지도 않음)", "r_nomock"], ["I/O·외부 호출", "r_modmock"]] },
+      q_infra: { q: "그 인프라에 인터페이스(어댑터)가 있고 인메모리 구현을 만들 수 있나요?", opts: [["예", "r_inmem"], ["아니오", "r_container"]] },
+      r_time: { r: "가짜 시계: <code>t.mock.timers.enable({ apis: ['setTimeout','setInterval','Date'] })</code> + <code>tick(ms)</code>", why: "실제 대기 없이 정확한 시각 검증. Date를 포함하면 만료 계산까지 결정적.", avoid: "실제 setTimeout으로 기다리기 (느리고 타이밍 플래키의 1순위 원인)." },
+      r_rand: { r: "RNG를 주입하거나 <code>t.mock.method(Math, 'random', ...)</code>. 속성 기반 테스트면 시드를 로그에 출력", why: "재현 가능해야 실패를 디버깅할 수 있다.", avoid: "'대략 맞는지' 범위 단언으로 때우기." },
+      r_http: { r: "undici <code>MockAgent</code>(fetch/undici) 또는 msw. <code>disableNetConnect()</code> 필수", why: "코드 변경 없이 전송 계층에서 가로채고, 보낸 요청의 헤더·바디까지 검증 가능. 빠진 모킹이 즉시 에러로 드러남.", avoid: "HTTP 클라이언트 래퍼 모듈을 통째로 모킹 (직렬화·헤더 결함을 못 본다)." },
+      r_db_real: { r: "실제 DB + <code>beforeEach BEGIN / afterEach ROLLBACK</code> + 테스트별 고유 키", why: "SQL·제약·타입 캐스팅 결함이 백엔드 결함의 최다 범주. 롤백 격리는 TRUNCATE보다 수십 배 빠르다.", avoid: "DB 드라이버 모킹 (사례 2)." },
+      r_db_fake: { r: "리포지토리 인터페이스의 인메모리 구현 + 별도의 느린 잡에서 실제 DB 통합 테스트", why: "단위 테스트는 빠르게, 쿼리 정확성은 야간/머지 큐에서라도 반드시 검증.", avoid: "인메모리만 두고 실제 DB 테스트를 영영 안 만들기." },
+      r_db_refactor: { r: "먼저 쿼리를 리포지토리로 모으는 리팩터링. 그 전까지는 실제 DB를 쓰는 테스트만 신뢰", why: "주입 지점이 없는 코드를 모듈 모킹으로 테스트하면 테스트가 구현을 고정해 리팩터링을 막는다.", avoid: "<code>mock.module('pg')</code>." },
+      r_di: { r: "의존성 주입: 생성자/팩토리 인자로 가짜 구현(인터페이스 동일)을 전달", why: "명시적이고 ESM/CJS 무관. 테스트가 공개 계약에만 결합.", avoid: "모듈 모킹. 주입이 가능한데 모듈을 모킹하는 것은 결합도를 올릴 뿐." },
+      r_nomock: { r: "모킹하지 않는다. 실제 모듈을 그대로 쓴다", why: "순수·빠른 협력자는 모킹할 이유가 없다. 모킹은 결정성·속도를 위한 것.", avoid: "'단위 테스트는 모든 협력자를 모킹해야 한다'는 교조." },
+      r_modmock: { r: "최후 수단: <code>t.mock.module(specifier, { namedExports })</code> (22.3+, <code>--experimental-test-module-mocks</code>). 가능하면 주입 지점을 만드는 리팩터링 병행", why: "모듈 모킹은 import 순서에 민감하고 ESM 라이브 바인딩과 충돌하기 쉽다.", avoid: "require 캐시 조작 (<code>require.cache</code> 삭제) — ESM에서 작동하지 않고 CJS에서도 깨지기 쉽다." },
+      r_inmem: { r: "인메모리 어댑터 (같은 인터페이스) + 계약 테스트로 실제 어댑터와 인메모리 어댑터가 동일하게 동작하는지 같은 테스트 스위트로 검증", why: "어댑터 두 개가 같은 테스트를 통과하면 가짜가 진짜를 대표한다고 믿을 수 있다.", avoid: "인메모리 구현이 실제와 다르게 동작(순서·중복 전달)하는데 검증 없이 쓰기." },
+      r_container: { r: "컨테이너로 실제 인스턴스를 띄운다 (testcontainers 류). 파일 병렬을 고려해 키 접두사/네임스페이스 분리", why: "큐·캐시의 의미론(at-least-once, 만료)은 가짜로 재현하기 어렵다.", avoid: "큐 클라이언트 모킹으로 '발행했다'만 검사." },
+    };
+    let path = [];
+    function render(id) {
+      const n = NODES[id];
+      const crumbs = path.length ? `<div class="tree-path">${path.map(p => `<span>${p}</span>`).join("")}</div>` : "";
+      if (n.r) {
+        root.innerHTML = crumbs + `<div class="result"><div style="font-weight:700;margin-bottom:6px">권장: ${n.r}</div><div style="font-size:14px"><b>이유</b> ${n.why}</div><div style="font-size:14px;margin-top:4px"><b class="c-bad">피하기</b> ${n.avoid}</div></div><div class="controls"><button class="btn" id="tree-reset">처음부터</button></div>`;
+        $("tree-reset").onclick = () => { path = []; render("q0"); };
+        return;
+      }
+      root.innerHTML = crumbs + `<div class="tree-q"><div class="qt">${n.q}</div><div class="controls">${n.opts.map((o, i) => `<button class="btn" data-i="${i}">${o[0]}</button>`).join("")}${path.length ? '<button class="btn" data-i="back">← 뒤로</button>' : ""}</div></div>`;
+      root.querySelector(".controls").onclick = e => {
+        const i = e.target.dataset.i; if (i == null) return;
+        if (i === "back") { path.pop(); render(path.length ? NODES_PATH[path.length - 1] : "q0"); return; }
+        path.push(n.opts[i][0]); NODES_PATH[path.length - 1] = n.opts[i][1]; render(n.opts[i][1]);
+      };
+    }
+    const NODES_PATH = [];
+    render("q0");
+  })();
+
+  // ========== 위젯 3: 러너 행 스텝 애니메이션 ==========
+  (function () {
+    const SC = [
+      { code: `test('주문 저장', () => {
+  saveOrder(order).then(saved => {      // ← await/return 누락
+    assert.equal(saved.status, 'PAID');   // 테스트가 끝난 뒤 실행되거나, 실패해도 unhandledRejection
+  });
+});`, steps: [
+        [["테스트 함수 호출"], [], "러너가 테스트 함수를 호출한다. 함수는 동기적으로 saveOrder()를 시작하고 .then을 등록한다."],
+        [["테스트 함수 반환: undefined", "→ 러너: 통과 ✓"], ["DB 쿼리 (진행 중)"], "함수가 Promise를 반환하지 않았으므로 러너는 <b>즉시 통과</b>로 기록한다. 단언은 아직 실행되지도 않았다."],
+        [["통과 ✓", "다음 테스트 시작"], ["DB 쿼리 (진행 중)"], "다음 테스트가 시작된다. 앞 테스트의 쿼리는 아직 진행 중이며 이 테스트와 DB 상태를 공유한다."],
+        [["통과 ✓", "단언 실행 → 실패!"], [], "쿼리가 끝나고 단언이 실패하면 어디에도 귀속되지 않는 <code>unhandledRejection</code>이 된다. 러너는 이를 다른 테스트 실패로 보고하거나(22+), 전체 통과 뒤 에러를 출력한다. <b>해결: <code>await</code> 또는 <code>t.plan(1)</code>.</b>"],
+      ] },
+      { code: `test('이벤트 수신', async () => {
+  const emitter = start();
+  await new Promise(resolve => {
+    emitter.on('ready', resolve);        // 'ready'는 start() 안에서 이미 동기로 emit됨 → 영원히 안 옴
+  });
+});`, steps: [
+        [["테스트 함수 호출", "start() → 'ready' 즉시 emit (리스너 없음)"], [], "<code>start()</code>가 동기적으로 'ready'를 emit한다. 아직 리스너를 붙이기 전이다."],
+        [["new Promise: 'ready' 리스너 등록", "await → 대기"], [], "이제 리스너를 붙이지만 이벤트는 이미 지나갔다. Promise는 영원히 pending."],
+        [["러너: Promise 대기 중…", "--test-timeout 없으면 무한"], [], "러너는 테스트 함수가 반환한 Promise를 기다린다. 타임아웃이 설정돼 있지 않으면(기본) <b>무한히</b> 기다린다. 핸들이 없으니 루프조차 할 일이 없다. 하지만 러너 부모 프로세스가 자식의 종료를 기다리므로 CI 잡은 멈춘다."],
+        [["(타임아웃 설정 시) 'test timed out' 실패"], [], "<b>해결: 리스너를 먼저 붙이고 시작하거나, <code>events.once(emitter, 'ready')</code>를 start 전에 만든다. CI에는 <code>--test-timeout</code>.</b> 코어 API가 이벤트를 <code>nextTick</code>으로 미루는 이유(2장)가 바로 이 패턴이다."],
+      ] },
+      { code: `test('헬스체크', async () => {
+  const server = http.createServer(app).listen(0);
+  const res = await fetch(\`http://localhost:\${server.address().port}/health\`);
+  assert.equal(res.status, 200);
+  // server.close() 없음
+});`, steps: [
+        [["테스트 함수 호출", "서버 listen"], ["TCPServerWrap"], "서버 핸들이 루프에 등록된다. <code>getActiveResourcesInfo()</code>에 <code>TCPServerWrap</code>이 보인다."],
+        [["fetch → 응답 200", "단언 통과", "테스트 함수 반환 → 통과 ✓"], ["TCPServerWrap", "TCPSocketWrap (keep-alive)"], "테스트는 통과했다. 그러나 서버와 keep-alive 소켓이 살아 있다."],
+        [["모든 테스트 완료", "러너: 프로세스 종료 대기…"], ["TCPServerWrap", "TCPSocketWrap (keep-alive)"], "러너는 자식 프로세스가 자연 종료되기를 기다린다. <code>uv__loop_alive</code>가 참이므로 프로세스는 끝나지 않는다. keep-alive 소켓은 서버의 <code>keepAliveTimeout</code>(기본 5초) 뒤 닫히지만 서버 자체는 영원하다."],
+        [["(해결) t.after(() => server.close())", "프로세스 종료"], [], "<b>해결: <code>t.after()</code>로 정리. 실패해도 실행된다.</b> <code>--test-force-exit</code>은 증상을 감출 뿐이다(사례 3)."],
+      ] },
+      { code: `test('부모', async (t) => {
+  t.test('자식 A', async () => { await work(); });   // ← await 누락
+  await t.test('자식 B', async () => { ... });
+});`, steps: [
+        [["부모 시작", "자식 A 시작 (await 안 함)"], [], "자식 A가 시작되지만 부모는 기다리지 않고 다음 줄로 간다."],
+        [["자식 B 시작 → await"], [], "자식 B는 await하므로 부모가 기다린다."],
+        [["자식 B 완료", "부모 함수 반환"], [], "부모 함수가 반환되는 순간 자식 A는 아직 진행 중이다."],
+        [["러너: 자식 A 실패", "'test did not finish before its parent finished'"], [], "러너는 부모가 끝났는데 미완료인 자식을 <b>실패로 기록</b>한다. <b>해결: 모든 <code>t.test()</code>를 <code>await</code>.</b> ESLint의 <code>no-floating-promises</code>(typescript-eslint)로 예방."],
+      ] },
+    ];
+    let stepper = null;
+    function load() {
+      const sc = SC[+$("hang-sel").value];
+      $("hang-code").textContent = sc.code;
+      $("hang-step").innerHTML = "";
+      stepper = MM.stepper($("hang-step"), { steps: sc.steps.length, interval: 2200, render(i) {
+        const [runner, handles, cap] = sc.steps[i];
+        $("hang-runner").innerHTML = runner.map((r, k) => `<div class="item ${k === runner.length - 1 ? "on" : ""} ${/실패|무한|대기 중/.test(r) ? "bad" : /통과 ✓|종료$/.test(r) ? "ok" : ""}">${MM.esc(r)}</div>`).join("") || "<span class='muted'>-</span>";
+        $("hang-handles").innerHTML = handles.map(h => `<div class="item bad">${MM.esc(h)}</div>`).join("") || "<span class='muted' style='font-size:12.5px'>없음 (루프 종료 가능)</span>";
+        return cap;
+      } });
+    }
+    $("hang-sel").onchange = load; load();
+  })();
+
+  // ========== 위젯 4: 플래키 시뮬레이터 ==========
+  (function () {
+    function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+    function simulate() {
+      const port = $("fl-port").checked, glob = $("fl-global").checked, timing = $("fl-timing").checked, ext = $("fl-ext").checked;
+      const W = +$("fl-w").value, shuffle = $("fl-shuffle").checked, RUNS = +$("fl-runs").value, load = +$("fl-load").value / 100;
+      $("fl-w-v").textContent = W; $("fl-runs-v").textContent = RUNS; $("fl-load-v").textContent = (load * 100) + "%";
+      const r = rng(42 + W * 7 + RUNS + (shuffle ? 1000 : 0) + load * 100);
+      // 테스트 정의 (20개)
+      const tests = [];
+      for (let i = 0; i < 20; i++) tests.push({ id: i, dur: 20 + Math.floor(r() * 60), port: port && i < 4, glob: glob && i >= 4 && i < 7, timing: timing && i >= 7 && i < 12, ext: ext && i >= 12 && i < 14 });
+      const cores = 4;
+      const results = []; const causes = { 포트: 0, "전역 상태": 0, 타이밍: 0, "외부 API": 0 };
+      let passAfterRetry = 0;
+      for (let run = 0; run < RUNS; run++) {
+        const order = tests.slice();
+        if (shuffle) for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+        // 워커에 라운드로빈 배정 (파일 = 테스트라고 가정)
+        const workers = Array.from({ length: W }, () => ({ t: 0, counter: 0 }));
+        const portBusy = []; // [start,end]
+        const failed = new Set();
+        order.forEach((tst, idx) => {
+          const w = workers[idx % W];
+          const start = w.t, end = w.t + tst.dur;
+          if (tst.port) {
+            if (portBusy.some(([s, e]) => start < e && s < end)) { failed.add(tst.id); causes.포트++; }
+            portBusy.push([start, end]);
+          }
+          if (tst.glob) {
+            if (tst.id === 6) w.counter++;               // G1(파일 순서상 마지막): 전역을 변경
+            else if (w.counter > 0) { failed.add(tst.id); causes["전역 상태"]++; }   // G2, G3: 카운터 0 가정
+          }
+          if (tst.timing) {
+            const effLoad = Math.min(1, load * (W / cores) + 0.1 * (W - 1) / cores);
+            const p = Math.max(0, effLoad - 0.35) * 0.9;   // 임계 초과분에 비례
+            if (r() < p) { failed.add(tst.id); causes.타이밍++; }
+          }
+          if (tst.ext && r() < 0.015) { failed.add(tst.id); causes["외부 API"]++; }
+          w.t = end;
+        });
+        const fail = failed.size > 0;
+        results.push(fail);
+        if (fail) {
+          // 재시도 3회: 각 재시도는 독립 실행으로 근사 (같은 설정의 실패 확률을 다시 샘플) — 뒤에서 전체 비율로 계산
+        }
+      }
+      const fails = results.filter(Boolean).length;
+      const pFail = fails / RUNS;
+      // 재시도 3회 후 통과율: 1 - pFail^4 (독립 가정)
+      const retryPass = 1 - Math.pow(pFail, 4);
+      $("fl-rate").textContent = (pFail * 100).toFixed(1) + "%";
+      $("fl-fails").textContent = `${fails} / ${RUNS}`;
+      $("fl-retry").textContent = (retryPass * 100).toFixed(1) + "%";
+      $("fl-runs-grid").innerHTML = results.map(f => `<div class="run ${f ? "fail" : ""}" title="${f ? "실패" : "통과"}"></div>`).join("");
+      const tot = Object.values(causes).reduce((a, b) => a + b, 0);
+      const cols = { 포트: "bad", "전역 상태": "violet", 타이밍: "warn", "외부 API": "teal" };
+      $("fl-cause").innerHTML = tot ? Object.entries(causes).filter(([, v]) => v).map(([k, v]) => `<div style="width:${v / tot * 100}%;background:var(--${cols[k]}-soft);color:var(--${cols[k]})">${k} ${(v / tot * 100).toFixed(0)}%</div>`).join("") : `<div style="width:100%;color:var(--muted)">실패 없음</div>`;
+      let note;
+      if (!tot) note = "이 설정에서는 실패가 없습니다. 워커를 늘리거나 순서를 섞거나 부하를 올려 보세요. <b>'내 머신에서는 통과'는 보통 워커 1개·순서 고정·부하 0의 조합</b>입니다.";
+      else {
+        const top = Object.entries(causes).sort((a, b) => b[1] - a[1])[0][0];
+        const fix = { 포트: "<code>listen(0)</code>과 <code>server.address().port</code>로 OS 배정 포트를 쓰면 사라집니다.", "전역 상태": "순서를 섞었을 때만 나타나는 전형적 순서 의존입니다. <code>beforeEach</code> 초기화 또는 모듈 싱글턴 제거.", 타이밍: "부하와 워커 수에 비례해 늘어나는 타이밍 의존입니다. <code>setTimeout</code> 대기를 이벤트/Promise await로 바꾸거나 가짜 시계를 쓰세요.", "외부 API": "워커·순서와 무관하게 일정 비율로 나는 외부 의존입니다. <code>disableNetConnect()</code> + 인터셉트." }[top];
+        note = `<span class="title">최다 원인: ${top}</span>${fix} 재시도 후 통과율 ${(retryPass * 100).toFixed(0)}%는 "재시도가 문제를 ${retryPass > 0.95 ? "거의 완전히 감추고 있다" : "일부만 감춘다"}"는 뜻입니다.`;
+      }
+      $("fl-note").innerHTML = note;
+    }
+    ["fl-port","fl-global","fl-timing","fl-ext","fl-w","fl-shuffle","fl-runs","fl-load"].forEach(id => $(id).oninput = simulate);
+    simulate();
+  })();
+})();
+</script>
+</body>
+</html>

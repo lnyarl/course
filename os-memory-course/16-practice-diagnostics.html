@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메모리 진단 플레이북</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 16장 전용 */
+main p code, main li code, main td code, main dd code { overflow-wrap: anywhere; }
+.membar { display: flex; height: 30px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); margin: 8px 0; }
+.membar > div { height: 100%; min-width: 0; transition: width .3s; }
+.mb-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+.mb-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.mi-area { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 12.5px; }
+.finding { padding: 6px 10px; border-radius: 6px; margin: 4px 0; font-size: 14px; border-left: 4px solid; }
+.finding.ok { background: var(--ok-soft); border-color: var(--ok); }
+.finding.warn { background: var(--warn-soft); border-color: var(--warn); }
+.finding.bad { background: var(--bad-soft); border-color: var(--bad); }
+.finding.info { background: var(--accent-soft); border-color: var(--accent); }
+.pss-tbl input[type=number] { width: 64px; }
+.pss-tbl td, .pss-tbl th { text-align: center; font-size: 13.5px; padding: 5px 6px; }
+.pss-tbl td:first-child, .pss-tbl th:first-child { text-align: left; }
+.pss-tbl tr.tot td { font-weight: 700; background: var(--surface-2); }
+.dt-crumb { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.dt-crumb b { color: var(--text); }
+.dt-q { font-weight: 700; font-size: 16px; margin: 6px 0 10px; }
+.dt-opt { display: block; width: 100%; text-align: left; margin: 6px 0; }
+.dt-leaf { border: 2px solid var(--ok); border-radius: 10px; padding: 12px 16px; background: var(--surface); }
+.dt-leaf h4 { margin: 0 0 6px; color: var(--ok); font-size: 16px; }
+.dt-leaf dt { font-weight: 700; font-size: 13.5px; color: var(--muted); margin-top: 8px; }
+.dt-leaf dd { margin: 2px 0 0; }
+.case-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.case-tabs .btn.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.stage-blk { border-left: 4px solid var(--border); padding: 4px 0 4px 14px; margin: 10px 0; animation: fadein .35s; }
+.stage-blk > .sl { font-size: 12.5px; font-weight: 700; letter-spacing: .03em; }
+.stage-blk.s0 { border-color: var(--bad); } .stage-blk.s0 > .sl { color: var(--bad); }
+.stage-blk.s1 { border-color: var(--accent); } .stage-blk.s1 > .sl { color: var(--accent); }
+.stage-blk.s2 { border-color: var(--violet); } .stage-blk.s2 > .sl { color: var(--violet); }
+.stage-blk.s3 { border-color: var(--warn); } .stage-blk.s3 > .sl { color: var(--warn); }
+.stage-blk.s4 { border-color: var(--ok); } .stage-blk.s4 > .sl { color: var(--ok); }
+.stage-blk pre { font-size: 12.5px; margin: 6px 0; }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.score-box { position: sticky; top: 52px; z-index: 5; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; box-shadow: var(--shadow); display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: 14px; }
+.score-box .big { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.score-box .meter { flex: 1; min-width: 120px; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.score-box .meter > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+.qtag { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 0 7px; border-radius: 999px; margin-right: 6px; vertical-align: 1px; }
+.qtag.t-i { color: var(--accent); background: var(--accent-soft); }
+.qtag.t-a { color: var(--violet); background: var(--violet-soft); }
+.qtag.t-p { color: var(--teal); background: var(--teal-soft); }
+.res-list li { margin: 6px 0; }
+.res-list a { overflow-wrap: anywhere; }
+svg.diagram .acc { fill: var(--accent-soft); stroke: var(--accent); }
+svg.diagram .vio { fill: var(--violet-soft); stroke: var(--violet); }
+svg.diagram .okb { fill: var(--ok-soft); stroke: var(--ok); }
+svg.diagram .wrn { fill: var(--warn-soft); stroke: var(--warn); }
+svg.diagram .badb { fill: var(--bad-soft); stroke: var(--bad); }
+svg.diagram .tl { fill: var(--teal-soft); stroke: var(--teal); }
+svg.diagram .arr { stroke: var(--muted); fill: none; stroke-width: 1.5; marker-end: url(#ah16); }
+svg.diagram .t-b { font-weight: 700; }
+svg.diagram .sm { font-size: 11.5px; }
+</style>
+</head>
+<body data-chapter="16">
+<main>
+  <header class="chapter-head">
+    <span class="label">실전 · Chapter 16</span>
+    <h1>실전 진단 도구와 종합 문제</h1>
+    <p class="lead">"메모리가 부족해요"라는 신고는 대부분 정확하지 않다. 무엇이, 어디에, 왜 쓰이고 있는지를 숫자로 확인하는 순서와 도구를 익히고, 실제 장애 사례로 추론 과정을 연습한다. 마지막으로 코스 전체를 종합 문제 20개로 점검한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>시스템 → cgroup → 프로세스 → 매핑 → 할당 지점 순으로 범위를 좁히는 진단 순서를 따를 수 있다.</li>
+      <li>free, vmstat, /proc/meminfo, smaps_rollup, pmap, top 컬럼의 정확한 의미를 알고 RSS/PSS/USS를 계산할 수 있다.</li>
+      <li>perf, bpftrace/BCC, massif, heaptrack, numastat, slabtop, PSI를 상황에 맞게 고를 수 있다.</li>
+      <li>OOMKilled, 힙 외 메모리 증가, THP 지연, 페이지 캐시 오해, 슬랩 폭증을 데이터로 구별할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">진단의 원칙: 범위를 좁히는 순서</a></li>
+    <li><a href="#s2">시스템 전체: free, vmstat, /proc/meminfo, PSI</a></li>
+    <li><a href="#s3">프로세스: top/htop, status, smaps, pmap</a></li>
+    <li><a href="#s4">커널·NUMA: slabtop, numastat</a></li>
+    <li><a href="#s5">이벤트와 할당 추적: perf, bpftrace/BCC, massif, heaptrack</a></li>
+    <li><a href="#s6">증상 → 원인 진단 트리</a></li>
+    <li><a href="#s7">케이스 스터디</a></li>
+    <li><a href="#s8">더 공부할 자료</a></li>
+    <li><a href="#final">코스 종합 문제 20</a></li>
+  </ol></nav>
+
+  <!-- ============ s1 ============ -->
+  <section id="s1">
+    <h2>1. 진단의 원칙: 범위를 좁히는 순서</h2>
+    <p>메모리 문제를 잘 푸는 사람은 도구를 많이 아는 사람이 아니라 <b>어떤 순서로 범위를 좁히는지</b> 아는 사람이다. 한 번에 하나의 질문에만 답하는 도구를 순서대로 쓴다.</p>
+    <ol>
+      <li><b>정말 부족한가?</b> — <code>MemAvailable</code>, PSI(<code>/proc/pressure/memory</code>), major fault, 스왑 I/O. 숫자 하나("used 98%")로 판단하지 않는다.</li>
+      <li><b>어느 범위인가?</b> — 시스템 전체인가, 특정 cgroup(컨테이너)인가. cgroup이면 <code>memory.current</code>, <code>memory.stat</code>, <code>memory.events</code>.</li>
+      <li><b>무엇의 메모리인가?</b> — 유저 익명(anon), 파일 캐시(file), 공유 메모리(shmem/tmpfs), 커널(slab, page table, kernel stack), hugetlb 예약.</li>
+      <li><b>누구의 것인가?</b> — 프로세스별 PSS, 그 안에서 매핑별(smaps, pmap).</li>
+      <li><b>어디서 할당했나?</b> — 할당 스택(heaptrack, memleak, massif, 런타임 프로파일러).</li>
+    </ol>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 300" role="img" aria-label="VIRT, RSS, PSS, USS의 관계와 공유 페이지 회계">
+        <defs><marker id="ah16" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="10" y="10" width="740" height="280" rx="12" class="box"/>
+        <text x="24" y="34" class="t-b">VIRT (VmSize): 예약된 가상 주소 전체 — 물리 메모리와 무관</text>
+        <rect x="30" y="50" width="700" height="225" rx="10" class="acc"/>
+        <text x="44" y="72" class="t-b">RSS (VmRSS = RssAnon + RssFile + RssShmem): 지금 물리 프레임에 매핑된 페이지</text>
+        <rect x="50" y="88" width="300" height="170" rx="8" class="okb"/>
+        <text x="200" y="112" text-anchor="middle" class="t-b">전용 페이지 (USS)</text>
+        <text x="200" y="134" text-anchor="middle" class="sm">Private_Clean + Private_Dirty</text>
+        <text x="200" y="156" text-anchor="middle" class="sm">힙, 스택, CoW로 복사된 페이지</text>
+        <text x="200" y="196" text-anchor="middle" class="muted sm">이 프로세스가 죽으면</text>
+        <text x="200" y="214" text-anchor="middle" class="muted sm">확실히 돌아오는 메모리</text>
+        <rect x="370" y="88" width="340" height="170" rx="8" class="vio"/>
+        <text x="540" y="112" text-anchor="middle" class="t-b">공유 페이지 (SHR에 포함)</text>
+        <text x="540" y="134" text-anchor="middle" class="sm">Shared_Clean + Shared_Dirty</text>
+        <text x="540" y="156" text-anchor="middle" class="sm">libc, 공유 라이브러리, fork 후 미분리 CoW, shm</text>
+        <rect x="395" y="176" width="290" height="62" rx="6" class="wrn"/>
+        <text x="540" y="200" text-anchor="middle" class="sm">PSS에는 (크기 ÷ 공유 프로세스 수)만 반영</text>
+        <text x="540" y="222" text-anchor="middle" class="sm">3개가 공유하는 3MiB lib → 각자 1MiB</text>
+      </svg>
+      <figcaption>그림 16-1. RSS는 공유 페이지를 프로세스마다 중복 계산한다. 시스템 전체 합산에는 PSS를, "죽이면 얼마나 돌아오나"에는 USS를 쓴다.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ s2 ============ -->
+  <section id="s2">
+    <h2>2. 시스템 전체: free, vmstat, /proc/meminfo, PSI</h2>
+    <h3>free</h3>
+<pre>$ free -m
+               total        used        free      shared  buff/cache   available
+Mem:           64299       16012         793        1806       47493       47083
+Swap:           8191         184        8007</pre>
+    <div class="tbl-wrap"><table>
+      <tr><th>컬럼</th><th>출처 (/proc/meminfo)</th><th>해석</th></tr>
+      <tr><td>free</td><td>MemFree</td><td>아무 용도로도 안 쓰이는 페이지. 리눅스에서는 낮은 게 정상 (안 쓰는 메모리는 낭비)</td></tr>
+      <tr><td>buff/cache</td><td>Buffers + Cached + SReclaimable</td><td>대부분 회수 가능. 단 Cached에는 <b>Shmem(tmpfs)</b>이 포함되며 이건 스왑 없이는 회수 불가</td></tr>
+      <tr><td>shared</td><td>Shmem</td><td>tmpfs, /dev/shm, SysV/POSIX 공유 메모리, 공유 익명 매핑</td></tr>
+      <tr><td><b>available</b></td><td>MemAvailable</td><td>스왑 없이 새 작업에 줄 수 있는 추정치 (free + 회수 가능한 캐시·슬랩 일부 − 워터마크). <b>판단 기준은 이 값</b></td></tr>
+      <tr><td>used</td><td>계산값</td><td>procps 버전마다 계산식이 달라 비교 지표로 부적합</td></tr>
+    </table></div>
+    <h3>vmstat</h3>
+<pre>$ vmstat 1
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+ 3  0 188416 812344 412880 48220344  0    0    12   340 5120 9800 22  4 73  1  0</pre>
+    <p>메모리 진단에서 볼 것은 <b>si/so</b>(초당 스왑 인/아웃 KiB — 지속적으로 0이 아니면 압박), <b>b</b>(I/O 대기 중 블록된 태스크), <b>wa</b>, <b>bi</b>(페이지 캐시 미스로 인한 블록 읽기). 첫 줄은 부팅 이후 평균이므로 무시하고 둘째 줄부터 본다. <code>vmstat -s</code>, <code>/proc/vmstat</code>에는 <code>pgmajfault</code>, <code>allocstall_*</code>, <code>pgscan_direct</code>, <code>compact_stall</code>, <code>thp_*</code>, <code>oom_kill</code> 같은 누적 카운터가 있어 두 시점의 차이로 비율을 구한다.</p>
+    <h3>/proc/meminfo 핵심 필드</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>필드</th><th>의미 / 진단 포인트</th></tr>
+      <tr><td>AnonPages</td><td>파일과 무관한 유저 익명 페이지(힙, 스택, private CoW). 누수가 쌓이는 곳</td></tr>
+      <tr><td>Cached / Buffers</td><td>페이지 캐시 / 블록 디바이스 메타데이터 버퍼. Cached ⊃ Shmem</td></tr>
+      <tr><td>Active(file) / Inactive(file)</td><td>파일 LRU. Inactive(file)이 1차 회수 대상</td></tr>
+      <tr><td>Shmem</td><td>tmpfs·공유 메모리. 회수하려면 스왑이 필요</td></tr>
+      <tr><td>Slab = SReclaimable + SUnreclaim</td><td>커널 객체 캐시. SUnreclaim의 지속 증가는 커널 메모리 누수 의심</td></tr>
+      <tr><td>KernelStack, PageTables</td><td>스레드 수, 매핑 크기/프로세스 수에 비례. 수만 스레드나 거대한 공유 매핑 × 다수 프로세스에서 커짐</td></tr>
+      <tr><td>Dirty / Writeback</td><td>디스크에 아직 안 쓴 페이지 / 쓰는 중. 크면 쓰기 쓰로틀링 지연</td></tr>
+      <tr><td>Committed_AS / CommitLimit</td><td>약속한 가상 메모리 총량 / <code>vm.overcommit_memory=2</code>일 때 상한</td></tr>
+      <tr><td>AnonHugePages</td><td>THP로 매핑된 익명 메모리</td></tr>
+      <tr><td>HugePages_Total × Hugepagesize</td><td>hugetlbfs 예약. 사용 여부와 무관하게 MemTotal에서 떼어 놓은 것처럼 동작</td></tr>
+    </table></div>
+    <div class="widget" id="w-meminfo">
+      <div class="w-title">/proc/meminfo 해석기</div>
+      <div class="w-desc">실제 서버의 <code>cat /proc/meminfo</code> 출력을 붙여 넣거나 프리셋을 골라 보자. 메모리를 용도별로 나눠 막대로 그리고 진단 포인트를 짚어 준다.</div>
+      <div class="controls">
+        <button class="btn" data-mi="cache">프리셋: 캐시가 큰 정상 서버</button>
+        <button class="btn" data-mi="slab">프리셋: 슬랩 폭증</button>
+        <button class="btn" data-mi="tight">프리셋: 메모리 압박</button>
+      </div>
+      <textarea class="mi-area" id="mi-text" spellcheck="false"></textarea>
+      <div class="controls"><button class="btn primary" id="mi-go">분석</button></div>
+      <div class="membar" id="mi-bar"></div>
+      <div class="mb-legend" id="mi-legend"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">MemTotal</div><div class="v" id="mi-total">-</div></div>
+        <div class="stat"><div class="k">MemAvailable</div><div class="v" id="mi-avail">-</div></div>
+        <div class="stat"><div class="k">"MemFree 기준" 사용률</div><div class="v c-bad" id="mi-naive">-</div></div>
+        <div class="stat"><div class="k">실제 압박 지표 (1 − Avail/Total)</div><div class="v c-ok" id="mi-real">-</div></div>
+      </div>
+      <div id="mi-find"></div>
+    </div>
+    <h3>PSI: 압박을 직접 재는 지표</h3>
+<pre>$ cat /proc/pressure/memory
+some avg10=3.21 avg60=1.05 avg300=0.40 total=58273611
+full avg10=0.87 avg60=0.22 avg300=0.08 total=14202155</pre>
+    <p>PSI(Pressure Stall Information, 4.20+)는 "메모리 때문에 태스크가 멈춰 있던 시간 비율"이다. <b>some</b>은 하나 이상의 태스크가 메모리(회수, 스왑인, 스래싱 리폴트)를 기다린 시간 비율, <b>full</b>은 모든 non-idle 태스크가 동시에 막힌 시간 비율이다. avg10/60/300은 각각 10초/60초/300초 이동평균(%), total은 누적 µs. cgroup v2에서는 <code>memory.pressure</code>로 컨테이너별로 볼 수 있고, systemd-oomd와 Android lmkd 같은 유저 공간 OOM 데몬이 이 값으로 판단한다. "메모리 사용률"보다 훨씬 좋은 경보 지표다.</p>
+  </section>
+
+  <!-- ============ s3 ============ -->
+  <section id="s3">
+    <h2>3. 프로세스: top/htop, status, smaps, pmap</h2>
+    <h3>top/htop 컬럼</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>컬럼</th><th>정의</th><th>흔한 오해</th></tr>
+      <tr><td>VIRT</td><td>VmSize. 매핑된 가상 주소 공간 전체(예약만 하고 안 쓴 것 포함)</td><td>"VIRT 30GiB면 메모리 많이 쓴다" — 아니다. JVM·Go·glibc 아레나·ASan은 큰 예약을 한다</td></tr>
+      <tr><td>RES</td><td>VmRSS = RssAnon + RssFile + RssShmem</td><td>공유 페이지를 중복 계산하므로 프로세스 RES 합 &gt; 실제 사용량</td></tr>
+      <tr><td>SHR</td><td>RssFile + RssShmem (공유 <b>가능한</b> 페이지)</td><td>실제로 다른 프로세스와 공유 중이라는 뜻이 아니다. 혼자 쓰는 파일 매핑도 포함</td></tr>
+      <tr><td>%MEM</td><td>RES / MemTotal</td><td>컨테이너 안에서는 호스트 MemTotal 기준일 수 있음</td></tr>
+      <tr><td>SWAP (선택 컬럼)</td><td>VmSwap: 스왑아웃된 익명 페이지</td><td>RES에는 포함되지 않음 — RES가 줄었다고 메모리가 해제된 건 아닐 수 있다</td></tr>
+    </table></div>
+    <h3>/proc/PID/status</h3>
+<pre>$ grep -E '^(VmPeak|VmSize|VmHWM|VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads)' /proc/1234/status
+VmPeak:  9812344 kB
+VmSize:  9734120 kB
+VmHWM:   4120004 kB      ← RSS 고점(high water mark)
+VmRSS:   3988212 kB
+RssAnon: 3721400 kB
+RssFile:  250812 kB
+RssShmem:  16000 kB
+VmSwap:        0 kB
+Threads:     212</pre>
+    <h3>/proc/PID/smaps와 smaps_rollup</h3>
+    <p><code>smaps</code>는 매핑(VMA)마다, <code>smaps_rollup</code>(4.14+)은 프로세스 전체 합계를 준다. 대형 프로세스에서 smaps 전체를 읽는 것은 커널이 모든 페이지 테이블을 걸어야 해서 비싸므로(수백 ms, mmap_lock 경합) 모니터링에는 rollup을 쓴다.</p>
+<pre>$ cat /proc/1234/smaps_rollup
+55d0c8a00000-7ffd3b5fe000 ---p 00000000 00:00 0  [rollup]
+Rss:             3988212 kB
+Pss:             3870551 kB
+Pss_Anon:        3721400 kB
+Pss_File:         133151 kB
+Pss_Shmem:         16000 kB
+Shared_Clean:     235004 kB
+Shared_Dirty:          0 kB
+Private_Clean:     15808 kB
+Private_Dirty:   3737400 kB
+Referenced:      3901220 kB
+Anonymous:       3721400 kB
+AnonHugePages:   1572864 kB
+Swap:                  0 kB
+SwapPss:               0 kB
+Locked:                0 kB</pre>
+    <ul>
+      <li><b>USS</b>(Unique Set Size) = Private_Clean + Private_Dirty. 이 프로세스만 매핑한 페이지.</li>
+      <li><b>PSS</b>(Proportional Set Size) = 전용 페이지 + Σ(공유 페이지 ÷ 그 페이지를 매핑한 프로세스 수). 모든 프로세스의 PSS 합 ≈ 실제 사용한 물리 메모리.</li>
+      <li>"Shared"는 <b>지금 실제로 둘 이상이 매핑</b>한 페이지다(top의 SHR과 다르다). <code>smem</code> 도구가 PSS/USS를 표로 보여 준다.</li>
+    </ul>
+    <div class="widget" id="w-pss">
+      <div class="w-title">RSS / PSS / USS 계산기</div>
+      <div class="w-desc">prefork 웹 서버 워커 3개(A, B, C). 각 영역의 크기(MiB)와 어느 프로세스가 매핑하는지를 바꿔 보자. 영역을 한 프로세스만 매핑하면 그 영역은 전용(Private)으로 바뀐다.</div>
+      <div class="stage"><div class="tbl-wrap"><table class="pss-tbl" id="pss-tbl"></table></div></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">RSS 합 (top으로 더하면)</div><div class="v c-bad" id="pss-rss">-</div></div>
+        <div class="stat"><div class="k">PSS 합</div><div class="v c-ok" id="pss-pss">-</div></div>
+        <div class="stat"><div class="k">실제 물리 사용량</div><div class="v" id="pss-phys">-</div></div>
+        <div class="stat"><div class="k">USS 합</div><div class="v" id="pss-uss">-</div></div>
+      </div>
+      <div class="log" id="pss-log"></div>
+    </div>
+    <h3>pmap</h3>
+<pre>$ pmap -x 1234 | sort -k3 -n | tail -4
+Address           Kbytes     RSS   Dirty Mode  Mapping
+00007f3a2c000000   65536   64712   64712 rw---   [ anon ]
+00007f3a34000000   65536   65020   65020 rw---   [ anon ]
+000055d0ca1e3000 1048576 1012340 1012340 rw---   [ anon ]
+total kB         9734120 3988212 3737400</pre>
+    <p><code>pmap -x</code>는 매핑별 크기/RSS/Dirty, <code>pmap -X</code>는 smaps 필드 대부분을 보여 준다. <b>정확히 64MiB(65536 KiB) 크기의 [anon] 영역 다수</b>는 glibc malloc의 스레드 아레나(64비트에서 아레나 힙 최대 64MiB)의 전형적 신호이고, 같은 크기 영역이 수백 개면 스레드 스택(기본 8MiB, 앞에 guard page)일 가능성이 높다. 패턴으로 할당자를 알아보는 눈이 진단 속도를 결정한다.</p>
+  </section>
+
+  <!-- ============ s4 ============ -->
+  <section id="s4">
+    <h2>4. 커널·NUMA: slabtop, numastat</h2>
+<pre>$ slabtop -o -s c | head -8
+ Active / Total Objects (% used)    : 167210334 / 167402119 (99.9%)
+ Active / Total Size (% used)       : 32514288.13K / 32555209.40K (99.9%)
+  OBJS ACTIVE  USE OBJ SIZE  SLABS OBJ/SLAB CACHE SIZE NAME
+165432112 165401011  99%    0.19K 7877720       21  31510880K dentry
+ 1043520 1040211  99%    1.06K   34784       30   1113088K ext4_inode_cache
+  612864  600120  97%    0.57K   21888       28    350208K radix_tree_node</pre>
+    <p><code>slabtop</code>(<code>/proc/slabinfo</code> 기반)은 커널 객체 캐시별 사용량을 보여 준다. <code>-o</code>는 한 번만 출력, <code>-s c</code>는 캐시 크기순 정렬. SUnreclaim이 클 때는 어떤 캐시가 범인인지 여기서 찾는다. 리눅스는 같은 크기·속성의 캐시를 병합(slab merging)하므로 이름이 <code>kmalloc-256</code>처럼 뭉뚱그려 보이면 부팅 옵션 <code>slab_nomerge</code>로 분리해 추적한다.</p>
+<pre>$ numastat
+                           node0           node1
+numa_hit              9112334451      8823410123
+numa_miss                 223451       912334512   ← node0이 꽉 차서 node1로 넘친 할당
+numa_foreign           912334512          223451
+interleave_hit             32111           32098
+local_node            9110234112      7912334001
+other_node               2323790       911399634   ← node0의 CPU가 node1 메모리를 할당(원격)
+$ numastat -p $(pidof mysqld)      # 프로세스의 노드별 메모리
+$ numastat -m                      # 노드별 meminfo</pre>
+    <p><code>numa_miss</code>: 이 노드에 할당됐지만 원래 다른 노드를 선호한 페이지, <code>numa_foreign</code>: 이 노드를 선호했지만 다른 노드에 할당된 페이지, <code>other_node</code>: 다른 노드의 CPU에서 실행 중인 프로세스가 이 노드에 할당한 페이지. 한 노드의 메모리가 꽉 차 다른 노드로 넘치거나, 프로세스가 노드 사이를 오가면 원격 접근이 늘어 지연이 커진다(13장).</p>
+  </section>
+
+  <!-- ============ s5 ============ -->
+  <section id="s5">
+    <h2>5. 이벤트와 할당 추적: perf, bpftrace/BCC, massif, heaptrack</h2>
+    <h3>perf</h3>
+<pre>$ perf stat -e page-faults,minor-faults,major-faults,dTLB-loads,dTLB-load-misses -p 1234 -- sleep 10
+       1,203,551      page-faults
+       1,203,402      minor-faults
+             149      major-faults
+  18,331,229,104      dTLB-loads
+     402,113,880      dTLB-load-misses   #  2.19% of all dTLB cache accesses
+
+$ perf record -e page-faults -g -p 1234 -- sleep 10    # 폴트를 일으킨 콜스택
+$ perf report --stdio</pre>
+    <ul>
+      <li><b>minor fault</b>: 디스크 I/O 없이 해결(첫 접근 0 페이지, CoW, 캐시에 있는 파일 페이지). 대량이면 메모리를 새로 만지는 패턴(대형 할당·해제 반복, THP 분할)을 의심.</li>
+      <li><b>major fault</b>: 디스크(파일 또는 스왑)에서 읽음. 지연 원인의 1순위.</li>
+      <li><b>dTLB-load-misses</b> 비율이 높으면 huge page 효과가 큰 워크로드다(13장). 이벤트 이름과 지원 여부는 CPU마다 다르므로 <code>perf list</code>로 확인한다.</li>
+    </ul>
+    <h3>bpftrace / BCC</h3>
+<pre># 프로세스별 페이지 폴트 수
+$ bpftrace -e 'software:page-faults:1 { @[comm] = count(); }'
+
+# direct reclaim에 걸린 시간 분포 (할당 경로에서 회수하느라 멈춘 시간)
+$ bpftrace -e 'tracepoint:vmscan:mm_vmscan_direct_reclaim_begin { @s[tid] = nsecs; }
+  tracepoint:vmscan:mm_vmscan_direct_reclaim_end /@s[tid]/ {
+    @us[comm] = hist((nsecs - @s[tid]) / 1000); delete(@s[tid]); }'
+
+# OOM 희생자 기록
+$ bpftrace -e 'tracepoint:oom:mark_victim { printf("OOM victim pid=%d\n", args->pid); }'
+
+# BCC 도구 (배포판에 따라 memleak-bpfcc 같은 이름)
+$ memleak -p $(pidof app) 30     # 30초마다 아직 해제되지 않은 할당의 상위 스택
+$ oomkill                        # OOM kill 발생 시 트리거 프로세스·희생자·페이지 수
+$ drsnoop                        # direct reclaim 이벤트와 지연
+$ slabratetop                    # 캐시별 kmem_cache_alloc 빈도
+$ cachestat 1                    # 페이지 캐시 히트/미스</pre>
+    <div class="callout warn"><span class="title">memleak의 오버헤드</span>
+      유저 공간 memleak은 malloc/free마다 uprobe를 건다. 할당이 초당 수백만 번인 서비스는 수 배 느려질 수 있다. 운영 환경에서는 짧게, 또는 샘플링(<code>-s</code> 옵션)으로 쓴다. 할당자 자체의 프로파일러(jemalloc <code>prof</code>, tcmalloc heap profiler, Go pprof, JVM NMT)가 있다면 그쪽이 훨씬 싸다.
+    </div>
+    <h3>Valgrind massif와 heaptrack</h3>
+<pre>$ valgrind --tool=massif --threshold=0.5 ./app args
+$ ms_print massif.out.12345          # 시간에 따른 힙 그래프 + 최대 시점의 할당 트리
+$ valgrind --tool=massif --pages-as-heap=yes ./app    # mmap/brk 수준까지(아레나·스택 포함)
+
+$ heaptrack ./app args               # 또는 heaptrack -p PID 로 붙이기
+$ heaptrack_print heaptrack.app.12345.zst | less    # 버전에 따라 .gz
+$ heaptrack_gui heaptrack.app.12345.zst</pre>
+    <div class="tbl-wrap"><table>
+      <tr><th>도구</th><th>원리</th><th>오버헤드</th><th>적합한 상황</th></tr>
+      <tr><td>massif</td><td>Valgrind 위에서 실행(동적 바이너리 변환), 주기적 힙 스냅샷</td><td>매우 큼(수십 배)</td><td>개발 환경에서 "최고점에 누가 메모리를 들고 있나"</td></tr>
+      <tr><td>heaptrack</td><td>LD_PRELOAD로 malloc 계열 가로채기, 모든 할당·해제를 스택과 기록</td><td>중간</td><td>할당 횟수 핫스팟(임시 할당 폭주), 누수, 최고점 분석</td></tr>
+      <tr><td>BCC memleak</td><td>eBPF uprobe, 미해제 할당 추적</td><td>할당 빈도에 비례</td><td>재시작 없이 운영 중인 프로세스에 붙이기</td></tr>
+      <tr><td>perf + page-faults</td><td>폴트 이벤트 샘플링</td><td>작음</td><td>"메모리를 처음 만지는 코드"가 어디인가</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============ s6 ============ -->
+  <section id="s6">
+    <h2>6. 증상 → 원인 진단 트리</h2>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 420" role="img" aria-label="메모리 문제 진단 흐름도">
+        <rect x="280" y="10" width="200" height="40" rx="8" class="badb"/>
+        <text x="380" y="35" text-anchor="middle" class="t-b">증상 보고</text>
+        <path d="M380 50 L380 70" class="arr"/>
+        <rect x="230" y="72" width="300" height="44" rx="8" class="acc"/>
+        <text x="380" y="92" text-anchor="middle" class="t-b">정말 압박인가?</text>
+        <text x="380" y="108" text-anchor="middle" class="sm">MemAvailable · PSI · si/so · pgmajfault</text>
+        <path d="M290 116 L120 150" class="arr"/>
+        <path d="M380 116 L380 150" class="arr"/>
+        <path d="M470 116 L640 150" class="arr"/>
+        <text x="178" y="138" class="sm muted">아니오</text>
+        <text x="388" y="140" class="sm muted">예 · 컨테이너</text>
+        <text x="575" y="138" class="sm muted">예 · 시스템</text>
+
+        <rect x="20" y="152" width="200" height="60" rx="8" class="okb"/>
+        <text x="120" y="176" text-anchor="middle" class="t-b">지표 오해</text>
+        <text x="120" y="196" text-anchor="middle" class="sm">캐시는 정상 · 경보 기준 수정</text>
+
+        <rect x="280" y="152" width="200" height="60" rx="8" class="vio"/>
+        <text x="380" y="176" text-anchor="middle" class="t-b">cgroup 보기</text>
+        <text x="380" y="196" text-anchor="middle" class="sm">memory.stat · memory.events</text>
+
+        <rect x="540" y="152" width="200" height="60" rx="8" class="vio"/>
+        <text x="640" y="176" text-anchor="middle" class="t-b">meminfo 분해</text>
+        <text x="640" y="196" text-anchor="middle" class="sm">Anon · Shmem · Slab · Huge</text>
+
+        <path d="M380 212 L380 240" class="arr"/>
+        <path d="M640 212 L640 225 L380 225 L380 240" class="line"/>
+        <rect x="180" y="242" width="400" height="44" rx="8" class="acc"/>
+        <text x="380" y="262" text-anchor="middle" class="t-b">무엇의 메모리인가?</text>
+        <text x="380" y="278" text-anchor="middle" class="sm">anon / file / shmem / kernel</text>
+
+        <path d="M220 286 L90 320" class="arr"/>
+        <path d="M330 286 L280 320" class="arr"/>
+        <path d="M430 286 L480 320" class="arr"/>
+        <path d="M540 286 L670 320" class="arr"/>
+
+        <rect x="10" y="322" width="170" height="86" rx="8" class="wrn"/>
+        <text x="95" y="344" text-anchor="middle" class="t-b">anon</text>
+        <text x="95" y="363" text-anchor="middle" class="sm">PSS 상위 프로세스 →</text>
+        <text x="95" y="380" text-anchor="middle" class="sm">smaps/pmap → 힙 통계</text>
+        <text x="95" y="397" text-anchor="middle" class="sm">→ heaptrack/memleak</text>
+
+        <rect x="195" y="322" width="170" height="86" rx="8" class="tl"/>
+        <text x="280" y="344" text-anchor="middle" class="t-b">file</text>
+        <text x="280" y="363" text-anchor="middle" class="sm">대개 회수 가능</text>
+        <text x="280" y="380" text-anchor="middle" class="sm">Dirty·mlock·리폴트 확인</text>
+        <text x="280" y="397" text-anchor="middle" class="sm">cachestat</text>
+
+        <rect x="395" y="322" width="170" height="86" rx="8" class="tl"/>
+        <text x="480" y="344" text-anchor="middle" class="t-b">shmem</text>
+        <text x="480" y="363" text-anchor="middle" class="sm">df -t tmpfs, /dev/shm</text>
+        <text x="480" y="380" text-anchor="middle" class="sm">ipcs -m</text>
+        <text x="480" y="397" text-anchor="middle" class="sm">스왑 없으면 회수 불가</text>
+
+        <rect x="580" y="322" width="170" height="86" rx="8" class="badb"/>
+        <text x="665" y="344" text-anchor="middle" class="t-b">kernel</text>
+        <text x="665" y="363" text-anchor="middle" class="sm">slabtop → 캐시 이름</text>
+        <text x="665" y="380" text-anchor="middle" class="sm">PageTables·KernelStack</text>
+        <text x="665" y="397" text-anchor="middle" class="sm">slabratetop</text>
+      </svg>
+      <figcaption>그림 16-2. 진단 흐름도: 압박 여부 → 범위 → 메모리 종류 → 소유자 → 할당 지점 순으로 좁힌다.</figcaption>
+    </figure>
+    <div class="widget" id="w-tree">
+      <div class="w-title">인터랙티브 진단 트리</div>
+      <div class="w-desc">관찰한 사실을 고르면 다음 질문으로 분기한다. 끝에 도달하면 가장 가능성 높은 원인, 확인 명령, 처방을 보여 준다.</div>
+      <div class="dt-crumb" id="dt-crumb"></div>
+      <div id="dt-body"></div>
+      <div class="controls"><button class="btn" id="dt-back">◀ 한 단계 뒤로</button><button class="btn" id="dt-restart">처음부터</button></div>
+    </div>
+  </section>
+
+  <!-- ============ s7 ============ -->
+  <section id="s7">
+    <h2>7. 케이스 스터디</h2>
+    <p>각 사례를 <b>증상 → 관찰 데이터 → 추론 → 원인 → 해결</b> 순서로 한 단계씩 공개한다. 다음 단계를 열기 전에 스스로 가설을 세워 보자.</p>
+    <div class="widget" id="w-case">
+      <div class="w-title">장애 사례 단계별 공개</div>
+      <div class="w-desc">사례를 고르고 "다음 단계 공개"를 누른다.</div>
+      <div class="case-tabs" id="case-tabs"></div>
+      <div id="case-body"></div>
+      <div class="controls"><button class="btn primary" id="case-next">다음 단계 공개</button><button class="btn" id="case-all">전체 공개</button><button class="btn" id="case-reset">처음부터</button></div>
+    </div>
+  </section>
+
+  <!-- ============ s8 ============ -->
+  <section id="s8">
+    <h2>8. 더 공부할 자료</h2>
+    <h3>교과서와 단행본</h3>
+    <ul class="res-list">
+      <li><b>Operating Systems: Three Easy Pieces (OSTEP)</b> — Remzi &amp; Andrea Arpaci-Dusseau. 가상화(메모리) 파트의 주소 공간·페이징·TLB·스왑 장들은 이 코스 개론의 가장 좋은 짝. 온라인 무료: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/">pages.cs.wisc.edu/~remzi/OSTEP</a></li>
+      <li><b>Understanding the Linux Virtual Memory Manager</b> — Mel Gorman (2004). 2.4/2.6 기준이라 세부 코드는 낡았지만 버디·슬랩·페이지 테이블·회수의 설계 근거를 이만큼 체계적으로 다룬 책이 없다. kernel.org에서 무료 공개: <a href="https://www.kernel.org/doc/gorman/">kernel.org/doc/gorman</a></li>
+      <li><b>What Every Programmer Should Know About Memory</b> — Ulrich Drepper (2007). DRAM, 캐시, NUMA, TLB의 하드웨어 관점. <a href="https://www.akkadia.org/drepper/cpumemory.pdf">akkadia.org/drepper/cpumemory.pdf</a></li>
+      <li><b>Systems Performance</b>(2판, 2020), <b>BPF Performance Tools</b>(2019) — Brendan Gregg. 메모리 장의 방법론과 도구 사용법. <a href="https://www.brendangregg.com/">brendangregg.com</a></li>
+    </ul>
+    <h3>하드웨어 매뉴얼</h3>
+    <ul class="res-list">
+      <li><b>Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.3</b> — 3A의 Paging 장(4/5단계 페이징, PCID, PTE 비트), 3C의 VMX 장(EPT, VPID, EPT violation). <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">Intel SDM</a></li>
+      <li><b>AMD64 Architecture Programmer's Manual, Vol.2</b> — 페이지 변환, Nested Paging, SEV/SEV-SNP.</li>
+      <li><b>Arm Architecture Reference Manual (A-profile)</b> — VMSAv8-64, stage 2 translation, MTE.</li>
+    </ul>
+    <h3>커널 문서와 기사</h3>
+    <ul class="res-list">
+      <li><b>kernel.org 관리자 가이드: 메모리 관리</b> — THP, KSM, NUMA, hugetlbpage, 회수 개념. <a href="https://www.kernel.org/doc/html/latest/admin-guide/mm/index.html">admin-guide/mm</a></li>
+      <li><b>cgroup v2</b> — memory.* 인터페이스의 정확한 정의. <a href="https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html">admin-guide/cgroup-v2</a></li>
+      <li><b>/proc 파일시스템</b> — meminfo, smaps 필드 정의. <a href="https://www.kernel.org/doc/html/latest/filesystems/proc.html">filesystems/proc</a></li>
+      <li><b>PSI</b> — <a href="https://www.kernel.org/doc/html/latest/accounting/psi.html">accounting/psi</a></li>
+      <li><b>LWN.net 커널 인덱스의 Memory management 항목</b> — folio, MGLRU, 메모리 tiering, DAMON 등 최신 변화를 설계 논쟁과 함께 읽을 수 있다. <a href="https://lwn.net/Kernel/Index/">lwn.net/Kernel/Index</a></li>
+      <li><b>glibc MallocInternals</b> — 아레나, bin, tcache 구조. <a href="https://sourceware.org/glibc/wiki/MallocInternals">sourceware.org/glibc/wiki/MallocInternals</a></li>
+    </ul>
+    <div class="callout tip"><span class="title">공부 순서 제안</span>
+      OSTEP으로 개념을 다지고 → Drepper로 하드웨어 감각을 잡고 → Gorman으로 리눅스 설계 근거를 읽은 뒤 → LWN으로 최신 변화를 따라가고 → 실제 서버에서 이 장의 도구를 돌려 보며 숫자를 손에 익히는 것이 효율적이다. 커널 소스(<code>mm/</code>)는 그 다음에 특정 질문을 들고 읽어야 길을 잃지 않는다.
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>진단은 <b>압박 여부 → 범위(cgroup/시스템) → 메모리 종류 → 소유 프로세스 → 할당 지점</b> 순으로 좁힌다.</li>
+    <li>판단 기준은 MemFree가 아니라 <b>MemAvailable과 PSI</b>, 그리고 스왑 I/O·major fault다. buff/cache가 큰 것은 정상이다.</li>
+    <li>RSS는 공유 페이지를 중복 계산한다. 전체 합산은 <b>PSS</b>, "죽이면 돌아오는 양"은 <b>USS</b>. top의 SHR은 "공유 가능한" 페이지다.</li>
+    <li>컨테이너 OOM은 <code>memory.events</code>와 <code>memory.stat</code>(anon/file/shmem/kernel)로 분해한다. tmpfs(shmem)는 스왑 없이는 회수되지 않는다.</li>
+    <li>RSS만 늘고 힙 live가 일정하면 단편화·아레나·네이티브 할당을 의심하고, pmap의 크기 패턴(64MiB 아레나 등)으로 할당자를 추정한다.</li>
+    <li>지연 스파이크는 compact_stall(THP), direct reclaim, major fault, NUMA 원격 접근 중 무엇과 상관있는지 카운터 차이로 확인한다.</li>
+    <li>도구 선택: 전체(free/vmstat/meminfo/PSI) → 프로세스(smaps_rollup/pmap) → 커널(slabtop/numastat) → 이벤트(perf/bpftrace) → 할당(heaptrack/memleak/massif).</li>
+  </ul></div>
+
+  <h2 id="final">코스 종합 문제 20</h2>
+  <p>개론·심화·실전을 고루 섞었다. 계산 문제는 종이에 직접 풀어 본 뒤 고르자. 점수는 <b>각 문제의 첫 번째 선택</b>으로만 집계된다.</p>
+  <div class="score-box" id="score-box">
+    <span>점수 <span class="big" id="sc-pts">0</span> / 20</span>
+    <span>응답 <b id="sc-ans">0</b>/20</span>
+    <div class="meter"><div id="sc-meter"></div></div>
+    <span id="sc-cat" style="font-size:13px;color:var(--muted)"></span>
+    <button class="btn" id="sc-reset">다시 풀기</button>
+  </div>
+  <div id="sc-msg" class="callout" style="display:none"></div>
+
+  <div id="final-quiz">
+    <div class="quiz" data-answer="0" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>32비트 가상 주소, 4KiB 페이지, 단일 레벨 페이징. 가상 주소 0x00403A7C의 페이지 번호(VPN)와 오프셋은?</div>
+      <button class="opt">VPN 0x00403, 오프셋 0xA7C</button>
+      <button class="opt">VPN 0x0040, 오프셋 0x3A7C</button>
+      <button class="opt">VPN 0x403A7, 오프셋 0xC</button>
+      <button class="opt">VPN 0x00403A, 오프셋 0x7C</button>
+      <div class="explain">4KiB = 2<sup>12</sup>이므로 하위 12비트(16진 3자리)가 오프셋: 0xA7C. 나머지 상위 20비트가 VPN: 0x00403A7C &gt;&gt; 12 = 0x00403.</div>
+    </div>
+    <div class="quiz" data-answer="1" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>32비트 주소, 4KiB 페이지, PTE 4바이트인 단일 레벨 페이지 테이블의 프로세스당 크기는?</div>
+      <button class="opt">1 MiB</button>
+      <button class="opt">4 MiB</button>
+      <button class="opt">4 KiB</button>
+      <button class="opt">16 MiB</button>
+      <div class="explain">엔트리 수 = 2<sup>32</sup> / 2<sup>12</sup> = 2<sup>20</sup>개, × 4B = 4MiB. 프로세스마다 이만큼 연속으로 필요하다는 점이 다단계 페이지 테이블의 동기다.</div>
+    </div>
+    <div class="quiz" data-answer="2" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>x86-64 4단계 페이징(48비트, 4KiB). 가상 주소 0x00007F1234567000의 (PML4, PDPT, PD, PT) 인덱스는?</div>
+      <button class="opt">(255, 72, 418, 359)</button>
+      <button class="opt">(127, 36, 209, 179)</button>
+      <button class="opt">(254, 72, 418, 359)</button>
+      <button class="opt">(254, 72, 418, 103)</button>
+      <div class="explain">각 인덱스는 9비트: PML4 = (VA&gt;&gt;39)&amp;511 = 254, PDPT = (VA&gt;&gt;30)&amp;511 = 72, PD = (VA&gt;&gt;21)&amp;511 = 418, PT = (VA&gt;&gt;12)&amp;511 = 359, 오프셋 = 0.</div>
+    </div>
+    <div class="quiz" data-answer="1" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>57비트 가상 주소, 4KiB 페이지, 8바이트 PTE에서 각 테이블이 정확히 한 페이지를 차지하도록 하면 몇 단계가 필요한가?</div>
+      <button class="opt">4단계</button>
+      <button class="opt">5단계</button>
+      <button class="opt">6단계</button>
+      <button class="opt">3단계</button>
+      <div class="explain">한 페이지에 4096/8 = 512 = 2<sup>9</sup>개 엔트리 → 레벨당 9비트. (57 − 12) / 9 = 5. x86-64의 LA57(5단계 페이징)이 바로 이 구성이다.</div>
+    </div>
+    <div class="quiz" data-answer="3" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>메모리 접근 100ns, TLB 조회 시간은 무시, TLB 히트율 99%, TLB 미스 시 4단계 페이지 워크(캐시 없음). 유효 접근 시간(EAT)은?</div>
+      <button class="opt">101 ns</button>
+      <button class="opt">140 ns</button>
+      <button class="opt">500 ns</button>
+      <button class="opt">104 ns</button>
+      <div class="explain">EAT = 0.99 × 100 + 0.01 × (4 × 100 + 100) = 99 + 5 = 104ns. 미스 시 페이지 테이블 4회 + 데이터 1회.</div>
+    </div>
+    <div class="quiz" data-answer="2" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>메모리 접근 200ns, 페이지 폴트 처리 8ms, 폴트율 p = 0.001일 때 EAT는 대략?</div>
+      <button class="opt">208 ns</button>
+      <button class="opt">약 1 µs</button>
+      <button class="opt">약 8.2 µs (약 41배 느려짐)</button>
+      <button class="opt">약 8 ms</button>
+      <div class="explain">EAT = 0.999 × 200 + 0.001 × 8,000,000 = 199.8 + 8,000 = 8,199.8ns ≈ 8.2µs. 1000번에 한 번의 폴트로도 40배 이상 느려진다 — 폴트율은 백만분의 일 수준이어야 한다.</div>
+    </div>
+    <div class="quiz" data-answer="1" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>참조열 7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1, 프레임 3개(처음엔 비어 있음). <b>FIFO</b>의 페이지 폴트 수는?</div>
+      <button class="opt">12</button>
+      <button class="opt">15</button>
+      <button class="opt">9</button>
+      <button class="opt">16</button>
+      <div class="explain">FIFO는 15회. 같은 참조열에서 LRU는 12회, OPT는 9회다(첫 3회 강제 미스 포함).</div>
+    </div>
+    <div class="quiz" data-answer="2" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>같은 참조열(7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1), 프레임 3개에서 <b>LRU</b>의 페이지 폴트 수는?</div>
+      <button class="opt">15</button>
+      <button class="opt">9</button>
+      <button class="opt">12</button>
+      <button class="opt">10</button>
+      <div class="explain">LRU는 12회. 최근 사용 순서를 추적하면 3 0 4 2 구간 등에서 FIFO보다 3회를 덜 교체한다.</div>
+    </div>
+    <div class="quiz" data-answer="0" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>같은 참조열, 프레임 3개에서 <b>OPT</b>(Belady 최적)의 페이지 폴트 수는?</div>
+      <button class="opt">9</button>
+      <button class="opt">8</button>
+      <button class="opt">11</button>
+      <button class="opt">12</button>
+      <div class="explain">OPT는 9회. 미래에 가장 늦게 쓰일 페이지를 내보낸다. 실제로는 구현 불가능하지만 다른 알고리즘의 하한 기준이 된다.</div>
+    </div>
+    <div class="quiz" data-answer="3" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>참조열 1 2 3 4 1 2 5 1 2 3 4 5에 FIFO를 적용할 때 프레임 3개와 4개의 폴트 수는?</div>
+      <button class="opt">3개: 9, 4개: 8</button>
+      <button class="opt">3개: 10, 4개: 9</button>
+      <button class="opt">3개: 9, 4개: 9</button>
+      <button class="opt">3개: 9, 4개: 10</button>
+      <div class="explain">프레임을 늘렸는데 폴트가 9→10으로 늘었다: Belady의 이상 현상. FIFO는 스택 알고리즘이 아니라서 생긴다(LRU/OPT에는 없다).</div>
+    </div>
+    <div class="quiz" data-answer="2" data-cat="a">
+      <div class="q"><span class="qtag t-a">심화·계산</span>1MiB 버디 할당자(시작 주소 0, 같은 크기면 낮은 주소 블록 우선)에 70KiB, 35KiB, 80KiB를 순서대로 요청했다. 남은 free 블록 구성과 내부 단편화 총량은?</div>
+      <button class="opt">free {64, 128, 512} KiB, 내부 단편화 120KiB</button>
+      <button class="opt">free {128, 256, 512} KiB, 내부 단편화 135KiB</button>
+      <button class="opt">free {64, 128, 512} KiB, 내부 단편화 135KiB</button>
+      <button class="opt">free {32, 64, 128, 512} KiB, 내부 단편화 135KiB</button>
+      <div class="explain">70→128K(@0), 35→64K(@128K, 128K 블록 분할), 80→128K(@256K, 256K 블록 분할). 남는 블록: 64K@192K, 128K@384K, 512K@512K. 내부 단편화 = (128−70) + (64−35) + (128−80) = 58 + 29 + 48 = 135KiB.</div>
+    </div>
+    <div class="quiz" data-answer="1" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론·계산</span>64엔트리 데이터 TLB의 TLB reach(커버 가능한 메모리)는 4KiB 페이지와 2MiB 페이지에서 각각?</div>
+      <button class="opt">64 KiB / 64 MiB</button>
+      <button class="opt">256 KiB / 128 MiB</button>
+      <button class="opt">256 KiB / 2 MiB</button>
+      <button class="opt">4 MiB / 128 MiB</button>
+      <div class="explain">64 × 4KiB = 256KiB, 64 × 2MiB = 128MiB. 같은 엔트리 수로 512배를 덮는다. 큰 working set에서 huge page가 효과적인 이유다.</div>
+    </div>
+    <div class="quiz" data-answer="3" data-cat="a">
+      <div class="q"><span class="qtag t-a">심화·계산</span>게스트는 4단계 4KiB 페이징, 호스트 EPT는 게스트 RAM을 2MiB 페이지로 매핑(EPT walk 3회)한다. 캐시가 모두 빈 상태에서 2D page walk의 최대 메모리 참조 수는?</div>
+      <button class="opt">24</button>
+      <button class="opt">12</button>
+      <button class="opt">15</button>
+      <button class="opt">19</button>
+      <div class="explain">n·m + n + m = 4×3 + 4 + 3 = 19. 호스트 쪽 huge page만으로도 24에서 19로 줄고, 게스트도 2MiB면 3×3+3+3 = 15.</div>
+    </div>
+    <div class="quiz" data-answer="0" data-cat="p">
+      <div class="q"><span class="qtag t-p">실전·계산</span>프로세스 P는 3개 프로세스가 공유하는 3MiB 라이브러리와 2MiB 전용 힙을 매핑하고 있다. P의 (RSS, PSS, USS)는?</div>
+      <button class="opt">(5, 3, 2) MiB</button>
+      <button class="opt">(5, 5, 2) MiB</button>
+      <button class="opt">(3, 3, 2) MiB</button>
+      <button class="opt">(5, 3, 3) MiB</button>
+      <div class="explain">RSS = 3 + 2 = 5, PSS = 3/3 + 2 = 3, USS = 전용 2. 세 프로세스의 RSS를 더하면 라이브러리가 세 번 계산되지만 PSS 합에는 한 번만 들어간다.</div>
+    </div>
+    <div class="quiz" data-answer="1" data-cat="i">
+      <div class="q"><span class="qtag t-i">개론</span>리눅스에서 fork() 직후 자식이 전역 변수 하나에 쓰면 일어나는 일로 옳은 것은?</div>
+      <button class="opt">fork() 시점에 이미 전체 주소 공간이 복사되어 있으므로 아무 일도 없다</button>
+      <button class="opt">쓰기 금지된 공유 페이지에 대한 페이지 폴트 → 해당 페이지 하나만 복사 후 쓰기 가능으로 매핑</button>
+      <button class="opt">부모의 페이지에 직접 쓰여 부모도 값이 바뀐다</button>
+      <button class="opt">SIGSEGV로 종료된다</button>
+      <div class="explain">fork는 페이지 테이블만 복사하고 양쪽 PTE를 쓰기 금지로 바꾼다. 첫 쓰기 시 CoW 폴트로 그 페이지만 복사한다. fork 후 대량 쓰기(Redis BGSAVE 등)가 메모리를 두 배 가까이 쓰게 하는 이유이기도 하다.</div>
+    </div>
+    <div class="quiz" data-answer="2" data-cat="a">
+      <div class="q"><span class="qtag t-a">심화</span>스래싱의 근본 원인과 가장 근본적인 해결책의 짝은?</div>
+      <button class="opt">CPU 이용률 저하 — 프로세스를 더 투입한다</button>
+      <button class="opt">TLB 미스 — huge page를 켠다</button>
+      <button class="opt">활성 프로세스들의 워킹셋 합 &gt; 가용 프레임 — 동시 실행(멀티프로그래밍) 정도를 줄이거나 메모리를 늘린다</button>
+      <button class="opt">디스크가 느림 — 스왑 파티션을 키운다</button>
+      <div class="explain">워킹셋 합이 메모리를 넘으면 페이지가 계속 서로를 밀어낸다. CPU 이용률이 떨어졌다고 프로세스를 더 넣으면 악화된다(고전적 실수). 스왑을 키워도 해결되지 않는다.</div>
+    </div>
+    <div class="quiz" data-answer="0" data-cat="a">
+      <div class="q"><span class="qtag t-a">심화</span>커널이 버디 할당자 위에 slab/SLUB 계층을 두는 주된 이유는?</div>
+      <button class="opt">자주 쓰는 작은 고정 크기 객체를 페이지 단위보다 작게, 빠르게(CPU별 캐시) 할당하고 내부 단편화를 줄이기 위해</button>
+      <button class="opt">유저 공간 malloc과 코드를 공유하기 위해</button>
+      <button class="opt">물리적으로 연속된 큰 메모리를 얻기 위해</button>
+      <button class="opt">페이지를 스왑하기 쉽게 만들기 위해</button>
+      <div class="explain">버디는 2<sup>n</sup> 페이지 단위라 수십~수백 바이트 객체에 낭비가 크다. slab은 같은 타입 객체를 페이지에 촘촘히 담고, CPU별 freelist로 락 없이 빠르게 할당한다. slab 객체는 일반적으로 스왑되지 않는다.</div>
+    </div>
+    <div class="quiz" data-answer="3" data-cat="a">
+      <div class="q"><span class="qtag t-a">심화</span>cgroup v2의 memory.high와 memory.max에 대한 설명으로 옳은 것은?</div>
+      <button class="opt">둘 다 초과 즉시 OOM killer를 호출한다</button>
+      <button class="opt">memory.high는 페이지 캐시에만, memory.max는 익명 메모리에만 적용된다</button>
+      <button class="opt">memory.high는 하드 한도이고 memory.max는 권고값이다</button>
+      <button class="opt">memory.high를 넘으면 회수 압박과 쓰로틀링을 받고(OOM 없음), memory.max는 하드 한도로 회수 실패 시 cgroup OOM이 발생한다</button>
+      <div class="explain">memory.high는 "여기서부터 느려져라"라는 소프트 한도로, 할당하는 태스크에 직접 회수와 지연을 부과한다. memory.max를 넘을 수 없고 회수로도 못 맞추면 cgroup 내 OOM kill이 일어난다.</div>
+    </div>
+    <div class="quiz" data-answer="1" data-cat="a">
+      <div class="q"><span class="qtag t-a">심화</span>KPTI(Meltdown 완화)가 시스템 콜 성능을 떨어뜨리는 이유와 이를 줄이는 하드웨어 기능은?</div>
+      <button class="opt">커널 코드 암호화 — AES-NI</button>
+      <button class="opt">유저/커널 전환마다 CR3를 바꿔 TLB가 flush됨 — PCID로 TLB 엔트리에 태그를 붙여 flush를 피함</button>
+      <button class="opt">시스템 콜마다 페이지 테이블 전체를 복사함 — huge page</button>
+      <button class="opt">커널 스택이 커짐 — SMEP</button>
+      <div class="explain">KPTI는 유저 모드용 페이지 테이블에서 커널 매핑 대부분을 제거하므로 진입/복귀마다 CR3를 전환한다. PCID가 없으면 매번 TLB가 비워진다. PCID가 있으면 두 주소 공간의 엔트리가 공존할 수 있다.</div>
+    </div>
+    <div class="quiz" data-answer="2" data-cat="p">
+      <div class="q"><span class="qtag t-p">실전</span>64GiB 서버에서 MemFree 0.8GiB, buff/cache 46GiB, MemAvailable 46GiB, PSI some avg60 = 0.00, si/so = 0이다. 올바른 판단은?</div>
+      <button class="opt">메모리 고갈 직전이므로 즉시 drop_caches를 실행한다</button>
+      <button class="opt">스왑을 늘린다</button>
+      <button class="opt">압박이 없다. 남는 메모리를 페이지 캐시로 쓰는 정상 상태이며, 경보 기준을 MemAvailable/PSI로 바꿔야 한다</button>
+      <button class="opt">커널 메모리 누수다</button>
+      <div class="explain">available이 크고 PSI·스왑 I/O가 0이면 압박이 없다. drop_caches는 뜨거운 캐시를 버려 오히려 디스크 I/O와 지연을 유발한다.</div>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function gib(kb) { return (kb / 1048576).toFixed(kb >= 10 * 1048576 ? 1 : 2) + " GiB"; }
+
+  /* ================= 1) /proc/meminfo 해석기 ================= */
+  var MI_PRESETS = {
+    cache: "MemTotal:       65842360 kB\nMemFree:          812344 kB\nMemAvailable:   48213560 kB\nBuffers:          412880 kB\nCached:         46120344 kB\nSwapCached:        10240 kB\nActive(anon):   13500000 kB\nInactive(anon):  1400000 kB\nActive(file):   18020000 kB\nInactive(file): 26700000 kB\nSwapTotal:       8388604 kB\nSwapFree:        8200000 kB\nDirty:             18420 kB\nWriteback:             0 kB\nAnonPages:      13050000 kB\nMapped:          1220000 kB\nShmem:           1850000 kB\nSlab:            2900000 kB\nSReclaimable:    2100000 kB\nSUnreclaim:       800000 kB\nKernelStack:       24576 kB\nPageTables:        98304 kB\nCommitLimit:    41309784 kB\nCommitted_AS:   22100000 kB\nAnonHugePages:   4194304 kB\nHugePages_Total:       0\nHugepagesize:       2048 kB",
+    slab: "MemTotal:       65842360 kB\nMemFree:         1203320 kB\nMemAvailable:   22914000 kB\nBuffers:          120332 kB\nCached:          6120344 kB\nAnonPages:       8350000 kB\nShmem:            310000 kB\nSlab:           43554432 kB\nSReclaimable:   32505856 kB\nSUnreclaim:     11048576 kB\nKernelStack:       30576 kB\nPageTables:       120304 kB\nDirty:              8420 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\nCommitLimit:    32921180 kB\nCommitted_AS:   14100000 kB\nAnonHugePages:         0 kB\nHugePages_Total:       0\nHugepagesize:       2048 kB",
+    tight: "MemTotal:       16303384 kB\nMemFree:          143220 kB\nMemAvailable:     402112 kB\nBuffers:            2104 kB\nCached:          1820332 kB\nAnonPages:      12980112 kB\nShmem:           1540112 kB\nSlab:             410332 kB\nSReclaimable:     120332 kB\nSUnreclaim:       290000 kB\nKernelStack:       40112 kB\nPageTables:       180332 kB\nDirty:            612000 kB\nSwapTotal:       4194300 kB\nSwapFree:         210112 kB\nCommitLimit:    12345992 kB\nCommitted_AS:   23801220 kB\nAnonHugePages:   2097152 kB\nHugePages_Total:       0\nHugepagesize:       2048 kB"
+  };
+  function parseMeminfo(txt) {
+    var m = {};
+    txt.split(/\n/).forEach(function (line) {
+      var r = /^\s*([A-Za-z0-9_()]+):\s+(\d+)/.exec(line);
+      if (r) m[r[1]] = +r[2];
+    });
+    return m;
+  }
+  // 순수 계산 함수: 범주별 kB 와 진단 결과
+  function analyzeMeminfo(m) {
+    var g = function (k) { return m[k] || 0; };
+    var T = g("MemTotal");
+    var huge = g("HugePages_Total") * g("Hugepagesize");
+    var parts = [
+      { k: "anon", n: "익명(AnonPages)", v: g("AnonPages"), c: "var(--accent)" },
+      { k: "file", n: "페이지 캐시(Cached+Buffers−Shmem)", v: Math.max(0, g("Cached") + g("Buffers") - g("Shmem")), c: "var(--teal)" },
+      { k: "shmem", n: "Shmem(tmpfs·공유메모리)", v: g("Shmem"), c: "var(--violet)" },
+      { k: "srec", n: "슬랩 회수 가능", v: g("SReclaimable"), c: "var(--warn)" },
+      { k: "sun", n: "슬랩 회수 불가", v: g("SUnreclaim"), c: "var(--bad)" },
+      { k: "kern", n: "커널스택+페이지테이블", v: g("KernelStack") + g("PageTables"), c: "var(--muted)" },
+      { k: "huge", n: "hugetlb 예약", v: huge, c: "var(--text)" },
+      { k: "free", n: "MemFree", v: g("MemFree"), c: "var(--ok)" }
+    ];
+    var sum = parts.reduce(function (a, p) { return a + p.v; }, 0);
+    parts.splice(parts.length - 1, 0, { k: "other", n: "기타/미분류(vmalloc·드라이버 등)", v: Math.max(0, T - sum), c: "var(--border)" });
+    var F = [];
+    var availR = T ? g("MemAvailable") / T : 0;
+    var freeR = T ? g("MemFree") / T : 0;
+    if (availR < 0.05) F.push(["bad", "MemAvailable이 " + (availR * 100).toFixed(1) + "%로 매우 낮다. 실제 압박 상태 — PSI, si/so, OOM 로그를 확인하라."]);
+    else if (availR < 0.15) F.push(["warn", "MemAvailable " + (availR * 100).toFixed(1) + "%. 여유가 적다. 추세를 보라."]);
+    var fileR = T ? Math.max(0, g("Cached") + g("Buffers") - g("Shmem")) / T : 0;
+    if (freeR < 0.05 && availR > 0.3 && fileR > 0.3) F.push(["ok", "MemFree는 " + (freeR * 100).toFixed(1) + "%뿐이지만 MemAvailable이 " + (availR * 100).toFixed(1) + "%다. 페이지 캐시가 남는 메모리를 쓰고 있는 정상 상태. 'free 기준' 경보는 오탐이다."]);
+    if (T && g("SUnreclaim") / T > 0.05) F.push(["bad", "SUnreclaim이 MemTotal의 " + (g("SUnreclaim") / T * 100).toFixed(1) + "%. 커널 객체 누수 의심 → slabtop -s c, slabratetop."]);
+    if (T && g("SReclaimable") / T > 0.25) F.push(["warn", "SReclaimable이 " + (g("SReclaimable") / T * 100).toFixed(1) + "%. dentry/inode 캐시 폭증 가능성(음수 dentry 등). 회수 가능하지만 회수 비용·지연이 크다 → slabtop, /proc/sys/fs/dentry-state."]);
+    if (T && g("Shmem") / T > 0.08) F.push(["warn", "Shmem이 " + gib(g("Shmem")) + ". tmpfs·/dev/shm·공유 메모리는 스왑 없이는 회수 불가 → df -t tmpfs, ipcs -m."]);
+    if (g("Dirty") > 512 * 1024) F.push(["warn", "Dirty " + gib(g("Dirty")) + ". 쓰기 저장이 밀려 있다. 쓰기 쓰로틀링(balance_dirty_pages) 지연 가능 → vm.dirty_* 설정, 디스크 대역폭 확인."]);
+    if (g("SwapTotal") > 0 && g("SwapFree") / g("SwapTotal") < 0.2) F.push(["bad", "스왑 사용률 " + ((1 - g("SwapFree") / g("SwapTotal")) * 100).toFixed(0) + "%. vmstat si/so가 지속되면 스래싱."]);
+    if (g("Committed_AS") > g("CommitLimit") && g("CommitLimit") > 0) F.push(["info", "Committed_AS(" + gib(g("Committed_AS")) + ") > CommitLimit. vm.overcommit_memory=2라면 새 할당이 실패한다. 기본값(0)에서는 경고 수준."]);
+    if (g("AnonHugePages") > 0) F.push(["info", "AnonHugePages " + gib(g("AnonHugePages")) + " — THP 사용 중. 지연 스파이크가 있다면 /proc/vmstat의 compact_stall을 함께 보라."]);
+    var other = parts.filter(function (p) { return p.k === "other"; })[0].v;
+    if (T && other / T > 0.15) F.push(["warn", "어느 범주에도 안 잡히는 메모리가 " + gib(other) + ". vmalloc, GPU/RDMA 드라이버, balloon, 커널 직접 할당 페이지 등을 의심."]);
+    if (!F.length) F.push(["ok", "특이 사항 없음."]);
+    return { T: T, parts: parts, findings: F, availR: availR, naive: T ? 1 - freeR : 0 };
+  }
+  function renderMeminfo() {
+    var m = parseMeminfo($("mi-text").value);
+    if (!m.MemTotal) { $("mi-find").innerHTML = '<div class="finding bad">MemTotal을 찾을 수 없다. /proc/meminfo 형식으로 붙여 넣어라.</div>'; return; }
+    var r = analyzeMeminfo(m);
+    $("mi-bar").innerHTML = r.parts.map(function (p) { return '<div title="' + esc(p.n) + ": " + gib(p.v) + '" style="width:' + (p.v / r.T * 100) + "%;background:" + p.c + '"></div>'; }).join("");
+    $("mi-legend").innerHTML = r.parts.map(function (p) { return '<span><i style="background:' + p.c + '"></i>' + esc(p.n) + " " + gib(p.v) + "</span>"; }).join("");
+    $("mi-total").textContent = gib(r.T);
+    $("mi-avail").textContent = gib(m.MemAvailable || 0);
+    $("mi-naive").textContent = (r.naive * 100).toFixed(1) + "%";
+    $("mi-real").textContent = ((1 - r.availR) * 100).toFixed(1) + "%";
+    $("mi-find").innerHTML = r.findings.map(function (f) { return '<div class="finding ' + f[0] + '">' + esc(f[1]) + "</div>"; }).join("");
+  }
+  document.querySelectorAll("[data-mi]").forEach(function (b) { b.onclick = function () { $("mi-text").value = MI_PRESETS[b.dataset.mi]; renderMeminfo(); }; });
+  $("mi-go").onclick = renderMeminfo;
+  $("mi-text").value = MI_PRESETS.cache;
+  renderMeminfo();
+
+  /* ================= 2) RSS / PSS / USS 계산기 ================= */
+  var PROCS = ["A", "B", "C"];
+  var REG = [
+    { name: "libc.so 텍스트 (파일)", size: 2, map: [1, 1, 1] },
+    { name: "앱 코드 (파일)", size: 8, map: [1, 1, 1] },
+    { name: "fork 전 마스터 힙 (CoW 미분리)", size: 30, map: [1, 1, 0] },
+    { name: "POSIX 공유 메모리 (shm)", size: 12, map: [0, 1, 1] },
+    { name: "A 전용 힙", size: 20, map: [1, 0, 0], fixed: 0 },
+    { name: "B 전용 힙", size: 35, map: [0, 1, 0], fixed: 1 },
+    { name: "C 전용 힙", size: 10, map: [0, 0, 1], fixed: 2 }
+  ];
+  // 순수 계산: 각 프로세스의 rss/pss/uss
+  function pssCalc(regs, np) {
+    var out = [];
+    for (var p = 0; p < np; p++) out.push({ rss: 0, pss: 0, uss: 0 });
+    var phys = 0;
+    regs.forEach(function (r) {
+      var n = r.map.reduce(function (a, b) { return a + b; }, 0);
+      if (n > 0) phys += r.size;
+      r.map.forEach(function (on, p) {
+        if (!on) return;
+        out[p].rss += r.size; out[p].pss += r.size / n;
+        if (n === 1) out[p].uss += r.size;
+      });
+    });
+    return { per: out, phys: phys };
+  }
+  function f1(x) { return (Math.round(x * 100) / 100) + ""; }
+  function pssRender() {
+    var res = pssCalc(REG, 3);
+    var h = "<tr><th>영역</th><th>크기(MiB)</th>" + PROCS.map(function (p) { return "<th>" + p + "</th>"; }).join("") + "<th>공유 수</th></tr>";
+    REG.forEach(function (r, i) {
+      var n = r.map.reduce(function (a, b) { return a + b; }, 0);
+      h += "<tr><td>" + r.name + '</td><td><input type="number" min="0" max="999" step="1" value="' + r.size + '" data-sz="' + i + '"></td>';
+      r.map.forEach(function (on, p) {
+        h += "<td>" + (r.fixed === undefined ? '<input type="checkbox" data-r="' + i + '" data-p="' + p + '"' + (on ? " checked" : "") + ">" : (on ? "●" : "")) + "</td>";
+      });
+      h += "<td>" + n + "</td></tr>";
+    });
+    ["RSS", "PSS", "USS"].forEach(function (k) {
+      h += '<tr class="tot"><td colspan="2">' + k + "</td>" + res.per.map(function (o) { return "<td>" + f1(o[k.toLowerCase()]) + "</td>"; }).join("") + "<td></td></tr>";
+    });
+    $("pss-tbl").innerHTML = h;
+    var sum = function (k) { return res.per.reduce(function (a, o) { return a + o[k]; }, 0); };
+    $("pss-rss").textContent = f1(sum("rss")) + " MiB";
+    $("pss-pss").textContent = f1(sum("pss")) + " MiB";
+    $("pss-phys").textContent = f1(res.phys) + " MiB";
+    $("pss-uss").textContent = f1(sum("uss")) + " MiB";
+    var a = res.per[0];
+    var lines = ["A의 PSS = " + REG.filter(function (r) { return r.map[0]; }).map(function (r) {
+      var n = r.map.reduce(function (x, y) { return x + y; }, 0); return r.size + "/" + n;
+    }).join(" + ") + " = " + f1(a.pss) + " MiB"];
+    lines.push("RSS 합 − 실제 = " + f1(sum("rss") - res.phys) + " MiB 과대 계상 (공유 영역 중복)");
+    lines.push("A를 kill하면 즉시 돌아오는 메모리 ≈ USS(A) = " + f1(a.uss) + " MiB" + (REG.some(function (r) { return r.map[0] && r.map.reduce(function (x, y) { return x + y; }, 0) > 1; }) ? " (공유 영역은 다른 프로세스가 계속 매핑)" : ""));
+    $("pss-log").textContent = lines.join("\n");
+  }
+  $("pss-tbl").addEventListener("change", function (e) {
+    var t = e.target;
+    if (t.dataset.sz !== undefined) REG[+t.dataset.sz].size = Math.max(0, +t.value || 0);
+    if (t.dataset.r !== undefined) REG[+t.dataset.r].map[+t.dataset.p] = t.checked ? 1 : 0;
+    pssRender();
+  });
+  pssRender();
+
+  /* ================= 3) 진단 트리 ================= */
+  var T = {
+    root: { q: "가장 먼저 관찰된 증상은?", o: [
+      ["특정 프로세스의 RSS가 계속 증가한다", "rss"],
+      ["프로세스나 컨테이너가 OOM으로 죽었다", "oom"],
+      ["모니터링에서 'free 메모리 거의 0' 경보", "freelow"],
+      ["간헐적 지연 스파이크, 순간 멈춤", "lat"],
+      ["시스템 전체가 느리고 디스크가 바쁘다", "slow"]
+    ] },
+    freelow: { q: "MemAvailable(free의 available)도 낮은가?", o: [
+      ["아니오, available은 충분하다", "L_cache"],
+      ["예, available도 MemTotal의 10% 미만", "press"]
+    ] },
+    press: { q: "/proc/meminfo를 분해하면 무엇이 큰가?", o: [
+      ["AnonPages (프로세스 PSS 합과 비슷)", "rss"],
+      ["Slab, 특히 SUnreclaim 또는 거대한 SReclaimable", "L_kmem"],
+      ["Shmem", "L_shmem"],
+      ["어느 항목 합으로도 설명 안 되는 큰 차이", "L_hidden"]
+    ] },
+    rss: { q: "증가분의 종류는? (smaps_rollup의 Pss_Anon / Pss_File / Pss_Shmem, status의 RssAnon/RssFile/RssShmem)", o: [
+      ["익명(Anonymous) 메모리", "anon"],
+      ["파일 매핑(RssFile)", "L_filemap"],
+      ["공유 메모리(RssShmem)", "L_shmem"]
+    ] },
+    anon: { q: "언어 런타임/할당자 통계의 live 힙도 같이 증가하는가?", o: [
+      ["예, live 객체(힙 사용량)도 증가", "L_leak"],
+      ["아니오, live 힙은 일정한데 RSS만 증가", "frag"],
+      ["관리형 런타임(JVM 등): 힙은 한도 내인데 RSS가 힙 한도보다 훨씬 큼", "L_offheap"]
+    ] },
+    frag: { q: "RSS 증가의 모양은?", o: [
+      ["부하가 줄어도 고점에서 내려오지 않는다", "L_frag"],
+      ["스레드 수에 비례해 늘고, pmap에 64MiB anon 영역이 많다", "L_arena"],
+      ["일정 수준에서 평탄해진다", "L_hwm"]
+    ] },
+    oom: { q: "커널 로그(dmesg / journalctl -k)에 어떤 메시지가 있나?", o: [
+      ["\"Memory cgroup out of memory\" (컨테이너 한도)", "oomcg"],
+      ["\"Out of memory: Killed process\" (시스템 전체)", "oomsys"],
+      ["커널 로그엔 없고 앱이 OutOfMemoryError 등을 던졌다", "L_rtoom"]
+    ] },
+    oomcg: { q: "그 cgroup의 memory.stat에서 가장 큰 항목은?", o: [
+      ["anon", "anon"],
+      ["shmem (tmpfs, emptyDir medium: Memory, /dev/shm)", "L_shmem"],
+      ["file이 대부분인데 OOM이 났다", "L_cgfile"],
+      ["kernel / slab / sock", "L_kmem"]
+    ] },
+    oomsys: { q: "OOM 로그의 메모리 덤프에서 무엇이 컸나?", o: [
+      ["anon이 대부분, 프로세스 RSS 합이 RAM을 넘음", "L_overcommit"],
+      ["slab_unreclaimable", "L_kmem"],
+      ["HugePages 예약 또는 설명 안 되는 영역", "L_hidden"]
+    ] },
+    lat: { q: "스파이크 시점에 함께 증가하는 카운터는?", o: [
+      ["sys CPU 급증, /proc/vmstat compact_stall 증가 (THP 사용 중)", "L_thp"],
+      ["allocstall, pgscan_direct 증가, PSI some 상승", "L_reclaim"],
+      ["pgmajfault 증가", "L_major"],
+      ["numastat의 other_node/numa_miss 증가", "L_numa"],
+      ["GC 로그의 긴 pause", "L_gc"]
+    ] },
+    slow: { q: "vmstat의 si/so가 지속적으로 0이 아닌가?", o: [
+      ["예, 스왑 인/아웃이 계속된다", "L_thrash"],
+      ["아니오, bi(읽기)만 많고 캐시가 계속 교체된다", "L_churn"]
+    ] },
+    L_cache: { t: "지표 오해: 페이지 캐시는 정상", cause: "남는 메모리를 페이지 캐시가 쓰고 있을 뿐이다. 필요하면 즉시 회수된다.", check: "free -m 의 available, cat /proc/pressure/memory, vmstat 1 의 si/so", fix: "경보를 MemAvailable 또는 PSI 기준으로 바꾼다. drop_caches cron은 제거(오히려 디스크 I/O와 지연 유발). 컨테이너는 working set(usage − inactive_file)을 본다." },
+    L_kmem: { t: "커널 메모리(슬랩) 증가", cause: "특정 커널 객체 캐시의 폭증: 음수 dentry, inode 캐시, 네트워크 버퍼, 드라이버 누수 등.", check: "slabtop -o -s c, /proc/slabinfo, slabratetop(BCC), cat /proc/sys/fs/dentry-state, memory.stat의 kernel/slab/sock", fix: "원인 앱의 패턴 수정(존재하지 않는 파일 반복 조회 등). vfs_cache_pressure 조정. SUnreclaim의 지속 증가는 커널/드라이버 버그 — 커널 업데이트, kmemleak(디버그 커널)." },
+    L_shmem: { t: "tmpfs / 공유 메모리 누적", cause: "tmpfs 파일, /dev/shm, POSIX/SysV 공유 메모리, memfd. 프로세스 RSS에 안 보이기도 하고 스왑 없이는 회수 불가.", check: "df -h -t tmpfs, du -sh /dev/shm, ipcs -m, memory.stat의 shmem, lsof +L1 (지워졌지만 열린 파일)", fix: "임시 파일 정리, K8s emptyDir에 sizeLimit 또는 디스크 기반 사용, 공유 메모리 세그먼트 해제(ipcrm), tmpfs size= 제한." },
+    L_hidden: { t: "회계에 안 잡히는 메모리", cause: "hugetlb 예약(HugePages_Total), vmalloc, GPU/RDMA 드라이버 pin, VM balloon, 커널이 alloc_pages로 직접 가져간 페이지.", check: "grep -i huge /proc/meminfo, /proc/vmallocinfo, 드라이버별 debugfs, VM이면 balloon 통계", fix: "불필요한 hugepage 예약 축소(vm.nr_hugepages), 드라이버 메모리 설정 확인. MemTotal − (모든 항목 합)을 정기적으로 추적하라." },
+    L_filemap: { t: "파일 매핑 증가 (대개 문제 아님)", cause: "mmap한 파일(DB 데이터 파일, 모델 가중치)을 더 많이 읽은 것. 클린 파일 페이지는 회수 가능.", check: "pmap -x 로 어떤 파일인지, smaps의 Private_Dirty(쓰기 매핑이면 dirty), Mlocked", fix: "보통 조치 불필요. 회수를 막는 mlock, MAP_POPULATE, 더티 페이지 과다 여부만 확인." },
+    L_leak: { t: "애플리케이션 누수 또는 무한 증가하는 캐시", cause: "해제되지 않는 객체: 크기 제한 없는 캐시/맵, 리스너 미해제, 세션 누적.", check: "런타임 힙 덤프/프로파일(jmap·pprof·tracemalloc), 네이티브면 heaptrack 또는 BCC memleak -p PID", fix: "캐시에 상한·TTL, 참조 해제. 수정 전까지는 memory.high로 완충하고 주기적 재시작을 임시 방편으로." },
+    L_offheap: { t: "힙 외(네이티브) 메모리 증가", cause: "JVM: 스레드 스택, Metaspace, 코드 캐시, Direct ByteBuffer, JNI 라이브러리의 malloc, glibc 아레나.", check: "-XX:NativeMemoryTracking=summary + jcmd PID VM.native_memory summary, pmap -x 의 64MiB 영역 개수, RSS − NMT committed 차이", fix: "MALLOC_ARENA_MAX=2~4 또는 jemalloc, -XX:MaxDirectMemorySize, 스레드 수 제한, 컨테이너 한도 대비 힙은 보통 60~75%." },
+    L_frag: { t: "힙 단편화 (해제했지만 OS에 반납 안 됨)", cause: "할당자가 free된 메모리를 내부에 보관하거나, 살아 있는 작은 객체가 페이지/청크를 붙잡아 반납 불가.", check: "할당자 통계(malloc_info, jemalloc stats), RSS 대비 live 힙 비율, smaps의 Private_Dirty", fix: "jemalloc/tcmalloc(반납 정책 조정: dirty_decay_ms 등), glibc malloc_trim, 할당 크기 클래스 정리, 수명별 풀/아레나 분리." },
+    L_arena: { t: "glibc malloc 아레나 증식", cause: "스레드가 경합 시 새 아레나를 만든다(64비트 기본 최대 8 × 코어 수). 아레나마다 단편화와 미반납 메모리가 쌓인다.", check: "pmap -x PID | awk '$2==65536' | wc -l, 스레드 수(/proc/PID/status Threads)", fix: "MALLOC_ARENA_MAX=2~4, 또는 jemalloc/tcmalloc 사용. 스레드 풀 크기 축소." },
+    L_hwm: { t: "고점 유지(high water mark) — 누수 아님", cause: "부하 피크 때 확보한 메모리를 할당자가 재사용을 위해 보관. 평탄해지면 누수가 아니다.", check: "VmHWM과 VmRSS 비교, 장기 추세", fix: "피크 메모리 자체를 줄이거나(배치 크기 제한), 할당자 반납 정책 조정. 한도는 피크 기준으로 잡는다." },
+    L_rtoom: { t: "런타임 내부 한도 초과", cause: "커널 OOM이 아니라 런타임 자체 한도(JVM -Xmx, Metaspace, Direct memory, Node --max-old-space-size)에 걸린 것.", check: "예외 메시지 종류(Java heap space / Metaspace / Direct buffer memory / unable to create native thread), 힙 덤프(-XX:+HeapDumpOnOutOfMemoryError)", fix: "누수 분석 후 한도 조정. 'unable to create native thread'는 메모리보다 스레드 수·pids.max·ulimit 문제인 경우가 많다." },
+    L_cgfile: { t: "파일 캐시가 큰데 cgroup OOM", cause: "file이 대부분 Dirty/Writeback이라 회수가 느리거나, 회수 가능한 캐시보다 할당 속도가 빠르다. 또는 file 안의 shmem을 놓쳤다(cgroup v2에서 file은 shmem을 포함).", check: "memory.stat의 file_dirty, file_writeback, shmem, memory.events의 max/high 횟수, memory.pressure", fix: "쓰기 패턴 조정(fsync 주기, O_DIRECT), memory.high를 max보다 낮게 두어 미리 회수, shmem 사용 확인." },
+    L_overcommit: { t: "실제 메모리 부족 (오버커밋)", cause: "프로세스들의 실제 사용량 합이 RAM(+스왑)을 넘었다. 대개 한 프로세스의 폭증이나 동시 실행 과다.", check: "OOM 로그의 프로세스 표(rss, pgtables_bytes, oom_score_adj), 직전 PSS 추세", fix: "원인 프로세스의 한도 설정(cgroup memory.max), 중요 프로세스 oom_score_adj 조정, systemd-oomd/earlyoom으로 조기 개입, 용량 증설." },
+    L_thp: { t: "THP 직접 컴팩션 지연", cause: "THP enabled=always + defrag=always에서 폴트 경로가 2MiB 연속 메모리를 만들려고 동기 컴팩션(direct compaction)을 수행.", check: "cat /sys/kernel/mm/transparent_hugepage/{enabled,defrag}, /proc/vmstat의 compact_stall·compact_fail·thp_fault_fallback 증가율, perf로 compact_zone 스택", fix: "defrag을 defer+madvise 또는 madvise로, enabled를 madvise로. 지연 민감 서비스(Redis 등)는 THP 비활성화 권장." },
+    L_reclaim: { t: "직접 회수(direct reclaim) 지연", cause: "free가 워터마크 아래로 떨어져 할당하는 스레드가 직접 회수를 수행.", check: "/proc/vmstat의 allocstall_*, pgscan_direct, pgsteal_direct, BCC drsnoop, PSI some/full", fix: "vm.watermark_scale_factor를 키워 kswapd가 미리 회수, vm.min_free_kbytes 조정, 메모리 한도/캐시 사용 축소, memory.high로 cgroup 단위 선제 회수." },
+    L_major: { t: "major fault (디스크에서 페이지 읽기)", cause: "필요한 파일 페이지가 캐시에서 밀려났거나 익명 페이지가 스왑아웃됨. 리폴트(workingset_refault_*)가 높으면 캐시가 working set보다 작다.", check: "perf stat -e major-faults, /proc/vmstat의 pgmajfault, workingset_refault_file/anon, BCC cachestat", fix: "메모리 증설 또는 다른 메모리 사용 축소, 중요한 파일은 mlock/vmtouch, 스왑이 원인이면 스왑성 조정(vm.swappiness, memory.swap.max)." },
+    L_numa: { t: "NUMA 원격 접근", cause: "프로세스가 실행되는 노드와 메모리가 있는 노드가 다르다. 한 노드 메모리 고갈 또는 스케줄러 이동.", check: "numastat -p PID, numastat의 other_node·numa_miss, perf의 원격 메모리 이벤트", fix: "numactl --cpunodebind/--membind, 프로세스별 노드 고정, automatic NUMA balancing(kernel.numa_balancing) 확인, 인터리브 정책 검토." },
+    L_gc: { t: "GC pause", cause: "관리형 런타임의 수집기 정지. 힙 크기·할당률·객체 수명 분포에 좌우. 컨테이너 CPU 쓰로틀링이 pause를 늘리기도 한다.", check: "GC 로그(-Xlog:gc*), 할당률, cgroup cpu.stat의 nr_throttled", fix: "저지연 GC(ZGC, Shenandoah), 힙/영역 크기 조정, 할당률 감소, CPU 한도 여유 확보." },
+    L_thrash: { t: "스래싱 (워킹셋 > 메모리)", cause: "활성 페이지 합이 RAM을 넘어 스왑 인/아웃이 계속된다.", check: "vmstat 1의 si/so, PSI full, /proc/vmstat의 pswpin/pswpout, 프로세스별 VmSwap", fix: "동시 실행 축소, 메모리 증설, 가장 큰 소비자 한도 설정. 스왑을 키우는 것은 해결이 아니다." },
+    L_churn: { t: "페이지 캐시 교체 폭주", cause: "읽는 데이터가 캐시보다 커서 같은 파일 페이지를 반복해 다시 읽는다(리폴트). 대용량 순차 스캔이 뜨거운 캐시를 밀어내는 경우도.", check: "BCC cachestat, /proc/vmstat의 workingset_refault_file, iostat", fix: "스캔 작업에 posix_fadvise(DONTNEED)/O_DIRECT, 작업 분리(cgroup memory.max로 스캔 작업 캐시 제한), 메모리 증설." }
+  };
+  var path = ["root"];
+  function dtRender() {
+    var id = path[path.length - 1], n = T[id];
+    var crumbs = path.slice(0, -1).map(function (pid, i) {
+      var nx = path[i + 1], opt = T[pid].o.filter(function (o) { return o[1] === nx; })[0];
+      return "<b>" + esc(opt ? opt[0] : nx) + "</b>";
+    });
+    $("dt-crumb").innerHTML = crumbs.length ? "경로: " + crumbs.join(" → ") : "시작";
+    var h;
+    if (n.q) {
+      h = '<div class="dt-q">' + esc(n.q) + "</div>" + n.o.map(function (o, i) { return '<button class="btn dt-opt" data-i="' + i + '">' + esc(o[0]) + "</button>"; }).join("");
+    } else {
+      h = '<div class="dt-leaf"><h4>' + esc(n.t) + "</h4><dl><dt>가능성 높은 원인</dt><dd>" + esc(n.cause) + "</dd><dt>확인할 것</dt><dd><code>" + esc(n.check) + "</code></dd><dt>처방</dt><dd>" + esc(n.fix) + "</dd></dl></div>";
+    }
+    $("dt-body").innerHTML = h;
+    $("dt-back").disabled = path.length === 1;
+  }
+  $("dt-body").addEventListener("click", function (e) {
+    var b = e.target.closest(".dt-opt"); if (!b) return;
+    var n = T[path[path.length - 1]];
+    path.push(n.o[+b.dataset.i][1]); dtRender();
+  });
+  $("dt-back").onclick = function () { if (path.length > 1) { path.pop(); dtRender(); } };
+  $("dt-restart").onclick = function () { path = ["root"]; dtRender(); };
+  dtRender();
+
+  /* ================= 4) 케이스 스터디 ================= */
+  var STAGES = ["증상", "관찰 데이터", "추론", "원인", "해결"];
+  var CASES = [
+    { t: "① 컨테이너 OOMKilled", s: [
+      "PDF 변환 워커 Pod가 하루 몇 차례 <code>OOMKilled</code>(exit code 137)로 재시작된다. limits.memory = 2Gi. 앱이 내보내는 힙 메트릭은 300MiB 안팎으로 평온하고, 컨테이너 안에서 <code>ps</code>로 본 RSS도 400MiB 남짓이다.",
+      "<pre>$ kubectl describe pod conv-7f9 | grep -A3 'Last State'\n    Last State:  Terminated\n      Reason:    OOMKilled\n      Exit Code: 137\n\n# 컨테이너 cgroup (cgroup v2)\n$ cat memory.events\nlow 0\nhigh 0\nmax 1843\noom 6\noom_kill 6\n$ grep -E '^(anon|file|kernel|shmem) ' memory.stat\nanon 341835776\nfile 1712324608\nkernel 41943040\nshmem 1606418432\n$ df -h /scratch\nFilesystem  Size  Used Avail Use% Mounted on\ntmpfs       7.8G  1.5G  6.3G  19% /scratch</pre>",
+      "anon은 326MiB로 앱 메트릭과 일치한다. 그런데 file이 1.6GiB이고 그중 <b>shmem이 1.5GiB</b>다(cgroup v2의 file은 shmem을 포함). shmem은 스왑이 없으면 회수할 수 없으므로 한도에 닿으면(max 1843회) 회수가 실패하고 결국 OOM이 난다. tmpfs의 Size가 7.8G인 것은 노드 RAM 기준 기본값(절반)이라 Pod 한도와 무관하다. 프로세스 RSS에는 tmpfs 파일이 (mmap하지 않는 한) 보이지 않는다.",
+      "<code>/scratch</code>가 <code>emptyDir: { medium: Memory }</code>로 마운트되어 있었고, 변환 중간 파일이 실패 경로에서 삭제되지 않고 쌓였다. 메모리 기반 emptyDir에 쓴 데이터는 컨테이너 메모리 사용량으로 회계된다.",
+      "실패 경로를 포함해 임시 파일을 확실히 삭제(try/finally). emptyDir에 <code>sizeLimit</code>를 걸거나 디스크 기반 emptyDir로 변경. 대시보드에 memory.stat의 shmem을 추가. 교훈: <b>OOMKilled면 앱 힙이 아니라 cgroup의 memory.stat부터 분해</b>한다."
+    ] },
+    { t: "② JVM 힙 외 메모리 증가", s: [
+      "<code>-Xmx4g</code> Java 서비스(컨테이너 한도 6Gi)의 RSS가 며칠에 걸쳐 5.7GiB를 넘어서까지 올라가다 OOMKilled. GC 로그상 힙 사용은 2~3GiB에서 안정적이다.",
+      "<pre>$ jcmd 1 VM.native_memory summary     # -XX:NativeMemoryTracking=summary 로 기동\nTotal: reserved=7012MB, committed=4790MB\n-                 Java Heap (reserved=4096MB, committed=4096MB)\n-                     Class (reserved=1080MB, committed=82MB)\n-                    Thread (reserved=262MB, committed=262MB)\n-                      Code (reserved=250MB, committed=61MB)\n-                        GC (reserved=180MB, committed=180MB)\n-                     Other (reserved=96MB, committed=96MB)\n$ grep VmRSS /proc/1/status\nVmRSS:   6011432 kB\n$ pmap -x 1 | awk '$2==65536' | wc -l\n21\n$ grep Threads /proc/1/status\nThreads:  260</pre>",
+      "RSS 약 5,870MB − NMT committed 4,790MB ≈ <b>1.1GB가 JVM이 모르는 메모리</b>다. NMT는 JVM 자신의 할당만 추적하고 JNI 라이브러리의 malloc은 보지 못한다. 정확히 64MiB(65536 KiB)짜리 anon 영역 21개는 glibc malloc의 스레드 아레나 패턴이다. 스레드 260개가 네이티브 코드에서 malloc을 하면 아레나가 코어 수 × 8까지 늘 수 있고, 아레나마다 단편화된 메모리를 반납하지 못한 채 쌓인다.",
+      "압축 라이브러리(JNI, zlib 기반 Inflater/Deflater)를 요청마다 생성하고 <code>end()</code>를 늦게 호출해 네이티브 버퍼가 여러 아레나에 흩어져 쌓였다. 힙만 보는 모니터링으로는 보이지 않았다.",
+      "Inflater/Deflater를 명시적으로 <code>end()</code>(또는 풀링). 환경 변수 <code>MALLOC_ARENA_MAX=2</code> 또는 jemalloc을 <code>LD_PRELOAD</code>. 힙은 컨테이너 한도의 60~75%로(<code>-XX:MaxRAMPercentage</code>). RSS − NMT committed 차이를 지표로 추가."
+    ] },
+    { t: "③ THP로 인한 지연 스파이크", s: [
+      "인메모리 키-값 캐시 서버의 p99가 평소 2ms인데 몇 분마다 200~800ms로 튄다. 그 순간 sys CPU가 급증한다. 네트워크·디스크 지표는 정상. 서버는 수개월째 재부팅 없이 운영 중.",
+      "<pre>$ cat /sys/kernel/mm/transparent_hugepage/enabled\n[always] madvise never\n$ cat /sys/kernel/mm/transparent_hugepage/defrag\n[always] defer defer+madvise madvise never\n\n# /proc/vmstat 1분 간격 두 번 측정\ncompact_stall        18412 → 19107   (+695)\ncompact_fail         15230 → 15851   (+621)\nthp_fault_alloc     902113 → 902201  (+88)\nthp_fault_fallback  120331 → 120952  (+621)\n\n$ perf record -g -p $(pidof kvd) -- sleep 60 ; perf report --stdio\n  (스파이크 구간 상위 스택)\n  __alloc_pages_slowpath → __alloc_pages_direct_compact → compact_zone\n    → isolate_migratepages_block</pre>",
+      "<code>defrag=always</code>이므로 THP 폴트마다 2MiB 연속 블록을 얻으려고 <b>폴트를 일으킨 스레드가 직접 컴팩션</b>을 수행한다. 1분에 695회 컴팩션이 멈춰 세웠고 그중 621회는 실패해 결국 4KiB로 폴백했다 — 비용만 내고 이득은 없었다. 오래 돈 서버라 물리 메모리가 단편화돼 컴팩션이 비싸다. perf 스택이 이를 확인한다.",
+      "THP <code>enabled=always</code> + <code>defrag=always</code> 설정과 장기 운영으로 인한 단편화가 결합해, 새 메모리를 만지는 요청 경로에서 동기 컴팩션 지연이 발생했다. (fork 기반 스냅샷을 쓰는 서버라면 CoW가 2MiB 단위로 일어나 복사량이 커지는 문제도 겹친다.)",
+      "<code>echo madvise &gt; .../enabled</code>, <code>echo defer+madvise &gt; .../defrag</code>(또는 never). 지연 민감 서비스는 THP를 끄고, huge page가 꼭 필요한 곳은 madvise(MADV_HUGEPAGE) 또는 hugetlbfs로 명시적으로. compact_stall 증가율을 경보 지표로 추가."
+    ] },
+    { t: "④ 페이지 캐시가 메모리를 다 먹었다는 오해", s: [
+      "64GiB 로그 분석 서버에서 \"메모리 사용률 98.8%\" 경보가 매일 울린다. 담당자가 cron으로 매시간 <code>echo 3 &gt; /proc/sys/vm/drop_caches</code>를 걸었더니 그 직후마다 디스크 읽기 IOPS가 폭증하고 쿼리가 느려진다.",
+      "<pre>$ free -m\n               total        used        free      shared  buff/cache   available\nMem:           64299       16012         793        1806       47493       47083\nSwap:           8191         184        8007\n$ cat /proc/pressure/memory\nsome avg10=0.00 avg60=0.00 avg300=0.00 total=1834211\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=901223\n$ vmstat 1 3   (si/so 열)\n   si   so\n    0    0\n    0    0\n# 모니터링 계산식: (MemTotal − MemFree) / MemTotal</pre>",
+      "경보 식은 (64299 − 793) / 64299 = 98.8%. 하지만 available이 47GiB(73%)이고 PSI가 0, 스왑 I/O도 0이다. <b>압박이 전혀 없다</b>. buff/cache 47GiB는 로그 파일을 읽은 페이지 캐시이고, 다음 쿼리가 같은 파일을 읽을 때 디스크를 건너뛰게 해 주는 자산이다. drop_caches가 이 자산을 매시간 버리고 있었다.",
+      "모니터링 지표의 정의 오류(MemFree 기준 사용률). 리눅스는 남는 메모리를 의도적으로 캐시로 채운다.",
+      "경보를 <code>1 − MemAvailable/MemTotal</code> 또는 PSI(<code>some avg60</code>) 기준으로 변경, drop_caches cron 제거. 컨테이너 환경이라면 usage가 아니라 working set(usage − inactive_file)을 본다. drop_caches는 벤치마크의 콜드 캐시 재현용이지 운영 조치가 아니다."
+    ] },
+    { t: "⑤ 보이지 않는 40GiB: dentry 슬랩", s: [
+      "웹 서버 노드에서 프로세스 PSS 합은 8GiB인데 MemAvailable이 몇 주에 걸쳐 꾸준히 줄어 이제 22GiB 남았다(총 64GiB). 재부팅하면 회복된다.",
+      "<pre>$ grep -E '^(Slab|SReclaimable|SUnreclaim)' /proc/meminfo\nSlab:           43554432 kB\nSReclaimable:   32505856 kB\nSUnreclaim:     11048576 kB\n$ slabtop -o -s c | head -5\n  OBJS ACTIVE  USE OBJ SIZE  SLABS OBJ/SLAB CACHE SIZE NAME\n165432112 165401011  99%    0.19K 7877720       21  31510880K dentry\n...\n$ cat /proc/sys/fs/dentry-state\n165401011  165012334  45  0  164980112  0</pre>",
+      "슬랩이 41.5GiB, 그중 dentry 캐시만 30GiB(1억 6천만 개 × 192B)다. dentry-state의 5번째 필드(최근 커널에서 nr_negative)가 거의 전부다 — <b>존재하지 않는 경로를 조회한 결과를 기억하는 음수 dentry</b>다. 회수 가능(SReclaimable)이라 즉시 OOM은 아니지만, 회수 시 거대한 LRU를 훑느라 지연이 생기고 MemAvailable 추정에도 일부만 반영된다. 또 다른 11GiB SUnreclaim은 별도 확인이 필요하다(위젯 프리셋 '슬랩 폭증' 참고).",
+      "애플리케이션이 요청마다 고유한 이름의 파일 존재 여부를 <code>stat()</code>으로 확인(예: 요청 ID 기반 캐시 파일 확인)해 매번 새 음수 dentry가 생겼다.",
+      "앱의 조회 패턴 수정(존재 확인 대신 인메모리 인덱스 사용). 단기적으로 <code>vm.vfs_cache_pressure</code>를 높여 dentry/inode 회수 비중을 키운다. <code>echo 2 &gt; drop_caches</code>는 일시적 확인용으로만. slabtop 상위 캐시를 정기 수집 지표로 추가."
+    ] }
+  ];
+  var cur = 0, shown = [1, 1, 1, 1, 1];
+  function caseRender() {
+    $("case-tabs").innerHTML = CASES.map(function (c, i) { return '<button class="btn' + (i === cur ? " on" : "") + '" data-c="' + i + '">' + c.t + "</button>"; }).join("");
+    var c = CASES[cur], h = "";
+    for (var k = 0; k < shown[cur]; k++) h += '<div class="stage-blk s' + k + '"><div class="sl">' + (k + 1) + ". " + STAGES[k] + "</div><div>" + c.s[k] + "</div></div>";
+    if (shown[cur] < 5) h += '<p style="color:var(--muted);font-size:14px">다음: <b>' + STAGES[shown[cur]] + "</b> — 열기 전에 스스로 추론해 보자.</p>";
+    $("case-body").innerHTML = h;
+    $("case-next").disabled = shown[cur] >= 5;
+  }
+  $("case-tabs").addEventListener("click", function (e) { var b = e.target.closest("[data-c]"); if (!b) return; cur = +b.dataset.c; caseRender(); });
+  $("case-next").onclick = function () { if (shown[cur] < 5) { shown[cur]++; caseRender(); } };
+  $("case-all").onclick = function () { shown[cur] = 5; caseRender(); };
+  $("case-reset").onclick = function () { shown[cur] = 1; caseRender(); };
+  caseRender();
+
+  /* ================= 5) 종합 문제 점수 집계 ================= */
+  var fq = $("final-quiz");
+  var qs = [].slice.call(fq.querySelectorAll(".quiz"));
+  var CAT = { i: "개론", a: "심화", p: "실전" };
+  var rec = {};
+  qs.forEach(function (q, i) { q.dataset.qi = i; });
+  function score() {
+    var keys = Object.keys(rec), pts = keys.filter(function (k) { return rec[k]; }).length;
+    $("sc-pts").textContent = pts;
+    $("sc-ans").textContent = keys.length;
+    $("sc-meter").style.width = (pts / qs.length * 100) + "%";
+    var byCat = {};
+    qs.forEach(function (q, i) {
+      var c = q.dataset.cat; byCat[c] = byCat[c] || { n: 0, ok: 0, done: 0 };
+      byCat[c].n++; if (i in rec) { byCat[c].done++; if (rec[i]) byCat[c].ok++; }
+    });
+    $("sc-cat").textContent = ["i", "a", "p"].map(function (c) { return byCat[c] ? CAT[c] + " " + byCat[c].ok + "/" + byCat[c].n : ""; }).join(" · ");
+    var msg = $("sc-msg");
+    if (keys.length === qs.length) {
+      var wrong = qs.filter(function (q, i) { return !rec[i]; }).map(function (q, i) { return +q.dataset.qi + 1; });
+      var grade = pts >= 18 ? "전문가 수준. 이제 커널 소스와 LWN으로 넘어가도 좋다." : pts >= 14 ? "탄탄하다. 틀린 문제의 챕터만 다시 보자." : pts >= 10 ? "기본은 잡혔다. 계산 문제(주소 분할·EAT·교체 알고리즘)를 손으로 다시 풀어 보자." : "개론 챕터(03~07)부터 위젯을 직접 돌려 보며 복습하자.";
+      msg.style.display = "block";
+      msg.className = "callout " + (pts >= 14 ? "tip" : pts >= 10 ? "" : "warn");
+      msg.innerHTML = '<span class="title">최종 ' + pts + " / " + qs.length + " (" + Math.round(pts / qs.length * 100) + "%)</span>" + grade + (wrong.length ? "<br>틀린 문제: " + wrong.join(", ") + "번" : "");
+    } else msg.style.display = "none";
+  }
+  fq.addEventListener("click", function (e) {
+    var o = e.target.closest(".opt"); if (!o) return;
+    var q = o.closest(".quiz"), qi = +q.dataset.qi;
+    if (qi in rec) return;
+    var opts = [].slice.call(q.querySelectorAll(".opt"));
+    rec[qi] = opts.indexOf(o) === +q.dataset.answer;
+    score();
+  });
+  $("sc-reset").onclick = function () {
+    rec = {};
+    qs.forEach(function (q) { q.classList.remove("answered"); q.querySelectorAll(".opt").forEach(function (o) { o.classList.remove("correct", "wrong"); }); });
+    score();
+    fq.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  // 문제 번호 표시
+  qs.forEach(function (q, i) { var qq = q.querySelector(".q"); qq.insertAdjacentHTML("afterbegin", "<b>" + (i + 1) + ".</b> "); });
+  score();
+})();
+</script>
+</body>
+</html>

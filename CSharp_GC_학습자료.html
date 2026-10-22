@@ -1,0 +1,1794 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C# 가비지 컬렉터 해부</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 레이아웃: 왼쪽 고정 목차(파트별 묶음) + 오른쪽 본문. 각 장은 설명 → 조작 가능한 도식 순서 */
+:root{
+  --bg:#f2f5f6; --surface:#ffffff; --sunk:#e6ecef; --ink:#13212b; --muted:#5a6b77; --line:#d2dce1;
+  --accent:#0e7c86; --accent-soft:#d3edef; --obj:#dfe7eb;
+  --g0:#139f8f; --g1:#c98f0e; --g2:#6f52cc; --dead:#b8c4cb; --danger:#c73e32; --danger-soft:#f8dfdc;
+  --code-bg:#0f1b22; --code-ink:#d6e2e8; --kw:#7fd3e0; --str:#e8c37a; --com:#7a8e99; --ty:#b9a6ff;
+  --f-body:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0c1318; --surface:#131d24; --sunk:#0f181e; --ink:#e1eaef; --muted:#8a9eab; --line:#24333d;
+    --accent:#3fc2cd; --accent-soft:#15363b; --obj:#22313a;
+    --g0:#2cc7b5; --g1:#efb53a; --g2:#9f88f2; --dead:#3a4953; --danger:#ff6a5c; --danger-soft:#3a1f1c;
+    --code-bg:#091015; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0c1318; --surface:#131d24; --sunk:#0f181e; --ink:#e1eaef; --muted:#8a9eab; --line:#24333d;
+  --accent:#3fc2cd; --accent-soft:#15363b; --obj:#22313a;
+  --g0:#2cc7b5; --g1:#efb53a; --g2:#9f88f2; --dead:#3a4953; --danger:#ff6a5c; --danger-soft:#3a1f1c;
+  --code-bg:#091015; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 var(--f-body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));}
+code,.mono{font-family:var(--f-mono);font-size:.88em}
+p code,li code,td code,.status code{background:var(--sunk);padding:.1em .35em;border-radius:4px}
+.status code{background:var(--surface)}
+a{color:var(--accent)}
+h1,h2,h3{text-wrap:balance;line-height:1.25;margin:0}
+.wrap{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:220px minmax(0,1fr);gap:48px;padding-block:40px 80px}
+nav.toc{position:sticky;top:20px;align-self:start;font-size:13.5px;max-height:calc(100vh - 40px);overflow:auto;counter-reset:t}
+nav.toc .grp{margin-bottom:12px}
+nav.toc .lbl{font-size:11px;letter-spacing:.1em;color:var(--muted);margin:0 0 4px 8px}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:1px}
+nav.toc a{display:flex;gap:10px;text-decoration:none;color:var(--muted);padding:4px 8px;border-radius:6px;counter-increment:t;line-height:1.45}
+nav.toc a::before{content:counter(t,decimal-leading-zero);font-family:var(--f-mono);font-size:11.5px;color:var(--line);padding-top:1px}
+nav.toc a:hover,nav.toc a.on{color:var(--ink);background:var(--surface)}
+nav.toc a.on::before{color:var(--accent)}
+main{min-width:0;display:grid;gap:72px}
+header.hero{display:grid;gap:14px}
+.eyebrow{font-family:var(--f-mono);font-size:13px;color:var(--accent);letter-spacing:.04em}
+.hero h1{font-size:clamp(34px,5vw,54px);font-weight:700;letter-spacing:-.02em}
+.hero p{max-width:62ch;color:var(--muted);margin:0;font-size:17px}
+.hero .addr{font-family:var(--f-mono);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px}
+.hero .addr b{color:var(--ink);font-weight:600}
+.part{font:600 12px var(--f-mono);letter-spacing:.12em;color:var(--accent);border-top:1px solid var(--line);padding-top:14px;margin-bottom:-48px}
+section{display:grid;gap:18px;scroll-margin-top:24px}
+section > h2{font-size:28px;font-weight:700;display:flex;align-items:baseline;gap:12px}
+section > h2 .n{font-family:var(--f-mono);font-size:14px;color:var(--accent);font-weight:600}
+section > h3{font-size:18px;margin-top:6px}
+section > p, section > ul, .prose{max-width:70ch;margin:0}
+section > ul{padding-left:1.2em;display:grid;gap:4px}
+.note{font-size:14px;color:var(--muted)}
+.caution{font-size:14px;border-left:3px solid var(--danger);background:var(--danger-soft);padding:10px 14px;border-radius:0 8px 8px 0;max-width:70ch}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:grid;gap:14px;min-width:0}
+.panel h3{font-size:15px;font-weight:700}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:500 14px/1.2 var(--f-body);color:var(--ink);background:var(--sunk);border:1px solid var(--line);
+  border-radius:7px;padding:9px 13px;cursor:pointer;transition:background .15s,border-color .15s}
+button:hover{border-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--accent);color:var(--surface);border-color:var(--accent)}
+button:disabled{opacity:.4;cursor:not-allowed;border-color:var(--line)}
+button .mono{font-size:12px}
+.status{font-size:14px;background:var(--sunk);border-radius:8px;padding:10px 14px;min-height:46px}
+.status b{color:var(--accent)}
+.svgbox{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.svgbox svg{display:block;width:100%;min-width:620px;height:auto}
+svg text{font-family:var(--f-body)}
+svg .mono{font-family:var(--f-mono)}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--muted)}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tabs button[aria-selected=true]{background:var(--accent);color:var(--surface);border-color:var(--accent)}
+input[type=range]{accent-color:var(--accent);width:160px}
+input[type=number],select{font:14px var(--f-mono);padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--ink);width:150px}
+select{font-family:var(--f-body);width:auto;max-width:100%}
+label{font-size:14px}
+
+/* 01 할당 */
+.heapwrap{display:grid;gap:6px}
+.heapbar{position:relative;height:58px;background:var(--sunk);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.heapbar.flash{animation:flash .6s}
+@keyframes flash{0%{background:var(--danger-soft)}100%{background:var(--sunk)}}
+.blk{position:absolute;top:6px;bottom:6px;padding:0;background:var(--g0);color:var(--surface);border-radius:4px;font:600 11px/1 var(--f-mono);
+  display:flex;align-items:center;justify-content:center;overflow:hidden;white-space:nowrap;border:1px solid var(--surface)}
+.blk.rooted{background:var(--g1)}
+.blk.fresh{animation:pop .35s ease-out}
+@keyframes pop{from{transform:scaleY(.2);opacity:0}to{transform:none;opacity:1}}
+.ptrrow{position:relative;height:42px}
+.ptr{position:absolute;top:0;transform:translateX(-50%);font:600 11px/1.3 var(--f-mono);color:var(--accent);text-align:center;transition:left .3s ease;white-space:nowrap}
+.ptr::before{content:"▲";display:block;font-size:12px}
+.meter{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13px;color:var(--muted);align-items:center}
+.meter b{font-family:var(--f-mono);color:var(--ink);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:3px;min-height:14px}
+.chips i{width:12px;height:12px;border-radius:2px;background:var(--g1)}
+
+/* 03 세대 */
+.gens{display:grid;gap:12px}
+.gen{display:grid;grid-template-columns:86px minmax(0,1fr);gap:12px;align-items:center}
+.gen .name{font:600 13px/1.3 var(--f-mono)}
+.gen .name small{display:block;font:400 11px var(--f-body);color:var(--muted)}
+.cells{display:flex;flex-wrap:wrap;gap:3px;padding:6px;border-radius:6px;border:1px dashed var(--line);transition:background .3s}
+.cells.gc{background:var(--danger-soft)}
+.cell{width:16px;height:16px;border-radius:3px;border:1px solid var(--line)}
+.cell.live{border:none}
+.g0 .cell.live{background:var(--g0)}
+.g1 .cell.live{background:var(--g1)}
+.g2 .cell.live{background:var(--g2)}
+.cell.live.long{box-shadow:inset 0 0 0 3px rgba(0,0,0,.28)}
+.cell.dead{background:repeating-linear-gradient(45deg,var(--dead) 0 3px,transparent 3px 6px);border-color:var(--dead)}
+.cell.over{border-color:var(--danger)}
+.genctl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,260px);gap:18px}
+.genlog{font:12px/1.7 var(--f-mono);color:var(--muted);margin:0;padding:0;list-style:none;max-height:190px;overflow:auto}
+.genlog li:first-child{color:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.stat{background:var(--sunk);border-radius:8px;padding:8px 10px}
+.stat span{display:block;font-size:11px;color:var(--muted)}
+.stat b{font:600 20px/1.2 var(--f-mono);font-variant-numeric:tabular-nums}
+.warn{color:var(--danger);font-size:13px;min-height:1.4em}
+
+/* 04 파이프라인 */
+.pipe{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.pipe .arr{color:var(--muted);font-family:var(--f-mono)}
+.pipe .fork{display:grid;gap:4px;border:1px dashed var(--line);border-radius:8px;padding:8px}
+.pipe .fork .or{font-size:11px;color:var(--muted);text-align:center}
+.pipe button[aria-pressed=true]{background:var(--accent);color:var(--surface);border-color:var(--accent)}
+
+/* 05 수명 */
+.listing{display:grid;gap:2px;font:13px/1.6 var(--f-mono);background:var(--code-bg);color:var(--code-ink);border-radius:8px;padding:12px 0;overflow-x:auto}
+.ln{display:grid;grid-template-columns:34px minmax(320px,1fr) 128px;align-items:center;gap:10px;padding:2px 14px 2px 0}
+.ln .no{color:var(--com);text-align:right}
+.ln.gcline{background:rgba(199,62,50,.18)}
+.ln .lv{font:600 11px var(--f-body);border-radius:4px;padding:3px 8px;text-align:center}
+.ln .lv.on{background:var(--g0);color:var(--code-bg)}
+.ln .lv.off{color:var(--com);border:1px dashed var(--com)}
+
+/* 08 LOH */
+.areas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.area{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--sunk);transition:all .25s;display:grid;gap:4px;align-content:start}
+.area h4{margin:0;font:600 14px var(--f-mono)}
+.area p{margin:0;font-size:13px;color:var(--muted)}
+.area.hit{background:var(--accent-soft);border-color:var(--accent);transform:translateY(-3px)}
+
+/* 코드 */
+pre.code,pre.term{margin:0;background:var(--code-bg);color:var(--code-ink);border-radius:8px;padding:16px 18px;overflow-x:auto;font:13px/1.65 var(--f-mono)}
+pre.code .k{color:var(--kw)} pre.code .s{color:var(--str)} pre.code .c{color:var(--com)} pre.code .t{color:var(--ty)}
+pre.term .p{color:var(--kw)} pre.term .c{color:var(--com)} pre.term .h{color:var(--str)}
+
+/* 16 할당 카드 */
+.acards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.acard{border:1px solid var(--line);border-radius:8px;padding:12px;display:grid;gap:8px;background:var(--surface);min-width:0}
+.acard pre{margin:0;font:12.5px/1.6 var(--f-mono);background:var(--code-bg);color:var(--code-ink);padding:10px 12px;border-radius:6px;overflow-x:auto}
+.acard .ans{font-size:13px;color:var(--muted)}
+.acard.ok{border-color:var(--accent)}
+.acard.ng{border-color:var(--danger)}
+.acard button:disabled{opacity:1;cursor:default}
+.acard button.pick-right{background:var(--accent-soft);border-color:var(--accent)}
+.acard button.pick-wrong{background:var(--danger-soft);border-color:var(--danger)}
+
+/* 퀴즈 */
+.quiz{display:grid;gap:18px}
+.q{display:grid;gap:8px}
+.q .qt{font-weight:500}
+.q .opts{display:flex;flex-wrap:wrap;gap:6px}
+.q .opts button:disabled{opacity:1;cursor:default}
+.q .opts button.right{background:var(--accent-soft);border-color:var(--accent)}
+.q .opts button.wrong{background:var(--danger-soft);border-color:var(--danger)}
+.q .ex{font-size:14px;color:var(--muted)}
+.score{font:600 14px var(--f-mono);color:var(--accent)}
+
+table{border-collapse:collapse;font-size:14px;width:100%}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:500;letter-spacing:.04em;white-space:nowrap}
+.tablebox{overflow-x:auto}
+.tablebox table{min-width:620px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.calc{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.calc label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+.calc input,.calc select{width:100%}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 16px;font-size:14px}
+.kv dt{color:var(--muted)} .kv dd{margin:0;font-family:var(--f-mono);overflow-wrap:anywhere}
+
+@media (max-width:900px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:28px}
+  nav.toc{position:static;max-height:none}
+  nav.toc ol{display:flex;flex-wrap:wrap}
+  .genctl,.two,.acards{grid-template-columns:minmax(0,1fr)}
+  .calc{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .part{margin-bottom:-56px}
+}
+@media (max-width:560px){
+  .areas{grid-template-columns:minmax(0,1fr)}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .gen{grid-template-columns:minmax(0,1fr)}
+  section > h2{font-size:23px}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="toc" aria-label="목차" id="toc">
+    <div class="grp"><div class="lbl">기초</div><ol>
+      <li><a href="#alloc">관리 힙과 할당</a></li>
+      <li><a href="#trigger">GC는 언제 도는가</a></li>
+      <li><a href="#mark">Mark · Sweep · Compact</a></li>
+    </ol></div>
+    <div class="grp"><div class="lbl">내부 동작</div><ol>
+      <li><a href="#phases">GC 단계와 스레드 정지</a></li>
+      <li><a href="#lifetime">루트의 수명과 JIT</a></li>
+      <li><a href="#gen">세대별 GC</a></li>
+      <li><a href="#card">카드 테이블</a></li>
+    </ol></div>
+    <div class="grp"><div class="lbl">메모리 영역</div><ol>
+      <li><a href="#loh">LOH와 POH</a></li>
+      <li><a href="#pin">Pinning과 단편화</a></li>
+      <li><a href="#regions">Regions</a></li>
+    </ol></div>
+    <div class="grp"><div class="lbl">런타임 설정</div><ol>
+      <li><a href="#modes">GC 모드</a></li>
+      <li><a href="#latency">지연 시간 제어 API</a></li>
+      <li><a href="#container">컨테이너와 설정</a></li>
+    </ol></div>
+    <div class="grp"><div class="lbl">리소스 정리</div><ol>
+      <li><a href="#final">Finalizer와 Dispose</a></li>
+      <li><a href="#handles">GC 핸들과 약한 참조</a></li>
+    </ol></div>
+    <div class="grp"><div class="lbl">실전</div><ol>
+      <li><a href="#hidden">숨은 할당</a></li>
+      <li><a href="#diag">진단과 체크리스트</a></li>
+      <li><a href="#unity">Unity · Mono GC</a></li>
+      <li><a href="#quiz">확인 퀴즈</a></li>
+    </ol></div>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">.NET CLR · Garbage Collector</div>
+      <h1>C# 가비지 컬렉터 해부</h1>
+      <p>C#에서는 <code>new</code>만 하고 <code>delete</code>는 하지 않습니다. 그 뒤처리를 맡는 CLR의 GC가 언제, 무엇을, 어떻게 치우는지 직접 조작하면서 익히고, 실무에서 마주치는 설정·진단까지 이어서 다룹니다.</p>
+      <div class="addr"><span>도달성 기반 <b>추적형(tracing)·정확(precise) GC</b></span><span>세대 <b>Gen0 · Gen1 · Gen2</b></span><span>LOH 기준 <b>85,000 bytes</b></span><span>압축 <b>있음</b></span><span>기준 런타임 <b>.NET 8~10 (64비트)</b></span></div>
+    </header>
+
+    <div class="part">PART 1 · 기초</div>
+
+    <!-- 01 -->
+    <section id="alloc">
+      <h2><span class="n">01</span>관리 힙과 할당</h2>
+      <p>CLR은 관리 힙에서 다음 할당 위치를 포인터 하나로 기억합니다. <code>new</code>는 이 포인터를 객체 크기만큼 앞으로 미는 것이 거의 전부라서, C의 <code>malloc</code>처럼 맞는 빈 블록을 찾아다니지 않습니다. 대신 Gen0 예산을 다 쓰면 GC가 돌아 쓰레기를 치우고 공간을 다시 만듭니다.</p>
+      <div class="panel">
+        <h3>직접 할당해 보기</h3>
+        <div class="row">
+          <button data-alloc="Point" data-size="1"><span class="mono">new Point()</span> · 24B</button>
+          <button data-alloc="Customer" data-size="3"><span class="mono">new Customer()</span> · 72B</button>
+          <button data-alloc="byte[]" data-size="5"><span class="mono">new byte[96]</span> · 120B</button>
+          <button id="allocReset">초기화</button>
+        </div>
+        <p class="note" style="margin:0">힙의 블록을 클릭하면 <b>지역 변수나 필드가 계속 참조하는 객체</b>(주황)로 바뀝니다. 클릭하지 않은 객체는 잠깐 쓰고 버린 임시 객체입니다. GC가 돌면 참조가 남아 있는 객체만 살아남습니다.</p>
+        <div class="heapwrap">
+          <div class="heapbar" id="allocBar" aria-label="Gen0 할당 영역"></div>
+          <div class="ptrrow"><div class="ptr" id="allocPtr">alloc_ptr <span id="allocAddr"></span></div></div>
+        </div>
+        <div class="meter"><span>Gen0 사용 <b id="allocUsed">0 / 24</b> 칸</span><span>GC 횟수 <b id="allocGc">0</b></span><span>Gen1으로 승격 <b id="allocProm">0</b></span><div class="chips" id="allocGen1" aria-label="승격된 객체"></div></div>
+        <div class="status" id="allocMsg"></div>
+      </div>
+      <h3>실제로는 이렇게 동작합니다</h3>
+      <ul>
+        <li><b>할당 컨텍스트</b>: 스레드마다 GC에게서 받은 작은 메모리 조각(allocation quantum, 대략 8KB)을 갖고, 그 안에서 락 없이 포인터만 밉니다. 조각이 바닥나면 느린 경로로 GC에 새 조각을 요청하고, 이때 Gen0 예산이 소진됐으면 GC가 시작됩니다.</li>
+        <li><b>0으로 초기화</b>: 조각은 미리 0으로 채워져 나오기 때문에 필드 기본값이 보장됩니다. 큰 배열에서 이 비용을 피하려면 <code>GC.AllocateUninitializedArray&lt;T&gt;()</code>를 쓸 수 있습니다(내용을 반드시 직접 채울 때만).</li>
+        <li><b>객체 레이아웃(64비트)</b>: 참조는 메서드 테이블 포인터를 가리키고, 그 앞 8바이트에 객체 헤더(동기화 블록 인덱스, 해시 코드 등)가 있습니다. 필드가 없는 객체도 최소 <b>24바이트</b>입니다.</li>
+      </ul>
+      <div class="panel">
+        <div class="svgbox"><svg viewBox="0 0 740 150" role="img" aria-label="64비트 객체 메모리 레이아웃">
+          <rect x="40" y="40" width="150" height="50" rx="4" style="fill:var(--sunk);stroke:var(--line)"/>
+          <text x="115" y="62" text-anchor="middle" font-size="13" style="fill:var(--ink);font-weight:600">객체 헤더</text>
+          <text x="115" y="80" text-anchor="middle" font-size="11" class="mono" style="fill:var(--muted)">8B · sync block / hash</text>
+          <rect x="190" y="40" width="170" height="50" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="275" y="62" text-anchor="middle" font-size="13" style="fill:var(--ink);font-weight:600">MethodTable*</text>
+          <text x="275" y="80" text-anchor="middle" font-size="11" class="mono" style="fill:var(--muted)">8B · 타입 정보</text>
+          <rect x="360" y="40" width="340" height="50" rx="4" style="fill:var(--obj);stroke:var(--line)"/>
+          <text x="530" y="62" text-anchor="middle" font-size="13" style="fill:var(--ink);font-weight:600">인스턴스 필드</text>
+          <text x="530" y="80" text-anchor="middle" font-size="11" class="mono" style="fill:var(--muted)">배열이면 길이 4B + 패딩 4B + 원소들</text>
+          <path d="M190 128 L190 96" style="stroke:var(--accent)" stroke-width="2"/>
+          <path d="M184 102 L190 92 L196 102 z" style="fill:var(--accent)"/>
+          <text x="200" y="132" font-size="12" class="mono" style="fill:var(--accent)">obj 참조가 가리키는 위치</text>
+          <text x="40" y="26" font-size="12" class="mono" style="fill:var(--muted)">-8</text>
+          <text x="190" y="26" font-size="12" class="mono" style="fill:var(--muted)">0</text>
+          <text x="360" y="26" font-size="12" class="mono" style="fill:var(--muted)">+8</text>
+        </svg></div>
+      </div>
+    </section>
+
+    <!-- 02 -->
+    <section id="trigger">
+      <h2><span class="n">02</span>GC는 언제 도는가</h2>
+      <p>GC는 타이머로 돌지 않습니다. 대부분 <b>할당이 예산을 넘는 순간</b> 할당을 시도한 스레드에서 시작됩니다. 할당을 줄이면 GC 횟수도 줄어드는 이유입니다.</p>
+      <div class="tablebox"><table>
+        <thead><tr><th>트리거</th><th>설명</th><th>ETW/트레이스의 GC Reason</th></tr></thead>
+        <tbody>
+          <tr><td>Gen0 예산 초과</td><td>가장 흔한 경우. 새 할당 조각을 받으려는데 Gen0 예산을 다 씀</td><td><code>AllocSmall</code></td></tr>
+          <tr><td>LOH·POH 예산 초과</td><td>큰 객체 할당이 누적되어 예산을 넘음. <b>Gen2 GC</b>로 이어짐</td><td><code>AllocLarge</code></td></tr>
+          <tr><td>명시적 호출</td><td><code>GC.Collect()</code>, 메모리 압박 알림 등 코드가 유도</td><td><code>Induced</code></td></tr>
+          <tr><td>시스템 메모리 부족</td><td>OS의 저메모리 알림, 또는 힙 하드 리밋(<a href="#container">13장</a>)에 근접</td><td><code>LowMemory</code> 등</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><b>예산은 고정값이 아닙니다.</b> Gen0 예산은 시작할 때 CPU 캐시(L3) 크기 등을 바탕으로 정하고, 이후 GC마다 각 세대의 <b>생존율</b>을 보고 다시 계산합니다. 생존율이 높으면 GC를 해도 얻는 게 적으므로 예산을 키워 GC 빈도를 낮춥니다.</li>
+        <li><b>어느 세대를 수거할지</b>도 GC가 정합니다. 기본은 예산을 넘은 가장 높은 세대이고, 단편화나 메모리 부족 같은 요인이 있으면 더 높은 세대로 올라갑니다.</li>
+        <li><code>GC.CollectionCount(0)</code>은 Gen1·Gen2 GC도 함께 셉니다. 높은 세대 GC는 낮은 세대도 수거하기 때문입니다.</li>
+      </ul>
+      <div class="panel">
+        <h3>다음 GC는 몇 세대일까 (단순화한 모델)</h3>
+        <p class="note" style="margin:0">Gen0 예산은 방금 다 썼다고 가정합니다. 다른 세대의 예산 사용률을 바꿔 보세요.</p>
+        <div class="row"><label for="tg1" style="width:120px">Gen1 예산 사용</label><input type="range" id="tg1" min="0" max="120" value="40"><b class="mono" id="tg1v"></b></div>
+        <div class="row"><label for="tg2" style="width:120px">Gen2 예산 사용</label><input type="range" id="tg2" min="0" max="120" value="60"><b class="mono" id="tg2v"></b></div>
+        <div class="row"><label for="tgl" style="width:120px">LOH 예산 사용</label><input type="range" id="tgl" min="0" max="120" value="30"><b class="mono" id="tglv"></b></div>
+        <label class="row"><input type="checkbox" id="tgc"> 코드에서 <code>GC.Collect()</code> 호출</label>
+        <div class="status" id="tgMsg"></div>
+      </div>
+    </section>
+
+    <!-- 03 -->
+    <section id="mark">
+      <h2><span class="n">03</span>Mark · Sweep · Compact</h2>
+      <p>GC는 참조 카운트를 세지 않습니다. <b>루트</b>(스택의 지역 변수, CPU 레지스터, static 필드, GC 핸들, F-Reachable 큐)에서 출발해 참조를 따라가며 닿는 객체에 표시(mark)하고, 닿지 않은 객체는 모두 쓰레기로 봅니다. 그래서 서로를 가리키는 순환 참조도 루트와 끊기면 회수됩니다.</p>
+      <div class="panel">
+        <h3>루트를 끊고 GC 단계를 하나씩 실행해 보기</h3>
+        <p class="note" style="margin:0">위쪽 루트 상자를 클릭하면 <code>null</code>로 바꿀 수 있습니다(Mark 전에만).</p>
+        <div class="svgbox"><svg id="mcSvg" viewBox="0 0 740 360" role="img" aria-label="루트와 힙 객체의 참조 그래프"></svg></div>
+        <div class="row">
+          <button class="primary" id="mcMark">1. Mark</button>
+          <button id="mcSweep" disabled>2. Sweep</button>
+          <button id="mcCompact" disabled>3. Compact</button>
+          <button id="mcReset">초기화</button>
+        </div>
+        <div class="status" id="mcStatus"></div>
+        <div class="legend"><span><i style="background:var(--obj)"></i>힙 객체</span><span><i style="background:var(--accent-soft);outline:2px solid var(--accent)"></i>도달 가능(marked)</span><span><i style="background:repeating-linear-gradient(45deg,var(--dead) 0 3px,transparent 3px 6px)"></i>빈 공간</span></div>
+      </div>
+      <ul>
+        <li><b>Compact</b>: 살아남은 객체를 앞으로 당기고, 그 객체를 가리키던 모든 참조의 주소를 고칩니다. 단편화가 사라지고 포인터를 미는 빠른 할당을 계속 쓸 수 있습니다.</li>
+        <li>매번 압축하지는 않습니다. 압축으로 얻는 게 적으면 빈 공간을 free list로 엮는 <b>Sweep</b>만 합니다. 실제 단계는 다음 장에서 봅니다.</li>
+      </ul>
+    </section>
+
+    <div class="part">PART 2 · 내부 동작</div>
+
+    <!-- 04 -->
+    <section id="phases">
+      <h2><span class="n">04</span>GC 단계와 스레드 정지</h2>
+      <p>앞 장의 세 단계는 단순화한 그림입니다. CoreCLR GC의 블로킹 GC는 아래 순서로 진행됩니다. 각 단계를 눌러 보세요.</p>
+      <div class="panel">
+        <div class="pipe" id="pipe">
+          <button data-ph="suspend">스레드 정지</button><span class="arr">→</span>
+          <button data-ph="mark">Mark</button><span class="arr">→</span>
+          <button data-ph="plan">Plan</button><span class="arr">→</span>
+          <div class="fork">
+            <div class="row"><button data-ph="reloc">Relocate</button><span class="arr">→</span><button data-ph="compact">Compact</button></div>
+            <div class="or">또는</div>
+            <button data-ph="sweep">Sweep</button>
+          </div><span class="arr">→</span>
+          <button data-ph="resume">스레드 재개</button>
+        </div>
+        <div class="row"><button id="pipePlay">▶ 순서대로 보기</button></div>
+        <div class="status" id="pipeMsg"></div>
+      </div>
+      <h3>스레드는 어디서 멈추는가: 안전 지점</h3>
+      <p>GC는 각 스레드의 스택 어디에 참조가 있는지 정확히 알아야 합니다. JIT은 메서드를 컴파일할 때 "이 지점에서는 이 슬롯과 레지스터가 참조다"라는 <b>GC 정보</b>를 함께 만들고, 이 정보가 있는 지점이 <b>안전 지점(safe point)</b>입니다.</p>
+      <div class="tablebox"><table>
+        <thead><tr><th>스레드 상태</th><th>런타임이 멈추는 방법</th></tr></thead>
+        <tbody>
+          <tr><td>네이티브 코드 실행 중 (P/Invoke, 블로킹 I/O)</td><td>멈출 필요 없음(preemptive 모드). 관리 코드로 돌아오는 순간 GC가 끝날 때까지 대기</td></tr>
+          <tr><td>partially interruptible 메서드 실행 중</td><td>호출 지점에만 GC 정보가 있음. 반환 주소를 바꿔치기(<b>return address hijacking</b>)해 메서드가 리턴할 때 멈추게 함. JIT이 넣은 <b>GC poll</b> 지점에서 스스로 멈추기도 함</td></tr>
+          <tr><td>fully interruptible 메서드 (호출 없는 긴 루프 등)</td><td>모든 명령에 GC 정보가 있어 어디서든 멈출 수 있음. 스레드를 세운 뒤 명령 포인터를 리디렉션함. 호출 없는 루프는 JIT이 이 방식으로 컴파일함</td></tr>
+        </tbody>
+      </table></div>
+      <p class="note">스레드를 모두 세우는 데 걸리는 시간(time to suspend)도 GC 멈춤의 일부입니다. 트레이스에서 GC 자체는 짧은데 멈춤이 길다면 스레드 정지 지연을 의심하세요.</p>
+    </section>
+
+    <!-- 05 -->
+    <section id="lifetime">
+      <h2><span class="n">05</span>루트의 수명과 JIT</h2>
+      <p>지역 변수는 <b>메서드가 끝날 때까지</b> 루트일 것 같지만 그렇지 않습니다. 최적화된(Release) 코드에서 JIT은 지역 변수를 <b>마지막으로 사용한 지점까지만</b> 살아 있다고 GC에 보고합니다. 메서드가 아직 실행 중이어도 객체가 회수될 수 있습니다.</p>
+      <div class="panel">
+        <h3><span class="mono">System.Threading.Timer</span>가 멈추는 버그</h3>
+        <div class="row">
+          <div class="tabs" role="tablist" id="ltBuild">
+            <button role="tab" aria-selected="true" data-b="rel">Release (최적화)</button>
+            <button role="tab" aria-selected="false" data-b="dbg">Debug / 디버거 연결</button>
+          </div>
+          <label class="row"><input type="checkbox" id="ltKeep"> 마지막 줄에 <code>GC.KeepAlive(timer)</code> 추가</label>
+        </div>
+        <div class="listing" id="ltList"></div>
+        <div class="status" id="ltMsg"></div>
+      </div>
+      <ul>
+        <li><b>Debug 빌드나 디버거가 붙은 상태</b>에서는 JIT이 지역 변수의 수명을 메서드 끝까지 늘립니다. 그래서 이 버그는 Release에서만 재현되곤 합니다.</li>
+        <li><code>GC.KeepAlive(obj)</code>는 아무 일도 하지 않는 메서드지만, 호출 지점까지 <code>obj</code>를 사용 중인 것으로 만들어 수명을 늘립니다.</li>
+        <li><b><code>this</code>도 마찬가지입니다.</b> 인스턴스 메서드에서 <code>this</code>를 마지막으로 쓴 뒤 네이티브 핸들 값만 들고 작업하면, 그 사이 finalizer가 실행되어 핸들을 닫을 수 있습니다. <code>SafeHandle</code>은 호출 동안 참조 카운트로 이 문제를 막습니다.</li>
+        <li><b>내부 포인터(byref)</b>: <code>ref int r = ref arr[5];</code>나 <code>Span&lt;T&gt;</code>는 객체 중간을 가리킵니다. GC는 이것도 추적해 객체를 살려 두고 압축 때 함께 고칩니다. 대신 byref는 스택에만 둘 수 있어서, <code>Span&lt;T&gt;</code>가 <code>ref struct</code>로 묶여 클래스 필드나 박싱이 금지됩니다.</li>
+      </ul>
+    </section>
+
+    <!-- 06 -->
+    <section id="gen">
+      <h2><span class="n">06</span>세대별 GC</h2>
+      <p>대부분의 객체는 금방 죽고, 오래 산 객체는 계속 산다는 <b>세대 가설</b>에 기대어 힙을 세 세대로 나눕니다. 새 객체는 Gen0에 들어가고, GC를 한 번 살아남을 때마다 다음 세대로 승격됩니다. 자주 도는 Gen0 GC는 작은 영역만 보기 때문에 빠릅니다.</p>
+      <div class="panel">
+        <h3>세대 시뮬레이터</h3>
+        <div class="row">
+          <button class="primary" id="genAuto">▶ 자동 할당</button>
+          <button id="genOne">할당 ×1</button>
+          <button id="genTen">할당 ×10</button>
+          <button id="genFull"><span class="mono">GC.Collect()</span></button>
+          <button id="genReset">초기화</button>
+        </div>
+        <div class="row">
+          <label for="genLong">오래 사는 객체 비율</label>
+          <input type="range" id="genLong" min="0" max="60" value="10">
+          <b class="mono" id="genLongV">10%</b>
+        </div>
+        <div class="gens">
+          <div class="gen g0"><div class="name">Gen0<small>예산 16</small></div><div class="cells" id="gc0"></div></div>
+          <div class="gen g1"><div class="name">Gen1<small>예산 24</small></div><div class="cells" id="gc1"></div></div>
+          <div class="gen g2"><div class="name">Gen2<small>예산 40</small></div><div class="cells" id="gc2"></div></div>
+        </div>
+        <div class="warn" id="genWarn"></div>
+        <div class="genctl">
+          <div class="stats">
+            <div class="stat"><span>총 할당</span><b id="sA">0</b></div>
+            <div class="stat"><span>Gen0 GC</span><b id="s0">0</b></div>
+            <div class="stat"><span>Gen1 GC</span><b id="s1">0</b></div>
+            <div class="stat"><span>Gen2 (Full) GC</span><b id="s2">0</b></div>
+          </div>
+          <ul class="genlog" id="genLog"></ul>
+        </div>
+        <div class="legend"><span><i style="background:var(--g0)"></i>살아 있음</span><span><i style="background:var(--g1);box-shadow:inset 0 0 0 3px rgba(0,0,0,.28)"></i>오래 사는 객체(진한 테두리)</span><span><i style="background:repeating-linear-gradient(45deg,var(--dead) 0 3px,transparent 3px 6px)"></i>이미 죽었지만 아직 수거 안 됨</span></div>
+        <p class="note" style="margin:0">통계는 "그 GC가 수거한 가장 높은 세대" 기준으로 셉니다(<code>GC.CollectionCount</code>와 세는 방식이 다름).</p>
+      </div>
+      <ul>
+        <li>Gen1 GC는 Gen0과 Gen1을, Gen2 GC는 LOH·POH를 포함한 전체 힙(Full GC)을 수거합니다.</li>
+        <li>빗금 칸을 보세요. 죽은 객체도 <em>그 세대의 GC가 돌기 전까지</em> 메모리를 차지합니다. Gen2로 넘어간 뒤 죽은 객체는 비싼 Full GC가 돌 때까지 남습니다.</li>
+        <li>비율을 40% 이상으로 올리면 Gen2가 빠르게 차고 Full GC가 잦아집니다. 딱 Gen2까지 살아남고 곧 죽는 <b>중간 수명 객체</b>(요청 단위 캐시, 오래 걸리는 작업의 버퍼)가 성능 문제를 자주 일으킵니다. 이를 "mid-life crisis"라고 부릅니다.</li>
+      </ul>
+    </section>
+
+    <!-- 07 -->
+    <section id="card">
+      <h2><span class="n">07</span>쓰기 장벽과 카드 테이블</h2>
+      <p>Gen0만 수거하려면 Gen0 객체를 가리키는 참조를 모두 알아야 합니다. 그런데 Gen2 객체의 필드가 Gen0 객체를 가리킬 수도 있습니다. Gen2 전체를 뒤지면 세대 분리의 의미가 없어지므로, JIT은 힙에 있는 참조 필드에 값을 쓸 때마다 <b>쓰기 장벽(write barrier)</b> 코드를 넣고, 장벽은 해당 메모리 구간의 <b>카드</b>를 더티로 표시합니다.</p>
+      <div class="panel">
+        <div class="svgbox"><svg viewBox="0 0 740 250" role="img" aria-label="Gen2 객체가 Gen0 객체를 가리킬 때 카드 테이블 표시">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+          </defs>
+          <text x="24" y="40" style="fill:var(--g2);font-weight:700" class="mono" font-size="13">Gen2</text>
+          <rect x="20" y="50" width="440" height="64" rx="6" style="fill:var(--sunk);stroke:var(--g2)" stroke-width="1.5"/>
+          <rect x="40" y="62" width="90" height="40" rx="4" style="fill:var(--obj)"/>
+          <rect x="140" y="62" width="130" height="40" rx="4" style="fill:var(--g2);opacity:.85"/>
+          <text x="205" y="87" text-anchor="middle" font-size="13" style="fill:var(--surface);font-weight:700">Cache</text>
+          <rect x="280" y="62" width="160" height="40" rx="4" style="fill:var(--obj)"/>
+          <text x="500" y="40" style="fill:var(--g0);font-weight:700" class="mono" font-size="13">Gen0</text>
+          <rect x="496" y="50" width="224" height="64" rx="6" style="fill:var(--sunk);stroke:var(--g0)" stroke-width="1.5"/>
+          <rect x="560" y="62" width="110" height="40" rx="4" style="fill:var(--g0)"/>
+          <text x="615" y="87" text-anchor="middle" font-size="13" style="fill:var(--surface);font-weight:700">Item</text>
+          <path d="M235 62 C 300 10, 560 10, 600 60" fill="none" style="stroke:var(--accent)" stroke-width="2" marker-end="url(#ah2)"/>
+          <text x="420" y="22" text-anchor="middle" font-size="12" class="mono" style="fill:var(--accent)">cache.Item = new Item();</text>
+          <text x="24" y="146" font-size="12" style="fill:var(--muted)">카드 테이블 (힙 구간마다 1비트)</text>
+          <g id="cards"></g>
+          <text x="24" y="214" font-size="13" style="fill:var(--ink)">Gen0 GC가 스캔하는 범위 = <tspan style="fill:var(--accent);font-weight:700">루트</tspan> + <tspan style="fill:var(--danger);font-weight:700">더티 카드</tspan>에 해당하는 오래된 세대 구간</text>
+          <text x="24" y="236" font-size="12" style="fill:var(--muted)">→ Gen2 전체를 보지 않고도 Item이 살아 있음을 압니다.</text>
+        </svg></div>
+      </div>
+      <ul>
+        <li>장벽은 힙 객체의 <b>참조 타입 필드</b>나 참조 배열 원소에 쓸 때 붙습니다. 지역 변수나 참조가 없는 값 타입 필드(int 등) 쓰기에는 없고, 참조를 담은 struct를 힙에 복사하면 그 참조 필드마다 장벽이 붙습니다.</li>
+        <li>장벽은 저장하는 참조 값이 젊은 세대를 가리킬 때만 카드를 표시하도록 빠르게 걸러 내지만, 참조를 대량으로 쓰는 핫 루프에서는 비용이 쌓입니다. 오래된 객체가 젊은 객체를 많이 가리킬수록 Gen0 GC가 훑어야 할 카드도 많아집니다.</li>
+      </ul>
+    </section>
+
+    <div class="part">PART 3 · 메모리 영역</div>
+
+    <!-- 08 -->
+    <section id="loh">
+      <h2><span class="n">08</span>LOH와 POH</h2>
+      <p>큰 객체를 매번 복사하며 압축하면 비쌉니다. 그래서 <b>85,000바이트 이상</b>의 객체는 처음부터 <b>LOH(Large Object Heap)</b>에 할당되고 논리적으로 Gen2로 취급됩니다. Gen2 GC에서만 수거되고, 기본적으로 압축되지 않아 단편화가 생길 수 있습니다. .NET 5부터는 고정(pinned) 객체 전용 <b>POH</b>가 따로 있습니다.</p>
+      <div class="panel">
+        <h3>이 배열은 어디에 할당될까?</h3>
+        <div class="row">
+          <span class="mono">new byte[</span><input type="number" id="lohLen" value="1000" min="0" step="1000" aria-label="배열 길이"><span class="mono">]</span>
+          <select id="lohKind" aria-label="할당 방식">
+            <option value="n">일반 new</option>
+            <option value="p">GC.AllocateArray&lt;byte&gt;(len, pinned: true)</option>
+          </select>
+        </div>
+        <div class="row">
+          <button data-len="1000">1,000</button>
+          <button data-len="84975">84,975</button>
+          <button data-len="84976">84,976</button>
+          <button data-len="1048576">1 MB</button>
+        </div>
+        <div class="status" id="lohMsg"></div>
+        <div class="areas">
+          <div class="area" id="aSOH"><h4>SOH · Gen0</h4><p>85,000B 미만. 세대별로 수거·압축. 대부분의 객체.</p></div>
+          <div class="area" id="aLOH"><h4>LOH</h4><p>85,000B 이상. Gen2와 함께 수거. 기본 비압축.</p></div>
+          <div class="area" id="aPOH"><h4>POH</h4><p>.NET 5+. 고정 객체 전용. 이동하지 않아 압축을 방해하지 않음.</p></div>
+        </div>
+      </div>
+      <ul>
+        <li>LOH 압축이 꼭 필요하면 <code>GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;</code>로 다음 블로킹 Gen2 GC에서 한 번 압축합니다.</li>
+        <li>큰 버퍼를 자주 만들고 버리면 LOH 예산이 빨리 차서 Gen2 GC가 잦아집니다(<a href="#trigger">02장</a>의 <code>AllocLarge</code>). <code>ArrayPool&lt;T&gt;</code>로 재사용하세요.</li>
+        <li>기준값은 <code>GCLOHThreshold</code> 설정으로 올릴 수 있습니다(낮출 수는 없음).</li>
+      </ul>
+    </section>
+
+    <!-- 09 -->
+    <section id="pin">
+      <h2><span class="n">09</span>Pinning과 단편화</h2>
+      <p>네이티브 코드에 버퍼 주소를 넘기는 동안 GC가 그 객체를 옮기면 안 됩니다. 그래서 객체를 <b>고정(pin)</b>합니다. 고정된 객체는 압축 때 제자리에 남고, 다른 객체는 그 객체를 넘어 이동하지 못합니다. 그 앞에 생긴 빈틈은 연속 공간으로 합쳐지지 못하고 남습니다.</p>
+      <div class="panel">
+        <h3>고정할 객체를 골라 압축해 보기</h3>
+        <p class="note" style="margin:0">살아 있는 객체(대문자)를 클릭하면 고정을 켜고 끕니다. 소문자는 이미 죽은 객체입니다.</p>
+        <div class="svgbox"><svg id="pinSvg" viewBox="0 0 684 170" role="img" aria-label="고정 객체가 압축을 막는 모습"></svg></div>
+        <div class="row"><button class="primary" id="pinRun">Compact</button><button id="pinReset">초기화</button></div>
+        <div class="status" id="pinMsg"></div>
+      </div>
+      <div class="tablebox"><table>
+        <thead><tr><th>고정 방법</th><th>고정 기간</th><th>메모</th></tr></thead>
+        <tbody>
+          <tr><td><code>fixed (byte* p = buf)</code></td><td>블록 안에서만</td><td>지역 변수에 pinned 표시만 하므로 GC가 그 사이에 돌지 않으면 비용이 거의 없음</td></tr>
+          <tr><td>P/Invoke 마샬링</td><td>호출 동안</td><td>blittable 배열·문자열은 복사 없이 자동 고정됨</td></tr>
+          <tr><td><code>GCHandle.Alloc(obj, GCHandleType.Pinned)</code></td><td><code>Free()</code> 할 때까지</td><td>오래 잡으면 단편화의 주범. Free 누락은 누수</td></tr>
+          <tr><td><code>Memory&lt;T&gt;.Pin()</code></td><td><code>MemoryHandle.Dispose()</code> 할 때까지</td><td>비동기 I/O에서 흔히 쓰임</td></tr>
+          <tr><td><code>GC.AllocateArray&lt;T&gt;(n, pinned: true)</code></td><td>객체 수명 전체</td><td>POH에 할당되어 SOH 압축을 방해하지 않음. .NET 5~7은 참조를 포함하지 않는 T만 가능, .NET 8부터 제한 없음</td></tr>
+        </tbody>
+      </table></div>
+      <p class="note">원칙: 짧게 고정할 때는 <code>fixed</code>, 오래 고정할 버퍼는 시작할 때 POH에 만들어 재사용하고, GC 힙이 필요 없으면 <code>NativeMemory.Alloc</code>을 씁니다.</p>
+    </section>
+
+    <!-- 10 -->
+    <section id="regions">
+      <h2><span class="n">10</span>Regions (.NET 7+)</h2>
+      <p>.NET 6까지 GC는 큰 연속 구간인 <b>세그먼트</b>로 힙을 관리했습니다. .NET 7부터 64비트 런타임(.NET 7 당시에는 macOS·NativeAOT 제외)은 힙을 작은 <b>region</b>들로 쪼개고, 각 세대를 region 목록으로 관리합니다. 세대, LOH, 압축이라는 개념은 그대로이고 메모리를 담는 그릇이 바뀌었습니다.</p>
+      <div class="panel">
+        <div class="tabs" role="tablist" id="rgTabs">
+          <button role="tab" aria-selected="true" data-rg="seg">세그먼트 (~.NET 6)</button>
+          <button role="tab" aria-selected="false" data-rg="reg">Regions (.NET 7+)</button>
+        </div>
+        <div class="svgbox"><svg id="rgSvg" viewBox="0 0 720 230" role="img" aria-label="세그먼트와 리전 비교"></svg></div>
+        <div class="status" id="rgMsg"></div>
+      </div>
+      <ul>
+        <li>기본 region 크기는 SOH용 4MB, LOH·POH용은 그 8배인 32MB입니다. 하드 리밋이 작은 컨테이너처럼 예약 범위가 작으면 2MB·1MB로 자동 축소됩니다. LOH·POH region보다 큰 객체는 전용 region을 받습니다.</li>
+        <li>빈 region은 어느 세대나 힙에서도 가져다 쓸 수 있고, 남으면 OS에 반환(decommit)하기 쉽습니다. 세그먼트 시절에는 한 세그먼트 안의 빈 공간이 다른 세대로 넘어가기 어려웠습니다.</li>
+        <li>생존율이 높은 region은 객체를 복사하지 않고 region째로 다음 세대에 넘길 수 있고, 고정 객체가 많은 region도 따로 다룰 수 있습니다.</li>
+        <li>.NET 7부터 세그먼트 기반 GC(<code>clrgc.dll</code> / <code>libclrgc.so</code>)를 함께 배포해, 문제가 생기면 <code>DOTNET_GCName</code>으로 되돌릴 수 있습니다(.NET 10에도 포함).</li>
+      </ul>
+    </section>
+
+    <div class="part">PART 4 · 런타임 설정</div>
+
+    <!-- 11 -->
+    <section id="modes">
+      <h2><span class="n">11</span>GC 모드: Workstation · Background · Server</h2>
+      <p>같은 GC라도 설정에 따라 스레드를 멈추는 방식이 달라집니다. 탭을 바꿔 가며 애플리케이션 스레드가 멈추는 구간(빗금)을 비교해 보세요.</p>
+      <div class="panel">
+        <div class="tabs" role="tablist" id="modeTabs">
+          <button role="tab" aria-selected="true" data-mode="ws">Workstation (비동시)</button>
+          <button role="tab" aria-selected="false" data-mode="bg">Workstation + Background</button>
+          <button role="tab" aria-selected="false" data-mode="sv">Server + Background</button>
+        </div>
+        <div class="svgbox"><svg id="modeSvg" viewBox="0 0 760 330" role="img" aria-label="GC 모드별 스레드 일시 중지 타임라인"></svg></div>
+        <div class="status" id="modeMsg"></div>
+      </div>
+      <div class="tablebox"><table>
+        <thead><tr><th>모드</th><th>힙 / GC 스레드</th><th>잘 맞는 곳</th><th>설정</th></tr></thead>
+        <tbody>
+          <tr><td>Workstation</td><td>힙 1개. GC는 GC를 일으킨 사용자 스레드에서 실행</td><td>데스크톱·클라이언트 앱, CPU가 적은 환경</td><td>콘솔·WPF·WinForms 기본값</td></tr>
+          <tr><td>Server</td><td>프로세스가 쓸 수 있는 프로세서당 힙 1개 + 힙마다 전용 GC 스레드(높은 우선순위)</td><td>처리량 중심 서버, 코어가 많은 머신</td><td><code>&lt;ServerGarbageCollection&gt;true</code>. ASP.NET Core 기본값</td></tr>
+          <tr><td>Background</td><td>Gen2를 전용 BGC 스레드에서 앱과 동시에 수행. Server 모드에서는 힙마다 BGC 스레드</td><td>응답성이 중요한 대부분의 앱</td><td><code>&lt;ConcurrentGarbageCollection&gt;</code> 기본 true</td></tr>
+        </tbody>
+      </table></div>
+      <pre class="code"><span class="c">&lt;!-- .csproj --&gt;</span>
+&lt;<span class="t">PropertyGroup</span>&gt;
+  &lt;<span class="t">ServerGarbageCollection</span>&gt;true&lt;/<span class="t">ServerGarbageCollection</span>&gt;
+  &lt;<span class="t">ConcurrentGarbageCollection</span>&gt;true&lt;/<span class="t">ConcurrentGarbageCollection</span>&gt;
+&lt;/<span class="t">PropertyGroup</span>&gt;</pre>
+      <p class="note">.NET 8에서 도입되고 .NET 9부터 Server GC의 기본값이 된 <b>DATAS</b>(Dynamic Adaptation To Application Sizes)는 힙 1개로 시작해 부하에 맞춰 힙 개수를 늘리고 줄입니다. 코어 수만큼 힙을 두는 Server GC가 메모리를 과하게 쓰는 문제를 완화합니다.</p>
+    </section>
+
+    <!-- 12 -->
+    <section id="latency">
+      <h2><span class="n">12</span>지연 시간 제어 API</h2>
+      <p>GC 설정은 대부분 프로세스 시작 시 고정되지만, 실행 중에 GC의 성격을 바꾸거나 GC에 힌트를 주는 API가 있습니다. 모두 특정 상황용이니 측정 없이 쓰지 마세요.</p>
+      <div class="tablebox"><table>
+        <thead><tr><th><code>GCSettings.LatencyMode</code></th><th>동작</th><th>조건</th></tr></thead>
+        <tbody>
+          <tr><td><code>Batch</code></td><td>동시(background) GC를 끄고 처리량 우선</td><td>동시 GC를 끈 설정의 기본값</td></tr>
+          <tr><td><code>Interactive</code></td><td>동시 GC 사용. 일반적인 균형</td><td>동시 GC가 켜진 설정의 기본값</td></tr>
+          <tr><td><code>LowLatency</code></td><td>Gen2 GC를 최대한 억제(메모리 부족 시엔 발생)</td><td>Workstation GC 전용. 짧은 구간에만</td></tr>
+          <tr><td><code>SustainedLowLatency</code></td><td>블로킹 Gen2 GC를 피하고 background Gen2만 수행</td><td>동시 GC가 켜져 있어야 함</td></tr>
+          <tr><td><code>NoGCRegion</code></td><td>읽기 전용 값. NoGC 구간 안에 있음을 뜻함</td><td><code>GC.TryStartNoGCRegion</code>으로 진입</td></tr>
+        </tbody>
+      </table></div>
+      <div class="panel">
+        <h3>상황별로 고르기</h3>
+        <select id="latSel" aria-label="상황 선택">
+          <option value="frame">짧은 구간에 GC가 절대 끼어들면 안 됨 (실시간 처리)</option>
+          <option value="trade">몇 시간 동안 긴 Full GC 멈춤을 피하고 싶음 (거래 세션)</option>
+          <option value="native">관리 객체 하나가 큰 네이티브 메모리를 쥐고 있음</option>
+          <option value="batch">응답성보다 처리량이 중요한 배치 작업</option>
+          <option value="drain">Full GC 직전에 서버를 로드밸런서에서 빼고 싶음</option>
+        </select>
+        <div class="status" id="latMsg"></div>
+        <pre class="code" id="latCode"></pre>
+      </div>
+    </section>
+
+    <!-- 13 -->
+    <section id="container">
+      <h2><span class="n">13</span>컨테이너와 런타임 설정</h2>
+      <p>GC 설정은 <code>.csproj</code>, <code>runtimeconfig.json</code>, 환경 변수로 줄 수 있습니다. 컨테이너에서는 .NET이 cgroup의 메모리·CPU 제한을 읽어 기본값을 바꾸기 때문에, 같은 코드라도 로컬과 쿠버네티스에서 GC 동작이 다릅니다.</p>
+      <div class="panel">
+        <h3>내 컨테이너의 기본 GC 값 계산</h3>
+        <div class="calc">
+          <label>메모리 제한 (MB)<input type="number" id="ctMem" value="512" min="32" step="128"></label>
+          <label>CPU 제한 (코어)<input type="number" id="ctCpu" value="1.5" min="0.25" step="0.25"></label>
+          <label>GC 모드<select id="ctMode"><option value="sv">Server (ASP.NET Core)</option><option value="ws">Workstation</option></select></label>
+          <label>.NET 버전<select id="ctVer"><option value="9">.NET 9 이상</option><option value="8">.NET 8</option></select></label>
+        </div>
+        <dl class="kv" id="ctOut"></dl>
+      </div>
+      <div class="tablebox"><table>
+        <thead><tr><th>설정</th><th>runtimeconfig.json</th><th>환경 변수</th><th>설명</th></tr></thead>
+        <tbody>
+          <tr><td>Server GC</td><td><code>System.GC.Server</code></td><td><code>DOTNET_gcServer=1</code></td><td>Server/Workstation 선택</td></tr>
+          <tr><td>동시 GC</td><td><code>System.GC.Concurrent</code></td><td><code>DOTNET_gcConcurrent=0</code></td><td>Background GC 끄기</td></tr>
+          <tr><td>힙 하드 리밋</td><td><code>System.GC.HeapHardLimit</code></td><td><code>DOTNET_GCHeapHardLimit</code></td><td>GC 힙과 GC 자체 관리 데이터의 최대 커밋 크기(바이트). 컨테이너 기본은 메모리 제한의 75%</td></tr>
+          <tr><td>하드 리밋 비율</td><td><code>System.GC.HeapHardLimitPercent</code></td><td><code>DOTNET_GCHeapHardLimitPercent</code></td><td>메모리 제한 대비 비율</td></tr>
+          <tr><td>힙 개수</td><td><code>System.GC.HeapCount</code></td><td><code>DOTNET_GCHeapCount</code></td><td>Server GC의 힙 수 직접 지정</td></tr>
+          <tr><td>메모리 절약</td><td><code>System.GC.ConserveMemory</code></td><td><code>DOTNET_GCConserveMemory</code></td><td>0~9. 높을수록 LOH 압축 등으로 단편화를 줄임(.NET 6+)</td></tr>
+          <tr><td>DATAS</td><td><code>System.GC.DynamicAdaptationMode</code></td><td><code>DOTNET_GCDynamicAdaptationMode</code></td><td>1 켜기, 0 끄기</td></tr>
+          <tr><td>LOH 기준</td><td><code>System.GC.LOHThreshold</code></td><td><code>DOTNET_GCLOHThreshold</code></td><td>LOH로 보낼 최소 크기</td></tr>
+        </tbody>
+      </table></div>
+      <div class="caution"><b>환경 변수의 숫자는 16진수입니다.</b> <code>DOTNET_GCHeapHardLimit=200000000</code>은 2억 바이트가 아니라 0x200000000(8GB)으로 읽힙니다. <code>DOTNET_GCHeapCount=10</code>도 힙 16개입니다. <code>runtimeconfig.json</code>의 값은 10진수입니다.</div>
+      <ul>
+        <li>하드 리밋은 <b>GC 힙(과 GC 자체 관리 데이터)에만</b> 적용됩니다. 네이티브 메모리, 스레드 스택, JIT 코드는 따로 쓰므로 컨테이너 메모리의 나머지 25%를 남겨 두는 것입니다.</li>
+        <li><code>DOTNET_</code> 접두사 대신 예전 <code>COMPlus_</code> 접두사도 아직 동작합니다.</li>
+        <li>컨테이너의 메모리 제한이 바뀌었을 때 <code>GC.RefreshMemoryLimit()</code>(.NET 8+)로 다시 읽게 할 수 있습니다.</li>
+      </ul>
+    </section>
+
+    <div class="part">PART 5 · 리소스 정리</div>
+
+    <!-- 14 -->
+    <section id="final">
+      <h2><span class="n">14</span>Finalizer와 IDisposable</h2>
+      <p>GC는 <b>메모리</b>만 관리합니다. 파일 핸들, 소켓, DB 연결 같은 비관리 리소스를 언제 정리할지 모르는 GC에 맡기면 안 됩니다. Finalizer(<code>~ClassName()</code>)는 마지막 안전망일 뿐이고 비용도 큽니다. 세 흐름을 비교해 보세요.</p>
+      <div class="panel">
+        <div class="tabs" role="tablist" id="finTabs">
+          <button role="tab" aria-selected="true" data-fin="f">Dispose 안 함</button>
+          <button role="tab" aria-selected="false" data-fin="d"><span class="mono">using</span> + <span class="mono">SuppressFinalize</span></button>
+          <button role="tab" aria-selected="false" data-fin="r">부활(resurrection)</button>
+        </div>
+        <div class="svgbox"><svg id="finSvg" viewBox="0 0 760 250" role="img" aria-label="Finalization 큐 흐름"></svg></div>
+        <div class="row">
+          <button id="finPrev">◀ 이전</button>
+          <button class="primary" id="finNext">다음 ▶</button>
+          <span class="mono note" id="finStep"></span>
+        </div>
+        <div class="status" id="finMsg"></div>
+      </div>
+      <pre class="code"><span class="k">public sealed class</span> <span class="t">FileHandle</span> : <span class="t">IDisposable</span>
+{
+    <span class="k">private</span> <span class="t">IntPtr</span> _handle;            <span class="c">// 비관리 리소스</span>
+    <span class="k">private bool</span> _disposed;
+
+    <span class="k">public void</span> Dispose()
+    {
+        <span class="k">if</span> (_disposed) <span class="k">return</span>;
+        NativeMethods.CloseHandle(_handle);
+        _disposed = <span class="k">true</span>;
+        <span class="t">GC</span>.SuppressFinalize(<span class="k">this</span>);     <span class="c">// finalization 큐에서 빼서 일반 객체처럼 회수</span>
+    }
+
+    ~FileHandle() => NativeMethods.CloseHandle(_handle);  <span class="c">// Dispose를 잊었을 때의 안전망</span>
+}
+
+<span class="k">using var</span> file = <span class="k">new</span> <span class="t">FileHandle</span>(<span class="s">"log.txt"</span>);   <span class="c">// 스코프를 벗어나면 Dispose()</span></pre>
+      <p class="note">실무에서는 finalizer를 직접 쓰기보다 <code>SafeHandle</code>을 상속해 핸들을 감싸는 방식을 권장합니다. 관리 리소스만 가진 클래스에는 finalizer를 만들지 마세요.</p>
+      <h3>Finalizer의 함정</h3>
+      <ul>
+        <li><b>Finalizer 스레드는 하나뿐입니다.</b> finalizer 하나가 락이나 UI 스레드를 기다리며 막히면 뒤의 모든 finalizable 객체가 F-Reachable 큐에 쌓여 메모리가 새는 것처럼 보입니다(<code>dotnet-dump</code>의 <code>finalizequeue</code>로 확인).</li>
+        <li><b>실행 순서가 보장되지 않습니다.</b> finalizer 안에서 다른 관리 객체 필드를 쓰면 그 객체가 이미 finalize되었을 수 있습니다. 예외로 <code>CriticalFinalizerObject</code>(예: <code>SafeHandle</code>)의 finalizer는 같은 시점에 수거되는 일반 finalizer보다 뒤에 실행됩니다.</li>
+        <li><b>.NET Core / .NET 5+는 프로세스 종료 시 finalizer를 실행하지 않습니다</b>(.NET Framework는 실행). 종료 정리는 <code>AppDomain.ProcessExit</code>나 호스트 수명 이벤트로 하세요.</li>
+        <li>finalizer에서 처리되지 않은 예외는 <b>프로세스를 종료</b>시킵니다.</li>
+        <li>테스트에서 finalizer까지 확실히 돌리려면 <code>GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();</code> 순서로 호출합니다.</li>
+      </ul>
+    </section>
+
+    <!-- 15 -->
+    <section id="handles">
+      <h2><span class="n">15</span>GC 핸들과 약한 참조</h2>
+      <p>GC 핸들은 런타임의 핸들 테이블에 있는 항목으로, 관리 코드 바깥(네이티브 코드, 런타임 내부)이 관리 객체를 붙잡거나 지켜보는 수단입니다. 강한 핸들은 그 자체가 루트입니다.</p>
+      <div class="tablebox"><table>
+        <thead><tr><th>핸들 종류</th><th>객체를 살리나</th><th>이동 가능</th><th>쓰는 곳</th></tr></thead>
+        <tbody>
+          <tr><td><code>Normal</code> (강한 핸들)</td><td>예</td><td>예</td><td>네이티브 콜백에 관리 객체를 넘길 때 (<code>GCHandle.ToIntPtr</code>)</td></tr>
+          <tr><td><code>Pinned</code></td><td>예</td><td>아니오</td><td>네이티브에 버퍼 주소 전달 (<a href="#pin">09장</a>)</td></tr>
+          <tr><td><code>Weak</code> (short)</td><td>아니오</td><td>-</td><td><code>WeakReference&lt;T&gt;</code> 기본값. 객체가 도달 불가가 되면 <b>finalizer 실행 전에</b> null</td></tr>
+          <tr><td><code>WeakTrackResurrection</code> (long)</td><td>아니오</td><td>-</td><td><code>trackResurrection: true</code>. finalizer가 끝나고 실제로 회수될 때 null</td></tr>
+          <tr><td>Dependent</td><td>1차 객체가 살아 있는 동안 2차 객체를 살림</td><td>-</td><td><code>ConditionalWeakTable</code>의 기반. <code>DependentHandle</code>로 공개(.NET 6+)</td></tr>
+        </tbody>
+      </table></div>
+      <p class="note"><code>GCHandle.Alloc</code>으로 만든 핸들은 <code>Free()</code>를 부르지 않으면 영원히 남습니다. 강한 핸들이라면 대상 객체와 그 객체가 참조하는 모든 것이 함께 새어 나갑니다.</p>
+      <div class="two">
+        <div class="panel">
+          <h3>WeakReference 실험</h3>
+          <div class="tabs" role="tablist" id="wkBuild">
+            <button role="tab" aria-selected="true" data-b="rel">Release 빌드</button>
+            <button role="tab" aria-selected="false" data-b="dbg">Debug 빌드</button>
+          </div>
+          <label class="row"><input type="checkbox" id="wkStrong" checked> 강한 참조 <code>image</code> 유지</label>
+          <div class="row"><button class="primary" id="wkGc"><span class="mono">GC.Collect()</span></button><button id="wkTry"><span class="mono">TryGetTarget()</span></button><button id="wkReset">초기화</button></div>
+          <div class="status mono" id="wkMsg" style="font-size:12.5px"></div>
+        </div>
+        <pre class="code"><span class="k">var</span> image = <span class="k">new</span> <span class="t">Bitmap</span>(<span class="s">"big.png"</span>);
+<span class="k">var</span> weak  = <span class="k">new</span> <span class="t">WeakReference</span>&lt;<span class="t">Bitmap</span>&gt;(image);
+
+image = <span class="k">null</span>;          <span class="c">// 강한 참조 제거</span>
+<span class="t">GC</span>.Collect();
+<span class="c">// Debug 빌드·디버거 연결 시에는 JIT이 지역 변수를</span>
+<span class="c">// 메서드 끝까지 살려 둘 수 있어 회수되지 않을 수 있음</span>
+
+<span class="k">if</span> (weak.TryGetTarget(<span class="k">out var</span> img))
+    Draw(img);         <span class="c">// 아직 살아 있음</span>
+<span class="k">else</span>
+    Reload();          <span class="c">// 회수됨 → 다시 로드</span></pre>
+      </div>
+      <p class="note">약한 참조로 캐시를 만들면 대상 객체가 속한 세대의 GC가 돌 때마다 항목이 사라져 히트율이 들쭉날쭉합니다. 일반적인 캐시는 크기 제한과 만료가 있는 <code>MemoryCache</code>가 낫습니다. <code>ConditionalWeakTable&lt;TKey,TValue&gt;</code>은 "키 객체가 살아 있는 동안만 부가 정보를 붙여 두기"에 맞습니다.</p>
+    </section>
+
+    <div class="part">PART 6 · 실전</div>
+
+    <!-- 16 -->
+    <section id="hidden">
+      <h2><span class="n">16</span>숨은 할당 찾기</h2>
+      <p>GC 부담을 줄이는 가장 확실한 방법은 할당 자체를 줄이는 것입니다. 문제는 <code>new</code>가 보이지 않는 할당입니다. 먼저 흔한 오해 하나부터 정리합니다.</p>
+      <div class="tablebox"><table>
+        <thead><tr><th>값 타입(struct)이 놓인 곳</th><th>실제 위치</th></tr></thead>
+        <tbody>
+          <tr><td>메서드의 지역 변수</td><td>스택 또는 레지스터</td></tr>
+          <tr><td>클래스의 필드</td><td>그 객체 안 (힙)</td></tr>
+          <tr><td>배열 원소 <code>new Point[100]</code></td><td>배열 객체 안 (힙). 원소마다 따로 할당하지는 않음</td></tr>
+          <tr><td>람다가 캡처한 지역 변수</td><td>컴파일러가 만든 클로저 객체 안 (힙)</td></tr>
+          <tr><td>async 메서드에서 <code>await</code>를 넘어 쓰는 지역 변수</td><td>상태 머신의 필드. 실제로 비동기 대기하면 상태 머신이 힙으로 옮겨짐</td></tr>
+          <tr><td><code>object</code>나 인터페이스 타입 변수에 대입</td><td>박싱되어 힙에 복사본 생성</td></tr>
+        </tbody>
+      </table></div>
+      <p class="caution">"struct는 스택, class는 힙"은 틀린 말입니다. 값 타입은 <b>선언된 곳에</b> 저장됩니다.</p>
+      <div class="panel">
+        <h3>이 코드는 힙에 할당할까? <span class="score" id="acScore"></span></h3>
+        <div class="acards" id="acards"></div>
+      </div>
+      <p class="note">.NET 9부터 JIT이 탈출 분석(escape analysis)으로 메서드 밖으로 나가지 않는 일부 박싱을 스택에 할당하기 시작했고, .NET 10에서는 작은 배열·delegate·일부 열거자까지 범위를 넓혔습니다. 다만 적용 범위가 좁고 버전마다 다르므로 기대지 말고 측정하세요.</p>
+    </section>
+
+    <!-- 17 -->
+    <section id="diag">
+      <h2><span class="n">17</span>진단과 체크리스트</h2>
+      <p>메모리가 계속 늘어나는 서비스를 추적하는 흐름입니다. 출력은 형식을 보여 주기 위한 <b>예시</b>입니다.</p>
+      <div class="panel">
+        <div class="tabs" role="tablist" id="dgTabs"></div>
+        <div class="status" id="dgMsg"></div>
+        <pre class="term" id="dgTerm"></pre>
+      </div>
+      <h3>증상별 체크리스트</h3>
+      <div class="tablebox"><table>
+        <thead><tr><th>증상 / 상황</th><th>흔한 원인</th><th>대응</th></tr></thead>
+        <tbody>
+          <tr><td>Gen0 GC가 초당 수십~수백 번</td><td>핫 경로의 짧은 할당(문자열 연결, LINQ, 박싱, 클로저)</td><td><code>Span&lt;T&gt;</code>, <code>StringBuilder</code>, struct, static 람다, 풀링</td></tr>
+          <tr><td>Gen2 GC가 잦고 멈춤이 김</td><td>중간 수명 객체 승격, 끝없이 커지는 캐시, LOH 할당</td><td>캐시 상한·만료, <code>ArrayPool&lt;T&gt;</code>, 객체 풀</td></tr>
+          <tr><td>GC 후에도 힙이 계속 증가</td><td>해제 안 한 이벤트 구독, static 컬렉션, GCHandle 누수</td><td><code>-=</code>로 구독 해제, 덤프의 <code>gcroot</code>로 루트 경로 확인</td></tr>
+          <tr><td>힙은 작은데 프로세스 메모리가 큼</td><td>네이티브 메모리, Server GC의 힙별 예산, 단편화</td><td><code>GetGCMemoryInfo().FragmentedBytes</code>, DATAS, <code>GCConserveMemory</code></td></tr>
+          <tr><td>GC 시간은 짧은데 멈춤이 김</td><td>스레드 정지 지연(긴 네이티브 전환, 루프)</td><td>트레이스에서 suspension 시간 확인 (<a href="#phases">04장</a>)</td></tr>
+          <tr><td>코드에 <code>GC.Collect()</code></td><td>GC의 예산 조정을 망가뜨림</td><td>제거하고 원인 할당을 줄이기. 테스트·벤치마크 외에는 쓰지 않기</td></tr>
+        </tbody>
+      </table></div>
+      <pre class="code"><span class="c">// 버퍼 재사용: LOH 할당과 Gen2 GC를 줄인다</span>
+<span class="k">byte</span>[] buf = <span class="t">ArrayPool</span>&lt;<span class="k">byte</span>&gt;.Shared.Rent(1 &lt;&lt; 20);
+<span class="k">try</span> { <span class="c">/* ... */</span> }
+<span class="k">finally</span> { <span class="t">ArrayPool</span>&lt;<span class="k">byte</span>&gt;.Shared.Return(buf); }
+
+<span class="c">// 부분 문자열을 새로 만들지 않는다</span>
+<span class="t">ReadOnlySpan</span>&lt;<span class="k">char</span>&gt; key = line.AsSpan(0, line.IndexOf(<span class="s">'='</span>));</pre>
+    </section>
+
+    <!-- 18 -->
+    <section id="unity">
+      <h2><span class="n">18</span>Unity · Mono GC</h2>
+      <p>같은 C#이라도 런타임이 다르면 GC도 다릅니다. 지금까지의 내용은 .NET(CoreCLR) 기준입니다. Unity는 Mono와 IL2CPP 백엔드 모두 <b>Boehm-Demers-Weiser GC</b>를 씁니다.</p>
+      <div class="tablebox"><table>
+        <thead><tr><th></th><th>.NET (CoreCLR)</th><th>Unity (Boehm)</th><th>Mono SGen</th></tr></thead>
+        <tbody>
+          <tr><td>세대</td><td>Gen0/1/2</td><td>없음 (매번 전체 힙)</td><td>nursery + major</td></tr>
+          <tr><td>압축</td><td>있음</td><td><b>없음</b> (객체를 옮기지 않음)</td><td>nursery는 복사, major는 상황에 따라</td></tr>
+          <tr><td>스택 스캔</td><td>정확(precise)</td><td>보수적(conservative): 참조처럼 보이는 값은 참조로 간주</td><td>스택은 보수적, 힙은 정확</td></tr>
+          <tr><td>멈춤 줄이기</td><td>Background GC</td><td>Incremental GC: 수거 작업을 여러 프레임에 나눔</td><td>concurrent mark 옵션</td></tr>
+          <tr><td>쓰이는 곳</td><td>.NET 서버·데스크톱, NativeAOT</td><td>Unity 에디터·플레이어</td><td>.NET의 Mono 기반 대상(모바일, WebAssembly)</td></tr>
+        </tbody>
+      </table></div>
+      <div class="panel">
+        <h3>프레임 시간에서 보는 차이</h3>
+        <div class="tabs" role="tablist" id="ufTabs">
+          <button role="tab" aria-selected="true" data-u="stw">Incremental 끔</button>
+          <button role="tab" aria-selected="false" data-u="inc">Incremental 켬</button>
+        </div>
+        <div class="svgbox"><svg id="ufSvg" viewBox="0 0 720 220" role="img" aria-label="Unity 프레임 시간 막대 그래프"></svg></div>
+        <div class="status" id="ufMsg"></div>
+      </div>
+      <ul>
+        <li>압축이 없으므로 단편화가 쌓이면 힙이 커지기만 할 수 있습니다. 큰 배열을 반복 생성하지 마세요.</li>
+        <li><code>Update()</code>에서의 할당(문자열 조합, <code>GetComponent</code> 결과 배열, LINQ, 박싱)을 프로파일러의 <b>GC.Alloc</b> 열로 찾아 0으로 만드는 것이 기본 전략입니다.</li>
+        <li><code>UnityEngine.Pool.ObjectPool&lt;T&gt;</code>로 재사용하고, 로딩 화면처럼 멈춰도 되는 시점에 수동 수거합니다.</li>
+        <li><code>UnityEngine.Scripting.GarbageCollector</code>: <code>GCMode</code>(Enabled / Disabled / Manual), <code>CollectIncremental(nanoseconds)</code>, <code>incrementalTimeSliceNanoseconds</code>로 직접 제어할 수 있습니다.</li>
+        <li>Unity는 CoreCLR 런타임으로의 전환을 예고했습니다. 사용하는 Unity 버전의 문서를 확인하세요.</li>
+      </ul>
+    </section>
+
+    <!-- 19 -->
+    <section id="quiz">
+      <h2><span class="n">19</span>확인 퀴즈</h2>
+      <div class="panel quiz" id="quizBox"></div>
+      <div class="score" id="quizScore"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const hex = n => '0x' + Math.round(n).toString(16).toUpperCase().padStart(8, '0');
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function tabs(sel, attr, cb) {
+  $$(sel + ' button').forEach(b => b.addEventListener('click', () => {
+    $$(sel + ' button').forEach(x => x.setAttribute('aria-selected', x === b));
+    cb(b.dataset[attr]);
+  }));
+}
+
+/* 01 할당 */
+(() => {
+  const CAP = 24, BASE = 0x02A41000, UNIT = 0x18;
+  const bar = $('#allocBar'), msg = $('#allocMsg');
+  const HINT = '버튼으로 객체를 할당하고, 계속 쓸 객체는 블록을 클릭해 주황으로 바꿔 보세요. 한 칸은 24바이트입니다.';
+  let objs = [], used = 0, gcs = 0, prom = 0;
+  function render() {
+    bar.innerHTML = '';
+    objs.forEach((o, i) => {
+      const d = document.createElement('button');
+      d.type = 'button';
+      d.className = 'blk' + (o.fresh ? ' fresh' : '') + (o.rooted ? ' rooted' : '');
+      d.style.left = (o.start / CAP * 100) + '%';
+      d.style.width = (o.size / CAP * 100) + '%';
+      d.textContent = o.size > 1 ? o.name : 'P';
+      d.dataset.i = i;
+      d.setAttribute('aria-pressed', o.rooted);
+      d.title = `${o.name} @ ${hex(BASE + o.start * UNIT)}`;
+      bar.appendChild(d);
+      o.fresh = false;
+    });
+    $('#allocPtr').style.left = (used / CAP * 100) + '%';
+    $('#allocAddr').textContent = hex(BASE + used * UNIT);
+    $('#allocUsed').textContent = `${used} / ${CAP}`;
+    $('#allocGc').textContent = gcs;
+    $('#allocProm').textContent = prom;
+    $('#allocGen1').innerHTML = '<i></i>'.repeat(Math.min(prom, 60));
+  }
+  function gc() {
+    gcs++;
+    const survivors = objs.filter(o => o.rooted);
+    prom += survivors.length;
+    objs = []; used = 0;
+    bar.classList.remove('flash'); void bar.offsetWidth; bar.classList.add('flash');
+    return survivors;
+  }
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('.blk'); if (!b) return;
+    const o = objs[+b.dataset.i]; o.rooted = !o.rooted;
+    msg.innerHTML = o.rooted ? `<b>${esc(o.name)}</b>을(를) 어떤 변수가 계속 참조합니다. GC가 와도 살아남습니다.` : `<b>${esc(o.name)}</b>에 대한 참조가 사라졌습니다. 다음 GC에서 회수됩니다.`;
+    render();
+  });
+  $$('[data-alloc]').forEach(b => b.addEventListener('click', () => {
+    const size = +b.dataset.size, name = b.dataset.alloc;
+    let text = '';
+    if (used + size > CAP) {
+      const s = gc();
+      text = `<b>Gen0 예산 초과 → GC #${gcs}</b>. 루트에서 닿는 객체 ${s.length}개(${s.map(o => esc(o.name)).join(', ') || '없음'})만 살아남아 Gen1으로 승격되고, 나머지는 회수되었습니다. Gen0은 처음부터 다시 씁니다. 이어서 `;
+    }
+    objs.push({ name, size, start: used, fresh: true, rooted: false });
+    const at = hex(BASE + used * UNIT);
+    used += size;
+    msg.innerHTML = text + `<b>${esc(name)}</b>을(를) <span class="mono">${at}</span>에 할당. 포인터를 ${size}칸 밀었을 뿐입니다.`;
+    render();
+  }));
+  $('#allocReset').addEventListener('click', () => { objs = []; used = 0; gcs = 0; prom = 0; msg.textContent = HINT; render(); });
+  msg.textContent = HINT;
+  render();
+})();
+
+/* 02 트리거 */
+(() => {
+  const g1 = $('#tg1'), g2 = $('#tg2'), gl = $('#tgl'), gc = $('#tgc');
+  function update() {
+    $('#tg1v').textContent = g1.value + '%'; $('#tg2v').textContent = g2.value + '%'; $('#tglv').textContent = gl.value + '%';
+    let gen = 0, why = 'Gen0 예산만 넘었으므로 Gen0만 수거합니다. 가장 싸고 흔한 GC입니다.', reason = 'AllocSmall';
+    if (+g1.value >= 100) { gen = 1; why = 'Gen1 예산도 넘었으므로 Gen1까지 수거합니다(Gen0 포함).'; }
+    if (+g2.value >= 100) { gen = 2; why = 'Gen2 예산을 넘었으므로 전체 힙을 수거합니다. 동시 GC가 켜져 있으면 대개 Background GC로 수행됩니다.'; }
+    if (+gl.value >= 100) { gen = 2; reason = 'AllocLarge'; why = 'LOH는 Gen2와 함께만 수거되므로, LOH 예산 초과는 Gen2 GC로 이어집니다.'; }
+    if (gc.checked) { gen = 2; reason = 'Induced'; why = '<code>GC.Collect()</code>는 인자가 없으면 모든 세대를 블로킹으로 수거합니다. GC가 쌓아 온 예산 조정 정보도 흐트러집니다.'; }
+    $('#tgMsg').innerHTML = `다음 GC: <b>Gen${gen} GC</b> · reason <span class="mono">${reason}</span><br>${why}`;
+  }
+  [g1, g2, gl, gc].forEach(el => el.addEventListener('input', update));
+  update();
+})();
+
+/* 03 Mark · Sweep · Compact */
+(() => {
+  const svg = $('#mcSvg'), status = $('#mcStatus');
+  const U = 52, X0 = 32, SY = 172, SH = 62, TOTAL = 13, BASE = 0x02A41000, BYTES = 0x20;
+  const DEFS = [
+    { id: 'A', w: 2, type: 'Order', refs: ['C'] },
+    { id: 'B', w: 1, type: 'Node', refs: ['D'] },
+    { id: 'C', w: 2, type: 'List<Item>', refs: ['F'] },
+    { id: 'D', w: 1, type: 'Node', refs: ['B'] },
+    { id: 'E', w: 3, type: 'Dictionary', refs: [] },
+    { id: 'F', w: 1, type: 'Item', refs: [] },
+    { id: 'G', w: 2, type: 'Logger', refs: ['E'] },
+    { id: 'H', w: 1, type: 'string', refs: [] },
+  ];
+  const ROOTS = [
+    { name: 'order', kind: '스택 지역 변수', target: 'A', x: 110 },
+    { name: 'Cache.Instance', kind: 'static 필드', target: 'E', x: 370 },
+    { name: 'logger', kind: '스택 지역 변수', target: 'G', x: 630 },
+  ];
+  let objs, roots, phase, marked, timers = [];
+  const byId = id => objs.find(o => o.id === id);
+  const cx = o => X0 + (o.x + o.w / 2) * U;
+  const visible = o => !['swept', 'compacting', 'compacted'].includes(phase) || marked.has(o.id);
+
+  function reset() {
+    timers.forEach(clearTimeout); timers = [];
+    let off = 0;
+    objs = DEFS.map(d => { const o = { ...d, x: off }; off += d.w; return o; });
+    roots = ROOTS.map(r => ({ ...r, on: true }));
+    phase = 'idle'; marked = new Set();
+    say('루트 3개가 각각 A, E, G를 가리킵니다. B와 D는 서로를 가리키지만 루트에서 닿지 않고, H는 아무도 가리키지 않습니다. <b>1. Mark</b>를 눌러 보세요.');
+    render(); ui();
+  }
+  function say(h) { status.innerHTML = h; }
+  function ui() {
+    $('#mcMark').disabled = phase !== 'idle';
+    $('#mcSweep').disabled = phase !== 'marked';
+    $('#mcCompact').disabled = phase !== 'swept';
+    $('#mcMark').classList.toggle('primary', phase === 'idle');
+    $('#mcSweep').classList.toggle('primary', phase === 'marked');
+    $('#mcCompact').classList.toggle('primary', phase === 'swept');
+  }
+  function render() {
+    let s = `<defs>
+      <marker id="ahm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+      <marker id="ahA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+      <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="7" style="fill:var(--dead)"/></pattern></defs>`;
+    s += `<text x="${X0}" y="${SY - 10}" font-size="12" style="fill:var(--muted)">관리 힙 (Gen0)</text>`;
+    s += `<rect x="${X0}" y="${SY}" width="${TOTAL * U}" height="${SH}" rx="5" style="fill:url(#hatch);stroke:var(--line)"/>`;
+    roots.forEach((r, i) => {
+      const t = byId(r.target);
+      const live = r.on && t && visible(t);
+      const hot = r.on && marked.has(r.target);
+      s += `<g data-root="${i}" tabindex="${phase === 'idle' ? 0 : -1}" role="button" aria-label="${r.name} 루트 토글" style="cursor:${phase === 'idle' ? 'pointer' : 'default'}">
+        <rect x="${r.x - 85}" y="14" width="170" height="50" rx="7" style="fill:var(--surface);stroke:${r.on ? 'var(--accent)' : 'var(--line)'}" stroke-width="1.5" ${r.on ? '' : 'stroke-dasharray="4 3"'}/>
+        <text x="${r.x}" y="33" text-anchor="middle" font-size="11" style="fill:var(--muted)">${r.kind}</text>
+        <text x="${r.x}" y="53" text-anchor="middle" font-size="13" class="mono" style="fill:var(--ink);font-weight:600">${esc(r.name)}${r.on ? '' : ' = null'}</text></g>`;
+      if (live) s += `<path d="M${r.x} 64 C ${r.x} 120, ${cx(t)} 110, ${cx(t)} ${SY - 3}" fill="none" stroke-width="${hot ? 2.2 : 1.5}" style="stroke:${hot ? 'var(--accent)' : 'var(--muted)'}" marker-end="url(#${hot ? 'ahA' : 'ahm'})"/>`;
+    });
+    objs.filter(visible).forEach(o => o.refs.forEach(rid => {
+      const t = byId(rid); if (!t || !visible(t)) return;
+      const x1 = cx(o) - 7, x2 = cx(t) + 7, y = SY + SH, d = 30 + Math.abs(x2 - x1) * 0.16;
+      const hot = marked.has(o.id) && marked.has(t.id);
+      s += `<path d="M${x1} ${y} C ${x1} ${y + d}, ${x2} ${y + d}, ${x2} ${y + 3}" fill="none" stroke-width="${hot ? 2 : 1.4}" style="stroke:${hot ? 'var(--accent)' : 'var(--muted)'}" marker-end="url(#${hot ? 'ahA' : 'ahm'})"/>`;
+    }));
+    objs.filter(visible).forEach(o => {
+      const x = X0 + o.x * U, w = o.w * U, m = marked.has(o.id);
+      const dead = phase === 'marked' && !m;
+      const fill = m ? 'var(--accent-soft)' : dead ? 'var(--danger-soft)' : 'var(--obj)';
+      const stroke = m ? 'var(--accent)' : dead ? 'var(--danger)' : 'var(--line)';
+      s += `<g><rect x="${x + 2}" y="${SY + 4}" width="${w - 4}" height="${SH - 8}" rx="4" style="fill:${fill};stroke:${stroke}" stroke-width="${m || dead ? 2 : 1}" ${dead ? 'stroke-dasharray="4 3"' : ''}/>
+        <text x="${x + w / 2}" y="${SY + 26}" text-anchor="middle" font-size="16" style="fill:var(--ink);font-weight:700">${o.id}${m ? ' ✓' : ''}</text>
+        <text x="${x + w / 2}" y="${SY + 42}" text-anchor="middle" font-size="${o.w > 1 ? 10 : 9}" style="fill:var(--muted)">${o.w > 1 || o.type.length < 6 ? esc(o.type) : ''}</text>
+        <text x="${x + w / 2}" y="${SY + 53}" text-anchor="middle" font-size="8.5" class="mono" style="fill:var(--muted)">${o.w > 1 ? hex(BASE + o.x * BYTES) : ''}</text></g>`;
+    });
+    const end = Math.max(0, ...objs.filter(visible).map(o => o.x + o.w));
+    const px = X0 + end * U;
+    if (phase !== 'swept') {
+      s += `<line x1="${px}" y1="${SY - 6}" x2="${px}" y2="${SY + SH + 6}" stroke-width="2" style="stroke:var(--accent)"/>
+        <text x="${px}" y="${SY - 10}" text-anchor="${px > 600 ? 'end' : 'start'}" dx="${px > 600 ? -4 : 4}" font-size="11" class="mono" style="fill:var(--accent);font-weight:600">alloc_ptr</text>`;
+    }
+    svg.innerHTML = s;
+  }
+  function markOrder() {
+    const order = [], seen = new Set(), q = roots.filter(r => r.on).map(r => r.target);
+    while (q.length) {
+      const id = q.shift();
+      if (seen.has(id)) continue;
+      seen.add(id); order.push(id); q.push(...byId(id).refs);
+    }
+    return order;
+  }
+  svg.addEventListener('click', e => {
+    const g = e.target.closest('[data-root]');
+    if (!g || phase !== 'idle') return;
+    const r = roots[+g.dataset.root]; r.on = !r.on;
+    say(`<span class="mono">${esc(r.name)}</span> ${r.on ? '참조를 복구했습니다.' : '= null. 이제 이 루트로는 어떤 객체에도 닿지 않습니다.'}`);
+    render();
+  });
+  svg.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-root]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+  });
+  $('#mcMark').addEventListener('click', () => {
+    phase = 'marking'; ui();
+    const order = markOrder(), step = reduced ? 60 : 480;
+    say('스레드를 멈추고 루트에서 출발해 참조를 따라갑니다…');
+    const done = () => {
+      phase = 'marked';
+      const dead = objs.filter(o => !marked.has(o.id)).map(o => o.id);
+      say(`Mark 완료. 도달한 객체 <b>${order.join(' → ') || '없음'}</b>. 도달하지 못한 <b>${dead.join(', ') || '없음'}</b>은(는) 쓰레기입니다.${dead.includes('B') && dead.includes('D') ? ' B↔D는 서로 참조하지만 루트와 끊겨 있어 함께 버려집니다.' : ''}`);
+      render(); ui();
+    };
+    if (!order.length) return done();
+    order.forEach((id, i) => timers.push(setTimeout(() => {
+      marked.add(id); render();
+      if (i === order.length - 1) done();
+    }, (i + 1) * step)));
+  });
+  $('#mcSweep').addEventListener('click', () => {
+    const freed = objs.filter(o => !marked.has(o.id));
+    const bytes = freed.reduce((a, o) => a + o.w * BYTES, 0);
+    phase = 'swept';
+    say(`Sweep: ${freed.map(o => o.id).join(', ') || '없음'}의 공간 ${bytes}바이트를 비웠습니다. 하지만 빈 공간이 여기저기 흩어져 있어(단편화) 포인터를 미는 방식으로는 재사용하기 어렵고 free list를 써야 합니다.`);
+    render(); ui();
+  });
+  $('#mcCompact').addEventListener('click', () => {
+    phase = 'compacting'; ui();
+    const live = objs.filter(o => marked.has(o.id)).sort((a, b) => a.x - b.x);
+    let off = 0;
+    const plan = live.map(o => { const p = { o, from: o.x, to: off }; off += o.w; return p; });
+    const moved = plan.filter(p => p.from !== p.to).map(p => p.o.id);
+    const finish = () => {
+      phase = 'compacted';
+      say(`Compact: ${moved.join(', ') || '이동 없음'}을(를) 앞으로 옮기고 이 객체를 가리키던 <b>모든 참조의 주소를 갱신</b>했습니다. 빈 공간은 끝에 한 덩어리로 모였고 할당 포인터도 당겨졌습니다.`);
+      render(); ui();
+    };
+    if (reduced) { plan.forEach(p => p.o.x = p.to); return finish(); }
+    const t0 = performance.now(), dur = 900;
+    (function tick(now) {
+      const k = Math.min(1, (now - t0) / dur), e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      plan.forEach(p => p.o.x = p.from + (p.to - p.from) * e);
+      render();
+      if (k < 1) requestAnimationFrame(tick); else finish();
+    })(t0);
+  });
+  $('#mcReset').addEventListener('click', reset);
+  reset();
+})();
+
+/* 04 GC 단계 */
+(() => {
+  const TEXT = {
+    suspend: '<b>스레드 정지(Suspension)</b>: 모든 관리 스레드를 안전 지점에 세웁니다. 이 순간부터 앱 코드는 멈춥니다. 아래 표처럼 스레드 상태에 따라 세우는 방법이 다릅니다.',
+    mark: '<b>Mark</b>: 루트(스택·레지스터는 JIT이 남긴 GC 정보로 정확히 찾음, static, 핸들 테이블, F-Reachable 큐)와 Gen0/1 GC라면 더티 카드에서 출발해 도달 가능한 객체를 표시합니다. 블로킹 GC는 표시 비트로 객체의 MethodTable 포인터 최하위 비트를 빌려 씁니다(Background GC는 별도 mark array 사용).',
+    plan: '<b>Plan</b>: 살아 있는 연속 객체 묶음(<i>plug</i>)과 죽은 구간(<i>gap</i>)을 계산하고, 압축한다면 각 plug가 어디로 갈지 미리 정합니다. 각 plug의 이동 정보는 plug 앞 gap에 트리로 기록하고, brick table은 그 트리를 빨리 찾기 위한 색인입니다. 이 결과로 압축할지 sweep만 할지 결정합니다.',
+    reloc: '<b>Relocate</b>: 객체를 옮기기 전에 루트, 객체 필드, 핸들 등 <b>모든 참조</b>를 Plan에서 정한 새 주소로 고칩니다.',
+    compact: '<b>Compact</b>: plug를 실제로 새 위치로 복사(memmove)합니다. 고정(pinned)된 plug는 그 자리에 둡니다(<a href="#pin">09장</a>).',
+    sweep: '<b>Sweep</b>: 압축이 이득이 없으면 객체를 옮기지 않고 gap을 free list에 엮어 둡니다. 이후 승격되는 객체 등이 free list에서 자리를 받습니다. 참조를 고칠 필요가 없어 빠릅니다.',
+    resume: '<b>스레드 재개</b>: GC가 끝나고 앱 스레드가 다시 달립니다. 정지부터 재개까지가 GC 멈춤(pause) 시간입니다.'
+  };
+  const ORDER = ['suspend', 'mark', 'plan', 'reloc', 'compact', 'resume'];
+  const btns = $$('#pipe button'), msg = $('#pipeMsg');
+  let timer = null;
+  function show(k) { btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.ph === k)); msg.innerHTML = TEXT[k]; }
+  btns.forEach(b => b.addEventListener('click', () => { clearInterval(timer); show(b.dataset.ph); }));
+  $('#pipePlay').addEventListener('click', () => {
+    clearInterval(timer);
+    let i = 0; show(ORDER[0]);
+    timer = setInterval(() => { i++; if (i >= ORDER.length) return clearInterval(timer); show(ORDER[i]); }, reduced ? 1200 : 2200);
+  });
+  show('suspend');
+})();
+
+/* 05 루트 수명 */
+(() => {
+  const LINES = [
+    { c: 'var timer = new Timer(Tick, null, 0, 1000);' },
+    { c: 'Console.WriteLine("타이머 시작");' },
+    { c: 'DoHeavyWork();          // ← 이 안에서 GC 발생', gc: true },
+    { c: 'Console.ReadLine();     // 엔터를 칠 때까지 Tick이 돌기를 기대' },
+    { c: 'GC.KeepAlive(timer);', keep: true },
+  ];
+  let build = 'rel';
+  const keep = $('#ltKeep');
+  function render() {
+    const rows = LINES.filter(l => !l.keep || keep.checked);
+    const lastUse = keep.checked ? rows.length - 1 : 0;
+    let liveAtGc = true;
+    $('#ltList').innerHTML = rows.map((l, i) => {
+      const live = build === 'dbg' || i <= lastUse;
+      if (l.gc) liveAtGc = live;
+      return `<div class="ln${l.gc ? ' gcline' : ''}"><span class="no">${i + 1}</span><span>${esc(l.c)}</span><span class="lv ${live ? 'on' : 'off'}">${live ? 'timer는 루트' : 'timer 루트 아님'}</span></div>`;
+    }).join('');
+    $('#ltMsg').innerHTML = liveAtGc
+      ? (build === 'dbg' && !keep.checked
+          ? 'Debug에서는 지역 변수가 메서드 끝까지 살아 있어 정상 동작합니다. <b>Release로 배포하면 다르게 동작할 수 있습니다.</b>'
+          : '3번 줄의 GC 시점에도 <span class="mono">timer</span>가 루트이므로 살아남고 Tick이 계속 호출됩니다.')
+      : '1번 줄 이후로 <span class="mono">timer</span>를 쓰지 않으므로 JIT은 더 이상 루트로 보고하지 않습니다. 3번 줄의 GC에서 Timer가 <b>회수될 수 있고, 그러면 Tick 호출이 멈춥니다.</b>';
+  }
+  tabs('#ltBuild', 'b', v => { build = v; render(); });
+  keep.addEventListener('change', render);
+  render();
+})();
+
+/* 06 세대 */
+(() => {
+  const CAP = [16, 24, 40];
+  const box = [$('#gc0'), $('#gc1'), $('#gc2')], range = $('#genLong'), logEl = $('#genLog');
+  let gens, t, counts, allocs, log, timer = null;
+  const alive = o => t - o.born < o.life;
+  function reset() { gens = [[], [], []]; t = 0; counts = [0, 0, 0]; allocs = 0; log = []; render(); }
+  function collect(force) {
+    let g = 0;
+    if (gens[1].length >= CAP[1]) g = 1;
+    if (gens[2].length >= CAP[2]) g = 2;
+    if (force) g = 2;
+    counts[g]++;
+    let freed = 0, promoted = 0;
+    const next = [[], [], []];
+    // k=2부터 돌아서 각 세대 안에서 오래된 객체가 앞쪽에 오게 한다
+    for (let k = 2; k >= 0; k--) {
+      if (k > g) { next[k].push(...gens[k]); continue; }
+      for (const o of gens[k]) {
+        if (!alive(o)) { freed++; continue; }
+        const dst = Math.min(k + 1, 2);
+        if (dst !== k) promoted++;
+        next[dst].push(o);
+      }
+    }
+    gens = next;
+    const total = counts[0] + counts[1] + counts[2];
+    log.unshift(`#${total} ${force ? 'GC.Collect() → ' : ''}Gen${g} GC · 회수 ${freed} · 승격 ${promoted}`);
+    log = log.slice(0, 12);
+    for (let k = 0; k <= g; k++) {
+      const el = box[k]; el.classList.add('gc');
+      setTimeout(() => el.classList.remove('gc'), reduced ? 0 : 350);
+    }
+  }
+  function alloc() {
+    if (gens[0].length >= CAP[0]) collect(false);
+    t++; allocs++;
+    const long = Math.random() * 100 < +range.value;
+    gens[0].push({ born: t, long, life: long ? 150 + (Math.random() * 350 | 0) : 1 + (Math.random() * 10 | 0) });
+  }
+  function render() {
+    gens.forEach((list, k) => {
+      const n = Math.max(CAP[k], list.length);
+      let h = '';
+      for (let i = 0; i < n; i++) {
+        const o = list[i];
+        const cls = o ? (alive(o) ? 'live' + (o.long ? ' long' : '') : 'dead') : '';
+        h += `<div class="cell ${cls}${i >= CAP[k] ? ' over' : ''}"></div>`;
+      }
+      box[k].innerHTML = h;
+    });
+    $('#sA').textContent = allocs;
+    counts.forEach((c, k) => $('#s' + k).textContent = c);
+    logEl.innerHTML = log.length ? log.map(l => `<li>${l}</li>`).join('') : '<li>GC 로그가 여기에 쌓입니다.</li>';
+    $('#genWarn').textContent = gens[2].length > CAP[2] ? `Gen2가 예산을 ${gens[2].length - CAP[2]}칸 넘었습니다. 실제 런타임이라면 힙이 커지고 Full GC가 더 자주 돕니다.` : '';
+  }
+  function stop() { clearInterval(timer); timer = null; $('#genAuto').textContent = '▶ 자동 할당'; }
+  $('#genAuto').addEventListener('click', () => {
+    if (timer) return stop();
+    timer = setInterval(() => { alloc(); render(); }, 110);
+    $('#genAuto').textContent = '❚❚ 정지';
+  });
+  $('#genOne').addEventListener('click', () => { alloc(); render(); });
+  $('#genTen').addEventListener('click', () => { for (let i = 0; i < 10; i++) alloc(); render(); });
+  $('#genFull').addEventListener('click', () => { collect(true); render(); });
+  $('#genReset').addEventListener('click', () => { stop(); reset(); });
+  range.addEventListener('input', () => $('#genLongV').textContent = range.value + '%');
+  reset();
+  for (let i = 0; i < 40; i++) alloc();   // 첫 화면부터 동작 중인 상태를 보여 준다
+  render();
+})();
+
+/* 07 카드 테이블 */
+(() => {
+  let s = '';
+  for (let i = 0; i < 11; i++) {
+    const x = 24 + i * 40, dirty = i === 4 || i === 5;
+    s += `<rect x="${x}" y="156" width="36" height="22" rx="3" style="fill:${dirty ? 'var(--danger)' : 'var(--sunk)'};stroke:var(--line)"/>
+      <text x="${x + 18}" y="171" text-anchor="middle" font-size="11" class="mono" style="fill:${dirty ? 'var(--surface)' : 'var(--muted)'}">${dirty ? '1' : '0'}</text>`;
+  }
+  s += `<path d="M205 104 L205 154" style="stroke:var(--danger)" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <text x="470" y="171" font-size="12" style="fill:var(--danger)">← 쓰기 장벽이 표시한 더티 카드</text>`;
+  $('#cards').innerHTML = s;
+})();
+
+/* 08 LOH */
+(() => {
+  const len = $('#lohLen'), kind = $('#lohKind'), msg = $('#lohMsg');
+  const HEADER = 24; // 객체 헤더 8 + 메서드 테이블 8 + 길이 4 + 패딩 4 (64비트)
+  function update() {
+    const n = Math.max(0, Math.floor(+len.value || 0)), size = n + HEADER;
+    const area = kind.value === 'p' ? 'POH' : size >= 85000 ? 'LOH' : 'SOH';
+    ['SOH', 'LOH', 'POH'].forEach(a => $('#a' + a).classList.toggle('hit', a === area));
+    const why = area === 'POH' ? '고정 할당을 요청했으므로 크기와 무관하게 POH'
+      : area === 'LOH' ? '85,000바이트 이상이므로 LOH. 처음부터 Gen2 취급입니다'
+      : '85,000바이트 미만이므로 SOH의 Gen0';
+    msg.innerHTML = `객체 크기 = 원소 ${n.toLocaleString()}B + 헤더·길이 ${HEADER}B = <b class="mono">${size.toLocaleString()}B</b> → ${why}.`;
+  }
+  len.addEventListener('input', update); kind.addEventListener('change', update);
+  $$('[data-len]').forEach(b => b.addEventListener('click', () => { len.value = b.dataset.len; update(); }));
+  update();
+})();
+
+/* 09 Pinning */
+(() => {
+  const svg = $('#pinSvg'), msg = $('#pinMsg');
+  const U = 46, X0 = 20, Y = 30, H = 58, TOTAL = 14;
+  const DEFS = [
+    { id: 'A', w: 2, live: 1 }, { id: 'b', w: 1 }, { id: 'C', w: 1, live: 1 }, { id: 'd', w: 2 },
+    { id: 'E', w: 1, live: 1, pin: 1 }, { id: 'f', w: 2 }, { id: 'G', w: 2, live: 1 }, { id: 'h', w: 1 },
+    { id: 'I', w: 1, live: 1 }, { id: 'j', w: 1 },
+  ];
+  let objs, phase, gaps = [];
+  function reset() {
+    let off = 0;
+    objs = DEFS.map(d => { const o = { ...d, x: off, pin: !!d.pin }; off += d.w; return o; });
+    phase = 'before'; gaps = [];
+    $('#pinRun').disabled = false;
+    msg.innerHTML = '<b>E</b>가 고정되어 있습니다. Compact를 눌러 결과를 보고, 초기화한 뒤 고정을 바꿔 다시 비교해 보세요.';
+    render();
+  }
+  function render() {
+    let s = `<defs><pattern id="pinHatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="7" style="fill:var(--dead)"/></pattern></defs>`;
+    s += `<rect x="${X0}" y="${Y}" width="${TOTAL * U}" height="${H}" rx="5" style="fill:url(#pinHatch);stroke:var(--line)"/>`;
+    objs.forEach((o, i) => {
+      if (!o.live && phase !== 'before') return;
+      const x = X0 + o.x * U, w = o.w * U;
+      if (!o.live) {
+        s += `<rect x="${x + 2}" y="${Y + 4}" width="${w - 4}" height="${H - 8}" rx="4" style="fill:var(--danger-soft);stroke:var(--danger)" stroke-dasharray="4 3"/>
+          <text x="${x + w / 2}" y="${Y + 35}" text-anchor="middle" font-size="14" style="fill:var(--muted)">${o.id}</text>`;
+        return;
+      }
+      s += `<g data-i="${i}" style="cursor:${phase === 'before' ? 'pointer' : 'default'}" tabindex="${phase === 'before' ? 0 : -1}" role="button" aria-pressed="${o.pin}" aria-label="${o.id} 고정 토글">
+        <rect x="${x + 2}" y="${Y + 4}" width="${w - 4}" height="${H - 8}" rx="4" style="fill:${o.pin ? 'var(--g1)' : 'var(--obj)'};stroke:${o.pin ? 'var(--g1)' : 'var(--line)'}" stroke-width="2"/>
+        <text x="${x + w / 2}" y="${Y + 30}" text-anchor="middle" font-size="16" style="fill:${o.pin ? 'var(--surface)' : 'var(--ink)'};font-weight:700">${o.id}</text>
+        <text x="${x + w / 2}" y="${Y + 46}" text-anchor="middle" font-size="10" style="fill:${o.pin ? 'var(--surface)' : 'var(--muted)'}">${o.pin ? '고정' : ''}</text></g>`;
+    });
+    gaps.forEach(g => {
+      const x1 = X0 + g.a * U, x2 = X0 + g.b * U, col = g.tail ? 'var(--accent)' : 'var(--danger)';
+      s += `<path d="M${x1 + 2} ${Y + H + 10} L${x1 + 2} ${Y + H + 16} L${x2 - 2} ${Y + H + 16} L${x2 - 2} ${Y + H + 10}" fill="none" style="stroke:${col}" stroke-width="1.5"/>
+        <text x="${(x1 + x2) / 2}" y="${Y + H + 34}" text-anchor="middle" font-size="11" style="fill:${col};font-weight:600">${g.tail ? '연속 빈 공간' : '갇힌 빈틈'} ${g.b - g.a}칸</text>`;
+    });
+    svg.innerHTML = s;
+  }
+  svg.addEventListener('click', e => {
+    const g = e.target.closest('[data-i]'); if (!g || phase !== 'before') return;
+    const o = objs[+g.dataset.i]; o.pin = !o.pin;
+    msg.innerHTML = `<b>${o.id}</b> 고정 ${o.pin ? '켬' : '끔'}.`;
+    render();
+  });
+  svg.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-i]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+  });
+  $('#pinRun').addEventListener('click', () => {
+    phase = 'after'; $('#pinRun').disabled = true;
+    const live = objs.filter(o => o.live).sort((a, b) => a.x - b.x);
+    let cur = 0; gaps = [];
+    const plan = live.map(o => {
+      let to;
+      if (o.pin) { if (o.x > cur) gaps.push({ a: cur, b: o.x }); to = o.x; cur = o.x + o.w; }
+      else { to = cur; cur += o.w; }
+      return { o, from: o.x, to };
+    });
+    if (cur < TOTAL) gaps.push({ a: cur, b: TOTAL, tail: true });
+    const trapped = gaps.filter(g => !g.tail).reduce((a, g) => a + g.b - g.a, 0);
+    const tail = TOTAL - cur;
+    const pinned = live.filter(o => o.pin).map(o => o.id);
+    const finish = () => {
+      render();
+      msg.innerHTML = trapped
+        ? `고정된 <b>${pinned.join(', ')}</b> 앞에 <b style="color:var(--danger)">${trapped}칸</b>이 갇혔습니다. 끝의 연속 공간은 ${tail}칸뿐이라, 이보다 큰 객체는 이 빈틈을 쓰지 못합니다.`
+        : `${pinned.length ? `고정된 <b>${pinned.join(', ')}</b>가 이미 앞쪽에 있어 갇힌 빈틈이 없습니다. ` : '고정된 객체가 없어 '}빈 공간 ${tail}칸이 모두 끝에 연속으로 모였습니다.`;
+    };
+    gaps = [];
+    if (reduced) { plan.forEach(p => p.o.x = p.to); gaps = computed(); return finish(); }
+    const t0 = performance.now();
+    (function tick(now) {
+      const k = Math.min(1, (now - t0) / 800), e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      plan.forEach(p => p.o.x = p.from + (p.to - p.from) * e);
+      if (k >= 1) gaps = computed();
+      render();
+      if (k < 1) requestAnimationFrame(tick); else finish();
+    })(t0);
+    function computed() {
+      const out = []; let c = 0;
+      objs.filter(o => o.live).sort((a, b) => a.x - b.x).forEach(o => { if (o.x > c) out.push({ a: c, b: o.x }); c = o.x + o.w; });
+      if (c < TOTAL) out.push({ a: c, b: TOTAL, tail: true });
+      return out;
+    }
+  });
+  $('#pinReset').addEventListener('click', reset);
+  reset();
+})();
+
+/* 10 Regions */
+(() => {
+  const svg = $('#rgSvg'), msg = $('#rgMsg');
+  const COL = { g0: 'var(--g0)', g1: 'var(--g1)', g2: 'var(--g2)', loh: 'var(--accent)', poh: 'var(--danger)' };
+  const NAME = { g0: 'Gen0', g1: 'Gen1', g2: 'Gen2', loh: 'LOH', poh: 'POH', free: '빈 region' };
+  function bar(y, label, parts) {
+    let s = `<text x="20" y="${y + 23}" font-size="12" style="fill:var(--ink)">${label}</text>`;
+    let x = 170;
+    parts.forEach(([k, w, t]) => {
+      const W = w * 5.3;
+      s += k === 'free'
+        ? `<rect x="${x}" y="${y}" width="${W}" height="34" style="fill:url(#rgH);stroke:var(--line)"/>`
+        : `<rect x="${x}" y="${y}" width="${W}" height="34" style="fill:${COL[k]}"/>`;
+      if (t) s += `<text x="${x + W / 2}" y="${y + 22}" text-anchor="middle" font-size="11" style="fill:${k === 'free' ? 'var(--muted)' : 'var(--surface)'};font-weight:600">${t}</text>`;
+      x += W;
+    });
+    return s;
+  }
+  const DEFS = `<defs><pattern id="rgH" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="7" style="fill:var(--dead)"/></pattern></defs>`;
+  function draw(mode) {
+    let s = DEFS;
+    if (mode === 'seg') {
+      s += bar(14, 'Gen2 세그먼트', [['g2', 30, 'Gen2'], ['free', 8, '빈틈'], ['g2', 26, 'Gen2'], ['free', 10, '빈틈'], ['g2', 26, 'Gen2']]);
+      s += bar(64, 'Ephemeral 세그먼트', [['g2', 20, 'Gen2'], ['g1', 16, 'Gen1'], ['g0', 28, 'Gen0'], ['free', 36, '미사용 예약']]);
+      s += bar(114, 'LOH 세그먼트', [['loh', 24, 'LOH'], ['free', 20, '빈틈'], ['loh', 30, 'LOH'], ['free', 26, '']]);
+      s += `<text x="20" y="190" font-size="12" style="fill:var(--muted)">세그먼트 하나는 큰 연속 구간입니다. Gen0/Gen1은 하나의 ephemeral 세그먼트에 함께 있고,</text>
+        <text x="20" y="208" font-size="12" style="fill:var(--muted)">Gen2 세그먼트의 빈틈은 그 세그먼트 안에서만 재사용되어 다른 세대나 OS로 돌려주기 어렵습니다.</text>`;
+      msg.innerHTML = '세그먼트 방식: 세대의 경계가 세그먼트 안의 주소로 정해집니다. 빈 공간이 세그먼트 중간에 남으면 다른 용도로 옮기기 어렵습니다.';
+    } else {
+      const items = ['g2','g2','g2','g1','g0','g0','free','g2','loh','g2','g2','free','g1','g0','free','poh','g2','free','loh','g2','g0','free','g2','g1'];
+      let x = 20, y = 14;
+      items.forEach(k => {
+        const w = k === 'loh' ? 2 : 1, W = w * 54 + (w - 1) * 6;
+        if (x + W > 700) { x = 20; y += 46; }
+        s += k === 'free'
+          ? `<rect x="${x}" y="${y}" width="${W}" height="38" rx="4" style="fill:url(#rgH);stroke:var(--line)" stroke-dasharray="4 3"/>`
+          : `<rect x="${x}" y="${y}" width="${W}" height="38" rx="4" style="fill:${COL[k]}"/>`;
+        s += `<text x="${x + W / 2}" y="${y + 24}" text-anchor="middle" font-size="11" style="fill:${k === 'free' ? 'var(--muted)' : 'var(--surface)'};font-weight:600">${k === 'free' ? '빈' : NAME[k]}</text>`;
+        x += W + 6;
+      });
+      s += `<text x="20" y="${y + 66}" font-size="12" style="fill:var(--muted)">각 세대는 region 목록입니다. 빈 region은 필요한 세대에 넘겨주거나 OS에 반환합니다. LOH region은 SOH region보다 큽니다.</text>`;
+      msg.innerHTML = 'Regions 방식: 세대 = region의 목록. 빈 region을 세대와 힙 사이에서 자유롭게 옮길 수 있고, 메모리를 OS에 돌려주기도 쉽습니다.';
+    }
+    svg.innerHTML = s;
+  }
+  tabs('#rgTabs', 'rg', draw);
+  draw('seg');
+})();
+
+/* 11 GC 모드 */
+(() => {
+  const svg = $('#modeSvg'), msg = $('#modeMsg');
+  const L = 150, R = 740, Y0 = 34, LH = 24, GAP = 5, sx = t => L + (R - L) * t / 100;
+  const ALL4 = [0, 1, 2, 3], BG4 = [4, 5, 6, 7];
+  const MODES = {
+    ws: {
+      gc: ['GC (트리거 스레드)'],
+      ev: [{ t: 16, d: 3, g: 0, p: 1, on: [0] }, { t: 40, d: 3, g: 0, p: 1, on: [0] }, { t: 62, d: 18, g: 2, p: 1, on: [0] }],
+      msg: 'GC가 도는 동안 <b>모든 관리 스레드가 멈춥니다</b>. Gen0 GC는 짧지만 Gen2(Full) GC가 오면 긴 멈춤이 생깁니다.'
+    },
+    bg: {
+      gc: ['GC (포그라운드)', 'BGC 스레드'],
+      ev: [{ t: 16, d: 3, g: 0, p: 1, on: [0] }, { t: 40, d: 3, g: 0, p: 1, on: [0] }, { t: 58, d: 2, g: 2, p: 1, on: [0] },
+           { t: 60, d: 24, g: 2, p: 0, on: [1] }, { t: 70, d: 3, g: 0, p: 1, on: [0] }, { t: 84, d: 2, g: 2, p: 1, on: [0] }],
+      msg: 'Gen2 GC를 <b>전용 BGC 스레드가 앱과 동시에</b> 수행합니다. 앱은 시작과 끝의 짧은 구간만 멈추고, 그 사이에도 Gen0/1 GC(포그라운드 GC)가 끼어들 수 있습니다.'
+    },
+    sv: {
+      gc: ['GC 스레드 #1', 'GC 스레드 #2', 'GC 스레드 #3', 'GC 스레드 #4', 'BGC 스레드 #1', 'BGC 스레드 #2', 'BGC 스레드 #3', 'BGC 스레드 #4'],
+      ev: [{ t: 16, d: 1.3, g: 0, p: 1, on: ALL4 }, { t: 40, d: 1.3, g: 0, p: 1, on: ALL4 }, { t: 58, d: 1, g: 2, p: 1, on: ALL4 },
+           { t: 59, d: 14, g: 2, p: 0, on: BG4 }, { t: 66, d: 1.3, g: 0, p: 1, on: ALL4 }, { t: 73, d: 1, g: 2, p: 1, on: ALL4 }],
+      msg: '<b>코어마다 힙과 GC 스레드</b>를 두고 병렬로 수거해 멈춤이 짧고 처리량이 높습니다. Background GC도 힙마다 있는 <b>별도의 BGC 스레드</b>가 병렬로 수행합니다. 대신 힙이 여러 개라 메모리를 더 씁니다.'
+    }
+  };
+  let mode = 'ws';
+  function draw() {
+    const m = MODES[mode], lanes = ['앱 스레드 #1', '앱 스레드 #2', '앱 스레드 #3', '앱 스레드 #4', ...m.gc];
+    const H = Y0 + lanes.length * (LH + GAP) + 30;
+    svg.setAttribute('viewBox', `0 0 760 ${H}`);
+    let s = `<defs><pattern id="ph" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" style="fill:var(--danger)"/></pattern></defs>`;
+    for (let t = 0; t <= 100; t += 20) s += `<line x1="${sx(t)}" y1="${Y0 - 8}" x2="${sx(t)}" y2="${H - 26}" style="stroke:var(--line)"/><text x="${sx(t)}" y="${Y0 - 14}" text-anchor="middle" font-size="10" class="mono" style="fill:var(--muted)">${t}ms</text>`;
+    lanes.forEach((name, i) => {
+      const y = Y0 + i * (LH + GAP), isApp = i < 4;
+      s += `<text x="${L - 10}" y="${y + 16}" text-anchor="end" font-size="12" style="fill:${isApp ? 'var(--ink)' : 'var(--muted)'}">${name}</text>`;
+      if (isApp) {
+        s += `<rect x="${L}" y="${y + 5}" width="${R - L}" height="${LH - 10}" rx="3" style="fill:var(--g0);opacity:.35"/>`;
+        m.ev.filter(e => e.p).forEach(e => s += `<rect x="${sx(e.t)}" y="${y + 1}" width="${Math.max(2, sx(e.t + e.d) - sx(e.t))}" height="${LH - 2}" rx="2" style="fill:url(#ph)"/>`);
+      } else {
+        s += `<rect x="${L}" y="${y + 10}" width="${R - L}" height="4" rx="2" style="fill:var(--line)"/>`;
+        m.ev.filter(e => e.on.includes(i - 4)).forEach(e => s += `<rect x="${sx(e.t)}" y="${y + 3}" width="${Math.max(2, sx(e.t + e.d) - sx(e.t))}" height="${LH - 6}" rx="3" style="fill:${e.g === 2 ? 'var(--g2)' : 'var(--g1)'}"/>`);
+      }
+    });
+    const pauses = m.ev.filter(e => e.p), pause = pauses.reduce((a, e) => a + e.d, 0), maxP = Math.max(...pauses.map(e => e.d));
+    s += `<text x="${L}" y="${H - 8}" font-size="12" style="fill:var(--ink)">앱 총 멈춤 <tspan class="mono" style="fill:var(--danger);font-weight:700">${pause.toFixed(1)}ms</tspan> · 최장 멈춤 <tspan class="mono" style="fill:var(--danger);font-weight:700">${maxP}ms</tspan></text>
+      <text x="${R}" y="${H - 8}" text-anchor="end" font-size="11" style="fill:var(--muted)">■ Gen0/1 작업  ■ Gen2 작업  ▨ 앱 멈춤 (설명용 수치)</text>`;
+    s += `<line id="playhead" x1="${L}" y1="${Y0 - 8}" x2="${L}" y2="${H - 26}" stroke-width="2" style="stroke:var(--accent)"/>`;
+    svg.innerHTML = s;
+    msg.innerHTML = m.msg;
+  }
+  function loop(now) {
+    const ph = svg.querySelector('#playhead'), x = sx((now / 60) % 100);
+    if (ph) { ph.setAttribute('x1', x); ph.setAttribute('x2', x); }
+    requestAnimationFrame(loop);
+  }
+  tabs('#modeTabs', 'mode', v => { mode = v; draw(); });
+  draw();
+  if (!reduced) requestAnimationFrame(loop);
+})();
+
+/* 12 지연 시간 API */
+(() => {
+  const D = {
+    frame: {
+      t: '<b>GC.TryStartNoGCRegion</b>: 지정한 크기만큼 미리 확보하고 그 구간에서는 GC를 하지 않습니다. 할당이 그 크기를 넘으면 GC가 일어나 구간이 끝나므로, 끝낼 때 상태를 확인합니다. 확보 가능한 크기에는 상한이 있습니다.',
+      c: `if (GC.TryStartNoGCRegion(16 * 1024 * 1024))   // 16MB 미리 확보
+{
+    try { ProcessCriticalBatch(); }
+    finally
+    {
+        if (GCSettings.LatencyMode == GCLatencyMode.NoGCRegion)
+            GC.EndNoGCRegion();   // 이미 끝났으면 예외가 나므로 확인
+    }
+}`
+    },
+    trade: {
+      t: '<b>SustainedLowLatency</b>: 블로킹 Gen2 GC를 피하고 Background GC만 씁니다. 메모리가 더 늘 수 있으니 구간을 정해 쓰고 원래 값으로 되돌립니다.',
+      c: `var old = GCSettings.LatencyMode;
+try
+{
+    GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+    RunTradingSession();
+}
+finally { GCSettings.LatencyMode = old; }`
+    },
+    native: {
+      t: '<b>GC.AddMemoryPressure</b>: GC는 관리 객체의 크기만 보므로, 작은 래퍼가 수백 MB 네이티브 메모리를 쥐고 있어도 급하지 않다고 판단합니다. 네이티브 크기를 알려 GC가 더 일찍 돌게 하고, 해제할 때 같은 값으로 되돌립니다.',
+      c: `public NativeImage(long bytes)
+{
+    _ptr = NativeMemory.Alloc((nuint)bytes);
+    _bytes = bytes;
+    GC.AddMemoryPressure(bytes);
+}
+public void Dispose()
+{
+    NativeMemory.Free(_ptr);
+    GC.RemoveMemoryPressure(_bytes);
+}`
+    },
+    batch: {
+      t: '<b>Server GC + 동시 GC 끔(Batch)</b>: 멈춤이 길어도 괜찮다면 Background GC의 부가 비용 없이 처리량을 최대로 냅니다. 프로세스 시작 설정으로 지정합니다.',
+      c: `<!-- .csproj -->
+<ServerGarbageCollection>true</ServerGarbageCollection>
+<ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+<!-- 이때 GCSettings.LatencyMode == GCLatencyMode.Batch -->`
+    },
+    drain: {
+      t: '<b>GC.RegisterForFullGCNotification</b>: 블로킹 Full GC가 다가오면 알림을 받아 트래픽을 다른 서버로 돌린 뒤 GC를 맞습니다. <b>동시 GC가 꺼져 있어야</b> 동작합니다.',
+      c: `GC.RegisterForFullGCNotification(10, 10);   // 임계값 1~99
+new Thread(() =>
+{
+    while (true)
+    {
+        if (GC.WaitForFullGCApproach() == GCNotificationStatus.Succeeded)
+            LoadBalancer.Drain(this);
+        if (GC.WaitForFullGCComplete() == GCNotificationStatus.Succeeded)
+            LoadBalancer.Restore(this);
+    }
+}) { IsBackground = true }.Start();`
+    }
+  };
+  const sel = $('#latSel');
+  function update() { const d = D[sel.value]; $('#latMsg').innerHTML = d.t; $('#latCode').textContent = d.c; }
+  sel.addEventListener('change', update);
+  update();
+})();
+
+/* 13 컨테이너 */
+(() => {
+  const mem = $('#ctMem'), cpu = $('#ctCpu'), mode = $('#ctMode'), ver = $('#ctVer');
+  function update() {
+    const m = Math.max(1, +mem.value || 0), c = Math.max(0.01, +cpu.value || 0);
+    const limitMB = Math.max(20, m * 0.75), bytes = Math.floor(limitMB * 1024 * 1024);
+    const procs = Math.max(1, Math.ceil(c));
+    const heaps = mode.value === 'ws' ? '1 (Workstation)'
+      : ver.value === '8' ? `${procs} (= ProcessorCount)`
+      : `1에서 시작, 부하에 따라 최대 ${procs}까지 조절 (DATAS 기본)`;
+    $('#ctOut').innerHTML = `
+      <dt>GC 힙 하드 리밋 (기본)</dt><dd>${limitMB.toLocaleString(undefined, { maximumFractionDigits: 1 })} MB = max(20MB, 제한의 75%)</dd>
+      <dt>같은 값을 환경 변수로</dt><dd>DOTNET_GCHeapHardLimit=0x${bytes.toString(16).toUpperCase()}</dd>
+      <dt>Environment.ProcessorCount</dt><dd>${procs} (CPU 제한 ${c}을 올림)</dd>
+      <dt>GC 힙 개수</dt><dd>${heaps}</dd>
+      <dt>GC 힙 밖에 남는 메모리</dt><dd>${(m - limitMB).toLocaleString(undefined, { maximumFractionDigits: 1 })} MB (네이티브·스택·JIT 코드용)</dd>`;
+  }
+  [mem, cpu, mode, ver].forEach(el => el.addEventListener('input', update));
+  update();
+})();
+
+/* 14 Finalizer */
+(() => {
+  const svg = $('#finSvg');
+  const BOX = { heap: [20, 150], fq: [210, 160], frq: [400, 160], thr: [590, 150] };
+  const SLOT = { fq: [290, 150], frq: [480, 150], thr: [665, 150], none: [290, 150] };
+  const FILE = 'file (지역 변수)', STATIC = 'Cache.Last (static)';
+  const FLOWS = {
+    f: [
+      { root: 1, obj: 'live', ptr: 'fq', gen: 'Gen0', t: '<span class="mono">new FileHandle()</span>: Finalizer가 있는 타입이므로 할당과 동시에 <b>Finalization Queue</b>에 포인터가 등록됩니다. 그래서 할당 자체도 더 비쌉니다.' },
+      { root: 0, obj: 'dead', ptr: 'fq', gen: 'Gen0', t: '마지막 참조가 사라졌습니다. 일반 객체라면 다음 GC에서 바로 회수됩니다.' },
+      { root: 0, obj: 'res', ptr: 'frq', gen: 'Gen1', t: '<b>GC #1</b>: 도달 불가지만 Finalization Queue에 있으므로 <b>F-Reachable Queue</b>로 옮겨집니다. 이 큐가 루트 역할을 해서 객체가 <b>되살아나고</b> Gen1으로 승격됩니다. 이 객체가 참조하는 다른 객체들까지 함께 살아남습니다.' },
+      { root: 0, obj: 'res', ptr: 'thr', gen: 'Gen1', t: '전용 <b>Finalizer 스레드</b>가 큐에서 꺼내 <span class="mono">Finalize()</span>를 실행합니다. 실행 시점은 보장되지 않습니다.' },
+      { root: 0, obj: 'dead', ptr: 'none', gen: 'Gen1', t: '이제 어느 큐에도 없는 진짜 쓰레기입니다. 하지만 이미 Gen1에 있으므로 <b>Gen1 이상의 GC가 돌 때까지</b> 메모리를 차지합니다.' },
+      { root: 0, obj: 'gone', ptr: 'none', gen: 'Gen1', t: '<b>GC #2</b>(Gen1 이상): 드디어 회수. Finalizer 하나 때문에 GC를 최소 두 번 거치고 세대까지 올라갔습니다.' },
+    ],
+    d: [
+      { root: 1, obj: 'live', ptr: 'fq', gen: 'Gen0', t: '<span class="mono">using var file = new FileHandle()</span>: 할당 시 Finalization Queue에 등록되는 것은 같습니다.' },
+      { root: 0, obj: 'dead', ptr: 'none', gen: 'Gen0', t: 'using 스코프가 끝나며 <span class="mono">Dispose()</span>가 핸들을 <b>즉시</b> 닫고 <span class="mono">GC.SuppressFinalize(this)</span>로 큐에서 빠집니다.' },
+      { root: 0, obj: 'gone', ptr: 'none', gen: 'Gen0', t: '<b>GC #1</b>: 일반 객체처럼 Gen0에서 바로 회수됩니다. 부활도, 승격도 없습니다.' },
+    ],
+    r: [
+      { root: 1, obj: 'live', ptr: 'fq', gen: 'Gen0', t: 'finalizer 안에서 <span class="mono">Cache.Last = this;</span>를 실행하는 타입입니다. 할당 시 Finalization Queue에 등록됩니다.' },
+      { root: 0, obj: 'dead', ptr: 'fq', gen: 'Gen0', t: '마지막 참조가 사라졌습니다.' },
+      { root: 0, obj: 'res', ptr: 'frq', gen: 'Gen1', t: '<b>GC #1</b>: F-Reachable Queue로 옮겨지고 Gen1으로 승격됩니다.' },
+      { root: 1, label: STATIC, obj: 'live', ptr: 'thr', gen: 'Gen1', t: 'Finalizer가 <span class="mono">this</span>를 static 필드에 저장했습니다. 객체가 <b>정말로 부활</b>했습니다. 하지만 이미 finalize된 상태라 내부 리소스는 닫혔을 수 있습니다.' },
+      { root: 1, label: STATIC, obj: 'live', ptr: 'none', gen: 'Gen2', t: '<b>GC #2</b>: static이 참조하므로 살아남아 Gen2로 승격됩니다. Finalization Queue에는 더 이상 없으므로, 나중에 다시 버려져도 finalizer는 <b>다시 실행되지 않습니다</b>. 다시 돌게 하려면 <span class="mono">GC.ReRegisterForFinalize(this)</span>가 필요합니다.' },
+    ]
+  };
+  let flow = 'f', step = 0;
+  function base() {
+    let s = `<defs><marker id="ahf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>`;
+    const labels = { heap: '관리 힙', fq: 'Finalization Queue', frq: 'F-Reachable Queue', thr: 'Finalizer 스레드' };
+    for (const k in BOX) {
+      const [x, w] = BOX[k];
+      s += `<rect x="${x}" y="70" width="${w}" height="150" rx="8" style="fill:var(--sunk);stroke:var(--line)"/>
+        <text x="${x + w / 2}" y="92" text-anchor="middle" font-size="12" style="fill:var(--muted);font-weight:500">${labels[k]}</text>`;
+    }
+    s += `<path d="M370 150 L398 150" style="stroke:var(--muted)" marker-end="url(#ahf)"/><path d="M560 150 L588 150" style="stroke:var(--muted)" marker-end="url(#ahf)"/>`;
+    s += `<g id="fRoot" style="transition:opacity .4s"><rect x="15" y="8" width="160" height="34" rx="6" style="fill:var(--surface);stroke:var(--accent)" stroke-width="1.5"/>
+      <text id="fRootT" x="95" y="30" text-anchor="middle" font-size="12" class="mono" style="fill:var(--ink)"></text>
+      <path d="M95 42 L95 118" style="stroke:var(--accent)" stroke-width="1.8" marker-end="url(#ahf)"/></g>`;
+    s += `<g id="fObj" style="transition:opacity .4s"><rect id="fObjR" x="45" y="122" width="100" height="56" rx="6" stroke-width="2" style="transition:all .4s"/>
+      <text x="95" y="146" text-anchor="middle" font-size="12" class="mono" style="fill:var(--ink);font-weight:600">FileHandle</text>
+      <text id="fObjS" x="95" y="166" text-anchor="middle" font-size="11" style="fill:var(--muted)"></text></g>
+      <text id="fGen" x="95" y="206" text-anchor="middle" font-size="11" class="mono" style="fill:var(--muted)"></text>`;
+    s += `<g id="fPtr" style="transition:transform .55s cubic-bezier(.4,0,.2,1),opacity .4s"><rect x="-44" y="-15" width="88" height="30" rx="5" style="fill:var(--g1)"/>
+      <text x="0" y="5" text-anchor="middle" font-size="12" class="mono" style="fill:var(--surface);font-weight:600">→ obj</text></g>`;
+    svg.innerHTML = s;
+  }
+  function render() {
+    const st = FLOWS[flow][step];
+    $('#fRoot', svg).style.opacity = st.root ? 1 : .15;
+    $('#fRootT', svg).textContent = st.label || FILE;
+    const r = $('#fObjR', svg), label = { live: '도달 가능', dead: '도달 불가', res: '부활 (F-reachable)', gone: '회수됨' }[st.obj];
+    r.style.fill = st.obj === 'res' ? 'var(--accent-soft)' : st.obj === 'dead' ? 'var(--danger-soft)' : 'var(--obj)';
+    r.style.stroke = st.obj === 'res' ? 'var(--accent)' : st.obj === 'dead' ? 'var(--danger)' : 'var(--line)';
+    r.setAttribute('stroke-dasharray', st.obj === 'dead' ? '4 3' : '0');
+    $('#fObjS', svg).textContent = label;
+    $('#fObj', svg).style.opacity = st.obj === 'gone' ? .12 : 1;
+    $('#fGen', svg).textContent = st.obj === 'gone' ? '' : st.gen;
+    const p = $('#fPtr', svg), [x, y] = SLOT[st.ptr];
+    p.style.transform = `translate(${x}px, ${y}px)`;
+    p.style.opacity = st.ptr === 'none' ? 0 : 1;
+    $('#finMsg').innerHTML = st.t;
+    $('#finStep').textContent = `${step + 1} / ${FLOWS[flow].length}`;
+    $('#finPrev').disabled = step === 0;
+    $('#finNext').disabled = step === FLOWS[flow].length - 1;
+  }
+  $('#finPrev').addEventListener('click', () => { step--; render(); });
+  $('#finNext').addEventListener('click', () => { step++; render(); });
+  tabs('#finTabs', 'fin', v => { flow = v; step = 0; render(); });
+  base(); render();
+})();
+
+/* 15 WeakReference */
+(() => {
+  const msg = $('#wkMsg'), strong = $('#wkStrong');
+  let alive = true, build = 'rel', lines = [];
+  const START = 'var image = new Bitmap("big.png"); var weak = new WeakReference&lt;Bitmap&gt;(image);';
+  const out = l => { lines.unshift(l); lines = lines.slice(0, 6); msg.innerHTML = lines.join('<br>'); };
+  $('#wkGc').addEventListener('click', () => {
+    if (!alive) return out('GC.Collect() → 이미 회수된 상태');
+    if (strong.checked) return out('GC.Collect() → Bitmap 생존 (image가 아직 참조 중)');
+    if (build === 'dbg') return out('GC.Collect() → Bitmap 생존할 수 있음! Debug 빌드는 image 슬롯을 메서드 끝까지 루트로 보고할 수 있음');
+    alive = false; out('GC.Collect() → Bitmap 회수됨 (약한 참조만 남아 있었음)');
+  });
+  $('#wkTry').addEventListener('click', () => out(alive ? 'TryGetTarget → true, img = Bitmap' : 'TryGetTarget → false, img = null → Reload()'));
+  strong.addEventListener('change', () => {
+    out(strong.checked ? (alive ? 'image = bitmap (강한 참조 복구)' : 'image = new Bitmap(...) (새로 로드)') : 'image = null');
+    if (strong.checked) alive = true;
+  });
+  tabs('#wkBuild', 'b', v => { build = v; out(v === 'dbg' ? '// Debug 빌드로 전환' : '// Release 빌드로 전환'); });
+  $('#wkReset').addEventListener('click', () => { alive = true; strong.checked = true; lines = []; out(START); });
+  out(START);
+})();
+
+/* 16 숨은 할당 */
+(() => {
+  const C = [
+    { c: 'int n = 42;\nobject o = n;', a: 1, e: '박싱. int 값을 담은 객체가 힙에 새로 만들어집니다.' },
+    { c: 'Span<byte> buf = stackalloc byte[256];', a: 0, e: '스택에 잡히는 버퍼입니다. 힙 할당이 없습니다(너무 크게 잡으면 스택 오버플로 주의).' },
+    { c: 'int sum = 0;\nlist.ForEach(x => sum += x);', a: 1, e: '지역 변수 sum을 캡처하므로 클로저 객체와 delegate가 호출마다 할당됩니다.' },
+    { c: 'list.ForEach(static x => Console.WriteLine(x));', a: 0, e: '캡처가 없는 람다의 delegate는 컴파일러가 static 필드에 캐시해 첫 호출 이후에는 할당하지 않습니다. static 키워드는 캡처를 금지해 이를 보장합니다.' },
+    { c: 'List<int> list = ...;\nforeach (var x in list) { }', a: 0, e: 'List<T>.Enumerator는 struct이고 foreach가 이를 직접 씁니다. 할당이 없습니다.' },
+    { c: 'IEnumerable<int> seq = list;\nforeach (var x in seq) { }', a: 1, e: '인터페이스로 열거하면 GetEnumerator()가 IEnumerator<int>를 반환하므로 struct 열거자가 박싱됩니다. (.NET 10에서는 JIT이 인라이닝·탈출 분석에 성공하면 열거자를 스택에 둘 수도 있음)' },
+    { c: 'IComparable c = new Point(1, 2);   // Point는 struct', a: 1, e: '값 타입을 인터페이스 타입 변수에 넣으면 박싱됩니다. 제네릭 제약(where T : IComparable<T>)을 쓰면 피할 수 있습니다.' },
+    { c: 'Point[] pts = new Point[1000];   // Point는 struct', a: 1, e: '배열 객체 하나가 할당됩니다(원소 1000개는 그 안에 들어 있고 따로 할당되지 않음).' },
+    { c: 'const string Name = "hello";\nstring s = Name;', a: 0, e: '문자열 리터럴은 인턴되어 미리 만들어진 객체를 가리킵니다. 대입은 참조 복사일 뿐입니다.' },
+    { c: 'async ValueTask<int> GetAsync()\n{\n    if (_cache.TryGetValue(k, out var v))\n        return v;      // 동기 완료\n    ...\n}', a: 0, e: '동기적으로 끝나면 ValueTask<int>가 값을 직접 담아 반환하므로 할당이 없습니다. Task<int>라면 일부 캐시된 값을 빼고 Task 객체가 할당됩니다.' },
+  ];
+  const box = $('#acards'), score = $('#acScore');
+  let right = 0, done = 0;
+  box.innerHTML = C.map((x, i) => `<div class="acard" id="ac${i}"><pre>${esc(x.c)}</pre>
+    <div class="row"><button data-c="${i}" data-v="1">힙 할당 있음</button><button data-c="${i}" data-v="0">할당 없음</button></div>
+    <div class="ans" id="aca${i}"></div></div>`).join('');
+  box.addEventListener('click', e => {
+    const b = e.target.closest('button[data-c]'); if (!b) return;
+    const i = +b.dataset.c, v = +b.dataset.v, x = C[i], card = $('#ac' + i);
+    const bs = $$('button', card); if (bs.some(z => z.disabled)) return;
+    bs.forEach(z => z.disabled = true);
+    const ok = v === x.a;
+    b.classList.add(ok ? 'pick-right' : 'pick-wrong');
+    card.classList.add(ok ? 'ok' : 'ng');
+    if (ok) right++; done++;
+    $('#aca' + i).innerHTML = `<b>${x.a ? '할당 있음' : '할당 없음'}</b>. ${esc(x.e)}`;
+    score.textContent = `${right} / ${done}`;
+  });
+})();
+
+/* 17 진단 */
+(() => {
+  const S = [
+    { k: '1. 관찰', d: '<b>dotnet-counters</b>로 실시간 지표를 봅니다. GC 후에도 힙 크기가 계속 오르는지, GC 시간 비율이 높은지 확인합니다. (.NET 9부터는 지표 이름이 OpenTelemetry 형식으로 바뀌어 표시가 다를 수 있습니다.)',
+      o: `<span class="p">$</span> dotnet-counters monitor -p 4312 --counters System.Runtime
+<span class="c"># 예시 출력</span>
+[System.Runtime]
+    GC Heap Size (MB)                            1,284   <span class="h">← 계속 증가</span>
+    Gen 0 GC Count (Count / 1 sec)                   9
+    Gen 2 GC Count (Count / 1 sec)                   1
+    % Time in GC since last GC (%)                  18   <span class="h">← 높음</span>
+    Allocation Rate (B / 1 sec)            212,435,816` },
+    { k: '2. 힙 스냅샷', d: '<b>dotnet-gcdump</b>로 힙에 무엇이 많은지 봅니다. 시간 간격을 두고 두 번 떠서 비교하면 늘어나는 타입이 보입니다. 결과 파일은 Visual Studio나 PerfView에서 열 수 있습니다.',
+      o: `<span class="p">$</span> dotnet-gcdump collect -p 4312 -o before.gcdump
+<span class="p">$</span> dotnet-gcdump collect -p 4312 -o after.gcdump
+<span class="p">$</span> dotnet-gcdump report after.gcdump
+<span class="c"># 예시 출력 (크기 순)</span>
+  412,331,520   1,288,536  MyApp.Orders.OrderView   <span class="h">← 화면이 닫혀도 남아 있음</span>
+   98,402,304     203,112  System.String
+   41,203,200     128,760  System.Byte[]` },
+    { k: '3. 루트 추적', d: '<b>dotnet-dump</b>로 전체 덤프를 떠서 SOS 명령으로 의심 객체를 <b>누가 붙잡고 있는지</b> 따라갑니다. 이 예시는 static 이벤트 버스가 구독 해제(<code>-=</code>)를 안 한 화면을 붙잡는 전형적인 누수입니다.',
+      o: `<span class="p">$</span> dotnet-dump collect -p 4312
+<span class="p">$</span> dotnet-dump analyze core_20261021_101500
+<span class="p">&gt;</span> dumpheap -stat
+<span class="p">&gt;</span> dumpheap -mt 00007ff8a1b2c3d8
+<span class="p">&gt;</span> gcroot 000001f2b4200010
+<span class="c"># 예시 출력</span>
+HandleTable:
+    000001f2a3c013e8 (strong handle)
+      -&gt; 000001f2b4001020  System.Object[]          <span class="h">(static 필드 저장소)</span>
+      -&gt; 000001f2b4123450  MyApp.EventBus
+      -&gt; 000001f2b4123500  System.EventHandler
+      -&gt; 000001f2b4200010  MyApp.Orders.OrderView
+<span class="p">&gt;</span> finalizequeue      <span class="c"># finalizer가 밀려 있는지도 확인</span>` },
+    { k: '4. GC 트레이스', d: '<b>dotnet-trace</b>로 GC 이벤트를 수집해 PerfView의 GCStats에서 GC마다 세대, 원인(<a href="#trigger">02장</a>의 reason), 멈춤 시간, 승격량을 봅니다. <code>gc-collect</code>는 오버헤드가 낮고, <code>gc-verbose</code>는 할당 샘플까지 남깁니다.',
+      o: `<span class="p">$</span> dotnet-trace collect -p 4312 --profile gc-collect --duration 00:00:30
+<span class="c"># PerfView → GCStats 예시</span>
+ GC#  Gen  Type                Reason      Pause(ms)  Promoted(MB)
+ 812  0N   NonConcurrentGC     AllocSmall       1.8          3.2
+ 813  1N   NonConcurrentGC     AllocSmall       6.4         21.7
+ 814  2B   BackgroundGC        AllocLarge       2.1        388.0   <span class="h">← LOH 할당이 Gen2 유발</span>` },
+    { k: '5. 코드에서', d: '수정 효과는 <b>BenchmarkDotNet</b>의 <code>[MemoryDiagnoser]</code>로 연산당 할당량을 확인합니다. 운영 중에는 <code>GC.GetGCMemoryInfo()</code>로 단편화와 멈춤을 기록할 수 있습니다.',
+      o: `[MemoryDiagnoser]
+public class FormatBench { ... }
+
+<span class="c">// 예시 결과 (Gen0 = 1,000회 연산당 Gen0 GC 횟수)</span>
+| Method     | Mean     | Gen0   | Allocated |
+|----------- |---------:|-------:|----------:|
+| Concat     | 85.32 ns | 0.0254 |     160 B |
+| SpanFormat | 21.07 ns |      - |         - |
+
+var info = GC.GetGCMemoryInfo();
+Console.WriteLine($"{info.HeapSizeBytes:N0} / frag {info.FragmentedBytes:N0} / {info.PauseTimePercentage}%");
+Console.WriteLine(GC.GetTotalPauseDuration());   <span class="c">// .NET 7+</span>` },
+  ];
+  const tabsEl = $('#dgTabs');
+  tabsEl.innerHTML = S.map((s, i) => `<button role="tab" aria-selected="${i === 0}" data-dg="${i}">${s.k}</button>`).join('');
+  function show(i) { $('#dgMsg').innerHTML = S[i].d; $('#dgTerm').innerHTML = S[i].o; }
+  tabs('#dgTabs', 'dg', v => show(+v));
+  show(0);
+})();
+
+/* 18 Unity 프레임 */
+(() => {
+  const svg = $('#ufSvg'), msg = $('#ufMsg');
+  let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+  const base = Array.from({ length: 60 }, () => 8 + rnd() * 3.5);
+  const L = 50, B = 180, sy = v => B - v * 2.6;
+  function draw(mode) {
+    const f = base.map((v, i) => mode === 'stw' ? v + (i === 38 ? 34 : 0) : v + (i >= 31 && i <= 46 ? 2.2 : 0));
+    let s = '';
+    [0, 16.7, 33.3, 50].forEach(v => s += `<line x1="${L}" y1="${sy(v)}" x2="710" y2="${sy(v)}" style="stroke:${v === 16.7 ? 'var(--danger)' : 'var(--line)'}" ${v === 16.7 ? 'stroke-dasharray="5 4"' : ''}/><text x="${L - 6}" y="${sy(v) + 4}" text-anchor="end" font-size="10" class="mono" style="fill:var(--muted)">${v}</text>`);
+    s += `<text x="710" y="${sy(16.7) - 6}" text-anchor="end" font-size="11" style="fill:var(--danger)">60fps 한계 16.7ms</text>`;
+    f.forEach((v, i) => {
+      const x = L + 6 + i * 11, over = v > 16.7, gc = mode === 'stw' ? i === 38 : i >= 31 && i <= 46;
+      s += `<rect x="${x}" y="${sy(v)}" width="8" height="${B - sy(v)}" rx="1.5" style="fill:${over ? 'var(--danger)' : gc ? 'var(--g2)' : 'var(--g0)'}"/>`;
+    });
+    s += `<text x="${L}" y="205" font-size="11" style="fill:var(--muted)">프레임 →  (ms, 설명용 수치)</text>`;
+    svg.innerHTML = s;
+    msg.innerHTML = mode === 'stw'
+      ? '전체 힙을 한 번에 수거하느라 <b>한 프레임이 수십 ms</b>로 튑니다. 플레이어는 이를 끊김(hitch)으로 느낍니다.'
+      : '같은 수거 작업을 여러 프레임에 <b>시간 조각으로 나눠</b> 수행해 각 프레임이 예산 안에 머뭅니다. 대신 쓰기 장벽 비용이 생기고, 할당이 너무 빠르면 결국 한 번에 수거합니다.';
+  }
+  tabs('#ufTabs', 'u', draw);
+  draw('stw');
+})();
+
+/* 19 퀴즈 */
+(() => {
+  const Q = [
+    { q: '다음 중 GC 루트가 <b>아닌</b> 것은?', o: ['메서드의 지역 변수', 'static 필드', '힙 객체의 인스턴스 필드', 'GCHandle'], a: 2, e: '인스턴스 필드는 그 객체가 도달 가능할 때만 따라가는 대상입니다. 루트는 스택·레지스터·static·GC 핸들처럼 힙 바깥에서 출발점이 되는 것입니다.' },
+    { q: '64비트에서 <span class="mono">new byte[100_000]</span>은 어디에 할당될까?', o: ['스택', 'SOH Gen0', 'LOH', 'POH'], a: 2, e: '100,024B로 85,000B를 넘으므로 LOH에 할당되고 Gen2와 함께 수거됩니다.' },
+    { q: 'A와 B가 서로를 참조하고 루트에서는 닿지 않는다. 어떻게 될까?', o: ['영원히 누수된다', 'GC가 둘 다 회수한다', 'Finalizer가 있어야 회수된다', 'GC.Collect()를 불러야만 회수된다'], a: 1, e: '.NET GC는 참조 카운팅이 아니라 루트에서의 도달성을 봅니다.' },
+    { q: 'Finalizer만 있고 Dispose를 호출하지 않은 객체는?', o: ['첫 GC에서 즉시 회수', '최소 GC 두 번을 거쳐 회수되고 승격된다', '절대 회수되지 않는다', '스택에 할당된다'], a: 1, e: 'F-Reachable Queue로 옮겨져 부활·승격된 뒤, finalizer 실행 후 다음 GC에서야 회수됩니다.' },
+    { q: 'Gen0 GC가 Gen2 → Gen0 참조를 놓치지 않는 방법은?', o: ['Gen2 전체 스캔', '참조 카운트', '쓰기 장벽 + 카드 테이블', 'Finalization Queue'], a: 2, e: '참조 필드에 쓸 때 쓰기 장벽이 카드를 표시하고, Gen0 GC는 표시된 카드 구간만 추가로 스캔합니다.' },
+    { q: 'Release 빌드에서 <span class="mono">var t = new Timer(...)</span> 이후 <span class="mono">t</span>를 다시 쓰지 않으면?', o: ['메서드가 끝날 때까지 안전하다', '메서드 실행 중에도 회수되어 타이머가 멈출 수 있다', 'Timer는 절대 회수되지 않는다', '컴파일 오류가 난다'], a: 1, e: 'JIT은 마지막 사용 이후 지역 변수를 루트로 보고하지 않습니다. 필드에 보관하거나 GC.KeepAlive로 수명을 늘립니다.' },
+    { q: '<span class="mono">new Point[100]</span>(Point는 struct)의 원소는 어디에 있을까?', o: ['각각 스택에', '각각 따로 힙에', '배열 객체 안(힙)에 연속으로', 'POH에'], a: 2, e: '값 타입은 선언된 곳에 저장됩니다. 배열 원소는 배열 객체 안에 있습니다.' },
+    { q: '<span class="mono">GCHandle.Alloc(buf, GCHandleType.Pinned)</span>를 오래 유지하면?', o: ['아무 영향 없다', '압축 때 옮길 수 없어 단편화가 생긴다', '객체가 즉시 LOH로 옮겨진다', 'GC가 멈춘다'], a: 1, e: '고정 객체는 제자리에 남아 그 앞의 빈틈이 연속 공간으로 합쳐지지 못합니다. 오래 고정할 버퍼는 POH에 만드세요.' },
+    { q: '메모리 제한 1GB 컨테이너, 별도 설정이 없을 때 GC 힙 하드 리밋 기본값은?', o: ['제한 없음', '512MB', '768MB', '1GB'], a: 2, e: 'max(20MB, 메모리 제한의 75%) = 768MB입니다.' },
+    { q: '<span class="mono">DOTNET_GCHeapCount=10</span>으로 설정하면 Server GC 힙은 몇 개?', o: ['10개', '16개', '2개', '설정이 무시된다'], a: 1, e: 'GC 관련 환경 변수의 숫자는 16진수로 해석됩니다. 0x10 = 16.' },
+    { q: 'Unity의 기본 GC(Boehm)에 대한 설명으로 맞는 것은?', o: ['세대별이고 압축한다', '비세대·비압축이며 보수적으로 스캔한다', 'CoreCLR GC와 같다', 'GC가 없다'], a: 1, e: '객체를 옮기지 않아 단편화가 해소되지 않고, 매번 전체 힙을 봅니다. Incremental 모드로 작업을 프레임에 나눌 수 있습니다.' },
+    { q: 'Gen2 GC가 한 번 일어났다. <span class="mono">GC.CollectionCount(0)</span>은?', o: ['그대로다', '1 증가한다', '0이 된다', '2 증가한다'], a: 1, e: 'Gen2 GC는 Gen0·Gen1도 수거하므로 각 세대의 카운트가 모두 1씩 늘어납니다.' },
+  ];
+  const box = $('#quizBox'), score = $('#quizScore');
+  let right = 0, answered = 0;
+  box.innerHTML = Q.map((x, i) => `<div class="q"><div class="qt">${i + 1}. ${x.q}</div><div class="opts">${x.o.map((o, j) => `<button data-q="${i}" data-o="${j}">${o}</button>`).join('')}</div><div class="ex" id="ex${i}"></div></div>`).join('');
+  box.addEventListener('click', e => {
+    const b = e.target.closest('button[data-q]'); if (!b) return;
+    const i = +b.dataset.q, j = +b.dataset.o, x = Q[i];
+    const opts = $$(`button[data-q="${i}"]`, box);
+    if (opts.some(o => o.disabled)) return;
+    opts.forEach((o, k) => { o.disabled = true; if (k === x.a) o.classList.add('right'); });
+    if (j !== x.a) b.classList.add('wrong'); else right++;
+    answered++;
+    $('#ex' + i).innerHTML = (j === x.a ? '정답. ' : '오답. ') + x.e;
+    score.textContent = `${answered} / ${Q.length} 문항 · 정답 ${right}`;
+  });
+})();
+
+/* 목차 하이라이트 */
+(() => {
+  const links = $$('#toc a'), map = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+  const io = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { links.forEach(a => a.classList.remove('on')); map.get(e.target.id)?.classList.add('on'); }
+  }), { rootMargin: '-30% 0px -60% 0px' });
+  $$('main section').forEach(s => io.observe(s));
+})();
+</script>
+</body>
+</html>

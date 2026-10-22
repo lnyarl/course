@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06. 응용 계층과 소켓 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.httpmsg{font-family:var(--mono);font-size:.84rem;background:#0f1420;color:#dfe5f1;border-radius:10px;padding:10px 0;border:1px solid #222a3a}
+.httpmsg .ln{padding:3px 14px;cursor:pointer;white-space:pre;border-left:3px solid transparent}
+.httpmsg .ln:hover{background:rgba(255,255,255,.06)}
+.httpmsg .ln.sel{background:rgba(91,147,255,.18);border-left-color:var(--primary)}
+.httpmsg .ln.blank{color:#5a6478;font-style:italic}
+.http-desc{background:var(--surface-2);border-radius:8px;padding:12px 14px;min-height:60px;font-size:.9rem;margin-top:8px}
+.api{display:grid;grid-template-columns:1fr 80px 1fr;gap:8px;align-items:start}
+.api .col{display:grid;gap:8px}
+.api .call{font-family:var(--mono);font-weight:700;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:.86rem}
+.api .call small{font-family:var(--font);font-weight:500;color:var(--muted);font-size:.72rem}
+.api .call:hover{border-color:var(--primary)}
+.api .call.sel{background:var(--primary-soft);border-color:var(--primary)}
+.api .mid{display:grid;gap:8px;text-align:center;font-size:.72rem;color:var(--muted);padding-top:4px}
+.api .mid div{height:38px;display:grid;place-items:center}
+.api-desc{background:var(--surface-2);border-radius:8px;padding:12px 14px;min-height:70px;font-size:.9rem;margin-top:10px}
+.sc td:first-child{font-family:var(--mono);font-weight:700}
+.rtt-badge{display:inline-block;background:var(--accent-soft);color:var(--accent);font-weight:700;padding:2px 8px;border-radius:999px;font-size:.8rem;font-family:var(--mono)}
+</style>
+</head>
+<body data-chapter="06">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 1 · 개론 — CHAPTER 06</div>
+  <h1>응용 계층과 소켓</h1>
+  <p class="lead">드디어 사람이 쓰는 층입니다. 이 장에서는 HTTP를 해부하고, 브라우저에 URL을 입력한 순간부터 화면이 그려질 때까지 몇 번의 왕복(RTT)이 필요한지 세어 봅니다. 그리고 프로그램이 TCP를 다루는 창구인 소켓 API가 TCP 상태 머신과 어떻게 맞물리는지 봅니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 60분</span><span class="chip l-app">응용</span><span class="chip l-tr">전송</span><span class="chip">RFC 9110 · 9112 · 9113</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>HTTP/1.1 요청·응답 메시지의 각 줄이 무엇을 뜻하는지 설명할 수 있다.</li>
+    <li>웹 페이지 한 번 로드에 필요한 RTT 수를 단계별로 계산할 수 있다.</li>
+    <li>socket/bind/listen/accept/connect가 TCP 상태 머신의 어떤 전이에 대응하는지 안다.</li>
+    <li>SYN 큐·accept 큐(backlog)의 역할과, 넘쳤을 때의 증상을 설명할 수 있다.</li>
+    <li>HTTP/1.1, HTTP/2, HTTP/3의 연결 모델 차이와 HOL blocking을 설명할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="arch"><span class="num">6.1</span>통신 구조: 클라이언트-서버와 P2P</h2>
+<p>응용 계층 프로토콜은 "누가 먼저 말을 거는가"로 두 구조로 나뉩니다. 전송 계층 관점에서 <b>서버 = listen()하는 쪽</b>, <b>클라이언트 = connect()하는 쪽</b>입니다. 역할은 고정된 기계가 아니라 <i>연결마다</i> 정해집니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 230">
+    <defs><marker id="a-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <text x="200" y="24" text-anchor="middle" font-weight="700">클라이언트-서버</text>
+    <rect x="150" y="60" width="100" height="44" rx="10" fill="var(--green-soft)" stroke="var(--l-net)"/><text x="200" y="80" text-anchor="middle" font-weight="700" font-size="12">서버</text><text x="200" y="95" text-anchor="middle" font-size="10" class="mono">:443 LISTEN</text>
+    <g fill="var(--primary-soft)" stroke="var(--l-tr)"><rect x="40" y="160" width="80" height="36" rx="8"/><rect x="160" y="160" width="80" height="36" rx="8"/><rect x="280" y="160" width="80" height="36" rx="8"/></g>
+    <g font-size="11" text-anchor="middle"><text x="80" y="182">클라 A</text><text x="200" y="182">클라 B</text><text x="320" y="182">클라 C</text></g>
+    <g class="wire" marker-end="url(#a-ar)"><line x1="80" y1="158" x2="180" y2="106"/><line x1="200" y1="158" x2="200" y2="106"/><line x1="320" y1="158" x2="220" y2="106"/></g>
+    <text x="200" y="218" text-anchor="middle" font-size="10.5" class="muted">항상 켜져 있고 고정 주소/포트 · 상태와 데이터가 중앙에</text>
+    <text x="620" y="24" text-anchor="middle" font-weight="700">P2P (peer-to-peer)</text>
+    <g fill="var(--purple-soft)" stroke="var(--l-app)"><rect x="560" y="50" width="80" height="36" rx="8"/><rect x="460" y="120" width="80" height="36" rx="8"/><rect x="660" y="120" width="80" height="36" rx="8"/><rect x="520" y="185" width="80" height="36" rx="8"/><rect x="700" y="185" width="80" height="36" rx="8"/></g>
+    <g font-size="11" text-anchor="middle"><text x="600" y="72">피어 1</text><text x="500" y="142">피어 2</text><text x="700" y="142">피어 3</text><text x="560" y="207">피어 4</text><text x="740" y="207">피어 5</text></g>
+    <g class="wire"><line x1="580" y1="86" x2="520" y2="120"/><line x1="620" y1="86" x2="680" y2="120"/><line x1="540" y1="150" x2="560" y2="185"/><line x1="700" y1="156" x2="740" y2="185"/><line x1="540" y1="140" x2="660" y2="140"/><line x1="580" y1="200" x2="700" y2="200"/></g>
+    <text x="620" y="228" text-anchor="middle" font-size="10.5" class="muted" dy="-4">각 피어가 클라이언트이자 서버 · BitTorrent, WebRTC, 블록체인</text>
+  </svg>
+</div>
+<div class="callout"><div class="t">📌 NAT 뒤의 피어</div><p>P2P의 가장 큰 현실적 장애물은 NAT입니다. 집 안의 두 피어는 서로 listen()해도 외부에서 connect()할 수 없습니다. 그래서 STUN/TURN/ICE 같은 "구멍 뚫기" 기법이 필요하고, 5장에서 본 동시 열기(simultaneous open)가 실제로 쓰입니다. 12장에서 다룹니다.</p></div>
+
+<h2 id="http"><span class="num">6.2</span>HTTP/1.1 메시지 해부 <small>(줄을 클릭)</small></h2>
+<p>HTTP/1.1(RFC 9112)은 <b>텍스트</b> 프로토콜입니다. 시작 줄, 헤더들, 빈 줄, 본문. 빈 줄(CRLF CRLF)이 헤더의 끝을 알립니다. 각 줄을 클릭해 보세요.</p>
+<div class="grid-2">
+  <div><h4 style="margin-top:0">요청</h4><div class="httpmsg" id="http-req"></div></div>
+  <div><h4 style="margin-top:0">응답</h4><div class="httpmsg" id="http-res"></div></div>
+</div>
+<div class="http-desc" id="http-desc">줄을 클릭하면 설명이 나타납니다.</div>
+<h3 id="status">상태 코드</h3>
+<table class="sc">
+  <thead><tr><th>코드</th><th>의미</th><th>자주 보는 것</th></tr></thead>
+  <tbody>
+    <tr><td>1xx</td><td>정보</td><td>100 Continue(큰 본문 보내기 전 확인), 101 Switching Protocols(WebSocket 업그레이드)</td></tr>
+    <tr><td>2xx</td><td>성공</td><td>200 OK, 201 Created, 204 No Content, 206 Partial Content(Range 요청)</td></tr>
+    <tr><td>3xx</td><td>리다이렉션</td><td>301 영구 이동, 302/307 임시 이동, 304 Not Modified(캐시 유효 — 본문 없음)</td></tr>
+    <tr><td>4xx</td><td>클라이언트 오류</td><td>400 Bad Request, 401 인증 필요, 403 금지, 404 없음, 429 Too Many Requests</td></tr>
+    <tr><td>5xx</td><td>서버 오류</td><td>500 내부 오류, 502 Bad Gateway(프록시 뒤 서버 응답 오류), 503 Unavailable, 504 Gateway Timeout</td></tr>
+  </tbody>
+</table>
+<div class="callout tip"><div class="t">💡 트러블슈팅 감각</div><p>502/504는 <b>프록시(로드밸런서)와 백엔드 사이</b>의 문제입니다. 클라이언트는 TCP·TLS까지 멀쩡하게 연결됐고, 프록시가 뒤쪽 TCP 연결에서 실패(RST, 타임아웃)한 것입니다. 반대로 <code>Connection refused</code>, <code>timeout</code>은 HTTP 이전 전송 계층 문제입니다. 어느 층에서 깨졌는지부터 구분하세요.</p></div>
+
+<h2 id="conn"><span class="num">6.3</span>연결 관리의 진화: Keep-Alive → 파이프라이닝 → 멀티플렉싱</h2>
+<p>HTML 하나에 이미지·CSS·JS가 수십 개 딸려옵니다. 리소스마다 TCP 연결을 새로 맺으면 handshake 비용(1 RTT + slow start)을 매번 치릅니다. HTTP 버전이 올라가며 연결 하나를 얼마나 알뜰하게 쓰는지가 달라졌습니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 420" id="conn-svg"></svg>
+  <div class="cap">같은 4개 리소스 요청. 가로축은 시간. 파란 블록 = TCP handshake, 보라 = 요청/응답. HTTP/2는 단일 연결에서 프레임이 섞여 흐른다.</div>
+</div>
+<table>
+  <thead><tr><th>방식</th><th>연결</th><th>요청 순서</th><th>문제</th></tr></thead>
+  <tbody>
+    <tr><td>HTTP/1.0 비지속</td><td>요청마다 새 연결</td><td>순차</td><td>handshake 비용, slow start 반복</td></tr>
+    <tr><td>HTTP/1.1 Keep-Alive</td><td>연결 재사용 (기본값)</td><td>순차 (응답 받아야 다음 요청)</td><td>연결당 한 번에 하나 → 브라우저가 호스트당 6개 연결을 병렬로 염</td></tr>
+    <tr><td>HTTP/1.1 파이프라이닝</td><td>연결 재사용</td><td>요청 여러 개 미리 전송, 응답은 순서대로</td><td>응답 순서 강제 → 앞 응답이 느리면 뒤가 막힘(HOL). 프록시 호환성 문제로 브라우저가 비활성화</td></tr>
+    <tr><td>HTTP/2 (RFC 9113)</td><td>호스트당 1개</td><td>스트림 단위 멀티플렉싱, 순서 무관</td><td>HTTP 층 HOL은 해결, <b>TCP 층 HOL은 잔존</b></td></tr>
+    <tr><td>HTTP/3 (RFC 9114, QUIC)</td><td>UDP 위 QUIC 연결 1개</td><td>스트림별 독립 전달</td><td>TCP HOL까지 해결. 커널 지원 없이 사용자 공간에서 동작</td></tr>
+  </tbody>
+</table>
+<div class="callout deep"><div class="t">🔬 깊이 보기: HOL blocking은 왜 HTTP/2에서 남고 HTTP/3에서 사라지는가</div><p>HTTP/2는 하나의 TCP 연결 위에 여러 스트림을 프레임으로 섞어 보냅니다. 그런데 TCP는 <b>하나의 바이트 스트림</b>이라 세그먼트 하나가 유실되면, 뒤에 도착한 세그먼트들(다른 스트림 소속이라도)은 그 구멍이 메워질 때까지 응용에 전달되지 않습니다. 커널은 "어느 바이트가 어느 스트림인지" 모르기 때문입니다. QUIC은 스트림을 <b>전송 계층 자체의 개념</b>으로 끌어내렸습니다. 손실 복구가 스트림 단위로 일어나므로 스트림 A의 패킷이 유실되어도 스트림 B는 그대로 응용에 올라갑니다. 대가는 혼잡 제어·재전송을 UDP 위 사용자 공간에서 전부 다시 구현해야 한다는 것, 그리고 CPU 비용입니다(13장).</p></div>
+
+<h2 id="timeline"><span class="num">6.4</span>URL 입력부터 화면까지: RTT를 세어 보자 <small>(애니메이션)</small></h2>
+<p>네트워크 성능의 단위는 바이트/초가 아니라 <b>왕복 횟수(RTT)</b>인 경우가 많습니다. 한국↔미국 서부 RTT가 약 130ms라면, 5 RTT = 650ms. 아래 애니메이션은 캐시가 전혀 없는 첫 접속(cold start)을 가정합니다. RTT를 바꿔 총 소요 시간을 확인하세요.</p>
+<div class="anim" id="tl-anim">
+  <div class="stage">
+    <div class="row" style="margin-bottom:8px"><label>RTT <input type="range" id="rtt" min="5" max="300" value="100" step="5"> <b id="rtt-v">100</b> ms</label><span class="rtt-badge" id="rtt-total">누적: 0 RTT · 0 ms</span></div>
+    <svg viewBox="0 0 900 400" id="tl-svg"></svg>
+  </div>
+</div>
+<div class="callout tip"><div class="t">💡 RTT를 줄이는 기법들</div><p>DNS 프리페치(<code>&lt;link rel="dns-prefetch"&gt;</code>), 연결 사전 수립(preconnect), TLS 1.3의 1-RTT 핸드셰이크와 0-RTT 재개, TCP Fast Open, HTTP/3(QUIC은 전송+암호화 핸드셰이크를 합쳐 1 RTT), CDN으로 서버를 물리적으로 가깝게 두기. 전부 <b>"왕복 횟수를 줄이거나 왕복 거리를 줄이는"</b> 두 축 위에 있습니다.</p></div>
+
+<h2 id="socket"><span class="num">6.5</span>소켓 API와 TCP 상태 머신 <small>(클릭)</small></h2>
+<p>소켓은 응용이 전송 계층을 쓰는 "파일 같은" 인터페이스입니다(BSD 소켓, 1983). 각 호출이 5장의 상태 전이 중 무엇을 일으키는지 짝지어 보세요. 호출 박스를 클릭하면 설명이 나타납니다.</p>
+<div class="card">
+  <div class="api">
+    <div class="col" id="api-srv"><div class="small" style="text-align:center;font-weight:700">서버</div></div>
+    <div class="mid" id="api-mid"><div></div></div>
+    <div class="col" id="api-cli"><div class="small" style="text-align:center;font-weight:700">클라이언트</div></div>
+  </div>
+  <div class="api-desc" id="api-desc">호출을 클릭하세요.</div>
+</div>
+<h3 id="code">최소 코드: Python</h3>
+<div class="grid-2">
+<div><h4 style="margin-top:0">서버</h4><pre><code>import socket
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("0.0.0.0", 8080))   # IP:port 고정
+srv.listen(128)               # LISTEN 상태, backlog=128
+while True:
+    conn, addr = srv.accept()  # 완료된 연결 하나 꺼냄 (블록)
+    data = conn.recv(4096)     # 바이트 스트림 일부
+    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    conn.close()               # FIN 전송</code></pre></div>
+<div><h4 style="margin-top:0">클라이언트</h4><pre><code>import socket
+c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+c.connect(("127.0.0.1", 8080))   # 3-way handshake (블록)
+c.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+buf = b""
+while True:
+    chunk = c.recv(4096)          # 0바이트 = 상대 FIN(EOF)
+    if not chunk:
+        break
+    buf += chunk
+print(buf.decode())
+c.close()</code></pre></div>
+</div>
+<div class="callout warn"><div class="t">⚠️ 바이트 스트림에는 경계가 없다</div><p><code>sendall()</code> 한 번이 <code>recv()</code> 한 번으로 오리라는 보장은 없습니다. 작은 메시지 여러 개가 합쳐져 오기도 하고(Nagle, 9장), 큰 메시지가 쪼개져 오기도 합니다. 그래서 모든 TCP 응용 프로토콜은 <b>프레이밍</b>을 정의합니다: HTTP는 <code>Content-Length</code> 또는 chunked 인코딩, 많은 바이너리 프로토콜은 길이 접두사(length-prefix), 텍스트 프로토콜은 줄바꿈. "recv가 반 토막 메시지를 돌려줬다"는 버그 리포트는 프로토콜 설계가 아니라 구현자의 오해입니다.</p></div>
+
+<h2 id="io"><span class="num">6.6</span>블로킹, 논블로킹, 그리고 다중화 I/O</h2>
+<p>서버가 연결 1만 개를 동시에 다루려면 어떻게 해야 할까요? <code>recv()</code>는 데이터가 올 때까지 <b>블록</b>됩니다. 연결마다 스레드를 두면 1만 스레드. 다른 길은 "어느 소켓이 준비됐는지"를 커널에 묻는 것입니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 250">
+    <g font-size="11">
+      <text x="140" y="24" text-anchor="middle" font-weight="700">스레드-퍼-연결 (블로킹)</text>
+      <g fill="var(--primary-soft)" stroke="var(--l-tr)"><rect x="40" y="40" width="60" height="30" rx="6"/><rect x="110" y="40" width="60" height="30" rx="6"/><rect x="180" y="40" width="60" height="30" rx="6"/></g>
+      <text x="70" y="59" text-anchor="middle">T1</text><text x="140" y="59" text-anchor="middle">T2</text><text x="210" y="59" text-anchor="middle">T3</text>
+      <g class="wire"><line x1="70" y1="70" x2="70" y2="110"/><line x1="140" y1="70" x2="140" y2="110"/><line x1="210" y1="70" x2="210" y2="110"/></g>
+      <g fill="var(--surface-2)" stroke="var(--border)"><rect x="40" y="110" width="60" height="30" rx="6"/><rect x="110" y="110" width="60" height="30" rx="6"/><rect x="180" y="110" width="60" height="30" rx="6"/></g>
+      <text x="70" y="129" text-anchor="middle" class="mono" font-size="10">sock1</text><text x="140" y="129" text-anchor="middle" class="mono" font-size="10">sock2</text><text x="210" y="129" text-anchor="middle" class="mono" font-size="10">sock3</text>
+      <text x="140" y="170" text-anchor="middle" class="muted" font-size="10.5">각 스레드가 recv()에서 블록</text>
+      <text x="140" y="186" text-anchor="middle" class="muted" font-size="10.5">단순하지만 스레드 수 = 연결 수</text>
+      <text x="140" y="202" text-anchor="middle" class="muted" font-size="10.5">(Apache prefork, 전통 Java)</text>
+
+      <text x="560" y="24" text-anchor="middle" font-weight="700">이벤트 루프 + epoll/kqueue (다중화)</text>
+      <rect x="500" y="40" width="120" height="30" rx="6" fill="var(--primary-soft)" stroke="var(--l-tr)"/><text x="560" y="59" text-anchor="middle">스레드 1개 (루프)</text>
+      <rect x="470" y="95" width="180" height="30" rx="6" fill="var(--green-soft)" stroke="var(--l-net)"/><text x="560" y="114" text-anchor="middle" class="mono" font-size="10.5">epoll_wait() → [sock2, sock7]</text>
+      <g class="wire"><line x1="560" y1="70" x2="560" y2="95"/></g>
+      <g fill="var(--surface-2)" stroke="var(--border)"><rect x="380" y="160" width="50" height="26" rx="5"/><rect x="440" y="160" width="50" height="26" rx="5"/><rect x="500" y="160" width="50" height="26" rx="5"/><rect x="560" y="160" width="50" height="26" rx="5"/><rect x="620" y="160" width="50" height="26" rx="5"/><rect x="680" y="160" width="50" height="26" rx="5"/></g>
+      <g class="mono" font-size="9.5" text-anchor="middle"><text x="405" y="177">s1</text><text x="465" y="177">s2 ●</text><text x="525" y="177">s3</text><text x="585" y="177">s4</text><text x="645" y="177">s5</text><text x="705" y="177">s7 ●</text></g>
+      <g class="wire" stroke="var(--l-net)"><line x1="465" y1="160" x2="520" y2="125"/><line x1="705" y1="160" x2="600" y2="125"/></g>
+      <text x="560" y="212" text-anchor="middle" class="muted" font-size="10.5">준비된 소켓만 돌려받아 논블로킹 read/write · 연결 수와 무관한 스레드 수</text>
+      <text x="560" y="228" text-anchor="middle" class="muted" font-size="10.5">(nginx, Node.js, Go netpoller, Redis)</text>
+    </g>
+  </svg>
+</div>
+<table>
+  <thead><tr><th>기법</th><th>동작</th><th>비고</th></tr></thead>
+  <tbody>
+    <tr><td>블로킹 I/O</td><td>준비될 때까지 호출이 멈춤</td><td>이해하기 쉬움. 스레드/프로세스로 병렬화</td></tr>
+    <tr><td>논블로킹 I/O</td><td>준비 안 됐으면 즉시 <code>EAGAIN</code> 반환</td><td>혼자 쓰면 바쁜 대기(busy loop). 다중화와 함께 씀</td></tr>
+    <tr><td><code>select</code>/<code>poll</code></td><td>소켓 목록을 넘기고 준비된 것을 받음</td><td>호출마다 전체 목록 스캔 — O(n). select는 FD 1024 제한</td></tr>
+    <tr><td><code>epoll</code>(Linux) / <code>kqueue</code>(BSD, macOS)</td><td>관심 소켓을 커널에 등록해 두고 준비된 것만 받음</td><td>O(준비된 수). C10K 문제의 해법</td></tr>
+    <tr><td><code>io_uring</code>(Linux 5.1+)</td><td>완료 기반(비동기) — "읽어 두고 끝나면 알려 줘"</td><td>시스템 콜 횟수 최소화. 최신 고성능 서버</td></tr>
+  </tbody>
+</table>
+
+<h2 id="backlog"><span class="num">6.7</span>백로그: SYN 큐와 accept 큐</h2>
+<p><code>listen(fd, backlog)</code>의 backlog는 무엇일까요? 리눅스 커널은 LISTEN 소켓마다 <b>두 개의 큐</b>를 둡니다. handshake 중인 연결(SYN_RCVD)은 SYN 큐에, handshake가 끝났지만 응용이 아직 <code>accept()</code>하지 않은 연결(ESTABLISHED)은 accept 큐에 있습니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 240">
+    <defs><marker id="b-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <text x="60" y="30" font-weight="700" font-size="12">클라이언트들</text>
+    <g class="wire" marker-end="url(#b-ar)"><line x1="60" y1="70" x2="180" y2="70"/><line x1="60" y1="150" x2="180" y2="150"/></g>
+    <text x="118" y="62" text-anchor="middle" font-size="10" class="mono">SYN</text>
+    <text x="118" y="142" text-anchor="middle" font-size="10" class="mono">ACK (3rd)</text>
+    <rect x="190" y="40" width="240" height="60" rx="10" fill="var(--accent-soft)" stroke="var(--l-link)"/>
+    <text x="310" y="62" text-anchor="middle" font-weight="700" font-size="12">SYN 큐 (반쯤 열린 연결)</text>
+    <text x="310" y="80" text-anchor="middle" font-size="10" class="mono">SYN_RCVD · tcp_max_syn_backlog</text>
+    <text x="310" y="94" text-anchor="middle" font-size="9.5" class="muted">넘치면: SYN cookies 또는 SYN 드롭</text>
+    <line x1="310" y1="100" x2="310" y2="120" class="wire" marker-end="url(#b-ar)"/>
+    <text x="330" y="114" font-size="9.5" class="muted">3rd ACK 도착 → 이동</text>
+    <rect x="190" y="120" width="240" height="60" rx="10" fill="var(--green-soft)" stroke="var(--l-net)"/>
+    <text x="310" y="142" text-anchor="middle" font-weight="700" font-size="12">accept 큐 (완료된 연결)</text>
+    <text x="310" y="160" text-anchor="middle" font-size="10" class="mono">ESTABLISHED · min(backlog, somaxconn)</text>
+    <text x="310" y="174" text-anchor="middle" font-size="9.5" class="muted">넘치면: 3rd ACK 무시 → 클라이언트는 재전송</text>
+    <line x1="430" y1="150" x2="540" y2="150" class="wire" marker-end="url(#b-ar)"/>
+    <text x="485" y="142" text-anchor="middle" font-size="10" class="mono">accept()</text>
+    <rect x="550" y="120" width="140" height="60" rx="10" fill="var(--purple-soft)" stroke="var(--l-app)"/>
+    <text x="620" y="145" text-anchor="middle" font-weight="700" font-size="12">응용 프로세스</text>
+    <text x="620" y="163" text-anchor="middle" font-size="10" class="muted">연결 FD 획득</text>
+    <text x="430" y="220" text-anchor="middle" font-size="10.5" class="muted">ss -tln 의 Recv-Q = 현재 accept 큐 길이, Send-Q = accept 큐 최대 크기</text>
+  </svg>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: accept 큐가 넘치면 무슨 일이 생기나</div><p>응용이 느려서(GC 정지, 스레드 풀 고갈) accept()를 못 하면 accept 큐가 꽉 찹니다. 리눅스 기본(<code>tcp_abort_on_overflow=0</code>)에서는 handshake의 3번째 ACK를 <b>조용히 버립니다</b>. 클라이언트는 이미 ESTABLISHED라고 믿고 요청을 보내는데, 서버 커널은 SYN_RCVD 상태라 데이터를 받지 않고 SYN+ACK를 재전송합니다. 클라이언트 입장의 증상은 "연결은 됐는데 응답이 1초, 3초, 7초… 늦게 온다"(지수 백오프)입니다. 간헐적 지연 장애의 단골 원인이며, <code>nstat | grep ListenOverflows</code> 또는 <code>netstat -s | grep "listen queue"</code>로 확인합니다. 대응: backlog와 <code>net.core.somaxconn</code>(리눅스 5.4+ 기본 4096) 상향, 그리고 근본적으로 응용의 accept 지연 해결.</p></div>
+
+<h2 id="protocols"><span class="num">6.8</span>대표 응용 프로토콜 한눈에</h2>
+<table>
+  <thead><tr><th>프로토콜</th><th>전송 / 포트</th><th>특징</th><th>알아둘 점</th></tr></thead>
+  <tbody>
+    <tr><td>HTTP/1.1, 2</td><td>TCP 80 / 443(TLS)</td><td>요청-응답, 무상태, 텍스트(1.1)·바이너리 프레임(2)</td><td>HTTP/2는 사실상 TLS 필수(ALPN으로 협상)</td></tr>
+    <tr><td>HTTP/3</td><td>UDP 443 (QUIC)</td><td>스트림 멀티플렉싱, 0-RTT, 연결 마이그레이션</td><td><code>Alt-Svc</code> 헤더로 광고, 첫 접속은 보통 TCP</td></tr>
+    <tr><td>DNS</td><td>UDP/TCP 53, DoT 853, DoH 443</td><td>질의-응답, 계층적 캐시</td><td>4장</td></tr>
+    <tr><td>SMTP</td><td>TCP 25(서버 간), 587(제출, STARTTLS), 465(TLS)</td><td>푸시 모델, 텍스트 명령(HELO/EHLO, MAIL FROM, RCPT TO, DATA)</td><td>수신은 IMAP(993)/POP3(995)</td></tr>
+    <tr><td>FTP</td><td>TCP 21(제어) + 데이터 연결</td><td>제어/데이터 연결 분리 — 능동/수동 모드</td><td>아래 도식. NAT·방화벽과 상극이라 SFTP/HTTPS로 대체</td></tr>
+    <tr><td>SSH</td><td>TCP 22</td><td>암호화 원격 셸, 포트 포워딩, SFTP 서브시스템</td><td>키 교환 후 채널 멀티플렉싱</td></tr>
+    <tr><td>NTP</td><td>UDP 123</td><td>시각 동기화, 4개 타임스탬프로 왕복 지연 보정</td><td>증폭 공격(monlist)에 악용된 역사</td></tr>
+    <tr><td>MQTT</td><td>TCP 1883 / 8883(TLS)</td><td>발행-구독, 브로커 경유, 작은 헤더(2B~)</td><td>IoT 표준. QoS 0/1/2</td></tr>
+    <tr><td>WebSocket</td><td>TCP 80/443 (HTTP 업그레이드)</td><td>HTTP handshake 후 양방향 프레임 스트림</td><td>101 Switching Protocols</td></tr>
+  </tbody>
+</table>
+<h3 id="ftp">FTP 능동 vs 수동 모드: 방화벽이 싫어하는 이유</h3>
+<div class="figure card">
+  <svg viewBox="0 0 860 220">
+    <defs><marker id="f-ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="context-stroke"/></marker></defs>
+    <g font-size="11">
+      <text x="210" y="22" text-anchor="middle" font-weight="700">능동 모드 (Active)</text>
+      <rect x="40" y="40" width="110" height="150" rx="10" class="node"/><text x="95" y="60" text-anchor="middle" font-weight="700">클라이언트</text>
+      <rect x="280" y="40" width="110" height="150" rx="10" class="node"/><text x="335" y="60" text-anchor="middle" font-weight="700">서버</text>
+      <line x1="150" y1="90" x2="280" y2="90" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#f-ar2)"/><text x="215" y="82" text-anchor="middle" font-size="10" class="mono">제어: →:21  "PORT 5001"</text>
+      <line x1="280" y1="150" x2="150" y2="150" stroke="var(--red)" stroke-width="2" marker-end="url(#f-ar2)"/><text x="215" y="142" text-anchor="middle" font-size="10" class="mono" fill="var(--red)">데이터: 서버:20 → 클라:5001</text>
+      <text x="215" y="208" text-anchor="middle" font-size="10" class="muted">서버가 클라이언트로 connect → 클라이언트 NAT/방화벽에 막힘</text>
+      <text x="640" y="22" text-anchor="middle" font-weight="700">수동 모드 (Passive)</text>
+      <rect x="470" y="40" width="110" height="150" rx="10" class="node"/><text x="525" y="60" text-anchor="middle" font-weight="700">클라이언트</text>
+      <rect x="710" y="40" width="110" height="150" rx="10" class="node"/><text x="765" y="60" text-anchor="middle" font-weight="700">서버</text>
+      <line x1="580" y1="90" x2="710" y2="90" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#f-ar2)"/><text x="645" y="82" text-anchor="middle" font-size="10" class="mono">제어: →:21  "PASV" → 227 (…,p1,p2)</text>
+      <line x1="580" y1="150" x2="710" y2="150" stroke="var(--l-net)" stroke-width="2" marker-end="url(#f-ar2)"/><text x="645" y="142" text-anchor="middle" font-size="10" class="mono" fill="var(--l-net)">데이터: 클라 → 서버:임의 포트</text>
+      <text x="645" y="208" text-anchor="middle" font-size="10" class="muted">둘 다 클라이언트가 connect → 서버 쪽 방화벽에 포트 범위 개방 필요</text>
+    </g>
+  </svg>
+</div>
+
+<h2 id="practice"><span class="num">6.9</span>실습</h2>
+<h3>curl -v로 전 과정 보기</h3>
+<pre><code>curl -v https://example.com/ -o /dev/null</code></pre>
+<div class="term">* Host example.com:443 was resolved.          <span class="c">← DNS</span>
+* IPv4: 93.184.216.34
+*   Trying 93.184.216.34:443...
+* Connected to example.com (93.184.216.34) port 443   <span class="c">← TCP handshake 완료</span>
+* ALPN: curl offers h2,http/1.1
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384   <span class="c">← TLS 완료</span>
+* ALPN: server accepted h2
+&gt; GET / HTTP/2                                <span class="c">← 요청 (&gt; 는 보낸 것)</span>
+&gt; Host: example.com
+&gt; User-Agent: curl/8.4.0
+&gt; Accept: */*
+&lt; HTTP/2 200                                  <span class="c">← 응답 (&lt; 는 받은 것)</span>
+&lt; content-type: text/html; charset=UTF-8
+&lt; content-length: 1256
+* Connection #0 to host example.com left intact   <span class="c">← keep-alive 유지</span></div>
+<p><code>curl -w "dns:%{time_namelookup} connect:%{time_connect} tls:%{time_appconnect} ttfb:%{time_starttransfer} total:%{time_total}\n" -o /dev/null -s https://example.com/</code> 으로 단계별 시간을 숫자로 뽑을 수 있습니다(13장에서 활용).</p>
+<h3>nc로 HTTP 손으로 치기</h3>
+<pre><code>printf 'GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n' | nc example.com 80</code></pre>
+<p>빈 줄(<code>\r\n\r\n</code>)을 빼먹으면 서버는 헤더가 끝나지 않았다고 보고 계속 기다립니다. 직접 겪어 보면 "빈 줄이 헤더의 끝"이라는 규칙이 몸에 남습니다.</p>
+<h3>로컬 서버 띄우고 관찰</h3>
+<pre><code>python3 -m http.server 8080 &amp;
+ss -tlnp | grep 8080             # LISTEN, Send-Q = backlog
+curl -s localhost:8080/ &gt; /dev/null
+ss -tan | grep 8080              # TIME_WAIT가 어느 쪽에 생겼나?</code></pre>
+
+<h2 id="quiz"><span class="num">6.10</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>HTTP/1.1은 시작 줄·헤더·빈 줄·본문으로 된 텍스트 프로토콜이다. 빈 줄이 헤더의 끝이고, 본문 길이는 Content-Length 또는 chunked로 프레이밍한다.</li>
+    <li>첫 접속은 DNS 1 + TCP 1 + TLS 1 + HTTP 1 = 약 4 RTT. 성능 최적화의 대부분은 왕복 수나 왕복 거리를 줄이는 것이다.</li>
+    <li>listen()=LISTEN, connect()=SYN 전송, accept()=accept 큐에서 완성된 연결 꺼내기, close()=FIN. 소켓 API는 상태 머신의 손잡이다.</li>
+    <li>accept 큐가 넘치면 3번째 ACK가 버려져 "연결은 됐는데 느린" 간헐 장애가 난다.</li>
+    <li>HTTP/2는 HTTP 층 HOL을, HTTP/3(QUIC)는 TCP 층 HOL까지 해결한다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz} = TCPIP;
+
+  /* ---------- 6.2 HTTP 메시지 ---------- */
+  const REQ = [
+    ['GET /index.html HTTP/1.1','<b>요청 줄</b>: 메서드(GET) + 요청 대상(경로) + 버전. 메서드는 의미(semantics)를 정한다 — GET은 안전·멱등, POST는 아님. RFC 9110.'],
+    ['Host: www.example.com','<b>Host</b>: HTTP/1.1 유일한 필수 헤더. 한 IP에 여러 도메인(가상 호스트)을 두기 위해 필요하다. TLS에서는 SNI가 같은 역할을 한다.'],
+    ['User-Agent: Mozilla/5.0 (…)','클라이언트 식별. 서버가 응답을 조정하는 근거가 되기도 한다.'],
+    ['Accept: text/html,application/xhtml+xml','콘텐츠 협상: 클라이언트가 받을 수 있는 미디어 타입. 서버는 Content-Type으로 답한다.'],
+    ['Accept-Encoding: gzip, br','압축 협상. 서버는 Content-Encoding으로 답한다. 텍스트 리소스는 보통 70~80% 줄어든다.'],
+    ['Connection: keep-alive','HTTP/1.1 기본값이라 생략 가능. <code>close</code>면 응답 후 서버가 FIN. HTTP/2에서는 금지된 헤더.'],
+    ['If-None-Match: "abc123"','조건부 요청: 캐시의 ETag와 같으면 304 Not Modified(본문 없음). 대역폭 절약의 핵심.'],
+    ['','<b>빈 줄 (CRLF)</b>: 헤더의 끝. 이 뒤에 본문이 온다. GET은 보통 본문이 없다. 빈 줄을 빼먹으면 서버는 헤더가 계속 온다고 보고 기다린다.',true],
+  ];
+  const RES = [
+    ['HTTP/1.1 200 OK','<b>상태 줄</b>: 버전 + 상태 코드 + 이유 구절(reason phrase, 정보용). 코드 첫 자리가 분류(2xx 성공, 4xx 클라 오류…).'],
+    ['Date: Tue, 21 Oct 2026 09:00:00 GMT','응답 생성 시각. 캐시 수명 계산(Age, max-age)의 기준.'],
+    ['Content-Type: text/html; charset=UTF-8','본문의 미디어 타입과 문자 인코딩. 브라우저가 렌더링 방식을 정한다. 틀리면 XSS 등 보안 문제로도 이어진다.'],
+    ['Content-Length: 1256','<b>본문 길이(바이트)</b>: 바이트 스트림에서 메시지 경계를 알려 주는 프레이밍. 이것 또는 <code>Transfer-Encoding: chunked</code> 중 하나가 있어야 keep-alive 연결에서 다음 응답과 구분된다.'],
+    ['Cache-Control: max-age=3600','캐시 정책: 1시간 동안 재검증 없이 재사용 가능.'],
+    ['ETag: "abc123"','리소스 버전 식별자. 조건부 요청(If-None-Match)에 쓰임.'],
+    ['Content-Encoding: gzip','본문이 gzip 압축됨. Content-Length는 압축 후 길이.'],
+    ['','<b>빈 줄</b>: 헤더 끝. 다음부터 Content-Length만큼이 본문.',true],
+    ['<!doctype html><html>…','<b>본문</b>: 1256바이트의 HTML(압축됨). TCP는 이것을 여러 세그먼트로 나눠 보낼 수 있고, 클라이언트는 Content-Length만큼 모아야 완성.'],
+  ];
+  function buildMsg(id, lines){
+    const box = $(id);
+    lines.forEach(([txt,desc,blank])=>{
+      const d = el('div','ln'+(blank?' blank':''), blank?'(빈 줄 — CRLF)':txt.replace(/</g,'&lt;'));
+      d.onclick=()=>{ $$('.httpmsg .ln').forEach(x=>x.classList.toggle('sel',x===d)); $('#http-desc').innerHTML=desc; };
+      box.appendChild(d);
+    });
+  }
+  buildMsg('#http-req',REQ); buildMsg('#http-res',RES);
+
+  /* ---------- 6.3 연결 관리 비교 도식 ---------- */
+  (function(){
+    const s = $('#conn-svg'); const X0=150, scale=9; // 1 RTT = scale*? px
+    const rows = [
+      {name:'HTTP/1.0\n비지속', items:[[0,1,'hs'],[1,2,'rq'],[2,3,'hs'],[3,4,'rq'],[4,5,'hs'],[5,6,'rq'],[6,7,'hs'],[7,8,'rq']]},
+      {name:'HTTP/1.1\nKeep-Alive', items:[[0,1,'hs'],[1,2,'rq'],[2,3,'rq'],[3,4,'rq'],[4,5,'rq']]},
+      {name:'HTTP/1.1\n6개 병렬 연결', items:[[0,1,'hs'],[1,2,'rq'],[0,1,'hs',1],[1,2,'rq',1],[0,1,'hs',2],[1,2,'rq',2],[0,1,'hs',3],[1,2,'rq',3]]},
+      {name:'HTTP/1.1\n파이프라이닝', items:[[0,1,'hs'],[1,2,'rq'],[1.15,2.3,'rq'],[1.3,2.6,'rq'],[1.45,2.9,'rq']]},
+      {name:'HTTP/2\n멀티플렉싱', items:[[0,1,'hs'],[1,2.2,'mx']]},
+    ];
+    const RH=70; const W=80;
+    rows.forEach((r,i)=>{
+      const y = 20 + i*RH;
+      r.name.split('\n').forEach((t,k)=>s.appendChild(svg('text',{x:10,y:y+22+k*14,'font-size':11,'font-weight':k?400:700,fill:k?'var(--muted)':'var(--text)'},t)));
+      s.appendChild(svg('line',{x1:X0,y1:y+RH-12,x2:850,y2:y+RH-12,class:'line'}));
+      r.items.forEach(([a,b,k,lane=0])=>{
+        const x=X0+a*W, w=(b-a)*W-3, yy=y+6+lane*11, h=lane!==undefined&&r.items.some(it=>it[3])?10:36;
+        const fill = k==='hs'?'var(--l-tr)':k==='mx'?'var(--pink)':'var(--l-app)';
+        s.appendChild(svg('rect',{x,y:yy,width:w,height:h,rx:3,fill,opacity:.85}));
+        if(k==='mx'){ for(let j=0;j<12;j++) s.appendChild(svg('rect',{x:x+4+j*7.5,y:yy+8,width:5,height:h-16,rx:1,fill:['var(--l-app)','var(--cyan)','var(--l-link)','var(--l-net)'][j%4]})); }
+      });
+    });
+    for(let t=0;t<=8;t++){ s.appendChild(svg('text',{x:X0+t*W,y:412,'font-size':10,class:'muted mono','text-anchor':'middle'},t+' RTT')); }
+    s.appendChild(svg('text',{x:X0+2.2*W+10,y:20+4*RH+30,'font-size':10,class:'muted'},'← 한 연결에서 4개 스트림이 섞여 흐름 (합계 ≈ 2.2 RTT)'));
+  })();
+
+  /* ---------- 6.4 타임라인 ---------- */
+  const tl = $('#tl-svg'); const XL=200, XR=700;
+  const base = svg('g');
+  [[XL,'브라우저'],[450,'DNS 리졸버'],[XR,'웹 서버']].forEach(([x,n])=>{ base.appendChild(svg('rect',{x:x-60,y:10,width:120,height:30,rx:8,class:'node'})); base.appendChild(svg('text',{x,y:30,'text-anchor':'middle','font-weight':700},n)); base.appendChild(svg('line',{x1:x,y1:40,x2:x,y2:390,class:'line','stroke-dasharray':'4 4'})); });
+  tl.appendChild(base); const dyn = svg('g'); tl.appendChild(dyn);
+  let rttCount=0;
+  function arrow(x1,y1,x2,y2,label,color,ins){
+    const g=svg('g'); const line=svg('line',{x1,y1,x2,y2,stroke:color,'stroke-width':2.5});
+    const len=Math.hypot(x2-x1,y2-y1); line.style.strokeDasharray=len; line.style.strokeDashoffset=ins?0:len; line.style.transition='stroke-dashoffset .5s';
+    const ang=Math.atan2(y2-y1,x2-x1)*180/Math.PI;
+    const head=svg('path',{d:'M-9 -4.5 L0 0 L-9 4.5z',fill:color,transform:`translate(${x2},${y2}) rotate(${ang})`}); head.style.opacity=ins?1:0; head.style.transition='opacity .2s .4s';
+    const t=svg('text',{x:(x1+x2)/2,y:(y1+y2)/2-6,'text-anchor':'middle','font-size':11,fill:color,'font-weight':700,class:'mono'},label); t.style.opacity=ins?1:0; t.style.transition='opacity .3s .2s';
+    g.append(line,head,t); dyn.appendChild(g); requestAnimationFrame(()=>{line.style.strokeDashoffset=0;head.style.opacity=1;t.style.opacity=1;});
+  }
+  function tag(y,txt,ins){ const t=svg('text',{x:XR+70,y,'font-size':11,fill:'var(--accent)','font-weight':700},txt); t.style.opacity=ins?1:0; t.style.transition='opacity .3s'; dyn.appendChild(t); requestAnimationFrame(()=>t.style.opacity=1); }
+  function updTotal(){ const r=+$('#rtt').value; $('#rtt-v').textContent=r; $('#rtt-total').textContent=`누적: ${rttCount} RTT · ${rttCount*r} ms`; }
+  $('#rtt').addEventListener('input',updTotal);
+  const A='var(--l-app)', T='var(--l-tr)', N='var(--l-net)', K='var(--red)';
+  Stepper('#tl-anim',{intro:'주소창에 https://www.example.com 을 입력하고 Enter. 캐시 없음.',autoplayMs:2300,steps:[
+    {title:'DNS 조회 (≈ 1 RTT)',text:'브라우저 캐시·OS 캐시·hosts에 없으면 스텁 리졸버가 설정된 재귀 리졸버(보통 ISP 또는 1.1.1.1)에 UDP 53으로 질의. 리졸버가 캐시를 갖고 있으면 1 RTT(리졸버까지의 짧은 RTT). 없으면 루트→TLD→권한 서버를 돌아 수백 ms 더 걸린다(4장).',run(i,ins){ arrow(XL,60,450,75,'A? www.example.com',N,ins); arrow(450,95,XL,110,'A 93.184.216.34',N,ins); rttCount=1; tag(90,'+1 RTT',ins); updTotal(); }},
+    {title:'TCP 3-way handshake (1 RTT)',text:'SYN → SYN+ACK → ACK. 클라이언트는 SYN+ACK를 받는 순간(1 RTT) 데이터를 보낼 수 있다. 3번째 ACK는 첫 데이터와 함께 나간다.',run(i,ins){ arrow(XL,130,XR,148,'SYN',T,ins); arrow(XR,160,XL,178,'SYN+ACK',T,ins); arrow(XL,190,XR,208,'ACK',T,ins); rttCount=2; tag(170,'+1 RTT',ins); updTotal(); }},
+    {title:'TLS 1.3 handshake (1 RTT)',text:'ClientHello(키 공유 포함) → ServerHello + 인증서 + Finished → 클라이언트 Finished. TLS 1.3은 1 RTT, TLS 1.2는 2 RTT였다. 재접속 시 0-RTT도 가능. 12장에서 내부를 본다. 3번째 메시지는 HTTP 요청과 같이 나간다.',run(i,ins){ arrow(XL,215,XR,233,'ClientHello',K,ins); arrow(XR,245,XL,263,'ServerHello, Cert, Finished',K,ins); rttCount=3; tag(250,'+1 RTT',ins); updTotal(); }},
+    {title:'HTTP 요청 → 응답 (1 RTT + 서버 처리 시간)',text:'GET / 전송. 서버가 처리(DB, 템플릿…)한 뒤 응답 첫 바이트가 도착하기까지가 <b>TTFB</b>(Time To First Byte) = 1 RTT + 서버 처리. 응답이 크면 TCP slow start 때문에 여러 RTT가 더 든다(8장).',run(i,ins){ arrow(XL,275,XR,293,'GET / HTTP/1.1 (+ TLS Finished)',A,ins); arrow(XR,310,XL,328,'200 OK + HTML',A,ins); rttCount=4; tag(305,'+1 RTT (+서버 처리)',ins); updTotal(); }},
+    {title:'파싱 → 추가 리소스 → 렌더링',text:'HTML을 파싱하다 CSS/JS/이미지를 만나면 같은 연결(HTTP/2) 또는 새 연결로 또 요청한다. 다른 도메인(CDN)이면 DNS+TCP+TLS를 처음부터 다시(3 RTT 추가!). 그래서 preconnect와 도메인 통합이 중요하다. 최종 화면까지 보통 수십 RTT.',run(i,ins){ arrow(XL,345,XR,360,'GET /style.css, /app.js …',A,ins); arrow(XR,368,XL,383,'…',A,ins); rttCount=5; tag(362,'+1 RTT ×n',ins); updTotal(); }},
+  ],reset(){ dyn.innerHTML=''; rttCount=0; updTotal(); }});
+
+  /* ---------- 6.5 소켓 API ---------- */
+  const SRV = [
+    ['socket()','FD 생성','커널에 소켓 구조체를 만들고 파일 디스크립터를 받는다. 아직 주소도 상태도 없다(CLOSED).'],
+    ['bind()','주소 고정','로컬 IP:port를 지정. 서버는 반드시 호출(클라이언트는 보통 생략 → connect 시 커널이 임시 포트 할당). 1024 미만은 root 필요. 이미 사용 중이면 EADDRINUSE — TIME_WAIT 때문이면 SO_REUSEADDR.'],
+    ['listen()','CLOSED → LISTEN','수동 열기. SYN 큐와 accept 큐가 생성된다. backlog 인자가 accept 큐 크기(somaxconn으로 상한). 이때부터 커널이 handshake를 응용 개입 없이 처리한다.'],
+    ['accept()','accept 큐에서 꺼냄','handshake가 끝난(ESTABLISHED) 연결 하나를 꺼내 새 FD로 돌려준다. 큐가 비어 있으면 블록. 리스닝 소켓은 그대로 LISTEN을 유지한다. accept()가 느리면 큐가 넘친다.'],
+    ['recv() / send()','데이터','바이트 스트림 읽기/쓰기. recv가 0을 돌려주면 상대 FIN(EOF). send는 커널 송신 버퍼에 복사만 하고 돌아온다 — 상대가 받았다는 뜻이 아니다.'],
+    ['close()','FIN 전송 → FIN_WAIT_1 / LAST_ACK','송신 버퍼의 남은 데이터를 보낸 뒤 FIN. 상대가 먼저 닫았다면(CLOSE_WAIT) 여기서 LAST_ACK로 간다. 읽지 않은 데이터가 남아 있으면 FIN 대신 RST.'],
+  ];
+  const CLI = [
+    ['socket()','FD 생성','서버와 동일.'],
+    ['connect()','CLOSED → SYN_SENT → ESTABLISHED','능동 열기. 커널이 임시 포트를 고르고(암묵적 bind) SYN을 보낸다. SYN+ACK가 올 때까지 블록(기본 타임아웃 리눅스 약 2분, SYN 재전송 6회). RST가 오면 ECONNREFUSED, 응답이 없으면 ETIMEDOUT.'],
+    ['send() / recv()','데이터','서버와 동일. 요청을 보내고 응답을 읽는다.'],
+    ['shutdown(SHUT_WR)','FIN (half-close)','송신만 닫는다. 응답은 계속 읽을 수 있다. 선택 사항.'],
+    ['close()','FIN 전송 → FIN_WAIT_1 → … → TIME_WAIT','능동 종료. 클라이언트가 먼저 닫으면 TIME_WAIT가 클라이언트에 남는다.'],
+  ];
+  function buildApi(id, list, side){
+    const col=$(id);
+    list.forEach(([n,st,d])=>{ const b=el('div','call',`<span>${n}</span><small>${st}</small>`); b.onclick=()=>{ $$('.api .call').forEach(x=>x.classList.toggle('sel',x===b)); $('#api-desc').innerHTML=`<b style="font-family:var(--mono)">${n}</b> <span class="tag blue">${st}</span><p style="margin:.4rem 0 0">${d}</p>`; }; col.appendChild(b); });
+  }
+  buildApi('#api-srv',SRV); buildApi('#api-cli',CLI);
+  const mid=$('#api-mid'); ['','','← 3-way handshake →','← 요청 →','← 응답 →','← FIN ↔ FIN →'].forEach(t=>mid.appendChild(el('div','',t)));
+
+  /* ---------- 6.10 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'HTTP/1.1 요청에서 유일하게 필수인 헤더와 그 이유는?',options:['User-Agent — 클라이언트 식별','Host — 한 IP에 여러 도메인을 호스팅하기 위해','Accept — 콘텐츠 협상','Content-Length — 본문 길이'],answer:1,explain:'가상 호스팅을 위해 서버는 어떤 도메인으로 요청이 왔는지 알아야 한다. TLS에서는 SNI가 같은 역할.'},
+    {q:'캐시가 전혀 없는 첫 HTTPS 접속에서 첫 바이트를 받기까지 최소 왕복 수는? (TLS 1.3, DNS 리졸버는 캐시 보유)',options:['2 RTT','3 RTT','4 RTT','6 RTT'],answer:2,explain:'DNS 1 + TCP 1 + TLS 1.3 1 + HTTP 1 = 4 RTT. TLS 1.2라면 5 RTT.'},
+    {q:'서버의 accept 큐가 가득 찼을 때 리눅스 기본 동작과 클라이언트 측 증상은?',options:['RST를 보내 연결이 즉시 거부된다','handshake 3번째 ACK를 버려, 클라이언트는 연결됐다고 믿지만 응답이 지수적으로 늦어진다','SYN을 버려 connect()가 실패한다','커널이 자동으로 큐를 늘린다'],answer:1,explain:'tcp_abort_on_overflow=0 기본값. 간헐적 지연의 단골 원인. ListenOverflows 카운터로 확인.'},
+    {q:'recv()가 0을 반환했다. 의미는?',options:['데이터가 아직 없다','상대가 FIN을 보내 송신을 닫았다(EOF)','연결이 RST로 끊겼다','버퍼가 가득 찼다'],answer:1,explain:'데이터 없음은 블록(또는 EAGAIN), RST는 ECONNRESET 오류다. 0은 정상적인 EOF.'},
+    {q:'HTTP/2에서도 남아 있는 HOL blocking의 원인은?',options:['HTTP/2가 요청 순서를 강제해서','TCP가 단일 바이트 스트림이라 세그먼트 유실 시 뒤 데이터 전체가 커널에서 대기해서','헤더 압축 때문에','TLS 때문에'],answer:1,explain:'커널은 어느 바이트가 어느 스트림인지 모른다. QUIC은 스트림을 전송 계층 개념으로 내려 해결.'},
+    {q:'listen(fd, 128)의 128이 뜻하는 것은?',options:['동시 연결 최대 수','SYN 큐 크기','accept()되지 않은 완료 연결(accept 큐)의 최대 수','스레드 수'],answer:2,explain:'accept 큐 크기이며 net.core.somaxconn으로 상한. 동시 연결 수와는 무관(accept 후 연결은 큐에서 빠진다).'},
+    {q:'FTP 능동 모드가 클라이언트 측 NAT에서 실패하는 이유는?',options:['포트 21이 막혀서','서버가 클라이언트로 데이터 연결을 connect하기 때문','UDP를 써서','암호화가 없어서'],answer:1,explain:'NAT는 안에서 밖으로 시작된 연결만 통과시킨다. 수동 모드는 양쪽 다 클라이언트가 connect.'},
+    {q:'epoll이 select보다 대규모 연결에 유리한 핵심 이유는?',options:['더 많은 메모리를 써서','호출마다 전체 FD를 스캔하지 않고 준비된 FD만 돌려주기 때문','멀티스레드를 자동으로 써서','UDP를 지원해서'],answer:1,explain:'select/poll은 O(n) 스캔, epoll은 관심 목록을 커널에 등록해 두고 준비된 것만 O(준비된 수)로 받는다.'},
+    {q:'클라이언트가 sendall()로 1000바이트를 보냈다. 서버의 recv(4096)가 한 번에 받는 양에 대해 옳은 것은?',options:['항상 1000바이트','1000바이트 이하 어떤 양이든 가능하며, 다른 sendall의 데이터와 합쳐질 수도 있다','항상 4096바이트','세그먼트 크기와 동일'],answer:1,explain:'TCP는 바이트 스트림이다. 메시지 경계는 응용이 프레이밍(길이, 구분자)으로 정해야 한다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모듈 시스템 심층</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .fs-tree { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--code-bg); border-radius: 8px; padding: 10px 12px; border: 1px solid var(--border); white-space: pre; overflow-x: auto; }
+  .fs-tree .hit { background: var(--ok-soft); color: var(--ok); font-weight: 700; border-radius: 3px; }
+  .fs-tree .probe { background: var(--bad-soft); border-radius: 3px; }
+  .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .res-grid { grid-template-columns: 1fr; } }
+  .attempts { list-style: none; padding: 0; margin: 0; font-family: var(--mono); font-size: 12.5px; }
+  .attempts li { padding: 3px 8px; border-left: 3px solid var(--border); margin: 2px 0; opacity: .35; transition: opacity .2s, background .2s; }
+  .attempts li.seen { opacity: 1; }
+  .attempts li.cur { background: var(--accent-soft); border-color: var(--accent); }
+  .attempts li.miss { border-color: var(--bad); }
+  .attempts li.hit { border-color: var(--ok); background: var(--ok-soft); font-weight: 700; }
+  .attempts li.info { border-color: var(--violet); font-family: var(--sans); color: var(--muted); }
+  .json-tree { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--code-bg); border-radius: 8px; padding: 10px 12px; border: 1px solid var(--border); white-space: pre; overflow-x: auto; }
+  .json-tree .pick { background: var(--ok-soft); color: var(--ok); font-weight: 700; border-radius: 3px; }
+  .json-tree .skip { opacity: .4; text-decoration: line-through; }
+  .json-tree .visit { background: var(--accent-soft); border-radius: 3px; }
+  .cyc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .cyc-grid { grid-template-columns: 1fr; } }
+  .mod-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface-2); font-size: 13.5px; min-height: 140px; }
+  .mod-box h5 { margin: 0 0 6px; font-family: var(--mono); font-size: 13px; }
+  .mod-box .st { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); margin-left: 6px; }
+  .mod-box .st.loading { color: var(--warn); border-color: var(--warn); }
+  .mod-box .st.loaded { color: var(--ok); border-color: var(--ok); }
+  .mod-box .st.linked { color: var(--accent); border-color: var(--accent); }
+  .mod-box .st.tdz { color: var(--bad); border-color: var(--bad); }
+  .mod-box pre { margin: 6px 0 0; padding: 8px 10px; font-size: 12px; }
+  .mod-box code.cur { background: var(--accent-soft); outline: 1px solid var(--accent); }
+  .kind-result { font-size: 20px; font-weight: 700; padding: 10px 14px; border-radius: 8px; background: var(--surface-2); margin-top: 8px; }
+</style>
+</head>
+<body data-chapter="08">
+<main>
+  <header class="chapter-head">
+    <span class="label">런타임 내부 · Chapter 08</span>
+    <h1>모듈 시스템: CJS·ESM·로더</h1>
+    <p class="lead"><code>require('x')</code> 한 줄 뒤에는 수십 번의 <code>stat()</code> 호출과 패키지 <code>exports</code> 맵 해석, 그리고 두 개의 전혀 다른 로더가 있습니다. CommonJS는 "실행하면서 연결"하고 ES Modules는 "연결한 뒤 실행"합니다. 이 차이가 순환 참조, 트리 셰이킹, 핫 리로드, dual package hazard까지 모든 모듈 관련 문제의 뿌리입니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>CJS 해석 알고리즘(LOAD_AS_FILE / LOAD_AS_DIRECTORY / LOAD_NODE_MODULES)을 종이 위에서 따라갈 수 있다.</li>
+      <li>ESM의 파싱→인스턴스화→평가 3단계와 live binding, TLA가 로딩 그래프에 미치는 영향을 설명할 수 있다.</li>
+      <li><code>exports</code>/<code>imports</code> 맵과 조건부 exports를 설계하고, dual package hazard를 피하는 패키지를 만들 수 있다.</li>
+      <li><code>require(esm)</code>, <code>module.register()</code> 훅, 타입 스트리핑 등 Node 20~24의 변화를 운영 관점에서 판단할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">두 로더, 두 철학</a></li>
+    <li><a href="#s2">CJS 로더 내부: Module._load와 해석 알고리즘</a></li>
+    <li><a href="#s3">ESM 로더 내부: 링킹 3단계와 live binding</a></li>
+    <li><a href="#s4">순환 참조: 부분 exports vs TDZ</a></li>
+    <li><a href="#s5">패키지 exports/imports 맵과 조건부 해석</a></li>
+    <li><a href="#s6">상호운용: require(esm), import cjs, dual package hazard</a></li>
+    <li><a href="#s7">모듈 종류 판정과 TypeScript 타입 스트리핑</a></li>
+    <li><a href="#s8">커스텀 로더 훅: module.register()</a></li>
+    <li><a href="#s9">모듈 캐시, 메모리, 핫 리로드</a></li>
+    <li><a href="#s10">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 두 로더, 두 철학</h2>
+    <p>CommonJS(CJS)는 2009년 서버 사이드 JS를 위해 만들어진 <em>동기 함수 호출</em> 기반 규약입니다. <code>require</code>는 그냥 함수이고, 모듈은 함수 래퍼 안에서 실행되며, <code>module.exports</code>에 무엇이든 대입합니다. 따라서 <b>어떤 모듈이 무엇을 export하는지는 실행해 봐야 압니다</b>.</p>
+    <p>ES Modules(ESM)는 2015년 언어 표준으로 들어왔습니다. <code>import</code>/<code>export</code>는 문(statement)이며 파일 최상단에서 정적으로 분석됩니다. <b>실행하기 전에 전체 의존성 그래프를 만들고 바인딩을 연결</b>합니다. 이 때문에 트리 셰이킹, 순환 참조의 안전한 처리, 비동기 로딩(브라우저)이 가능해졌습니다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>CommonJS</th><th>ES Modules</th></tr>
+      <tr><td>로딩</td><td>동기, 실행 중 <code>require()</code> 호출 시점</td><td>비동기 가능, 실행 전 정적 그래프 구성</td></tr>
+      <tr><td>export 결정</td><td>런타임 (<code>module.exports</code> 대입)</td><td>파싱 시점 (구문 분석)</td></tr>
+      <tr><td>바인딩</td><td>값 복사 (객체 참조 공유)</td><td>live binding (변수 자체를 공유)</td></tr>
+      <tr><td>순환 참조</td><td>부분적으로 채워진 exports 객체</td><td>TDZ(초기화 전 접근 시 ReferenceError)</td></tr>
+      <tr><td><code>this</code> 최상위</td><td><code>module.exports</code></td><td><code>undefined</code></td></tr>
+      <tr><td>strict mode</td><td>선택</td><td>항상</td></tr>
+      <tr><td>파일 식별</td><td><code>__filename</code>, <code>__dirname</code></td><td><code>import.meta.url</code>, <code>import.meta.dirname</code>(20.11+)</td></tr>
+      <tr><td>동적 로딩</td><td><code>require(expr)</code></td><td><code>await import(expr)</code></td></tr>
+      <tr><td>최상위 await</td><td>불가</td><td>가능 (그래프 전체가 비동기화됨)</td></tr>
+    </table></div>
+
+    <div class="callout"><span class="title">한 줄 모델</span>
+      CJS = "<b>함수를 호출해 반환값을 받는다</b>". ESM = "<b>그래프를 먼저 연결하고, 의존성 순으로 한 번씩 실행한다</b>". 이 장의 모든 동작은 이 두 문장에서 유도됩니다.
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2>2. CJS 로더 내부: Module._load와 해석 알고리즘</h2>
+    <p><code>require</code>는 <code>lib/internal/modules/cjs/loader.js</code>의 <code>Module.prototype.require</code> → <code>Module._load</code>로 이어집니다. 핵심 흐름은 세 단계입니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="Module._load 흐름">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="30" width="150" height="50" rx="8" class="box"/><text x="95" y="60" text-anchor="middle">require('x')</text>
+        <rect x="210" y="30" width="190" height="50" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="305" y="52" text-anchor="middle" font-weight="700">Module._resolveFilename</text><text x="305" y="70" text-anchor="middle" font-size="11" class="muted">해석 알고리즘 → 절대 경로</text>
+        <rect x="440" y="30" width="170" height="50" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="525" y="52" text-anchor="middle" font-weight="700">Module._cache[path]?</text><text x="525" y="70" text-anchor="middle" font-size="11" class="muted">있으면 exports 즉시 반환</text>
+        <rect x="650" y="30" width="210" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="755" y="52" text-anchor="middle" font-weight="700">new Module → load()</text><text x="755" y="70" text-anchor="middle" font-size="11" class="muted">캐시에 먼저 등록, 그다음 실행</text>
+        <path d="M170 55 H210" class="line" marker-end="url(#arr)"/><path d="M400 55 H440" class="line" marker-end="url(#arr)"/><path d="M610 55 H650" class="line" marker-end="url(#arr)"/>
+        <rect x="440" y="130" width="420" height="140" rx="8" class="box"/>
+        <text x="650" y="152" text-anchor="middle" font-weight="700">Module._extensions['.js'] → module._compile(source)</text>
+        <text x="455" y="180" font-family="var(--mono)" font-size="11.5">(function (exports, require, module, __filename, __dirname) {</text>
+        <text x="475" y="200" font-family="var(--mono)" font-size="11.5">  // 파일 내용이 이 안에 들어간다 (wrapSafe → vm.compileFunction)</text>
+        <text x="455" y="220" font-family="var(--mono)" font-size="11.5">})</text>
+        <text x="455" y="244" font-size="11.5" class="muted">실행이 끝나면 module.loaded = true.</text>
+        <text x="455" y="260" font-size="11.5" class="muted">예외가 나면 캐시에서 삭제: delete Module._cache[filename]</text>
+        <path d="M755 80 V130" class="line" marker-end="url(#arr)"/>
+        <text x="30" y="150" font-size="12" class="muted">캐시 키 = 해석된 절대 경로(realpath).</text>
+        <text x="30" y="170" font-size="12" class="muted">같은 파일을 심링크 등 다른 경로로</text>
+        <text x="30" y="190" font-size="12" class="muted">요청하면 두 번 로드될 수 있다.</text>
+        <text x="30" y="220" font-size="12" class="muted">--preserve-symlinks 는 realpath를</text>
+        <text x="30" y="240" font-size="12" class="muted">건너뛰어 그 동작을 일부러 택하는 플래그.</text>
+      </svg>
+      <figcaption>해석 → 캐시 확인 → 래퍼 함수 컴파일·실행. 캐시 등록이 실행보다 <em>먼저</em>라는 점이 순환 참조 동작의 핵심입니다.</figcaption>
+    </figure>
+
+    <h3>2.1 해석 알고리즘 (Node 공식 의사코드 요약)</h3>
+<pre><code>require(X) from module at path Y
+1. X가 코어 모듈('node:fs', 'fs')이면 → 코어 반환. ('node:' 접두사는 캐시·오버라이드를 우회하므로 권장)
+2. X가 '/'로 시작하면 Y = 파일시스템 루트
+3. X가 './', '/', '../'로 시작하면
+   a. LOAD_AS_FILE(Y + X)        b. LOAD_AS_DIRECTORY(Y + X)      c. THROW "not found"
+4. X가 '#'로 시작하면 LOAD_PACKAGE_IMPORTS(X, dirname(Y))     ← package.json "imports"
+5. LOAD_PACKAGE_SELF(X, dirname(Y))                            ← 자기 패키지 이름으로 자기 참조
+6. LOAD_NODE_MODULES(X, dirname(Y))
+7. THROW "not found"  (MODULE_NOT_FOUND)
+
+LOAD_AS_FILE(X):  X → X.js → X.json → X.node         (.mjs, .cjs, .ts는 시도하지 않는다!)
+LOAD_INDEX(X):    X/index.js → X/index.json → X/index.node
+LOAD_AS_DIRECTORY(X): X/package.json의 "main" → LOAD_AS_FILE(X/main) → LOAD_INDEX(X/main) → (main 없으면) LOAD_INDEX(X)
+LOAD_NODE_MODULES(X, START):
+   DIRS = NODE_MODULES_PATHS(START)   // START부터 루트까지 모든 조상의 node_modules + $NODE_PATH + ~/.node_modules 등
+   for each DIR in DIRS:
+      LOAD_PACKAGE_EXPORTS(X, DIR)    // package.json에 "exports"가 있으면 여기서 결정, 실패 시 즉시 에러
+      LOAD_AS_FILE(DIR/X)
+      LOAD_AS_DIRECTORY(DIR/X)</code></pre>
+    <p>세 가지가 실무에서 중요합니다. 첫째, <b>확장자 추론은 <code>.js/.json/.node</code>만</b>이며 <code>require('./util')</code>이 <code>util.mjs</code>를 찾아주지 않습니다. 둘째, <code>node_modules</code> 탐색은 <b>조상 디렉터리를 모두 올라가며</b> <code>stat()</code>을 호출하므로, 깊은 모노레포에서 존재하지 않는 패키지를 <code>require</code>하면 수십 번의 syscall이 발생합니다. 셋째, <code>exports</code> 필드가 있는 패키지에서 해당 서브패스가 없으면 <b>fallback 없이</b> <code>ERR_PACKAGE_PATH_NOT_EXPORTED</code>입니다.</p>
+
+    <div class="widget" id="rs-widget">
+      <div class="w-title">require 해석 경로 탐색기</div>
+      <div class="w-desc">가상 프로젝트 트리에서 <code>require(X)</code>가 실제로 어떤 경로를 어떤 순서로 시도하는지 애니메이션으로 봅니다. 빨간 줄이 <code>stat()</code> 실패, 초록이 성공입니다.</div>
+      <div class="controls">
+        <label>호출 위치 <select id="rs-from">
+          <option value="/app/src/routes/user.js">/app/src/routes/user.js</option>
+          <option value="/app/src/lib/db.js">/app/src/lib/db.js</option>
+          <option value="/app/index.js">/app/index.js</option>
+        </select></label>
+        <label>specifier <input type="text" id="rs-spec" value="../lib/db" size="22"></label>
+        <button class="btn primary" id="rs-run">해석</button>
+      </div>
+      <div class="controls" style="font-size:12.5px;color:var(--muted)">예시:
+        <button class="btn" data-spec="../lib/db">../lib/db</button>
+        <button class="btn" data-spec="../lib">../lib</button>
+        <button class="btn" data-spec="../utils">../utils</button>
+        <button class="btn" data-spec="lodash">lodash</button>
+        <button class="btn" data-spec="pkg/feature">pkg/feature</button>
+        <button class="btn" data-spec="pkg/internal/x">pkg/internal/x</button>
+        <button class="btn" data-spec="local-pkg">local-pkg</button>
+        <button class="btn" data-spec="node:fs">node:fs</button>
+        <button class="btn" data-spec="missing-pkg">missing-pkg</button>
+      </div>
+      <div class="res-grid">
+        <div><div class="tl-lbl" style="font-size:12px;color:var(--muted)">가상 파일 시스템</div><div class="fs-tree" id="rs-tree"></div></div>
+        <div><div class="tl-lbl" style="font-size:12px;color:var(--muted)">시도 순서</div><ol class="attempts" id="rs-attempts"></ol></div>
+      </div>
+      <div id="rs-step"></div>
+    </div>
+
+    <details class="deep"><summary>Module._load 소스의 숨은 디테일 (Node 22 기준)</summary><div>
+      <ul>
+        <li><b>relativeResolveCache</b>: "부모 모듈 경로 + specifier" 조합을 캐시해, 같은 파일에서 같은 <code>require('x')</code>를 두 번 호출하면 해석 알고리즘을 다시 돌지 않습니다.</li>
+        <li><b>stat 캐시</b>: 로더는 <code>internalFsBinding.internalModuleStat</code>을 쓰며, 한 번의 최상위 <code>require</code> 동안 결과를 캐시합니다(statCache). 부팅 시 수천 개 모듈을 로드할 때 syscall 폭을 줄입니다.</li>
+        <li><b>package.json 리더 캐시</b>: <code>packageJsonReader</code>가 C++에서 파싱하고 경로별로 캐시합니다. 같은 package.json을 수백 번 읽지 않습니다.</li>
+        <li><b>컴파일 캐시</b>: Node 22.1+ <code>module.enableCompileCache()</code> 또는 <code>NODE_COMPILE_CACHE=dir</code>로 V8 코드 캐시를 디스크에 저장해 재부팅 시 컴파일을 건너뜁니다. 큰 앱의 콜드 스타트를 수십 % 줄입니다.</li>
+        <li><b>실패 시 캐시 삭제</b>: 모듈 실행 중 예외가 나면 <code>delete Module._cache[filename]</code>. 다음 <code>require</code>는 다시 실행을 시도합니다. 부작용(이미 등록한 리스너 등)은 남습니다.</li>
+      </ul>
+    </div></details>
+  </section>
+
+  <section id="s3">
+    <h2>3. ESM 로더 내부: 링킹 3단계와 live binding</h2>
+    <p>ESM은 <code>lib/internal/modules/esm/</code>의 <code>ModuleLoader</code>가 담당하며, V8의 <code>v8::Module</code> API 위에 올라갑니다. 로딩은 명확한 세 단계로 나뉘고, <b>한 단계가 그래프 전체에 대해 끝나야 다음 단계로 갑니다</b>.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 330" role="img" aria-label="ESM 링킹 3단계">
+        <defs><marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <g>
+          <rect x="20" y="20" width="270" height="290" rx="12" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="155" y="48" text-anchor="middle" font-weight="700">① 파싱 (Construction)</text>
+          <text x="155" y="70" text-anchor="middle" font-size="12" class="muted">resolve → load → parse, 재귀</text>
+          <rect x="60" y="90" width="80" height="34" rx="6" class="box"/><text x="100" y="112" text-anchor="middle" font-size="12">main.mjs</text>
+          <rect x="40" y="160" width="80" height="34" rx="6" class="box"/><text x="80" y="182" text-anchor="middle" font-size="12">a.mjs</text>
+          <rect x="150" y="160" width="80" height="34" rx="6" class="box"/><text x="190" y="182" text-anchor="middle" font-size="12">b.mjs</text>
+          <rect x="95" y="230" width="80" height="34" rx="6" class="box"/><text x="135" y="252" text-anchor="middle" font-size="12">c.mjs</text>
+          <path d="M90 124 L80 160" class="line" marker-end="url(#arr3)"/><path d="M110 124 L180 160" class="line" marker-end="url(#arr3)"/>
+          <path d="M85 194 L125 230" class="line" marker-end="url(#arr3)"/><path d="M185 194 L150 230" class="line" marker-end="url(#arr3)"/>
+          <text x="155" y="292" text-anchor="middle" font-size="11.5" class="muted">import/export 구문만 읽음. 코드 실행 없음.</text>
+        </g>
+        <g>
+          <rect x="310" y="20" width="270" height="290" rx="12" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+          <text x="445" y="48" text-anchor="middle" font-weight="700">② 인스턴스화 (Linking)</text>
+          <text x="445" y="70" text-anchor="middle" font-size="12" class="muted">export 바인딩에 메모리 슬롯 할당, import와 연결</text>
+          <rect x="340" y="100" width="100" height="60" rx="6" class="box"/><text x="390" y="122" text-anchor="middle" font-size="12">a.mjs</text><text x="390" y="142" text-anchor="middle" font-size="11" font-family="var(--mono)">export let x</text>
+          <rect x="450" y="100" width="100" height="60" rx="6" class="box"/><text x="500" y="122" text-anchor="middle" font-size="12">b.mjs</text><text x="500" y="142" text-anchor="middle" font-size="11" font-family="var(--mono)">import {x}</text>
+          <rect x="390" y="190" width="110" height="36" rx="6" style="fill:var(--surface);stroke:var(--violet);stroke-dasharray:4 3"/><text x="445" y="212" text-anchor="middle" font-size="11.5">슬롯: x = &lt;TDZ&gt;</text>
+          <path d="M390 160 L430 190" class="line accent"/><path d="M500 160 L460 190" class="line accent"/>
+          <text x="445" y="262" text-anchor="middle" font-size="11.5" class="muted">양쪽이 같은 슬롯을 가리킨다 = live binding</text>
+          <text x="445" y="282" text-anchor="middle" font-size="11.5" class="muted">없는 export를 import하면 여기서 SyntaxError</text>
+        </g>
+        <g>
+          <rect x="600" y="20" width="260" height="290" rx="12" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="730" y="48" text-anchor="middle" font-weight="700">③ 평가 (Evaluation)</text>
+          <text x="730" y="70" text-anchor="middle" font-size="12" class="muted">깊이 우선 후위 순서로 각 모듈 본문을 1회 실행</text>
+          <text x="625" y="110" font-size="12.5">1. c.mjs</text><text x="625" y="135" font-size="12.5">2. a.mjs</text><text x="625" y="160" font-size="12.5">3. b.mjs</text><text x="625" y="185" font-size="12.5">4. main.mjs</text>
+          <text x="730" y="230" text-anchor="middle" font-size="11.5" class="muted">슬롯에 값이 채워짐. TLA가 있으면</text>
+          <text x="730" y="250" text-anchor="middle" font-size="11.5" class="muted">그 모듈을 기다리는 조상들이 모두 async</text>
+          <text x="730" y="285" text-anchor="middle" font-size="11.5" class="muted">같은 모듈은 두 번 평가되지 않음</text>
+        </g>
+        <path d="M290 165 H310" class="line" marker-end="url(#arr3)"/><path d="M580 165 H600" class="line" marker-end="url(#arr3)"/>
+      </svg>
+      <figcaption>ESM은 그래프 전체를 파싱하고 링크한 뒤에야 첫 줄을 실행합니다. CJS에는 ①②가 없고 실행이 곧 로딩입니다.</figcaption>
+    </figure>
+
+    <h3>3.1 live binding의 실체</h3>
+    <div class="compare">
+      <div><div class="lbl">counter.mjs</div><pre><code>export let count = 0;
+export function inc() { count++; }</code></pre></div>
+      <div><div class="lbl">main.mjs</div><pre><code>import { count, inc } from './counter.mjs';
+inc(); inc();
+console.log(count);   // 2  ← 값 복사가 아니라 같은 변수
+count = 5;            // TypeError: Assignment to constant variable</code></pre></div>
+    </div>
+    <p>CJS로 같은 것을 쓰면 <code>const { count } = require('./counter')</code>는 <code>0</code>을 복사해 와서 영원히 0입니다. ESM import는 <b>읽기 전용 뷰</b>입니다. 이것이 순환 참조에서 "나중에 채워지는 값"을 안전하게 볼 수 있는 이유이며, 동시에 모킹 도구들이 ESM에서 고생하는 이유입니다(바인딩을 바꿔치기할 수 없으므로 로더 훅이 필요).</p>
+
+    <h3>3.2 최상위 await(TLA)의 전파</h3>
+    <p>모듈 하나에 TLA가 있으면 V8은 그 모듈을 <em>비동기 모듈</em>로 표시하고, 그것을 import하는 모든 조상도 비동기로 평가합니다. 결과는 두 가지입니다.</p>
+    <ul>
+      <li><b>형제 모듈은 병렬 평가</b>됩니다. <code>import './a.mjs'; import './b.mjs'</code>에서 a가 TLA로 기다리는 동안 b가 먼저 끝날 수 있습니다. 순서에 의존한 초기화(예: a가 DB 커넥션을 열고 b가 그걸 쓴다)는 깨집니다.</li>
+      <li><b><code>require()</code>할 수 없습니다.</b> <code>require(esm)</code>는 동기여야 하므로 TLA가 있는 그래프는 <code>ERR_REQUIRE_ASYNC_MODULE</code>을 던집니다(6절).</li>
+      <li>영원히 resolve되지 않는 TLA는 프로세스를 조용히 종료시킵니다(Node 는 경고 "Detected unsettled top-level await"와 함께 exit code 13).</li>
+    </ul>
+    <div class="callout warn"><span class="title">권장</span> TLA는 진입점(main)에서만. 라이브러리나 공유 모듈에서 TLA를 쓰면 소비자의 로딩 그래프 전체를 비동기로 만들고 <code>require</code> 호환성을 잃습니다.</div>
+  </section>
+
+  <section id="s4">
+    <h2>4. 순환 참조: 부분 exports vs TDZ</h2>
+    <p>a → b → a 순환이 있을 때 두 로더는 완전히 다르게 행동합니다. CJS는 <b>"지금까지 채워진 exports 객체"</b>를 돌려주고, ESM은 <b>"슬롯은 연결됐지만 값이 없는 바인딩"</b>을 돌려줍니다.</p>
+
+    <div class="widget">
+      <div class="w-title">순환 참조 스텝 애니메이션</div>
+      <div class="w-desc">같은 순환 구조를 CJS와 ESM으로 각각 로드할 때의 내부 상태 변화입니다. 실제 Node 22에서 검증한 출력과 같습니다.</div>
+      <div class="tabs" id="cyc-tabs">
+        <div class="tab-bar"><button class="tab active" data-tab="cjs">CommonJS</button><button class="tab" data-tab="esm">ES Modules</button></div>
+        <div class="tab-pane active" data-tab="cjs">
+          <div class="cyc-grid">
+            <div class="mod-box" id="cjs-a"></div>
+            <div class="mod-box" id="cjs-b"></div>
+          </div>
+          <div class="log" id="cjs-log" style="margin-top:8px;min-height:60px"></div>
+          <div id="cjs-step"></div>
+        </div>
+        <div class="tab-pane" data-tab="esm">
+          <div class="cyc-grid">
+            <div class="mod-box" id="esm-a"></div>
+            <div class="mod-box" id="esm-b"></div>
+          </div>
+          <div class="log" id="esm-log" style="margin-top:8px;min-height:60px"></div>
+          <div id="esm-step"></div>
+        </div>
+      </div>
+    </div>
+
+    <p>CJS에서 흔한 함정은 <code>module.exports = { ... }</code>로 <em>객체를 통째로 교체</em>하는 경우입니다. 순환 상대가 받은 것은 교체 전의 빈 <code>exports</code> 객체이므로, 나중에 채워져도 보이지 않습니다. <code>exports.foo = ...</code>처럼 기존 객체에 속성을 추가하면 나중에라도 보입니다(위 애니메이션의 a가 그 방식). 더 근본적인 해결은 순환을 끊는 것입니다. 보통 "두 모듈이 모두 필요로 하는 것"을 세 번째 모듈로 뽑아내면 됩니다. <code>madge --circular src/</code> 같은 도구로 CI에서 순환을 탐지하세요.</p>
+    <p>ESM에서는 순환이 있어도 <b>함수 선언은 호이스팅되어 평가 전에도 호출 가능</b>합니다. 문제가 되는 것은 <code>let/const/class</code>와 그 값을 모듈 최상위에서 <em>즉시</em> 쓰는 코드입니다. 에러 메시지가 "Cannot access 'x' before initialization"이면 거의 항상 순환입니다.</p>
+  </section>
+
+  <section id="s5">
+    <h2>5. 패키지 exports/imports 맵과 조건부 해석</h2>
+    <p><code>package.json</code>의 <code>"exports"</code>는 패키지의 <b>공개 API 표면을 선언</b>합니다. 있으면 <code>"main"</code>은 무시되고, 선언되지 않은 경로는 <code>require('pkg/lib/internal.js')</code>처럼 접근할 수 없습니다. 이것이 라이브러리 작성자에게는 캡슐화를, 소비자에게는 "내부 파일 경로를 import했다가 패치 버전에서 깨지는" 사고의 종식을 의미합니다.</p>
+<pre><code>{
+  "name": "pkg",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",          // ① 조건은 "키 순서"대로 매칭된다. types는 항상 맨 앞
+      "import": "./dist/index.js",           // ② import 또는 import() 로 로드될 때
+      "require": "./dist/index.cjs",         // ③ require() 로 로드될 때
+      "default": "./dist/index.js"           // ④ 항상 매칭되는 폴백. 반드시 마지막
+    },
+    "./feature": {
+      "node": "./dist/feature-node.js",      // 런타임 조건: node / browser / deno ...
+      "default": "./dist/feature.js"
+    },
+    "./utils/*": "./dist/utils/*.js",        // 서브패스 패턴. * 는 경로의 나머지 전체(/ 포함)
+    "./internal/*": null,                    // 명시적 차단
+    "./package.json": "./package.json"
+  },
+  "imports": {
+    "#db": { "node": "./src/db-node.js", "default": "./src/db-mock.js" }   // 패키지 내부 전용 별칭
+  }
+}</code></pre>
+
+    <h3>5.1 해석 규칙</h3>
+    <ol>
+      <li><b>서브패스 매칭</b>: 정확히 일치하는 키 우선. 없으면 <code>*</code> 패턴 중 <code>*</code> 앞부분이 가장 긴 키(가장 구체적인 것)를 선택.</li>
+      <li><b>타깃 해석</b>: 문자열이면 <code>*</code>를 치환해 끝. 배열이면 앞에서부터 유효한 첫 항목(잘못된 타깃을 건너뛰는 폴백용. 조건 폴백 아님). 객체면 <b>키 순서대로</b> 순회하며 조건 집합에 포함되거나 <code>"default"</code>인 첫 키로 재귀. <code>null</code>이면 "export되지 않음".</li>
+      <li><b>조건 집합</b>: Node는 항상 <code>["node", "import" 또는 "require", "default"]</code> + <code>--conditions=</code>로 추가한 것. 번들러는 <code>browser</code>, <code>development/production</code>, <code>module</code> 등을 추가. 객체 키 순서가 우선순위이고 조건 집합 순서는 무관합니다.</li>
+      <li>타깃은 <code>./</code>로 시작해야 하고 패키지 밖(<code>../</code>)이나 <code>node_modules</code>를 가리키면 <code>ERR_INVALID_PACKAGE_TARGET</code>.</li>
+    </ol>
+
+    <div class="widget">
+      <div class="w-title">exports 맵 조건 매처</div>
+      <div class="w-desc">exports 객체, 요청 서브패스, 활성 조건을 바꾸면 선택되는 타깃과 탐색 경로를 보여줍니다. 알고리즘은 Node의 PACKAGE_EXPORTS_RESOLVE를 그대로 구현했습니다.</div>
+      <div class="res-grid">
+        <div>
+          <div style="font-size:12px;color:var(--muted)">exports (JSON)</div>
+          <textarea id="ex-json" style="width:100%;min-height:240px;font-family:var(--mono);font-size:12px;white-space:pre;overflow:auto" spellcheck="false">{
+  ".": {
+    "types": "./dist/index.d.ts",
+    "import": "./dist/index.js",
+    "require": "./dist/index.cjs",
+    "default": "./dist/index.js"
+  },
+  "./feature": {
+    "node": { "import": "./dist/feature-node.mjs", "require": "./dist/feature-node.cjs" },
+    "browser": "./dist/feature-browser.js",
+    "default": "./dist/feature.js"
+  },
+  "./utils/*": "./dist/utils/*.js",
+  "./utils/private/*": null,
+  "./legacy": ["./dist/legacy.js", "./dist/legacy-fallback.js"]
+}</textarea>
+          <div class="controls">
+            <label>서브패스 <input type="text" id="ex-sub" value="pkg/feature" size="20"></label>
+          </div>
+          <div class="controls" id="ex-conds">
+            <label><input type="radio" name="ex-mode" value="import" checked> import</label>
+            <label><input type="radio" name="ex-mode" value="require"> require</label>
+            <label><input type="checkbox" value="node" checked> node</label>
+            <label><input type="checkbox" value="browser"> browser</label>
+            <label><input type="checkbox" value="types"> types</label>
+            <label><input type="checkbox" value="development"> development</label>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--muted)">탐색 과정 (초록 = 선택, 취소선 = 조건 불일치로 건너뜀)</div>
+          <div class="json-tree" id="ex-tree"></div>
+          <div class="kind-result" id="ex-result"></div>
+          <div class="log" id="ex-log" style="margin-top:8px;max-height:150px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout tip"><span class="title">exports 설계 체크리스트</span>
+      <ul class="checklist">
+        <li><code>"types"</code> 조건을 맨 앞에, <code>"default"</code>를 맨 뒤에.</li>
+        <li><code>"./package.json": "./package.json"</code>을 노출(도구들이 읽음).</li>
+        <li>서브패스 패턴을 쓰더라도 <code>"./internal/*": null</code>로 내부를 명시적으로 차단.</li>
+        <li>조건별 타깃이 <b>서로 다른 모듈 인스턴스</b>가 되지 않도록 설계(6절 dual package hazard).</li>
+        <li><code>npx publint</code>, <code>npx @arethetypeswrong/cli</code>로 배포 전 검증.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="s6">
+    <h2>6. 상호운용: require(esm), import cjs, dual package hazard</h2>
+    <h3>6.1 ESM에서 CJS import</h3>
+    <p>항상 가능했습니다. CJS 모듈의 <code>module.exports</code>가 default export가 되고, Node는 <b>cjs-module-lexer</b>로 소스를 정적 분석해 <code>exports.foo = </code>, <code>Object.defineProperty(exports, 'foo', …)</code>, <code>module.exports = { foo, bar }</code> 같은 패턴을 찾아 named export도 제공합니다. 분석은 휴리스틱이므로 동적으로 만든 export(<code>for (k of keys) exports[k] = …</code>)는 named import가 실패하고 <code>default</code>를 통해야 합니다. 트랜스파일된 번들(esbuild, tsc 출력)은 lexer가 인식하는 패턴을 쓰므로 대체로 잘 됩니다.</p>
+
+    <h3>6.2 CJS에서 ESM: require(esm)</h3>
+    <p>Node 22.12와 20.19부터 플래그 없이 <code>require()</code>로 ESM을 로드할 수 있습니다(23.x에서 먼저 기본 활성화). 조건은 <b>그래프에 TLA가 없을 것</b>입니다. 반환값은 모듈 네임스페이스 객체(<code>[Symbol.toStringTag]: 'Module'</code>)이며, <code>default</code> export는 <code>.default</code> 속성으로 접근합니다(네임스페이스에 <code>__esModule</code>이 export돼 있으면 Babel 호환 규칙으로 default를 펼칩니다).</p>
+<pre><code>// esm.mjs
+export const x = 1; export default 'd';
+
+// main.cjs
+const m = require('./esm.mjs');
+m.x;            // 1
+m.default;      // 'd'
+m[Symbol.toStringTag]; // 'Module'
+
+// tla.mjs:  export const y = await fetchConfig();
+require('./tla.mjs'); // ERR_REQUIRE_ASYNC_MODULE</code></pre>
+    <p>이 기능의 의미는 큽니다. <b>ESM-only 라이브러리 생태계 이동이 CJS 앱을 깨뜨리지 않게</b> 되었고, dual package를 배포할 이유가 줄었습니다. 2025년 이후 새 라이브러리는 ESM-only로 배포하고 CJS 소비자는 <code>require(esm)</code>에 기대는 흐름이 주류입니다.</p>
+
+    <h3>6.3 Dual package hazard</h3>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 250" role="img" aria-label="dual package hazard">
+        <defs><marker id="arr6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="30" width="160" height="50" rx="8" class="box"/><text x="100" y="60" text-anchor="middle">app.mjs (ESM)</text>
+        <rect x="20" y="170" width="160" height="50" rx="8" class="box"/><text x="100" y="200" text-anchor="middle">legacy-plugin.cjs</text>
+        <rect x="340" y="30" width="200" height="50" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="440" y="52" text-anchor="middle" font-weight="700">pkg/dist/index.js</text><text x="440" y="70" text-anchor="middle" font-size="11" class="muted">"import" 조건 → 인스턴스 A</text>
+        <rect x="340" y="170" width="200" height="50" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="440" y="192" text-anchor="middle" font-weight="700">pkg/dist/index.cjs</text><text x="440" y="210" text-anchor="middle" font-size="11" class="muted">"require" 조건 → 인스턴스 B</text>
+        <path d="M180 55 H340" class="line" marker-end="url(#arr6)"/><path d="M180 195 H340" class="line" marker-end="url(#arr6)"/>
+        <path d="M100 80 V170" class="line" marker-end="url(#arr6)"/><text x="110" y="130" font-size="11" class="muted">import</text>
+        <rect x="600" y="80" width="260" height="90" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="730" y="108" text-anchor="middle" font-weight="700" style="fill:var(--bad)">같은 패키지가 두 번 로드됨</text>
+        <text x="730" y="130" text-anchor="middle" font-size="12">A.instanceof B → false</text>
+        <text x="730" y="150" text-anchor="middle" font-size="12">싱글턴(레지스트리·캐시·설정)이 2개</text>
+        <path d="M540 55 L600 100" class="line"/><path d="M540 195 L600 150" class="line"/>
+      </svg>
+      <figcaption>import/require 조건이 서로 다른 파일을 가리키면 한 프로세스에 패키지 인스턴스가 둘 생깁니다. 모듈 수준 상태가 있는 패키지에서는 재앙입니다.</figcaption>
+    </figure>
+    <p>해법은 세 가지입니다. ① <b>ESM-only 배포</b>(require(esm) 시대의 정답). ② <b>상태를 한쪽에만</b>: ESM 래퍼가 CJS 구현을 <code>import</code>해 re-export하는 "CJS 우선 래퍼" 패턴(둘 다 같은 CJS 인스턴스를 공유). ③ 상태를 <code>globalThis[Symbol.for('pkg.state')]</code>에 두기(임시방편).</p>
+  </section>
+
+  <section id="s7">
+    <h2>7. 모듈 종류 판정과 TypeScript 타입 스트리핑</h2>
+    <p>Node가 파일을 CJS로 볼지 ESM으로 볼지는 확장자와 가장 가까운 <code>package.json</code>의 <code>"type"</code>으로 정합니다. Node 22.7부터는 <code>"type"</code>이 없을 때 <b>구문 감지</b>(<code>import</code>/<code>export</code>/<code>import.meta</code>가 있고 CJS 전용 식별자가 없으면 ESM)를 기본으로 수행합니다.</p>
+    <div class="widget">
+      <div class="w-title">모듈 종류 판정기</div>
+      <div class="w-desc">파일 확장자, 가까운 package.json의 type, 플래그를 조합하면 Node가 어떤 로더를 쓰는지 보여줍니다.</div>
+      <div class="controls">
+        <label>확장자 <select id="kd-ext"><option>.js</option><option>.mjs</option><option>.cjs</option><option>.ts</option><option>.mts</option><option>.cts</option><option>.json</option><option>.wasm</option></select></label>
+        <label>package.json "type" <select id="kd-type"><option value="none">(없음)</option><option value="module">"module"</option><option value="commonjs">"commonjs"</option></select></label>
+        <label>소스에 import/export 구문 <input type="checkbox" id="kd-syntax"></label>
+        <label>소스에 enum/namespace/데코레이터 <input type="checkbox" id="kd-tsfeat"></label>
+        <label>Node 버전 <select id="kd-ver"><option value="20">20</option><option value="22" selected>22 (22.18+)</option><option value="24">24</option></select></label>
+      </div>
+      <div class="kind-result" id="kd-result"></div>
+      <div class="log" id="kd-why" style="margin-top:8px"></div>
+    </div>
+
+    <h3>7.1 타입 스트리핑 (Node 22.6+ 실험, 23.6/22.18+ 기본)</h3>
+    <p>Node는 <code>amaro</code>(swc 기반)로 <b>타입 주석만 공백으로 치환</b>해 <code>.ts</code>를 직접 실행합니다. 핵심은 "트랜스파일이 아니다"라는 점입니다. 소스맵이 필요 없도록 위치를 보존하고, 타입 검사는 하지 않으며, <b>런타임 의미가 있는 TS 문법</b>(<code>enum</code>, <code>namespace</code>, 파라미터 프로퍼티, 레거시 데코레이터)은 <code>--experimental-transform-types</code>를 켜야 합니다. 또 <code>import './x.ts'</code>처럼 <b>확장자를 명시</b>해야 하고(<code>'./x'</code> 추론 없음), <code>import type</code>을 쓰거나 <code>verbatimModuleSyntax</code>를 켜서 타입 전용 import가 남지 않게 해야 합니다. <code>node_modules</code> 안의 <code>.ts</code>는 스트리핑하지 않습니다.</p>
+    <div class="callout warn"><span class="title">운영 판단</span> 개발·스크립트·테스트에는 좋지만, 프로덕션 배포는 여전히 빌드 단계에서 JS로 변환하는 것이 안전합니다. 타입 스트리핑은 Node 버전마다 세부 동작이 바뀌어 왔고(플래그 이름, 기본값), 콜드 스타트에 파싱 비용이 추가됩니다.</div>
+  </section>
+
+  <section id="s8">
+    <h2>8. 커스텀 로더 훅: module.register()</h2>
+    <p>Node 20.6+의 <code>module.register(specifier, parentURL)</code>는 <b>별도 스레드에서 실행되는 훅</b>을 등록합니다. 훅은 두 종류입니다. <code>resolve(specifier, context, next)</code>는 "어떤 URL로 갈지"를, <code>load(url, context, next)</code>는 "그 URL의 소스와 포맷"을 결정합니다. 체인 가능하고 <code>next()</code>로 다음 훅(기본 동작)에 위임합니다.</p>
+<pre><code>// hooks.mjs
+export async function resolve(specifier, context, next) {
+  if (specifier.startsWith('@app/')) {                     // 경로 별칭
+    return next(new URL(`./src/${specifier.slice(5)}.js`, import.meta.url).href, context);
+  }
+  return next(specifier, context);
+}
+export async function load(url, context, next) {
+  if (url.endsWith('.yaml')) {                             // 새 포맷 지원
+    const { source } = await next(url, { ...context, format: 'module' });
+    return { format: 'module', shortCircuit: true,
+             source: `export default ${JSON.stringify(parseYaml(String(source)))};` };
+  }
+  return next(url, context);
+}
+
+// register.mjs  (진입점보다 먼저: node --import ./register.mjs app.mjs)
+import { register } from 'node:module';
+register('./hooks.mjs', import.meta.url);</code></pre>
+    <ul>
+      <li>훅은 <b>별도 워커 스레드</b>에서 돌므로 메인 스레드의 전역 상태를 볼 수 없습니다. 설정은 <code>register(..., { data })</code>와 <code>initialize(data)</code> 훅으로 전달합니다.</li>
+      <li>Node 22.15/23.5+에는 <b>동기 훅</b> <code>module.registerHooks()</code>가 실험적으로 추가되어 메인 스레드에서 동기적으로 동작하며 <code>require()</code>도 가로챕니다. 훅 API는 아직 변동이 있으니 릴리스 노트를 확인하세요.</li>
+      <li>용도: 계측(OpenTelemetry의 <code>import-in-the-middle</code>), 모킹(<code>node:test</code>의 <code>mock.module()</code>도 내부적으로 같은 메커니즘), 트랜스파일, 경로 별칭. CJS에서 흔히 쓰던 <code>require.extensions</code> 몽키패치의 공식 대체입니다.</li>
+    </ul>
+  </section>
+
+  <section id="s9">
+    <h2>9. 모듈 캐시, 메모리, 핫 리로드</h2>
+    <p><code>require.cache</code>(= <code>Module._cache</code>)는 공개 객체이고 삭제가 가능합니다. 그래서 "<code>delete require.cache[path]</code> 후 다시 require"로 핫 리로드를 구현한 코드가 많습니다. 문제는 세 가지입니다.</p>
+    <ul>
+      <li><b>구 모듈은 사라지지 않는다.</b> 다른 모듈이 이미 받아 간 참조(클로저, 이벤트 리스너, 타이머)가 살아 있는 한 옛 인스턴스는 메모리에 남습니다. 반복하면 누수(11장).</li>
+      <li><b>ESM은 캐시 삭제 API가 없다.</b> 모듈 맵은 V8 내부이며 의도적으로 노출하지 않습니다. 우회책인 <code>import(url + '?t=' + Date.now())</code>는 매번 새 모듈을 만들고 역시 옛것을 해제하지 못합니다.</li>
+      <li><b>싱글턴 깨짐.</b> 리로드된 모듈이 새 Map/EventEmitter를 만들면 이전 상태를 참조하는 코드와 분리됩니다.</li>
+    </ul>
+    <p>프로덕션에서 핫 리로드는 하지 마세요. 개발에서는 <code>node --watch</code>(Node 18.11+, 22에서 안정)가 프로세스를 통째로 재시작하는 올바른 방식입니다. 설정값처럼 "바뀌어야 하는 데이터"는 모듈이 아니라 데이터로 다루고, 모듈 로드 시점이 아니라 호출 시점에 읽으세요.</p>
+    <p>메모리 측면에서는 모듈 수 자체가 부팅 시간과 힙에 직접 영향을 줍니다. <code>node --cpu-prof</code>로 부팅을 프로파일하면 큰 앱에서 모듈 로딩이 상당 비율을 차지합니다. 대책: lazy <code>require</code>(핸들러 안에서 로드), <code>module.enableCompileCache()</code>, 번들링(단일 파일은 syscall 수를 극적으로 줄임), 그리고 Node 22.6+의 <code>--experimental-sea-config</code>/스냅샷(1장).</p>
+  </section>
+
+  <section id="s10">
+    <h2>10. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: 패치 업데이트 후 ERR_PACKAGE_PATH_NOT_EXPORTED</span>
+      <p>앱이 <code>require('some-lib/lib/internal/parser')</code>로 내부 파일을 직접 쓰고 있었는데, 라이브러리가 패치 버전에서 <code>exports</code> 맵을 추가하자 즉시 실패. semver상 patch였지만 "내부 경로"는 애초에 API가 아니었습니다. 교훈: 내부 경로 import는 CI에서 금지(eslint <code>import/no-internal-modules</code>), 락파일으로 버전 고정.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: OpenTelemetry 계측이 조용히 빠짐</span>
+      <p>앱을 ESM으로 전환하자 DB 호출 스팬이 사라짐. CJS에서는 <code>require</code> 몽키패치로 계측했지만 ESM의 live binding은 바꿔치기가 불가능. <code>--import</code>로 로더 훅(<code>@opentelemetry/instrumentation</code>의 ESM 지원)을 <b>앱 코드보다 먼저</b> 등록해야 하는데 진입점 안에서 등록해 이미 링크된 모듈은 계측되지 않음. 교훈: 로더 훅은 <code>node --import ./otel.mjs app.mjs</code>처럼 CLI에서.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 두 개의 "싱글턴" 커넥션 풀</span>
+      <p>dual package로 배포된 ORM을 앱(ESM)과 레거시 플러그인(CJS)이 각각 로드해 커넥션 풀이 두 개 생김. 풀 크기 제한(10)이 실제로는 20이 되어 DB max_connections 초과. 진단: <code>process.moduleLoadList</code>나 힙 스냅샷에서 같은 클래스 이름이 두 경로로 보임. 해결: ESM-only 버전으로 업그레이드하고 플러그인은 <code>require(esm)</code>.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>CJS는 실행하며 연결(캐시 등록 → 래퍼 함수 실행), ESM은 파싱 → 링킹 → 평가의 3단계로 연결 후 실행.</li>
+    <li>CJS 해석: 코어 → 상대/절대(파일 → 디렉터리) → <code>#imports</code> → self → 조상 <code>node_modules</code> 순. 확장자 추론은 .js/.json/.node만.</li>
+    <li>순환 참조: CJS는 부분 exports 객체, ESM은 TDZ ReferenceError. 해결은 순환 제거.</li>
+    <li><code>exports</code> 맵은 공개 API 선언. 조건은 키 순서대로, <code>types</code> 먼저 <code>default</code> 마지막. 미선언 경로는 에러.</li>
+    <li><code>require(esm)</code>(22.12+/20.19+)로 TLA 없는 ESM은 동기 로드 가능. 새 라이브러리는 ESM-only가 dual package hazard를 피하는 길.</li>
+    <li>로더 훅 <code>module.register()</code>는 별도 스레드, <code>--import</code>로 앱보다 먼저. 타입 스트리핑은 타입만 지우며 enum 등은 transform 플래그 필요.</li>
+    <li><code>require.cache</code> 삭제 기반 핫 리로드는 누수의 지름길. 개발은 <code>--watch</code>, 운영은 재시작.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>/app/src/a.js</code>에서 <code>require('./util')</code>을 호출했고 <code>/app/src/util.mjs</code>만 존재한다. 결과는?</div>
+    <button class="opt">util.mjs를 ESM으로 로드한다</button>
+    <button class="opt">util.mjs를 CJS로 로드하려다 SyntaxError</button>
+    <button class="opt">MODULE_NOT_FOUND</button>
+    <button class="opt">/app/src/util/ 디렉터리를 찾는다</button>
+    <div class="explain">LOAD_AS_FILE은 X, X.js, X.json, X.node만 시도합니다. .mjs는 추론 대상이 아니므로 파일을 찾지 못하고, 디렉터리도 없으므로 MODULE_NOT_FOUND입니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">exports가 <code>{ ".": { "default": "./a.js", "import": "./b.js" } }</code>일 때 ESM에서 <code>import 'pkg'</code>가 로드하는 파일은?</div>
+    <button class="opt">./b.js (import 조건이 더 구체적이므로)</button>
+    <button class="opt">./a.js (default가 먼저 나오므로)</button>
+    <button class="opt">에러 (default가 마지막이 아니면 무효)</button>
+    <button class="opt">./b.js와 ./a.js 둘 다</button>
+    <div class="explain">조건 객체는 키 순서대로 순회하며 조건 집합에 포함되거나 "default"인 첫 키를 선택합니다. "default"는 항상 매칭되므로 먼저 나오면 뒤의 키는 절대 도달하지 않습니다. 에러는 아니지만 사실상 버그이고, publint가 경고합니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">ESM 순환 a.mjs ⇄ b.mjs에서 b가 평가 중 a의 <code>export let x</code>를 읽으면?</div>
+    <button class="opt">undefined</button>
+    <button class="opt">a의 부분적으로 채워진 네임스페이스 객체</button>
+    <button class="opt">b의 평가가 a가 끝날 때까지 중단된다</button>
+    <button class="opt">ReferenceError (TDZ)</button>
+    <div class="explain">링킹 단계에서 슬롯은 연결되었지만 a의 본문이 아직 평가되지 않아 x는 TDZ 상태입니다. "Cannot access 'x' before initialization". 단, export function은 호이스팅되어 호출 가능합니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">CJS 앱에서 <code>require('esm-only-lib')</code>가 ERR_REQUIRE_ASYNC_MODULE을 던진다. 가장 가능성 높은 원인은?</div>
+    <button class="opt">그 라이브러리(또는 의존성)의 모듈 그래프에 최상위 await가 있다</button>
+    <button class="opt">Node 버전이 22.12 미만이다</button>
+    <button class="opt">package.json에 "type": "module"이 없다</button>
+    <button class="opt">default export만 있고 named export가 없다</button>
+    <div class="explain">require(esm)은 동기여야 하므로 그래프 어딘가에 TLA가 있으면 이 에러가 납니다. 버전이 낮으면 ERR_REQUIRE_ESM(구버전)이 납니다. 해결은 <code>await import()</code>로 전환하거나 라이브러리의 TLA 제거를 요청하는 것입니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">OpenTelemetry ESM 계측이 일부 모듈에만 적용된다. 원인으로 가장 적절한 것은?</div>
+    <button class="opt">ESM은 계측이 원천적으로 불가능하다</button>
+    <button class="opt">로더 훅이 등록되기 전에 이미 링크된 모듈은 훅을 거치지 않는다</button>
+    <button class="opt">훅이 별도 스레드라서 느리다</button>
+    <button class="opt">exports 맵이 없는 패키지만 계측된다</button>
+    <div class="explain">훅은 등록 이후의 resolve/load에만 개입합니다. 진입점 안에서 register()하면 진입점이 정적으로 import한 그래프는 이미 링크된 뒤입니다. <code>node --import ./otel.mjs app.mjs</code>로 앱보다 먼저 등록해야 합니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>해석 syscall 세기.</b> 깊이 6단계의 디렉터리에서 존재하지 않는 패키지를 <code>require</code>하는 스크립트를 만들고 <code>strace -e trace=stat,openat,newfstatat node app.js 2&gt;&amp;1 | grep node_modules | wc -l</code>(macOS는 <code>dtruss</code> 또는 <code>fs_usage</code>)로 시도 횟수를 세세요. 기대: 조상 디렉터리 수 × (exports 확인 + 파일 4종 + 디렉터리) 규모의 호출. 같은 것을 번들된 단일 파일에서 측정해 비교하세요.</li>
+    <li><b>순환 참조 재현.</b> 4절 애니메이션의 a.js/b.js, ea.mjs/eb.mjs를 그대로 만들어 실행하고, CJS에서 <code>exports.loaded = true</code>를 <code>module.exports = { loaded: true }</code>로 바꿨을 때 b가 보는 값이 어떻게 달라지는지 확인하세요. 기대: 객체 교체 시 b는 영원히 빈 객체를 봄.</li>
+    <li><b>exports 맵 검증.</b> 5절의 체크리스트대로 더미 패키지를 만들고 <code>npm pack</code> 후 <code>npx publint</code>와 <code>npx @arethetypeswrong/cli --pack</code>을 돌려 경고를 0으로 만드세요. 그다음 "default"를 맨 앞으로 옮겨 경고가 나는지 확인하세요.</li>
+    <li><b>require(esm) 경계.</b> TLA가 있는 ESM과 없는 ESM을 만들어 각각 <code>require()</code>하고 에러 코드를 확인하세요. 기대: 전자 ERR_REQUIRE_ASYNC_MODULE, 후자 성공 + <code>[Symbol.toStringTag] === 'Module'</code>.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  // ===================== 위젯 1: require 해석 경로 탐색기 =====================
+  (function () {
+    // 가상 FS: 경로 → 'file' | 'dir' | {json}
+    const FS = {
+      "/app": "dir", "/app/package.json": { name: "app", main: "index.js" }, "/app/index.js": "file",
+      "/app/src": "dir", "/app/src/routes": "dir", "/app/src/routes/user.js": "file",
+      "/app/src/lib": "dir", "/app/src/lib/db.js": "file", "/app/src/lib/index.js": "file",
+      "/app/src/utils.json": "file",
+      "/app/src/node_modules": "dir", "/app/src/node_modules/local-pkg": "dir", "/app/src/node_modules/local-pkg/index.js": "file",
+      "/app/node_modules": "dir",
+      "/app/node_modules/lodash": "dir", "/app/node_modules/lodash/package.json": { name: "lodash", main: "lodash.js" }, "/app/node_modules/lodash/lodash.js": "file",
+      "/app/node_modules/pkg": "dir",
+      "/app/node_modules/pkg/package.json": { name: "pkg", exports: { ".": { import: "./dist/index.mjs", require: "./dist/index.cjs" }, "./feature": { node: "./dist/feature-node.js", default: "./dist/feature.js" }, "./internal/*": null } },
+      "/app/node_modules/pkg/dist": "dir", "/app/node_modules/pkg/dist/index.cjs": "file", "/app/node_modules/pkg/dist/index.mjs": "file", "/app/node_modules/pkg/dist/feature-node.js": "file", "/app/node_modules/pkg/dist/feature.js": "file",
+    };
+    const CORE = new Set(["fs", "path", "http", "os", "crypto", "events", "stream", "util", "url", "child_process", "worker_threads", "net", "zlib", "buffer", "test", "sqlite"]);
+    const norm = p => { const out = []; for (const seg of p.split("/")) { if (!seg || seg === ".") continue; if (seg === "..") out.pop(); else out.push(seg); } return "/" + out.join("/"); };
+    const dirname = p => p.slice(0, p.lastIndexOf("/")) || "/";
+    function resolve(from, X) {
+      const A = []; // {path, kind:'probe'|'hit'|'info', text}
+      const probe = p => { const t = FS[p]; A.push({ path: p, kind: t === "file" || (t && typeof t === "object") ? "hit" : "probe", text: p }); return t; };
+      const info = t => A.push({ kind: "info", text: t });
+      const asFile = X => { for (const s of ["", ".js", ".json", ".node"]) { const t = probe(X + s); if (t === "file" || (t && typeof t === "object")) return X + s; } return null; };
+      const index = X => { for (const s of ["/index.js", "/index.json", "/index.node"]) { if (probe(X + s) === "file") return X + s; } return null; };
+      const asDir = X => {
+        if (FS[X] !== "dir") { A.push({ path: X, kind: "probe", text: X + "/ (디렉터리 아님)" }); return null; }
+        const pj = FS[X + "/package.json"];
+        if (pj && typeof pj === "object") {
+          A.push({ path: X + "/package.json", kind: "hit", text: X + "/package.json" });
+          if (pj.main) { info(`"main": "${pj.main}" → LOAD_AS_FILE / LOAD_INDEX`); const r = asFile(norm(X + "/" + pj.main)) || index(norm(X + "/" + pj.main)); if (r) return r; }
+        } else probe(X + "/package.json");
+        return index(X);
+      };
+      const m = /^(?:node:)?([^/]+)$/.exec(X);
+      if (X.startsWith("node:") || (m && CORE.has(m[1]))) { info(`코어 모듈 '${X}' → 파일시스템 접근 없이 즉시 반환`); return { A, result: "core:" + X.replace(/^node:/, "") }; }
+      if (/^(\.\.?\/|\/)/.test(X)) {
+        const Y = norm(dirname(from) + "/" + X);
+        info(`상대/절대 경로 → ${Y}`); info("LOAD_AS_FILE");
+        let r = asFile(Y); if (r) return { A, result: r };
+        info("LOAD_AS_DIRECTORY"); r = asDir(Y); if (r) return { A, result: r };
+        return { A, result: null };
+      }
+      if (X.startsWith("#")) { info("'#' → LOAD_PACKAGE_IMPORTS (package.json \"imports\")"); return { A, result: null }; }
+      info("bare specifier → LOAD_PACKAGE_SELF (해당 없음) → LOAD_NODE_MODULES");
+      // node_modules paths
+      const dirs = []; let d = dirname(from); while (true) { if (!d.endsWith("/node_modules")) dirs.push(d === "/" ? "/node_modules" : d + "/node_modules"); if (d === "/") break; d = dirname(d); }
+      const pm = /^((?:@[^/]+\/)?[^/]+)(?:\/(.*))?$/.exec(X); const pname = pm[1], psub = pm[2] ? "./" + pm[2] : ".";
+      for (const nm of dirs) {
+        if (FS[nm] !== "dir") { A.push({ path: nm, kind: "probe", text: nm + "/ (없음)" }); continue; }
+        const pdir = nm + "/" + pname;
+        const pj = FS[pdir + "/package.json"];
+        if (pj && typeof pj === "object" && pj.exports) {
+          A.push({ path: pdir + "/package.json", kind: "hit", text: pdir + "/package.json (exports 있음)" });
+          info(`LOAD_PACKAGE_EXPORTS: 서브패스 "${psub}", 조건 [node, require]`);
+          const r = exportsResolve(pj.exports, psub, ["node", "require"]);
+          if (r.target === undefined) { info(`exports에 "${psub}" 없음 → ERR_PACKAGE_PATH_NOT_EXPORTED (폴백 없음)`); return { A, result: "ERR_PACKAGE_PATH_NOT_EXPORTED" }; }
+          if (r.target === null) { info(`"${psub}" → null: 명시적으로 차단됨 → ERR_PACKAGE_PATH_NOT_EXPORTED`); return { A, result: "ERR_PACKAGE_PATH_NOT_EXPORTED" }; }
+          const full = norm(pdir + "/" + r.target); probe(full); return { A, result: full };
+        }
+        info(`LOAD_AS_FILE(${nm}/${X})`);
+        let r = asFile(nm + "/" + X); if (r) return { A, result: r };
+        info(`LOAD_AS_DIRECTORY(${nm}/${X})`);
+        r = asDir(nm + "/" + X); if (r) return { A, result: r };
+      }
+      return { A, result: null };
+    }
+    // 간이 PACKAGE_EXPORTS_RESOLVE (위젯 2와 같은 알고리즘)
+    function exportsResolve(exp, sub, conds) {
+      if (typeof exp === "string" || Array.isArray(exp) || !Object.keys(exp).some(k => k.startsWith("."))) exp = { ".": exp };
+      const target = (t) => {
+        if (t === null || typeof t === "string") return t;
+        if (Array.isArray(t)) { for (const x of t) { const r = target(x); if (r !== undefined) return r; } return undefined; }
+        for (const k of Object.keys(t)) if (k === "default" || conds.includes(k)) { const r = target(t[k]); if (r !== undefined) return r; }
+        return undefined;
+      };
+      if (sub in exp && !sub.includes("*")) return { target: target(exp[sub]) };
+      let best = null;
+      for (const k of Object.keys(exp)) { const i = k.indexOf("*"); if (i < 0) continue; const pre = k.slice(0, i), post = k.slice(i + 1); if (sub.startsWith(pre) && sub.endsWith(post) && sub.length >= k.length - 1 && (!best || pre.length > best.pre.length)) best = { k, pre, post }; }
+      if (!best) return { target: undefined };
+      const star = sub.slice(best.pre.length, sub.length - best.post.length);
+      const t = target(exp[best.k]);
+      return { target: typeof t === "string" ? t.replaceAll("*", star) : t };
+    }
+    function renderTree(hl) {
+      const paths = Object.keys(FS).sort();
+      return paths.map(p => {
+        const depth = p.split("/").length - 2, name = p.split("/").pop() || "/";
+        const t = FS[p]; const isDir = t === "dir";
+        let cls = hl.hit === p ? "hit" : hl.probes.has(p) ? "probe" : "";
+        return `${"  ".repeat(depth)}${isDir ? "📁 " : "📄 "}<span class="${cls}">${name}${isDir ? "/" : ""}</span>`;
+      }).join("\n");
+    }
+    const tree = $("rs-tree"), list = $("rs-attempts");
+    let stepper = null;
+    function run() {
+      const from = $("rs-from").value, X = $("rs-spec").value.trim();
+      const { A, result } = resolve(from, X);
+      $("rs-step").innerHTML = "";
+      list.innerHTML = A.map(a => `<li class="${a.kind}">${MM.esc(a.text)}</li>`).join("") + `<li class="${result && !result.startsWith("ERR") ? "hit" : "miss"} final">${result ? (result.startsWith("ERR") ? "✗ " + result : result.startsWith("core:") ? "✓ 코어 모듈 " + result.slice(5) : "✓ " + result) : "✗ MODULE_NOT_FOUND"}</li>`;
+      const items = [...list.children];
+      MM.stepper($("rs-step"), { steps: items.length, interval: 700, render(i) {
+        items.forEach((li, k) => { li.classList.toggle("seen", k <= i); li.classList.toggle("cur", k === i); });
+        const probes = new Set(A.slice(0, i + 1).filter(a => a.kind === "probe").map(a => a.path));
+        const hit = i === items.length - 1 && result && !result.startsWith("ERR") && !result.startsWith("core:") ? result : (A[i] && A[i].kind === "hit" ? A[i].path : null);
+        tree.innerHTML = renderTree({ probes, hit });
+        const a = A[i];
+        if (!a) return `결과: <b>${MM.esc(items[i].textContent)}</b> · stat() 시도 ${A.filter(x => x.kind !== "info").length}회`;
+        return a.kind === "info" ? a.text : a.kind === "hit" ? `<span class="c-ok">존재</span>: <code>${MM.esc(a.text)}</code>` : `<span class="c-bad">stat() 실패</span>: <code>${MM.esc(a.text)}</code>`;
+      } });
+    }
+    $("rs-run").onclick = run;
+    document.querySelectorAll("[data-spec]").forEach(b => b.onclick = () => { $("rs-spec").value = b.dataset.spec; run(); });
+    $("rs-spec").onkeydown = e => { if (e.key === "Enter") run(); };
+    run();
+    window.__exportsResolve = exportsResolve;
+  })();
+
+  // ===================== 위젯 2: exports 맵 조건 매처 =====================
+  (function () {
+    const tree = $("ex-tree"), res = $("ex-result"), log = $("ex-log");
+    function conds() {
+      const mode = document.querySelector('input[name="ex-mode"]:checked').value;
+      const c = [mode, ...[...document.querySelectorAll('#ex-conds input[type=checkbox]:checked')].map(i => i.value)];
+      return c;
+    }
+    // 경로 추적이 있는 해석기
+    function resolveTraced(exp, sub, C) {
+      const L = [];
+      const picked = new Set(), skipped = new Set(), visited = new Set();
+      if (typeof exp === "string" || Array.isArray(exp) || !Object.keys(exp).some(k => k.startsWith("."))) { L.push("exports가 서브패스 객체가 아님 → { \".\": exports } 로 간주"); exp = { ".": exp }; }
+      function target(t, path, star) {
+        visited.add(path);
+        if (t === null) { L.push(`${path} → null: 명시적 차단`); picked.add(path); return null; }
+        if (typeof t === "string") {
+          if (!t.startsWith("./")) { L.push(`${path} → "${t}": "./"로 시작하지 않음 → ERR_INVALID_PACKAGE_TARGET`); return undefined; }
+          const r = star != null ? t.replaceAll("*", star) : t; L.push(`${path} → "${t}"${star != null ? ` (* = "${star}") → "${r}"` : ""}`); picked.add(path); return r;
+        }
+        if (Array.isArray(t)) { L.push(`${path}: 배열 → 유효한 첫 항목`); for (let i = 0; i < t.length; i++) { const r = target(t[i], path + "[" + i + "]", star); if (r !== undefined) return r; skipped.add(path + "[" + i + "]"); } return undefined; }
+        for (const k of Object.keys(t)) {
+          const p = path + "." + k;
+          if (k === "default" || C.includes(k)) { L.push(`${p}: 조건 "${k}" 매칭`); const r = target(t[k], p, star); if (r !== undefined) return r; }
+          else { L.push(`${p}: 조건 "${k}" 활성 아님 → 건너뜀`); skipped.add(p); }
+        }
+        L.push(`${path}: 매칭되는 조건 없음 → undefined`); return undefined;
+      }
+      let out;
+      if (sub in exp && !sub.includes("*")) { L.push(`서브패스 "${sub}" 정확히 일치`); out = target(exp[sub], JSON.stringify(sub)); }
+      else {
+        let best = null;
+        for (const k of Object.keys(exp)) { const i = k.indexOf("*"); if (i < 0) continue; const pre = k.slice(0, i), post = k.slice(i + 1); if (sub.startsWith(pre) && sub.endsWith(post) && sub.length >= k.length - 1 && (!best || pre.length > best.pre.length)) best = { k, pre, post }; }
+        if (!best) { L.push(`서브패스 "${sub}"에 맞는 키 없음`); out = undefined; }
+        else { const star = sub.slice(best.pre.length, sub.length - best.post.length); L.push(`패턴 키 "${best.k}" 선택 (가장 긴 접두사), * = "${star}"`); out = target(exp[best.k], JSON.stringify(best.k), star); }
+      }
+      return { out, L, picked, skipped, visited };
+    }
+    function render(exp, tr) {
+      // JSON을 경로 태깅하며 직렬화
+      function ser(v, path, ind) {
+        const cls = tr.picked.has(path) ? "pick" : tr.skipped.has(path) ? "skip" : tr.visited.has(path) ? "visit" : "";
+        const wrap = s => cls ? `<span class="${cls}">${s}</span>` : s;
+        const pad = "  ".repeat(ind);
+        if (v === null || typeof v === "string") return wrap(JSON.stringify(v));
+        if (Array.isArray(v)) return "[\n" + v.map((x, i) => pad + "  " + ser(x, path + "[" + i + "]", ind + 1)).join(",\n") + "\n" + pad + "]";
+        return "{\n" + Object.keys(v).map(k => { const p = ind === 0 ? JSON.stringify(k) : path + "." + k; const kc = tr.picked.has(p) || (tr.visited.has(p) && !tr.skipped.has(p)) ? "visit" : tr.skipped.has(p) ? "skip" : ""; return pad + "  " + (kc ? `<span class="${kc}">${JSON.stringify(k)}</span>` : JSON.stringify(k)) + ": " + ser(v[k], p, ind + 1); }).join(",\n") + "\n" + pad + "}";
+      }
+      return ser(exp, "", 0);
+    }
+    function run() {
+      let exp; try { exp = JSON.parse($("ex-json").value); } catch (e) { tree.textContent = "JSON 파싱 오류: " + e.message; res.textContent = ""; return; }
+      let sub = $("ex-sub").value.trim(); const m = /^((?:@[^/]+\/)?[^/]+)(?:\/(.*))?$/.exec(sub); sub = m && m[2] ? "./" + m[2] : ".";
+      const C = conds();
+      const tr = resolveTraced(exp, sub, C);
+      tree.innerHTML = render(exp, tr);
+      res.innerHTML = tr.out === undefined ? `<span class="c-bad">ERR_PACKAGE_PATH_NOT_EXPORTED</span> <span style="font-size:13px;color:var(--muted)">(서브패스 "${MM.esc(sub)}", 조건 [${C.join(", ")}])</span>`
+        : tr.out === null ? `<span class="c-bad">ERR_PACKAGE_PATH_NOT_EXPORTED</span> <span style="font-size:13px;color:var(--muted)">(null로 차단됨)</span>`
+        : `<span class="c-ok">${MM.esc(tr.out)}</span> <span style="font-size:13px;color:var(--muted)">(서브패스 "${MM.esc(sub)}", 조건 [${C.join(", ")}])</span>`;
+      log.textContent = tr.L.join("\n");
+    }
+    ["ex-json", "ex-sub"].forEach(id => $(id).oninput = run);
+    document.querySelectorAll("#ex-conds input").forEach(i => i.onchange = run);
+    run();
+  })();
+
+  // ===================== 위젯 3: 순환 참조 애니메이션 =====================
+  (function () {
+    const cjsA = ["exports.loaded = false;", "const b = require('./b');", "console.log('in a, b.loaded =', b.loaded);", "exports.loaded = true;"];
+    const cjsB = ["exports.loaded = false;", "const a = require('./a');", "console.log('in b, a.loaded =', a.loaded);", "exports.loaded = true;"];
+    function box(el, name, lines, cur, state, stLabel, stCls) {
+      el.innerHTML = `<h5>${name}<span class="st ${stCls}">${stLabel}</span></h5><div style="font-size:12.5px;color:var(--muted)">${state}</div><pre>${lines.map((l, i) => `<code class="${i === cur ? "cur" : ""}">${MM.esc(l)}</code>`).join("\n")}</pre>`;
+    }
+    const cjsSteps = [
+      { a: [-1, "캐시: 없음", "미로드", ""], b: [-1, "캐시: 없음", "미로드", ""], log: "", cap: "<code>node a.js</code>: Module._load('a') → 캐시에 a 등록(exports = {}) → 실행 시작" },
+      { a: [0, "exports = { loaded: false }", "로딩 중", "loading"], b: [-1, "캐시: 없음", "미로드", ""], log: "", cap: "a의 첫 줄: exports 객체에 loaded=false 추가" },
+      { a: [1, "exports = { loaded: false }", "로딩 중", "loading"], b: [-1, "캐시: 등록됨 (exports = {})", "로딩 중", "loading"], log: "", cap: "a가 require('./b') → b를 캐시에 등록하고 실행 시작. a의 실행은 여기서 멈춰 있다." },
+      { a: [1, "exports = { loaded: false }", "로딩 중", "loading"], b: [0, "exports = { loaded: false }", "로딩 중", "loading"], log: "", cap: "b의 첫 줄 실행" },
+      { a: [1, "exports = { loaded: false }", "로딩 중", "loading"], b: [1, "exports = { loaded: false }", "로딩 중", "loading"], log: "", cap: "b가 require('./a') → <b>캐시에 a가 있다</b>(아직 loading 상태). 실행하지 않고 <b>현재의 a.exports 객체</b>를 그대로 반환." },
+      { a: [1, "exports = { loaded: false }", "로딩 중", "loading"], b: [2, "exports = { loaded: false }", "로딩 중", "loading"], log: "in b, a.loaded = false", cap: "b는 부분적으로 채워진 a를 본다: loaded = false" },
+      { a: [1, "exports = { loaded: false }", "로딩 중", "loading"], b: [3, "exports = { loaded: true }", "로드 완료", "loaded"], log: "in b, a.loaded = false", cap: "b 실행 완료. b.loaded = true. require('./b')가 a로 반환됨." },
+      { a: [2, "exports = { loaded: false }", "로딩 중", "loading"], b: [3, "exports = { loaded: true }", "로드 완료", "loaded"], log: "in b, a.loaded = false\nin a, b.loaded = true", cap: "a는 완성된 b를 본다: loaded = true" },
+      { a: [3, "exports = { loaded: true }", "로드 완료", "loaded"], b: [3, "exports = { loaded: true }", "로드 완료", "loaded"], log: "in b, a.loaded = false\nin a, b.loaded = true", cap: "a 완료. b가 가진 a.exports는 <b>같은 객체</b>이므로 지금 b가 a.loaded를 읽으면 true다. 단, a가 module.exports = {...}로 교체했다면 b는 영원히 옛 빈 객체를 본다." },
+    ];
+    MM.stepper($("cjs-step"), { steps: cjsSteps.length, interval: 1500, render(i) {
+      const s = cjsSteps[i];
+      box($("cjs-a"), "a.js", cjsA, s.a[0], s.a[1], s.a[2], s.a[3]); box($("cjs-b"), "b.js", cjsB, s.b[0], s.b[1], s.b[2], s.b[3]);
+      $("cjs-log").textContent = s.log || "(출력 없음)"; return s.cap;
+    } });
+    const esmA = ["import { b } from './eb.mjs';", "export let a = 'a-init';", "console.log('ea: b =', b);"];
+    const esmB = ["import { a } from './ea.mjs';", "export let b = 'b-init';", "console.log('eb: a =', a);  // ?"];
+    const esmSteps = [
+      { a: [-1, "① 파싱: import/export 추출", "파싱됨", ""], b: [-1, "① 파싱: import/export 추출", "파싱됨", ""], log: "", cap: "① 파싱(Construction): ea → eb → (ea는 이미 있음). 코드 실행 없음. 그래프 완성." },
+      { a: [-1, "② 슬롯 a = ⟨TDZ⟩, import b → eb.b 슬롯", "링크됨", "linked"], b: [-1, "② 슬롯 b = ⟨TDZ⟩, import a → ea.a 슬롯", "링크됨", "linked"], log: "", cap: "② 인스턴스화(Linking): 모든 export에 슬롯 할당, import를 슬롯에 연결. 아직 값은 없다(TDZ)." },
+      { a: [-1, "평가 대기 (eb를 먼저)", "링크됨", "linked"], b: [0, "평가 시작 (후위 순서: 의존성 먼저)", "평가 중", "loading"], log: "", cap: "③ 평가: ea의 의존성인 eb를 먼저 평가한다. eb의 import 문은 이미 링크됐으므로 아무 일도 안 함." },
+      { a: [-1, "a = ⟨TDZ⟩", "링크됨", "linked"], b: [1, "b = 'b-init'", "평가 중", "loading"], log: "", cap: "eb: 슬롯 b에 값이 채워짐. ea의 import b는 이 슬롯을 가리키므로 ea에서도 즉시 보인다." },
+      { a: [-1, "a = ⟨TDZ⟩", "TDZ 접근!", "tdz"], b: [2, "b = 'b-init'", "평가 중", "loading"], log: "eb: ReferenceError Cannot access 'a' before initialization", cap: "eb가 a를 읽음 → 슬롯은 있지만 초기화 전 → <b>ReferenceError</b>. (예제는 try/catch로 잡음. 안 잡으면 프로세스 종료)" },
+      { a: [1, "a = 'a-init'", "평가 중", "loading"], b: [2, "b = 'b-init'", "평가 완료", "loaded"], log: "eb: ReferenceError Cannot access 'a' before initialization", cap: "eb 완료 → ea 평가. a 슬롯 채워짐." },
+      { a: [2, "a = 'a-init'", "평가 완료", "loaded"], b: [2, "b = 'b-init'", "평가 완료", "loaded"], log: "eb: ReferenceError Cannot access 'a' before initialization\nea: b = b-init", cap: "ea는 b를 정상적으로 읽는다. 만약 eb가 a를 <b>함수 안에서</b>(나중에) 읽었다면 live binding 덕분에 문제없이 'a-init'을 봤을 것." },
+    ];
+    MM.stepper($("esm-step"), { steps: esmSteps.length, interval: 1500, render(i) {
+      const s = esmSteps[i];
+      box($("esm-a"), "ea.mjs", esmA, s.a[0], s.a[1], s.a[2], s.a[3]); box($("esm-b"), "eb.mjs", esmB, s.b[0], s.b[1], s.b[2], s.b[3]);
+      $("esm-log").textContent = s.log || "(출력 없음)"; return s.cap;
+    } });
+  })();
+
+  // ===================== 위젯 4: 모듈 종류 판정기 =====================
+  (function () {
+    function judge() {
+      const ext = $("kd-ext").value, type = $("kd-type").value, syn = $("kd-syntax").checked, tsf = $("kd-tsfeat").checked, ver = +$("kd-ver").value;
+      const why = [];
+      let kind, ts = false;
+      if (ext === ".json") { kind = "JSON"; why.push("JSON 파일: CJS에서는 require로 바로, ESM에서는 import attributes `with { type: 'json' }` 필요 (Node 22+)."); }
+      else if (ext === ".wasm") { kind = "WASM"; why.push("WebAssembly: ESM 통합은 --experimental-wasm-modules 플래그 필요. 보통 WebAssembly.instantiate로 직접 로드(19장)."); }
+      else {
+        if (ext === ".ts" || ext === ".mts" || ext === ".cts") {
+          ts = true;
+          if (ver < 22) { kind = "에러"; why.push("Node 20은 .ts를 실행할 수 없음 (ERR_UNKNOWN_FILE_EXTENSION). tsx/ts-node 또는 빌드 필요."); }
+          else { why.push(ver === 22 ? "Node 22.6+: --experimental-strip-types, 22.18+/23.6+: 기본 활성화 → 타입 주석 제거 후 실행" : "Node 24: 타입 스트리핑 기본 활성화"); if (tsf) why.push("enum/namespace/파라미터 프로퍼티/레거시 데코레이터는 런타임 의미가 있음 → --experimental-transform-types 없이는 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX."); }
+        }
+        if (kind !== "에러") {
+          const base = ext === ".mts" ? ".mjs" : ext === ".cts" ? ".cjs" : ext === ".ts" ? ".js" : ext;
+          if (base === ".mjs") { kind = "ESM"; why.push(`${ext}: 확장자가 모듈 종류를 확정 (package.json type 무관)`); }
+          else if (base === ".cjs") { kind = "CJS"; why.push(`${ext}: 확장자가 CommonJS를 확정`); }
+          else {
+            if (type === "module") { kind = "ESM"; why.push('가장 가까운 package.json "type": "module" → ESM'); }
+            else if (type === "commonjs") { kind = "CJS"; why.push('"type": "commonjs" → CJS (구문 감지도 하지 않음)'); }
+            else {
+              if (syn && ver >= 22) { kind = "ESM (구문 감지)"; why.push('"type" 없음 + import/export 구문 존재 → Node 22.7+ 구문 감지로 ESM. CJS로 먼저 파싱 시도 후 실패하면 ESM 재파싱이므로 약간의 비용.'); why.push("권장: package.json에 type을 명시해 감지 비용과 모호성 제거."); }
+              else if (syn) { kind = "CJS → SyntaxError"; why.push("Node 20: 구문 감지 없음 → CJS로 파싱하다 import 문에서 SyntaxError. (20.19에서 --experimental-detect-module 로 가능)"); }
+              else { kind = "CJS"; why.push('"type" 없음 → 기본 CJS'); }
+            }
+          }
+        }
+      }
+      $("kd-result").innerHTML = `${MM.esc(kind)}${ts && kind !== "에러" ? ' <span style="font-size:13px;color:var(--muted)">(타입 스트리핑 경유)</span>' : ""}`;
+      $("kd-why").textContent = why.join("\n");
+    }
+    ["kd-ext", "kd-type", "kd-syntax", "kd-tsfeat", "kd-ver"].forEach(id => $(id).onchange = judge);
+    judge();
+  })();
+})();
+</script>
+</body>
+</html>

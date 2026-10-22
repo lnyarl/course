@@ -1,0 +1,1152 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>다단계 페이지 테이블</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 05장 전용 */
+.f-acc { fill: var(--accent-soft); stroke: var(--accent); }
+.f-ok { fill: var(--ok-soft); stroke: var(--ok); }
+.f-warn { fill: var(--warn-soft); stroke: var(--warn); }
+.f-bad { fill: var(--bad-soft); stroke: var(--bad); }
+.f-vio { fill: var(--violet-soft); stroke: var(--violet); }
+.f-teal { fill: var(--teal-soft); stroke: var(--teal); }
+.f-code { fill: var(--code-bg); stroke: var(--border); }
+.ln-acc { stroke: var(--accent); fill: none; stroke-width: 2; }
+.ln-bad { stroke: var(--bad); fill: none; stroke-dasharray: 4 3; }
+svg.diagram .sm { font-size: 11px; }
+svg.diagram .mono { font-family: var(--mono); }
+svg.diagram .b { font-weight: 700; }
+svg.diagram .t-acc { fill: var(--accent); }
+svg.diagram .t-bad { fill: var(--bad); }
+svg.diagram .t-ok { fill: var(--ok); }
+svg.diagram .t-warn { fill: var(--warn); }
+svg.diagram .t-vio { fill: var(--violet); }
+
+/* 가상 주소 필드 */
+.vfields { display: flex; min-width: 600px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-family: var(--mono); font-size: 12px; margin: 10px 0; }
+.vf { flex-basis: 0; padding: 6px 3px; text-align: center; border-right: 1px solid var(--border); background: var(--surface-2); transition: background .25s, box-shadow .25s; min-width: 0; }
+.vf:last-child { border-right: 0; }
+.vf .nm { font-weight: 700; font-family: var(--sans); font-size: 12.5px; }
+.vf .rg { color: var(--muted); font-size: 10.5px; }
+.vf .hv { font-size: 12.5px; }
+.vf .bv { font-size: 10.5px; color: var(--muted); word-break: break-all; line-height: 1.3; }
+.vf.sign { background: var(--code-bg); }
+.vf.on { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.vf.done { background: var(--ok-soft); }
+.vf.offset { background: var(--teal-soft); }
+.vf.merged { background: var(--warn-soft); }
+.vf.bad { background: var(--bad-soft); }
+
+/* 페이지 워크 트리 */
+.walk-svg { min-width: 680px; }
+svg .t-rect { fill: var(--surface-2); stroke: var(--border); }
+svg .t-rect.on { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+svg .tk { stroke: var(--muted); stroke-width: 1.3; }
+svg .tk.leaf { stroke: var(--ok); stroke-width: 1.3; }
+svg .tk.huge { stroke: var(--warn); stroke-width: 3; }
+svg .tk.cur { stroke: var(--accent); stroke-width: 3.5; }
+svg .edge { stroke: var(--border); fill: none; stroke-width: 1.2; }
+svg .edge.on { stroke: var(--accent); stroke-width: 2.2; }
+svg .miss { stroke: var(--bad); stroke-width: 3; stroke-dasharray: 3 2; }
+
+.seg-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg-tabs button { font: inherit; font-size: 13.5px; padding: 5px 12px; border: 0; background: var(--surface-2); color: var(--text); cursor: pointer; }
+.seg-tabs button.on { background: var(--accent); color: var(--surface); }
+.mono { font-family: var(--mono); }
+.preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.preset-row .btn { font-size: 12.5px; padding: 4px 10px; }
+.bar-cmp { margin: 8px 0; font-size: 13.5px; }
+.bar-cmp .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.bar-cmp .lbl { width: 110px; flex: none; color: var(--muted); }
+.bar-cmp .bar { height: 16px; border-radius: 4px; min-width: 2px; transition: width .3s; }
+.bar-cmp .val { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+.fold-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.fold { flex: 1 1 100px; border: 2px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 6px 8px; font-size: 13px; text-align: center; }
+.fold b { font-family: var(--mono); font-size: 15px; display: block; }
+.fold.folded { border-style: dashed; border-color: var(--border); background: var(--surface-2); color: var(--muted); }
+.note { font-size: 13.5px; color: var(--muted); }
+</style>
+</head>
+<body data-chapter="05">
+<main>
+  <header class="chapter-head">
+    <span class="label">개론 · Chapter 05</span>
+    <h1>다단계 페이지 테이블과 x86-64</h1>
+    <p class="lead">64비트 주소 공간은 거의 텅 비어 있다. 다단계 페이지 테이블은 "쓰지 않는 영역에는 테이블조차 만들지 않는다"는 아이디어로 이 희소성을 활용한다. 대가는 TLB 미스마다 테이블을 여러 번 읽어야 한다는 점이고, 하드웨어와 커널은 이 비용을 줄이려고 여러 장치를 겹겹이 둔다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>단일 레벨 페이지 테이블의 메모리 비용을 직접 계산하고, 다단계 구조가 왜 필요한지 설명할 수 있다.</li>
+      <li>32비트 x86(10|10|12), x86-64 4단계(9|9|9|9|12), 5단계(LA57)로 가상 주소를 분해하고 CR3부터 페이지 워크를 손으로 따라갈 수 있다.</li>
+      <li>canonical 주소, PS 비트에 의한 2MB/1GB 대형 페이지, paging-structure cache의 역할을 이해한다.</li>
+      <li>ARM64의 granule(4KB/16KB/64KB)과 TTBR0/TTBR1 분할을 x86-64와 비교할 수 있다.</li>
+      <li>Linux의 pgd/p4d/pud/pmd/pte 추상화와 "레벨 접기(folding)"를 코드 수준에서 이해한다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">단일 레벨 페이지 테이블은 왜 안 되는가</a></li>
+    <li><a href="#s2">2단계 페이지 테이블: 32비트 x86 (10|10|12)</a></li>
+    <li><a href="#s3">x86-64 4단계 페이징과 canonical 주소</a></li>
+    <li><a href="#s4">5단계 페이징 (LA57)</a></li>
+    <li><a href="#s5">페이지 워크 따라가기 (위젯)</a></li>
+    <li><a href="#s6">페이지 테이블은 메모리를 얼마나 먹는가</a></li>
+    <li><a href="#s7">대형 페이지: 워크가 중간에서 끝나는 방법</a></li>
+    <li><a href="#s8">워크 비용과 paging-structure cache</a></li>
+    <li><a href="#s9">ARM64 변환 테이블과 비교</a></li>
+    <li><a href="#s10">Linux의 pgd/p4d/pud/pmd/pte 추상화</a></li>
+    <li><a href="#s11">다른 설계: 역 페이지 테이블과 해시 페이지 테이블</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 단일 레벨 페이지 테이블은 왜 안 되는가</h2>
+    <p>3장에서 본 단일 레벨(선형) 페이지 테이블은 가상 페이지 번호(VPN)를 그대로 배열 인덱스로 쓴다. 조회는 빠르지만 <b>주소 공간 전체</b>에 대한 엔트리를 미리 연속으로 잡아 두어야 한다. 프로세스가 실제로 쓰는 메모리 양과 무관하게 테이블 크기가 결정된다는 것이 핵심 문제다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>환경</th><th>VPN 비트</th><th>엔트리 수</th><th>PTE 크기</th><th>프로세스당 테이블 크기</th></tr>
+      <tr><td>32비트, 4KB 페이지</td><td>32 − 12 = 20</td><td>2<sup>20</sup> ≈ 100만</td><td>4B</td><td><b>4 MiB</b></td></tr>
+      <tr><td>48비트(x86-64 4단계), 4KB 페이지</td><td>48 − 12 = 36</td><td>2<sup>36</sup> ≈ 687억</td><td>8B</td><td><b>512 GiB</b></td></tr>
+      <tr><td>57비트(LA57), 4KB 페이지</td><td>57 − 12 = 45</td><td>2<sup>45</sup></td><td>8B</td><td><b>256 TiB</b></td></tr>
+    </table></div>
+    <p>32비트에서도 프로세스 1,000개면 페이지 테이블만 4GB다. 그런데 실제 프로세스는 주소 공간의 <b>극히 일부</b>만 쓴다. 전형적인 리눅스 프로세스의 주소 공간은 아래쪽의 코드·데이터·힙, 위쪽의 공유 라이브러리와 스택, 그 사이의 거대한 빈 공간으로 이루어진다. 엔트리 대부분이 P=0(not present)인 배열에 메모리를 쓰는 것은 낭비다.</p>
+    <div class="callout"><span class="title">핵심 아이디어</span>
+      페이지 테이블 자체를 다시 페이지 단위로 쪼개고, <b>그 조각들을 가리키는 상위 테이블</b>을 둔다. 하위 조각이 전부 비어 있으면 상위 엔트리에 P=0만 적고 조각은 아예 할당하지 않는다. 결국 "페이지 테이블에 대한 페이지 테이블"이고, 이것을 반복하면 트리(정확히는 기수 트리, radix tree)가 된다.</div>
+    <p>이 설계에는 두 가지 부수 효과가 있다. 첫째, 각 테이블 조각을 <b>정확히 한 페이지(4KB)</b> 크기로 맞추면 페이지 테이블도 일반 물리 페이지 할당자로 관리할 수 있다. 연속된 큰 물리 메모리를 찾을 필요가 없다. 둘째, 대가로 주소 변환 한 번에 메모리를 레벨 수만큼 읽어야 한다. 이 비용은 TLB(4장)와 뒤에서 볼 paging-structure cache가 숨긴다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 2단계 페이지 테이블: 32비트 x86 (10|10|12)</h2>
+    <p>i386의 기본 페이징(PAE 아님)은 32비트 가상 주소를 다음처럼 나눈다.</p>
+    <ul>
+      <li><b>비트 31:22 (10비트)</b>: 페이지 디렉터리(Page Directory) 인덱스, PDE 1024개 중 하나</li>
+      <li><b>비트 21:12 (10비트)</b>: 페이지 테이블(Page Table) 인덱스, PTE 1024개 중 하나</li>
+      <li><b>비트 11:0 (12비트)</b>: 4KB 페이지 내 오프셋</li>
+    </ul>
+    <p>엔트리가 4바이트이므로 1024 × 4B = 4KB, 즉 디렉터리와 각 페이지 테이블이 정확히 한 페이지다. 10비트라는 숫자는 여기서 나온다. <b>CR3</b>(PDBR)에는 현재 프로세스 페이지 디렉터리의 <b>물리 주소</b>가 들어 있다. 문맥 교환 때 CR3를 바꾸면 주소 공간 전체가 바뀐다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 330" role="img" aria-label="32비트 x86 2단계 페이지 워크">
+        <defs><marker id="m05a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="20" y="36" class="b">가상 주소</text>
+        <rect x="120" y="14" width="190" height="34" class="f-acc"/><text x="215" y="36" text-anchor="middle">Dir (31:22) · 10비트</text>
+        <rect x="310" y="14" width="190" height="34" class="f-vio"/><text x="405" y="36" text-anchor="middle">Table (21:12) · 10비트</text>
+        <rect x="500" y="14" width="228" height="34" class="f-teal"/><text x="614" y="36" text-anchor="middle">Offset (11:0) · 12비트</text>
+
+        <rect x="20" y="210" width="80" height="40" class="f-code"/><text x="60" y="235" text-anchor="middle" class="b">CR3</text>
+
+        <rect x="150" y="100" width="130" height="210" class="box"/>
+        <text x="215" y="92" text-anchor="middle" class="sm muted">Page Directory (4KB)</text>
+        <rect x="150" y="170" width="130" height="22" class="f-acc"/><text x="215" y="186" text-anchor="middle" class="sm">PDE [Dir]</text>
+        <text x="215" y="125" text-anchor="middle" class="sm muted">1024 × 4B</text>
+        <text x="215" y="290" text-anchor="middle" class="sm muted">P=0 엔트리 →</text><text x="215" y="303" text-anchor="middle" class="sm muted">하위 테이블 없음</text>
+
+        <rect x="350" y="100" width="130" height="210" class="box"/>
+        <text x="415" y="92" text-anchor="middle" class="sm muted">Page Table (4KB)</text>
+        <rect x="350" y="240" width="130" height="22" class="f-vio"/><text x="415" y="256" text-anchor="middle" class="sm">PTE [Table]</text>
+        <text x="415" y="125" text-anchor="middle" class="sm muted">1024 × 4B</text>
+        <text x="415" y="145" text-anchor="middle" class="sm muted">(4MB 영역 담당)</text>
+
+        <rect x="560" y="150" width="150" height="150" class="f-ok"/>
+        <text x="635" y="142" text-anchor="middle" class="sm muted">물리 페이지 (4KB)</text>
+        <rect x="560" y="215" width="150" height="20" class="f-teal"/><text x="635" y="230" text-anchor="middle" class="sm">+ Offset</text>
+
+        <path d="M100,230 L150,230" class="line" marker-end="url(#m05a)"/>
+        <path d="M100,230 C125,230 125,181 150,181" class="line" marker-end="url(#m05a)" style="stroke-dasharray:3 3"/>
+        <path d="M280,181 C315,181 315,110 350,110" class="line" marker-end="url(#m05a)"/>
+        <path d="M480,251 C520,251 520,160 560,160" class="line" marker-end="url(#m05a)"/>
+        <path d="M215,48 L215,170" class="line" style="stroke-dasharray:2 4"/>
+        <path d="M405,48 L405,98" class="line" style="stroke-dasharray:2 4"/>
+        <path d="M614,48 L614,214" class="line" style="stroke-dasharray:2 4"/>
+        <text x="300" y="150" class="sm muted">PT 물리 주소</text>
+        <text x="490" y="210" class="sm muted">프레임 번호</text>
+      </svg>
+      <figcaption>그림 5-1. 32비트 x86 2단계 워크: CR3 → PDE → PTE → 프레임 + 오프셋. 디렉터리 하나가 4GB 전체를, PT 하나가 4MB를 담당한다.</figcaption>
+    </figure>
+
+    <h3>얼마나 아끼는가</h3>
+    <p>코드 1MB, 힙 2MB, 스택 64KB를 쓰는 작은 프로세스를 생각해 보자. 코드와 힙이 같은 4MB 구간에, 스택이 맨 위 4MB 구간에 있다면 필요한 것은 디렉터리 1개 + PT 2개 = <b>12KB</b>다. 단일 레벨의 4MB와 비교하면 약 340분의 1이다. 대신 주소 공간을 빽빽하게 다 쓰는 극단적인 경우에는 디렉터리 4KB만큼 오히려 손해다. 다단계 테이블은 <b>희소성에 거는 내기</b>이고, 실제 프로그램에서 이 내기는 거의 항상 이긴다.</p>
+
+    <div class="callout tip"><span class="title">4MB 페이지 (PSE)</span>
+      CR4.PSE가 켜져 있으면 PDE의 <b>PS 비트(비트 7)</b>를 1로 설정해 PDE 하나가 4MB 페이지를 직접 가리키게 할 수 있다. 이 경우 PT 단계가 사라지고 하위 22비트가 전부 오프셋이 된다. "중간 레벨에서 워크를 끝낸다"는 대형 페이지의 원형이며, 7절의 2MB/1GB 페이지와 같은 원리다.</div>
+
+    <details class="deep"><summary>심화: PAE (2|9|9|12)는 왜 생겼나</summary><div>
+      <p>32비트 주소 공간에서 4GB 넘는 <b>물리</b> 메모리를 쓰기 위해 Pentium Pro가 PAE를 도입했다. 물리 주소가 36비트(이후 최대 52비트)로 커지자 프레임 번호가 4바이트 엔트리에 들어가지 않게 되었다. 그래서 엔트리를 <b>8바이트</b>로 키웠고, 한 페이지(4KB)에 들어가는 엔트리는 512개, 즉 인덱스 9비트가 되었다. 32비트 주소에서 9+9+12 = 30비트를 빼면 2비트가 남고, 이 2비트가 4개짜리 PDPT(Page Directory Pointer Table)를 고른다.</p>
+      <p>PAE의 8바이트 엔트리와 512개 구성은 그대로 x86-64로 이어졌다. NX(XD) 비트(비트 63)도 8바이트 엔트리가 있어서 넣을 수 있었다. x86-64의 "9비트씩"은 PAE에서 물려받은 것이다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. x86-64 4단계 페이징과 canonical 주소</h2>
+    <p>x86-64는 PAE 형식(8바이트 엔트리, 테이블당 512개)을 유지하면서 레벨을 4개로 늘렸다. 9비트 × 4 + 12비트 = <b>48비트</b> 가상 주소이고, 표현 가능한 공간은 2<sup>48</sup> = 256 TiB다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>레벨</th><th>Intel 명칭</th><th>인덱스 비트</th><th>엔트리 하나가 담당하는 영역</th><th>Linux 이름</th></tr>
+      <tr><td>4</td><td>PML4 (Page Map Level 4)</td><td>47:39</td><td>512 GiB</td><td>pgd (p4d는 접힘)</td></tr>
+      <tr><td>3</td><td>PDPT (Page Directory Pointer Table)</td><td>38:30</td><td>1 GiB</td><td>pud</td></tr>
+      <tr><td>2</td><td>PD (Page Directory)</td><td>29:21</td><td>2 MiB</td><td>pmd</td></tr>
+      <tr><td>1</td><td>PT (Page Table)</td><td>20:12</td><td>4 KiB</td><td>pte</td></tr>
+      <tr><td>-</td><td>오프셋</td><td>11:0</td><td>-</td><td>-</td></tr>
+    </table></div>
+    <p>CR3에는 PML4 테이블의 물리 주소가 들어간다(하위 12비트는 PCID가 켜져 있으면 PCID, 아니면 PWT/PCD 플래그). 각 엔트리의 물리 주소 필드는 비트 51:12(CPU가 지원하는 MAXPHYADDR까지)이며, 하위 비트는 P/RW/US/A/D 등 플래그, 비트 63은 XD(NX)다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 200" role="img" aria-label="x86-64 4단계와 5단계 가상 주소 비트 분할">
+        <text x="10" y="44" class="b sm">4단계</text><text x="10" y="58" class="sm muted">48비트</text>
+        <rect x="80" y="26" width="160" height="40" class="f-code"/><text x="160" y="44" text-anchor="middle" class="sm">부호 확장 (63:48)</text><text x="160" y="58" text-anchor="middle" class="sm muted">= 비트 47 복사</text>
+        <rect x="240" y="26" width="90" height="40" class="f-acc"/><text x="285" y="44" text-anchor="middle" class="sm b">PML4</text><text x="285" y="58" text-anchor="middle" class="sm muted mono">47:39</text>
+        <rect x="330" y="26" width="90" height="40" class="f-vio"/><text x="375" y="44" text-anchor="middle" class="sm b">PDPT</text><text x="375" y="58" text-anchor="middle" class="sm muted mono">38:30</text>
+        <rect x="420" y="26" width="90" height="40" class="f-warn"/><text x="465" y="44" text-anchor="middle" class="sm b">PD</text><text x="465" y="58" text-anchor="middle" class="sm muted mono">29:21</text>
+        <rect x="510" y="26" width="90" height="40" class="f-ok"/><text x="555" y="44" text-anchor="middle" class="sm b">PT</text><text x="555" y="58" text-anchor="middle" class="sm muted mono">20:12</text>
+        <rect x="600" y="26" width="120" height="40" class="f-teal"/><text x="660" y="44" text-anchor="middle" class="sm b">Offset</text><text x="660" y="58" text-anchor="middle" class="sm muted mono">11:0</text>
+
+        <text x="10" y="124" class="b sm">5단계</text><text x="10" y="138" class="sm muted">57비트</text>
+        <rect x="80" y="106" width="70" height="40" class="f-code"/><text x="115" y="124" text-anchor="middle" class="sm">부호 확장</text><text x="115" y="138" text-anchor="middle" class="sm muted mono">63:57</text>
+        <rect x="150" y="106" width="90" height="40" class="f-bad"/><text x="195" y="124" text-anchor="middle" class="sm b">PML5</text><text x="195" y="138" text-anchor="middle" class="sm muted mono">56:48</text>
+        <rect x="240" y="106" width="90" height="40" class="f-acc"/><text x="285" y="124" text-anchor="middle" class="sm b">PML4</text><text x="285" y="138" text-anchor="middle" class="sm muted mono">47:39</text>
+        <rect x="330" y="106" width="90" height="40" class="f-vio"/><text x="375" y="124" text-anchor="middle" class="sm b">PDPT</text><text x="375" y="138" text-anchor="middle" class="sm muted mono">38:30</text>
+        <rect x="420" y="106" width="90" height="40" class="f-warn"/><text x="465" y="124" text-anchor="middle" class="sm b">PD</text><text x="465" y="138" text-anchor="middle" class="sm muted mono">29:21</text>
+        <rect x="510" y="106" width="90" height="40" class="f-ok"/><text x="555" y="124" text-anchor="middle" class="sm b">PT</text><text x="555" y="138" text-anchor="middle" class="sm muted mono">20:12</text>
+        <rect x="600" y="106" width="120" height="40" class="f-teal"/><text x="660" y="124" text-anchor="middle" class="sm b">Offset</text><text x="660" y="138" text-anchor="middle" class="sm muted mono">11:0</text>
+        <text x="400" y="182" text-anchor="middle" class="sm muted">각 인덱스 9비트 = 512 엔트리 × 8B = 4KB 테이블 한 장. 5단계는 4단계 위에 PML5 한 층을 얹은 것이다.</text>
+      </svg>
+      <figcaption>그림 5-2. x86-64 가상 주소 분할. 하위 레벨 구조는 같고, 5단계는 맨 위에 9비트를 더한다.</figcaption>
+    </figure>
+
+    <h3>canonical 주소: 위쪽 16비트는 왜 비어 있나</h3>
+    <p>포인터는 64비트지만 변환에 쓰이는 것은 하위 48비트다. AMD는 남는 비트 63:48을 <b>비트 47과 같은 값으로 채우도록(부호 확장)</b> 강제했다. 이 규칙을 만족하는 주소를 <b>canonical 주소</b>라고 한다. 결과적으로 주소 공간은 아래쪽 128 TiB(0x0000_0000_0000_0000 ~ 0x0000_7FFF_FFFF_FFFF)와 위쪽 128 TiB(0xFFFF_8000_0000_0000 ~ 0xFFFF_FFFF_FFFF_FFFF)로 갈라지고, 그 사이는 쓸 수 없는 거대한 구멍이 된다. Linux는 아래쪽을 사용자 공간, 위쪽을 커널 공간으로 쓴다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 270" role="img" aria-label="x86-64 canonical 주소 공간 지도">
+        <rect x="220" y="14" width="200" height="60" class="f-vio"/>
+        <text x="320" y="40" text-anchor="middle" class="b">커널 공간 128 TiB</text>
+        <text x="320" y="58" text-anchor="middle" class="sm muted">PML4[256..511]</text>
+        <rect x="220" y="74" width="200" height="120" class="f-bad" style="stroke-dasharray:5 4"/>
+        <text x="320" y="128" text-anchor="middle" class="b t-bad">non-canonical 구멍</text>
+        <text x="320" y="146" text-anchor="middle" class="sm muted">접근하면 #GP (페이지 폴트 아님)</text>
+        <text x="320" y="164" text-anchor="middle" class="sm muted">(약 16M × 1TiB, 축척 무시)</text>
+        <rect x="220" y="194" width="200" height="60" class="f-acc"/>
+        <text x="320" y="220" text-anchor="middle" class="b">사용자 공간 128 TiB</text>
+        <text x="320" y="238" text-anchor="middle" class="sm muted">PML4[0..255]</text>
+        <text x="210" y="20" text-anchor="end" class="sm mono">0xFFFF_FFFF_FFFF_FFFF</text>
+        <text x="210" y="78" text-anchor="end" class="sm mono">0xFFFF_8000_0000_0000</text>
+        <text x="210" y="198" text-anchor="end" class="sm mono">0x0000_7FFF_FFFF_FFFF</text>
+        <text x="210" y="256" text-anchor="end" class="sm mono">0x0000_0000_0000_0000</text>
+        <text x="440" y="40" class="sm">0xFFFF_8880_0000_0000: direct map 시작</text>
+        <text x="440" y="56" class="sm muted">(KASLR 비활성 시, 물리 0번지가 여기 매핑)</text>
+        <text x="440" y="220" class="sm">0x5555_5555_4000: PIE 실행 파일</text>
+        <text x="440" y="236" class="sm muted">(ASLR 끈 상태, gdb에서 흔히 보는 값)</text>
+        <text x="440" y="252" class="sm">0x7FFF_xxxx_xxxx: 스택, 공유 라이브러리</text>
+      </svg>
+      <figcaption>그림 5-3. 4단계 x86-64의 canonical 주소 공간. 사용자/커널 절반은 PML4의 아래/위 256개 엔트리에 정확히 대응한다.</figcaption>
+    </figure>
+
+    <div class="callout warn"><span class="title">왜 굳이 canonical 규칙을 강제했나</span>
+      위쪽 비트를 "무시"하도록 했다면 프로그램들이 포인터 상위 16비트에 태그를 숨겼을 것이고, 나중에 주소 공간을 넓힐 때 그 프로그램들이 전부 깨진다. 실제로 68000에서 24비트 주소 시절 상위 8비트를 쓰던 Mac 소프트웨어가 32비트 전환 때 대거 망가진 전례가 있다. 그래서 AMD는 "지금은 안 쓰지만 쓰면 예외"로 막아 두었고, 덕분에 5단계(57비트) 확장이 기존 바이너리를 깨지 않았다. 현재의 포인터 태깅은 Intel LAM, AMD UAI, ARM TBI처럼 하드웨어가 명시적으로 허용하는 방식으로만 한다.</div>
+    <p>non-canonical 주소에 접근하면 페이지 워크까지 가지도 않고 <b>#GP(일반 보호 예외)</b>가 난다(스택 세그먼트 참조라면 #SS). Linux에서는 둘 다 SIGSEGV로 끝나지만, 커널 oops 로그에서 "general protection fault ... probably for non-canonical address"가 보이면 <b>쓰레기 포인터</b>(초기화 안 된 값, use-after-free 후 덮어쓴 값, 0xdead000000000100 같은 poison 값)를 의심해야 한다. 페이지 폴트("unable to handle page request")와 구분해서 읽는 것이 디버깅의 첫걸음이다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 5단계 페이징 (LA57)</h2>
+    <p>256 TiB 가상 공간은 수 TB 메모리를 가진 서버, 비휘발성 메모리(persistent memory) 매핑, 대규모 데이터베이스에서 부족해지기 시작했다. Linux의 direct map은 물리 메모리 전체를 커널 가상 공간에 매핑하는데, 4단계에서는 이 영역이 64 TiB로 제한된다. 그래서 Intel은 <b>5단계 페이징</b>을 정의했다.</p>
+    <ul>
+      <li>CR4.LA57(비트 12)을 켜면 PML5 레벨이 추가되어 9×5 + 12 = <b>57비트</b> 가상 주소, 128 PiB 공간이 된다. canonical 규칙은 "비트 63:57 = 비트 56"으로 바뀐다.</li>
+      <li>CR3는 PML5 테이블을 가리키고, PML5 엔트리 하나가 256 TiB(4단계 주소 공간 전체)를 담당한다.</li>
+      <li>CPU 지원 여부는 <code>/proc/cpuinfo</code>의 <code>la57</code> 플래그로 확인한다. Intel은 Ice Lake 세대부터, AMD는 Zen 4부터 지원한다.</li>
+      <li>LA57은 64비트 모드에서 페이징을 켠 채로 바꿀 수 없다. 그래서 부팅 초기에 결정되며, Linux는 CPU가 지원하면 5단계로 부팅하고 <code>no5lvl</code> 커널 파라미터로 끌 수 있다.</li>
+    </ul>
+    <div class="callout"><span class="title">Linux의 호환성 장치: 기본은 47비트</span>
+      5단계로 부팅해도 Linux는 사용자 프로세스의 mmap을 기본적으로 <b>47비트(128 TiB) 아래</b>에만 배치한다. 포인터 상위 비트에 태그를 숨기는 JIT, 가비지 컬렉터, NaN-boxing 런타임이 깨지지 않게 하기 위해서다. 47비트 위 공간(최대 56비트, 64 PiB)이 필요한 프로그램은 <code>mmap()</code>의 주소 힌트로 그보다 높은 주소를 명시적으로 요청해야 한다. "능력은 넓히되 기본 동작은 바꾸지 않는다"는 전형적인 커널 호환성 설계다.</div>
+    <p>대가는 분명하다. TLB 미스 하나에 메모리 참조가 최대 4번에서 5번으로 늘어난다. 실제로는 상위 레벨 엔트리가 거의 항상 paging-structure cache에 적중하기 때문에(8절) 체감 비용은 작지만, 가상화 환경의 2차원 워크에서는 레벨 증가 비용이 곱으로 커진다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. 페이지 워크 따라가기</h2>
+    <p>아래 위젯은 작은 가상 프로세스의 실제 페이지 테이블 트리를 만든다. 매핑은 PIE 코드(0x5555_5555_4000, 4페이지), 힙(33페이지), libc 일부(8페이지), 2MB THP 하나, 스택(33페이지), 그리고 커널 direct map의 1GB 페이지 하나다. 각 테이블은 512칸짜리 세로 막대로 그렸고, 가로 눈금은 P=1인 엔트리다. <b>대부분의 칸이 비어 있고, 빈 칸 아래에는 하위 테이블이 존재하지 않는다</b>는 점을 눈여겨보자.</p>
+
+    <div class="widget" id="walkW">
+      <div class="w-title">가상 주소 분해 + CR3부터 페이지 워크</div>
+      <div class="w-desc">주소를 입력하거나 프리셋을 고른 뒤 ▶ 재생 또는 다음 ▶으로 한 단계씩 따라간다. 4단계/5단계를 바꾸면 같은 매핑으로 트리를 다시 만든다.</div>
+      <div class="controls">
+        <span class="seg-tabs" id="walkMode"><button type="button" data-l="4" class="on">4단계 (48비트)</button><button type="button" data-l="5">5단계 (LA57)</button></span>
+        <label>VA <input type="text" id="walkVA" class="mono" size="22" value="0x0000555555555149"></label>
+        <button type="button" class="btn primary" id="walkGo">분해</button>
+      </div>
+      <div class="preset-row" id="walkPresets"></div>
+      <div class="stage"><div id="walkFields"></div></div>
+      <div class="stage"><svg class="diagram walk-svg" id="walkSvg" viewBox="0 0 900 380"></svg></div>
+      <div class="stat-row" id="walkStats"></div>
+      <div id="walkStep"></div>
+    </div>
+    <p>위젯에서 확인할 것들:</p>
+    <ul>
+      <li><b>"힙 끝 너머"</b>는 PT까지 내려가서 마지막 칸이 비어 #PF가 난다. <b>"중간 레벨 빈칸"</b>은 PD 엔트리가 비어서 PT 단계까지 가지도 못한다. 하드웨어 입장에서는 둘 다 같은 #PF이고, 커널이 VMA를 확인해서 정상적인 요구 페이징인지 잘못된 접근인지 판단한다(6장).</li>
+      <li><b>0x0000_8000_0000_0000</b>은 4단계에서는 non-canonical이라 #GP지만, 5단계에서는 정상 주소라 PML4 칸이 비어서 #PF가 난다. 같은 숫자가 모드에 따라 다른 예외를 만든다.</li>
+      <li>5단계에서는 테이블이 하나 더 늘어날 뿐 하위 구조는 같다. 이 프로세스는 PML5[0](사용자)과 PML5[511](커널)만 쓴다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. 페이지 테이블은 메모리를 얼마나 먹는가</h2>
+    <p>다단계 테이블의 메모리 사용량은 "매핑된 바이트 수"가 아니라 <b>매핑이 몇 개의 서로 다른 구간에 퍼져 있는가</b>로 결정된다. 레벨 k의 테이블 수는 매핑된 주소들을 그 테이블이 담당하는 크기(PT는 2MB, PD는 1GB, PDPT는 512GB)로 나눴을 때 나오는 서로 다른 몫의 개수다.</p>
+    <ul>
+      <li><b>빽빽한 매핑</b>: 1GB를 연속으로 4KB 페이지로 매핑하면 PT 512개(2MB) + PD 1개 + PDPT 1개 + PML4 1개 ≈ 2.01MB, 즉 데이터의 약 0.2%(8B/4KB)다. 단일 레벨이라도 이 부분은 똑같이 필요하므로, 차이는 상위 레벨 몇 장뿐이다.</li>
+      <li><b>흩어진 매핑</b>: 4KB 페이지 하나씩을 서로 1GB 넘게 떨어뜨려 놓으면 페이지마다 PT, PD, 경우에 따라 PDPT까지 새로 필요하다. 최악에는 4KB 데이터에 테이블 12~16KB가 붙는다.</li>
+    </ul>
+
+    <div class="widget" id="memW">
+      <div class="w-title">페이지 테이블 메모리 사용량 계산기</div>
+      <div class="w-desc">N개의 영역을 주소 공간에 배치했을 때 단일 레벨과 다단계 테이블이 실제로 차지하는 메모리를 비교한다. 레벨별 테이블 수는 매핑 구간에서 직접 센 값이다.</div>
+      <div class="controls">
+        <label>구조 <select id="memArch">
+          <option value="x86_32">x86 32비트 (10|10|12, 4B)</option>
+          <option value="x64_4" selected>x86-64 4단계 (48비트, 8B)</option>
+          <option value="x64_5">x86-64 5단계 (57비트, 8B)</option>
+        </select></label>
+        <label><input type="checkbox" id="memHuge"> 2MB 대형 페이지로 매핑</label>
+      </div>
+      <div class="controls">
+        <label>영역 수 N <input type="range" id="memN" min="1" max="512" value="16"> <b id="memNv" class="mono">16</b></label>
+        <label>영역 크기 <select id="memSize">
+          <option value="4096">4 KiB</option>
+          <option value="65536">64 KiB</option>
+          <option value="1048576" selected>1 MiB</option>
+          <option value="16777216">16 MiB</option>
+          <option value="268435456">256 MiB</option>
+          <option value="1073741824">1 GiB</option>
+        </select></label>
+        <label>배치 <select id="memLayout">
+          <option value="dense">연속 (빽빽하게)</option>
+          <option value="spread" selected>사용자 공간 전체에 균등 분산</option>
+        </select></label>
+      </div>
+      <div class="tbl-wrap"><table id="memTbl"></table></div>
+      <div class="bar-cmp" id="memBars"></div>
+      <div class="stat-row" id="memStats"></div>
+      <div class="note" id="memNote"></div>
+    </div>
+
+    <p>계산기로 확인할 만한 실험:</p>
+    <ul>
+      <li>4단계, 4KB × 512개, 분산: 영역마다 PT·PD·PDPT가 따로 생겨 테이블이 매핑 데이터보다 커진다. 같은 512개를 "연속"으로 바꾸면 테이블 몇 장으로 줄어든다. <b>주소 공간 레이아웃이 페이지 테이블 비용을 결정한다.</b></li>
+      <li>256MiB × 16개에 2MB 대형 페이지를 켜면 PT 레벨이 통째로 사라져 테이블 메모리가 수백 분의 1로 준다.</li>
+      <li>32비트로 바꾸면 단일 레벨도 4MiB라 차이가 덜 극적이다. 64비트에서 다단계가 "선택"이 아니라 "필수"인 이유가 여기 있다.</li>
+    </ul>
+
+    <div class="callout danger"><span class="title">현업: 공유 메모리 × 프로세스 수 = PageTables 폭증</span>
+      <p>PostgreSQL처럼 프로세스 기반 서버가 큰 공유 메모리(shared_buffers)를 쓰면, 같은 물리 페이지를 매핑하더라도 <b>페이지 테이블은 프로세스마다 따로</b> 존재한다. 공유 메모리 64GB를 4KB 페이지로 매핑하면 프로세스 하나당 PTE만 64GB/4KB × 8B = 128MB이고, 백엔드 500개가 전부 건드리면 이론상 64GB가 페이지 테이블로 사라진다. <code>/proc/meminfo</code>의 <code>PageTables</code>가 수십 GB로 치솟는 장애가 실제로 자주 보고된다.</p>
+      <p>대응은 대형 페이지다. 2MB 페이지면 PT 레벨이 사라져 테이블 크기가 1/512로 준다. 또 Linux는 hugetlbfs 공유 매핑이 1GB(PUD) 경계에 정렬돼 있으면 x86-64 등에서 <b>PMD 페이지 자체를 프로세스 간에 공유</b>(huge_pmd_share)해 이 비용을 더 줄인다. 프로세스별 사용량은 <code>/proc/&lt;pid&gt;/status</code>의 <code>VmPTE</code>로 확인한다.</p></div>
+<pre>$ grep PageTables /proc/meminfo
+PageTables:        48212 kB
+$ grep VmPTE /proc/$(pgrep -o postgres)/status
+VmPTE:      1036 kB</pre>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 대형 페이지: 워크가 중간에서 끝나는 방법</h2>
+    <p>x86-64에서 PD 엔트리와 PDPT 엔트리의 비트 7은 <b>PS(Page Size)</b>다. PS=0이면 엔트리는 다음 레벨 테이블을 가리키고, PS=1이면 엔트리 자체가 <b>큰 페이지의 리프</b>가 된다. 워크는 거기서 끝나고, 남은 하위 비트는 전부 오프셋이 된다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="PS 비트에 따른 4KB, 2MB, 1GB 페이지 워크 비교">
+        <defs><marker id="m05b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="10" y="44" class="b sm">4KB</text>
+        <rect x="60" y="24" width="70" height="32" class="f-code"/><text x="95" y="45" text-anchor="middle" class="sm">CR3</text>
+        <rect x="150" y="24" width="80" height="32" class="f-acc"/><text x="190" y="45" text-anchor="middle" class="sm">PML4E</text>
+        <rect x="250" y="24" width="80" height="32" class="f-vio"/><text x="290" y="45" text-anchor="middle" class="sm">PDPTE</text>
+        <rect x="350" y="24" width="80" height="32" class="f-warn"/><text x="390" y="45" text-anchor="middle" class="sm">PDE</text>
+        <rect x="450" y="24" width="80" height="32" class="f-ok"/><text x="490" y="45" text-anchor="middle" class="sm">PTE</text>
+        <rect x="560" y="24" width="180" height="32" class="f-teal"/><text x="650" y="45" text-anchor="middle" class="sm">4KB 프레임 + 12비트</text>
+        <path d="M130,40 L150,40 M230,40 L250,40 M330,40 L350,40 M430,40 L450,40 M530,40 L560,40" class="line" marker-end="url(#m05b)"/>
+        <text x="390" y="72" text-anchor="middle" class="sm muted">PS=0</text><text x="290" y="72" text-anchor="middle" class="sm muted">PS=0</text>
+
+        <text x="10" y="124" class="b sm">2MB</text>
+        <rect x="60" y="104" width="70" height="32" class="f-code"/><text x="95" y="125" text-anchor="middle" class="sm">CR3</text>
+        <rect x="150" y="104" width="80" height="32" class="f-acc"/><text x="190" y="125" text-anchor="middle" class="sm">PML4E</text>
+        <rect x="250" y="104" width="80" height="32" class="f-vio"/><text x="290" y="125" text-anchor="middle" class="sm">PDPTE</text>
+        <rect x="350" y="104" width="80" height="32" class="f-warn" style="stroke-width:3"/><text x="390" y="125" text-anchor="middle" class="sm b">PDE</text>
+        <rect x="460" y="104" width="280" height="32" class="f-teal"/><text x="600" y="125" text-anchor="middle" class="sm">2MB 프레임 + 21비트 오프셋</text>
+        <path d="M130,120 L150,120 M230,120 L250,120 M330,120 L350,120 M430,120 L460,120" class="line" marker-end="url(#m05b)"/>
+        <text x="390" y="152" text-anchor="middle" class="sm t-warn b">PS=1 → 여기서 끝</text>
+
+        <text x="10" y="204" class="b sm">1GB</text>
+        <rect x="60" y="184" width="70" height="32" class="f-code"/><text x="95" y="205" text-anchor="middle" class="sm">CR3</text>
+        <rect x="150" y="184" width="80" height="32" class="f-acc"/><text x="190" y="205" text-anchor="middle" class="sm">PML4E</text>
+        <rect x="250" y="184" width="80" height="32" class="f-vio" style="stroke-width:3"/><text x="290" y="205" text-anchor="middle" class="sm b">PDPTE</text>
+        <rect x="360" y="184" width="380" height="32" class="f-teal"/><text x="550" y="205" text-anchor="middle" class="sm">1GB 프레임 + 30비트 오프셋</text>
+        <path d="M130,200 L150,200 M230,200 L250,200 M330,200 L360,200" class="line" marker-end="url(#m05b)"/>
+        <text x="290" y="232" text-anchor="middle" class="sm t-warn b">PS=1 → 여기서 끝</text>
+      </svg>
+      <figcaption>그림 5-4. PS 비트가 1인 엔트리에서 워크가 끝나면 남은 인덱스 비트가 오프셋으로 합쳐진다. 메모리 참조가 줄고, TLB 엔트리 하나가 512배(2MB) 또는 262,144배(1GB) 넓은 영역을 덮는다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>4KB</th><th>2MB</th><th>1GB</th></tr>
+      <tr><td>리프 레벨</td><td>PT (PTE)</td><td>PD (PDE, PS=1)</td><td>PDPT (PDPTE, PS=1)</td></tr>
+      <tr><td>오프셋 비트</td><td>12</td><td>21</td><td>30</td></tr>
+      <tr><td>워크 메모리 참조 (4단계)</td><td>4</td><td>3</td><td>2</td></tr>
+      <tr><td>물리 정렬 요구</td><td>4KB</td><td>2MB (엔트리 비트 20:13은 예약, 비트 12는 PAT)</td><td>1GB</td></tr>
+      <tr><td>CPU 지원 확인</td><td>기본</td><td>64비트 모드에서는 항상 지원</td><td><code>pdpe1gb</code> 플래그</td></tr>
+      <tr><td>Linux에서 쓰는 곳</td><td>일반 페이지</td><td>THP, hugetlbfs, 커널 텍스트</td><td>hugetlbfs(1G), 커널 direct map</td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">PS 비트 위치의 미묘함</span>
+      비트 7은 PDE/PDPTE에서는 PS지만 4KB PTE에서는 <b>PAT</b> 비트다. PTE 단계에서는 더 내려갈 곳이 없으니 PS가 필요 없고, 그 자리를 캐시 속성 선택에 재사용한다. 대신 대형 페이지 엔트리에서 PAT는 비트 12로 옮겨진다(대형 페이지는 정렬 때문에 물리 주소 하위 비트가 어차피 0이다). "같은 비트가 레벨마다 다른 의미"라는 점은 커널 코드에서 <code>pmd_leaf()</code>, <code>pud_leaf()</code> 같은 함수가 따로 있는 이유이기도 하다.</div>
+    <p>대형 페이지의 본래 목적은 페이지 테이블 절약보다 <b>TLB reach</b> 확대다(4장). 2MB 페이지 하나가 4KB TLB 엔트리 512개 몫을 하므로, 수십 GB 작업 집합을 다루는 DB·JVM·ML 워크로드에서 TLB 미스와 워크 비용이 크게 준다. 대가는 내부 단편화, 2MB 연속 물리 메모리 확보의 어려움(compaction 비용), 메모리 회수의 거친 단위다. 이 트레이드오프는 13장에서 다시 다룬다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 워크 비용과 paging-structure cache</h2>
+    <p>TLB 미스가 나면 하드웨어 페이지 워커가 CR3부터 엔트리를 순서대로 읽는다. 각 읽기는 앞의 결과에 의존하므로(포인터 추적) <b>병렬화할 수 없다</b>. 다행히 페이지 테이블 엔트리도 일반 데이터처럼 L1/L2/LLC 캐시에 올라가므로, 매번 DRAM까지 가지는 않는다. 그래도 4번의 의존적 캐시 접근은 수십 사이클이다.</p>
+    <p>그래서 CPU는 TLB와 별도로 <b>상위 레벨 엔트리를 캐시</b>한다. Intel SDM은 이것을 paging-structure cache라고 부르고, 학계와 AMD 계열 자료에서는 흔히 page walk cache(PWC)라고 한다. 핵심은 "가상 주소의 상위 비트만 같으면 상위 레벨 엔트리도 같다"는 사실이다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 270" role="img" aria-label="TLB와 paging-structure cache가 사용하는 가상 주소 태그 범위">
+        <rect x="120" y="20" width="110" height="32" class="f-acc"/><text x="175" y="41" text-anchor="middle" class="sm b">47:39</text>
+        <rect x="230" y="20" width="110" height="32" class="f-vio"/><text x="285" y="41" text-anchor="middle" class="sm b">38:30</text>
+        <rect x="340" y="20" width="110" height="32" class="f-warn"/><text x="395" y="41" text-anchor="middle" class="sm b">29:21</text>
+        <rect x="450" y="20" width="110" height="32" class="f-ok"/><text x="505" y="41" text-anchor="middle" class="sm b">20:12</text>
+        <rect x="560" y="20" width="130" height="32" class="f-teal"/><text x="625" y="41" text-anchor="middle" class="sm b">11:0</text>
+        <text x="10" y="41" class="sm muted">가상 주소</text>
+
+        <path d="M120,76 L230,76" class="ln-acc"/><text x="10" y="80" class="sm">PML4E 캐시</text><text x="240" y="80" class="sm muted">태그 VA[47:39] → PDPT 주소. 적중 시 3번 참조</text>
+        <path d="M120,112 L340,112" class="ln-acc"/><text x="10" y="116" class="sm">PDPTE 캐시</text><text x="350" y="116" class="sm muted">태그 VA[47:30] → PD 주소. 적중 시 2번 참조</text>
+        <path d="M120,148 L450,148" class="ln-acc"/><text x="10" y="152" class="sm">PDE 캐시</text><text x="460" y="152" class="sm muted">태그 VA[47:21] → PT 주소. 적중 시 1번 참조</text>
+        <path d="M120,184 L560,184" class="ln-acc" style="stroke-width:4"/><text x="10" y="188" class="sm b">TLB</text><text x="570" y="188" class="sm muted">태그 VA[47:12] → 프레임. 참조 0번</text>
+        <text x="380" y="226" text-anchor="middle" class="sm">태그가 짧을수록 더 넓은 영역에 공유되어 적중률이 높다.</text>
+        <text x="380" y="246" text-anchor="middle" class="sm muted">TLB 미스 → 가장 긴 접두사가 적중한 캐시에서부터 워크를 재개한다.</text>
+      </svg>
+      <figcaption>그림 5-5. Intel paging-structure cache의 태그 범위(4단계 기준). PDE 캐시 엔트리 하나는 2MB 영역의 모든 TLB 미스에 쓸 수 있다.</figcaption>
+    </figure>
+    <ul>
+      <li>프로세스가 512GB 안에서만 일한다면 PML4E는 사실상 항상 적중한다. 그래서 4→5단계 전환의 실제 비용은 생각보다 작다.</li>
+      <li>최악은 수십 GB 이상의 넓은 영역을 무작위로 건드리는 경우(그래프 처리, 해시 조인, 큰 해시 테이블)다. PDE 캐시조차 미스가 나서 워크가 DRAM까지 내려간다. 이때 대형 페이지가 TLB와 PWC 양쪽에서 효과를 낸다.</li>
+      <li><b>가상화</b>에서는 게스트 페이지 테이블의 각 엔트리 주소가 다시 EPT/NPT를 거쳐야 하므로 4단계 × 4단계 2차원 워크에서 최대 (4+1)×(4+1) − 1 = <b>24번</b> 메모리 참조가 필요하다(15장). PWC와 대형 페이지가 가상화 성능에 결정적인 이유다.</li>
+    </ul>
+    <div class="callout deep"><span class="title">커널이 지켜야 할 규칙: 테이블을 해제할 때도 무효화해야 한다</span>
+      paging-structure cache는 <b>상위 엔트리의 사본</b>을 들고 있다. 커널이 빈 PT 페이지를 해제하고 PDE를 지운 뒤 그 페이지를 다른 용도로 재사용했는데, 어떤 CPU의 PDE 캐시에 옛 PT 주소가 남아 있다면 하드웨어 워커가 엉뚱한 데이터를 PTE로 해석할 수 있다. 그래서 Intel SDM은 INVLPG가 해당 주소의 TLB 엔트리뿐 아니라 <b>현재 PCID의 paging-structure cache 엔트리 전부</b>를 무효화한다고 규정한다. Linux는 <code>mmu_gather</code>(<code>tlb_gather_mmu()</code> … <code>tlb_finish_mmu()</code>)로 페이지와 페이지 테이블 해제를 모아 두었다가 TLB flush가 끝난 <b>다음</b>에 실제로 해제한다. 락 없이 페이지 테이블을 읽는 소프트웨어 워커(fast GUP)를 위해 RCU로 해제를 늦추는 설정(<code>MMU_GATHER_RCU_TABLE_FREE</code>)도 있다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. ARM64 변환 테이블과 비교</h2>
+    <p>ARMv8-A(AArch64)도 기수 트리 구조지만 두 가지 면에서 x86-64와 다르다.</p>
+    <h3>(1) granule: 페이지 크기를 고를 수 있다</h3>
+    <p>변환 granule은 4KB, 16KB, 64KB 중 하나다. 테이블 한 장 = granule 크기, 디스크립터 = 8바이트이므로 레벨당 인덱스 비트는 log<sub>2</sub>(granule) − 3이다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>granule</th><th>오프셋</th><th>레벨당 비트 (엔트리)</th><th>48비트 VA 구성</th><th>블록(대형) 매핑</th><th>대표 사용처</th></tr>
+      <tr><td>4KB</td><td>12</td><td>9 (512)</td><td>L0~L3, 4단계 (9|9|9|9|12)</td><td>L1 1GB, L2 2MB</td><td>대부분의 Linux 배포판, Android</td></tr>
+      <tr><td>16KB</td><td>14</td><td>11 (2048)</td><td>L0(1비트, 2개)~L3, 4단계</td><td>L2 32MB</td><td>Apple Silicon(macOS, iOS)</td></tr>
+      <tr><td>64KB</td><td>16</td><td>13 (8192)</td><td>L1(6비트, 64개)~L3, 3단계</td><td>L2 512MB</td><td>일부 서버용 커널(대용량 메모리, HPC)</td></tr>
+    </table></div>
+    <p>granule이 크면 레벨 수가 줄고 TLB reach가 커지지만 내부 단편화와 페이지 캐시 낭비가 커진다. 64KB 커널에서는 4KB 파일 수천 개를 열면 페이지 캐시가 16배로 부푼다. ARM64는 이 밖에 <b>contiguous 비트</b>로 연속된 엔트리 묶음(4KB granule이면 PTE 16개 = 64KB, PMD 16개 = 32MB)을 TLB 엔트리 하나로 합치게 할 수 있다. Linux arm64가 hugetlb 크기로 64KB, 2MB, 32MB, 1GB를 제공하는 이유다.</p>
+
+    <h3>(2) TTBR0/TTBR1: 주소 공간을 레지스터 두 개로 나눈다</h3>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 290" role="img" aria-label="ARM64 TTBR0/TTBR1 분할과 x86-64 단일 CR3 비교">
+        <defs><marker id="m05c" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="190" y="20" text-anchor="middle" class="b">ARM64</text>
+        <rect x="20" y="36" width="150" height="60" class="f-vio"/><text x="95" y="62" text-anchor="middle" class="sm b">커널 (상위)</text><text x="95" y="80" text-anchor="middle" class="sm mono muted">0xFFFF…</text>
+        <rect x="20" y="96" width="150" height="80" class="f-bad" style="stroke-dasharray:4 3"/><text x="95" y="134" text-anchor="middle" class="sm t-bad">변환 폴트 영역</text>
+        <rect x="20" y="176" width="150" height="60" class="f-acc"/><text x="95" y="202" text-anchor="middle" class="sm b">사용자 (하위)</text><text x="95" y="220" text-anchor="middle" class="sm mono muted">0x0000…</text>
+        <rect x="230" y="50" width="120" height="34" class="f-vio"/><text x="290" y="72" text-anchor="middle" class="sm b">TTBR1_EL1</text>
+        <rect x="230" y="190" width="120" height="34" class="f-acc"/><text x="290" y="212" text-anchor="middle" class="sm b">TTBR0_EL1</text>
+        <path d="M230,67 L170,67" class="line" marker-end="url(#m05c)"/>
+        <path d="M230,207 L170,207" class="line" marker-end="url(#m05c)"/>
+        <text x="290" y="104" text-anchor="middle" class="sm muted">커널 테이블, 고정</text>
+        <text x="290" y="244" text-anchor="middle" class="sm muted">문맥 교환 시 이것만 교체</text>
+        <text x="290" y="260" text-anchor="middle" class="sm muted">(ASID도 함께)</text>
+
+        <path d="M380,20 L380,280" class="line" style="stroke-dasharray:3 4"/>
+
+        <text x="575" y="20" text-anchor="middle" class="b">x86-64</text>
+        <rect x="410" y="130" width="70" height="34" class="f-code"/><text x="445" y="152" text-anchor="middle" class="sm b">CR3</text>
+        <rect x="520" y="40" width="90" height="220" class="box"/>
+        <text x="565" y="58" text-anchor="middle" class="sm b">PML4</text>
+        <rect x="520" y="66" width="90" height="90" class="f-acc"/><text x="565" y="106" text-anchor="middle" class="sm">[0..255]</text><text x="565" y="122" text-anchor="middle" class="sm muted">사용자</text>
+        <rect x="520" y="160" width="90" height="96" class="f-vio"/><text x="565" y="202" text-anchor="middle" class="sm">[256..511]</text><text x="565" y="218" text-anchor="middle" class="sm muted">커널</text>
+        <path d="M480,147 L520,147" class="line" marker-end="url(#m05c)"/>
+        <rect x="650" y="180" width="96" height="56" class="f-vio"/><text x="698" y="204" text-anchor="middle" class="sm">커널 PDPT들</text><text x="698" y="222" text-anchor="middle" class="sm muted">모든 프로세스 공유</text>
+        <path d="M610,208 L650,208" class="line" marker-end="url(#m05c)"/>
+        <text x="565" y="278" text-anchor="middle" class="sm muted">프로세스마다 PML4가 따로 있고 커널 절반 엔트리를 복사한다</text>
+      </svg>
+      <figcaption>그림 5-6. ARM64는 VA 최상위 비트로 TTBR0(사용자)/TTBR1(커널)을 고른다. x86-64는 CR3 하나가 전체를 가리키고 PML4의 위쪽 절반을 커널용으로 모든 프로세스가 공유한다.</figcaption>
+    </figure>
+    <ul>
+      <li>VA 상위 비트가 전부 0이면 TTBR0_EL1, 전부 1이면 TTBR1_EL1의 테이블로 변환한다. 두 범위의 크기는 TCR_EL1의 <b>T0SZ/T1SZ</b>(VA 크기 = 64 − TxSZ)로, granule은 <b>TG0/TG1</b>로 따로 정한다. 그 사이 주소는 변환 폴트다(x86의 non-canonical에 해당).</li>
+      <li>x86-64 커널은 새 프로세스의 PML4를 만들 때 커널 절반 엔트리를 복사한다(<code>pgd_alloc()</code>). 커널 상위 엔트리가 나중에 바뀌면 모든 프로세스의 PGD에 반영해야 하므로, x86-64 Linux는 vmalloc 영역 등의 상위 테이블을 부팅 때 미리 할당해 두고(<code>preallocate_vmalloc_pages()</code>) 이후에는 하위 레벨만 바꾼다. ARM64는 TTBR1이 별도라서 이런 복사 자체가 없다.</li>
+      <li>ARM64 디스크립터는 레벨에 따라 <b>table / block / page</b> 세 가지다. x86의 PS 비트 대신 디스크립터 하위 2비트의 타입 필드로 구분한다(L0~L2: 0b11 = table, 0b01 = block / L3: 0b11 = page).</li>
+    </ul>
+
+    <div class="widget" id="armW">
+      <div class="w-title">ARM64 granule별 주소 분해기</div>
+      <div class="w-desc">granule과 VA 크기(Linux CONFIG_ARM64_VA_BITS로 고를 수 있는 조합)를 고르면 레벨 구성과 인덱스를 보여준다. TTBR 선택은 TBI(Top Byte Ignore)를 끈 상태 기준이다.</div>
+      <div class="controls">
+        <label>granule <select id="armG"><option value="4">4KB</option><option value="16">16KB</option><option value="64">64KB</option></select></label>
+        <label>VA 비트 <select id="armBits"></select></label>
+        <label>VA <input type="text" id="armVA" class="mono" size="22" value="0x0000FFFF8A3C5D10"></label>
+      </div>
+      <div class="preset-row">
+        <button type="button" class="btn" data-va="0x000000005A3C5D10">사용자 (낮은 주소)</button>
+        <button type="button" class="btn" data-va="0x0000FFFF8A3C5D10">사용자 스택 (48비트)</button>
+        <button type="button" class="btn" data-va="0xFFFFFFF812345678">커널 주소</button>
+        <button type="button" class="btn" data-va="0x0001000000000000">범위 밖 주소</button>
+      </div>
+      <div id="armOut"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. Linux의 pgd/p4d/pud/pmd/pte 추상화</h2>
+    <p>Linux는 수십 개 아키텍처를 하나의 메모리 관리 코드로 지원한다. 그래서 하드웨어 레벨 이름 대신 <b>5단계 일반 모델</b>을 쓴다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Linux</th><th>뜻</th><th>x86-64 5단계</th><th>x86-64 4단계</th><th>ARM64 4KB/48비트</th></tr>
+      <tr><td><code>pgd_t</code></td><td>Page Global Directory</td><td>PML5</td><td>PML4</td><td>L0</td></tr>
+      <tr><td><code>p4d_t</code></td><td>Page 4th-level Directory</td><td>PML4</td><td>(접힘)</td><td>(접힘)</td></tr>
+      <tr><td><code>pud_t</code></td><td>Page Upper Directory</td><td>PDPT</td><td>PDPT</td><td>L1</td></tr>
+      <tr><td><code>pmd_t</code></td><td>Page Middle Directory</td><td>PD</td><td>PD</td><td>L2</td></tr>
+      <tr><td><code>pte_t</code></td><td>Page Table Entry</td><td>PT</td><td>PT</td><td>L3</td></tr>
+    </table></div>
+    <p>하드웨어 레벨이 5개보다 적으면 남는 레벨을 <b>접는다(fold)</b>. 접힌 레벨은 엔트리 1개짜리 가상의 테이블로 취급되고, <code>p4d_offset(pgd, addr)</code>는 단순히 <code>(p4d_t *)pgd</code>를 돌려준다. 컴파일러가 이 호출을 전부 지워 버리므로 런타임 비용은 0이다. 공통 정의는 <code>include/asm-generic/pgtable-nop4d.h</code>, <code>pgtable-nopud.h</code>, <code>pgtable-nopmd.h</code>에 있고, 아키텍처는 <code>CONFIG_PGTABLE_LEVELS</code>에 맞춰 이 헤더를 포함한다. x86-64는 한 커널 이미지로 4단계와 5단계를 모두 지원해야 하므로 p4d를 <b>런타임에</b> 접는다(<code>pgtable_l5_enabled()</code>). p4d는 2017년(Linux 4.11) 5단계 지원을 준비하면서 pgd와 pud 사이에 새로 끼워 넣은 레벨이고, 실제 5단계 지원은 4.14에 들어왔다.</p>
+<pre><code>/* 커널에서 사용자 주소 addr의 PTE를 찾는 전형적인 워크 (개념 코드) */
+pgd_t *pgd = pgd_offset(mm, addr);          /* mm-&gt;pgd + pgd_index(addr) */
+if (pgd_none(*pgd) || pgd_bad(*pgd)) return NULL;
+p4d_t *p4d = p4d_offset(pgd, addr);         /* 4단계면 사실상 no-op */
+if (p4d_none(*p4d) || p4d_bad(*p4d)) return NULL;
+pud_t *pud = pud_offset(p4d, addr);
+if (pud_none(*pud)) return NULL;
+if (pud_leaf(*pud)) return /* 1GB 페이지 */;
+pmd_t *pmd = pmd_offset(pud, addr);
+if (pmd_none(*pmd)) return NULL;
+if (pmd_leaf(*pmd)) return /* 2MB THP / hugetlb */;
+pte_t *pte = pte_offset_map(pmd, addr);     /* 사용 후 pte_unmap(pte) */
+</code></pre>
+    <p>상수도 같은 체계다. x86-64 4단계에서 <code>PAGE_SHIFT</code>=12, <code>PMD_SHIFT</code>=21, <code>PUD_SHIFT</code>=30, <code>PGDIR_SHIFT</code>=39이고, 5단계에서는 <code>P4D_SHIFT</code>=39, <code>PGDIR_SHIFT</code>=48이다. <code>PTRS_PER_PTE</code> 등은 모두 512다. 실제 커널 코드에서는 이 워크를 직접 쓰기보다 <code>walk_page_range()</code>(mm/pagewalk.c)처럼 레벨별 콜백을 받는 범용 워커나, 폴트 경로의 <code>handle_mm_fault()</code> → <code>__handle_mm_fault()</code>처럼 필요한 테이블을 <b>할당하면서</b> 내려가는 코드(<code>p4d_alloc()</code>, <code>pud_alloc()</code>, <code>pmd_alloc()</code>)를 쓴다. 다단계 테이블의 "필요할 때만 만든다"는 성질이 이 alloc 함수들에서 구현된다.</p>
+
+    <div class="widget" id="foldW">
+      <div class="w-title">아키텍처별 레벨 접기 보기</div>
+      <div class="w-desc">구성을 고르면 Linux의 다섯 레벨이 어느 하드웨어 레벨에 대응하는지, 어느 레벨이 접히는지, 각 레벨의 SHIFT 값을 보여준다. 위의 워크 코드는 모든 구성에서 그대로 컴파일된다.</div>
+      <div class="controls"><label>구성 <select id="foldSel"></select></label></div>
+      <div class="fold-row" id="foldRow"></div>
+      <div class="note" id="foldNote"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s11">
+    <h2>11. 다른 설계: 역 페이지 테이블과 해시 페이지 테이블</h2>
+    <p>기수 트리만 답은 아니다. 64비트 주소 공간이 희소하다는 같은 문제를 다른 방식으로 푼 설계도 있다.</p>
+    <ul>
+      <li><b>역 페이지 테이블(inverted page table)</b>: 물리 프레임마다 엔트리 하나를 둔다(크기가 물리 메모리에 비례). 가상 주소로 찾으려면 해시로 검색한다. 프로세스가 많아도 테이블은 하나지만, 공유 메모리(한 프레임에 여러 가상 주소)를 표현하기 어렵다.</li>
+      <li><b>해시 페이지 테이블</b>: PowerPC의 HPT(Hashed Page Table)가 대표적이다. VPN을 해시해 고정 크기 테이블의 그룹(PTEG)을 찾는다. 워크가 1~2번의 메모리 접근으로 끝나는 장점이 있지만 해시 충돌 처리와 테이블 크기 결정이 까다롭고, 캐시 지역성이 나쁘다. IBM은 POWER9부터 기수 트리 MMU(radix)도 지원하고 있다.</li>
+    </ul>
+    <div class="callout"><span class="title">왜 기수 트리가 이겼나</span>
+      기수 트리는 (1) 인접한 가상 페이지의 엔트리가 같은 캐시 라인에 모여 지역성이 좋고, (2) 상위 레벨 캐시(PWC)로 워크를 단축하기 쉬우며, (3) 대형 페이지를 "중간에서 끝내기"로 자연스럽게 표현하고, (4) fork/COW나 범위 단위 해제에서 하위 트리를 통째로 다룰 수 있다. 하드웨어 워커가 단순하다는 점도 크다.</div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>단일 레벨 테이블은 주소 공간 크기에 비례한다(32비트 4MiB, 48비트 512GiB). 다단계 테이블은 <b>매핑이 퍼진 구간 수</b>에 비례하므로 희소한 주소 공간에서 수천~수백만 배 작다.</li>
+    <li>테이블 한 장 = 한 페이지가 되도록 인덱스 폭을 정한다. 32비트(4B 엔트리)는 10|10|12, PAE·x86-64(8B 엔트리)는 레벨당 9비트다.</li>
+    <li>x86-64 4단계는 9|9|9|9|12 = 48비트이고 비트 63:48은 비트 47의 부호 확장(canonical)이어야 한다. 위반 시 #GP다. LA57은 PML5를 추가해 57비트(128 PiB)를 만든다.</li>
+    <li>PDE/PDPTE의 PS=1은 워크를 중간에서 끝내 2MB/1GB 페이지를 만든다. 오프셋이 21/30비트가 되고 TLB reach가 커진다.</li>
+    <li>워크는 의존적 메모리 접근의 연쇄다. TLB, paging-structure cache(PWC), 데이터 캐시가 비용을 숨기고, 가상화의 2D 워크(최대 24회)에서는 대형 페이지가 결정적이다.</li>
+    <li>ARM64는 granule(4/16/64KB)로 레벨 구조가 바뀌고, TTBR0/TTBR1로 사용자·커널 테이블을 분리한다.</li>
+    <li>Linux는 pgd→p4d→pud→pmd→pte 5단계 모델을 쓰고, 하드웨어에 없는 레벨은 접어서 런타임 비용 없이 같은 코드를 쓴다. 페이지 테이블 메모리는 <code>PageTables</code>(meminfo), <code>VmPTE</code>(status)로 확인한다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">x86-64 4단계 페이징에서 프로세스가 VA 0x0000_0000_0000_0000의 한 페이지와 VA 0x0000_7FFF_FFFF_F000의 한 페이지만 매핑했다. 필요한 페이지 테이블 페이지(4KB) 수는?</div>
+    <button class="opt">4장</button><button class="opt">5장</button><button class="opt">7장</button><button class="opt">8장</button>
+    <div class="explain">두 주소의 인덱스는 (0,0,0,0)과 (255,511,511,511)이다. PML4는 1장을 공유하지만 PML4 인덱스부터 다르므로 PDPT·PD·PT가 각각 2장씩 필요하다. 1 + 2 + 2 + 2 = 7장(28KB)이다. 단일 레벨이었다면 512GiB가 필요하다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">VA 0x0000_7F12_3456_7ABC를 4단계로 분해하면 (PML4, PDPT, PD, PT, offset)은?</div>
+    <button class="opt">(0x07F, 0x123, 0x456, 0x7AB, 0xC)</button>
+    <button class="opt">(0x0FE, 0x048, 0x1A2, 0x167, 0xABC)</button>
+    <button class="opt">(0x0FE, 0x091, 0x1A2, 0x0B3, 0xABC)</button>
+    <button class="opt">(0x1FC, 0x048, 0x0D1, 0x167, 0xABC)</button>
+    <div class="explain">각 인덱스는 9비트라 16진수 자릿수(4비트)와 경계가 맞지 않는다. (VA&gt;&gt;39)&amp;0x1FF = 0x0FE, (VA&gt;&gt;30)&amp;0x1FF = 0x048, (VA&gt;&gt;21)&amp;0x1FF = 0x1A2, (VA&gt;&gt;12)&amp;0x1FF = 0x167, VA&amp;0xFFF = 0xABC다. 16진수 자릿수대로 끊는 실수(첫 번째 보기)가 가장 흔하다. 위의 워크 위젯에 넣어 확인해 보자.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">4단계 x86-64에서 사용자 프로그램이 0x0000_8000_0000_0000을 역참조했다. 어떤 일이 일어나는가?</div>
+    <button class="opt">PML4[256]이 비어 있으므로 #PF가 나고 커널이 VMA를 확인한다</button>
+    <button class="opt">상위 비트를 무시하고 0x0000_0000_0000_0000으로 변환한다</button>
+    <button class="opt">커널 공간이므로 U/S 비트 검사에서 #PF(보호 위반)가 난다</button>
+    <button class="opt">non-canonical 주소이므로 워크 없이 #GP가 나고, Linux는 SIGSEGV를 보낸다</button>
+    <div class="explain">비트 47이 1인데 비트 63:48이 0이므로 canonical 규칙 위반이다. 페이지 워크 전에 #GP가 발생한다. 5단계(LA57)에서는 같은 주소가 canonical이라 정상적으로 워크를 시작한다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">워크 중 PD 엔트리의 비트 7(PS)이 1이었다. 옳은 설명은?</div>
+    <button class="opt">2MB 페이지의 리프 엔트리이며, VA의 하위 21비트가 오프셋이 된다</button>
+    <button class="opt">PT를 가리키며, PT의 엔트리들이 2MB 단위로 묶인다</button>
+    <button class="opt">1GB 페이지이며, 하위 30비트가 오프셋이 된다</button>
+    <button class="opt">PAT 캐시 속성 비트이므로 워크와는 무관하다</button>
+    <div class="explain">PDE의 PS=1은 2MB 페이지다. 워크는 여기서 끝나고 VA[20:0]이 오프셋이다. 1GB는 PDPTE의 PS=1이다. 비트 7이 PAT인 것은 4KB PTE에서다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">ARM64에서 16KB granule, 48비트 VA를 쓰면 최상위 레벨(L0) 테이블의 엔트리 수는?</div>
+    <button class="opt">1개</button><button class="opt">2개</button><button class="opt">512개</button><button class="opt">2048개</button>
+    <div class="explain">오프셋 14비트, 레벨당 11비트다. 48 − 14 = 34비트를 11비트씩 나누면 11 × 3 = 33, 남는 1비트가 L0이므로 2개다. 그래서 47비트 VA로 줄이면 L0가 사라져 3단계가 된다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">5단계를 지원하지 않는 CPU에서 x86-64 Linux가 4단계로 동작할 때, Linux의 다섯 레벨 중 접히는(fold) 것은?</div>
+    <button class="opt">pgd</button><button class="opt">pud</button><button class="opt">p4d</button><button class="opt">pmd</button>
+    <div class="explain">pgd = PML4, pud = PDPT, pmd = PD, pte = PT가 되고, 2017년 5단계 지원 때 끼워 넣은 p4d가 접힌다. x86-64는 이 판단을 pgtable_l5_enabled()로 런타임에 한다. 32비트 non-PAE x86(2단계)이라면 p4d, pud, pmd가 모두 접힌다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">PostgreSQL 서버에서 /proc/meminfo의 PageTables가 30GB까지 커졌다. 원인과 대응으로 가장 적절한 것은?</div>
+    <button class="opt">커널 메모리 누수이므로 재부팅 외에는 방법이 없다</button>
+    <button class="opt">5단계 페이징 때문이므로 no5lvl로 부팅한다</button>
+    <button class="opt">스왑이 부족해서이므로 스왑을 늘린다</button>
+    <button class="opt">큰 공유 메모리를 많은 프로세스가 4KB 페이지로 각자 매핑한 탓이므로, huge page를 쓰거나 커넥션 풀로 프로세스 수를 줄인다</button>
+    <div class="explain">페이지 테이블은 물리 페이지를 공유해도 프로세스마다 따로 있다. 공유 메모리 크기 × 프로세스 수 × (8B/4KB)만큼 늘어난다. 2MB huge page로 PT 레벨을 없애거나(1/512), 프로세스 수를 줄이는 것이 정석이다. 5단계로 늘어나는 것은 상위 테이블 몇 장뿐이라 원인이 아니다.</div>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const B = BigInt;
+  const MASK64 = (1n << 64n) - 1n;
+  const $ = id => document.getElementById(id);
+
+  function parseVA(s) {
+    s = String(s).trim().replace(/[_\s]/g, "").replace(/^0x/i, "");
+    if (!/^[0-9a-f]{1,16}$/i.test(s)) return null;
+    return B("0x" + s) & MASK64;
+  }
+  function hx(v, w) { return "0x" + v.toString(16).toUpperCase().padStart(w || 1, "0"); }
+  function hx64(v) {
+    const s = v.toString(16).toUpperCase().padStart(16, "0");
+    return "0x" + s.slice(0, 4) + "_" + s.slice(4, 8) + "_" + s.slice(8, 12) + "_" + s.slice(12);
+  }
+  function bits(v, lo, w) { return (v >> B(lo)) & ((1n << B(w)) - 1n); }
+  function fmtBytes(n) {
+    const u = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let i = 0, x = n;
+    while (x >= 1024n * 1024n && i < u.length - 2) { x /= 1024n; i++; }
+    let v = Number(x);
+    if (v >= 1024) { v /= 1024; i++; }
+    return (Number.isInteger(v) ? v : v.toFixed(v < 10 ? 2 : 1)) + " " + u[i];
+  }
+
+  /* ================= 위젯 1: 페이지 워크 ================= */
+  const LV = {
+    4: { names: ["PML4", "PDPT", "PD", "PT"], shifts: [39, 30, 21, 12], vaBits: 48 },
+    5: { names: ["PML5", "PML4", "PDPT", "PD", "PT"], shifts: [48, 39, 30, 21, 12], vaBits: 57 }
+  };
+  const SIZE_SHIFT = { "4K": 12, "2M": 21, "1G": 30 };
+  const NX = 1n << 63n;
+  const MAPS = [
+    { name: "text", va: 0x555555554000n, pages: 4, size: "4K", flags: 0x25n },
+    { name: "heap", va: 0x555555559000n, pages: 33, size: "4K", flags: NX | 0x67n },
+    { name: "libc", va: 0x7ffff7dc0000n, pages: 8, size: "4K", flags: NX | 0x67n },
+    { name: "THP 2MB", va: 0x7fffe8000000n, pages: 1, size: "2M", flags: NX | 0xE7n },
+    { name: "stack", va: 0x7ffffffde000n, pages: 33, size: "4K", flags: NX | 0x67n },
+    { name: "direct map 1GB", va: 0xffff888000000000n, pages: 1, size: "1G", flags: NX | 0x1E3n }
+  ];
+  const idxOf = (va, sh) => Number((va >> B(sh)) & 511n);
+
+  function isCanonical(va, vaBits) {
+    const top = va >> B(vaBits - 1);
+    return top === 0n || top === (1n << B(65 - vaBits)) - 1n;
+  }
+
+  function buildTree(L) {
+    const cfg = LV[L];
+    const tables = [];
+    const newTable = level => {
+      const t = { id: tables.length, level, phys: 0x1a3000n + B(tables.length) * 0x1000n, entries: new Map() };
+      tables.push(t); return t;
+    };
+    const root = newTable(0);
+    MAPS.forEach((m, mi) => {
+      const sh = SIZE_SHIFT[m.size];
+      const leafLevel = cfg.shifts.indexOf(sh);
+      const kernel = (m.va >> 63n) === 1n;
+      for (let p = 0; p < m.pages; p++) {
+        const va = m.va + (B(p) << B(sh));
+        let t = root;
+        for (let l = 0; l < leafLevel; l++) {
+          const i = idxOf(va, cfg.shifts[l]);
+          let e = t.entries.get(i);
+          if (!e) {
+            const c = newTable(l + 1);
+            e = { kind: "table", child: c, val: c.phys | (kernel ? 0x63n : 0x67n) };
+            t.entries.set(i, e);
+          }
+          t = e.child;
+        }
+        let base;
+        if (m.size === "1G") base = 0n;
+        else if (m.size === "2M") base = 0x240000000n;
+        else base = 0x100000000n + B(((mi * 97 + p) * 7919) % 65536) * 0x1000n;
+        t.entries.set(idxOf(va, sh), { kind: "page", size: m.size, base, val: base | m.flags, map: m });
+      }
+    });
+    return { root, tables, L };
+  }
+
+  function walk(va, tree) {
+    const cfg = LV[tree.L];
+    va &= MASK64;
+    if (!isCanonical(va, cfg.vaBits)) return { type: "gp", path: [] };
+    const path = [];
+    let t = tree.root;
+    for (let l = 0; l < cfg.shifts.length; l++) {
+      const i = idxOf(va, cfg.shifts[l]);
+      const e = t.entries.get(i) || null;
+      path.push({ level: l, table: t, idx: i, entry: e });
+      if (!e) return { type: "pf", path, level: l };
+      if (e.kind === "page") {
+        const sh = cfg.shifts[l];
+        return { type: "ok", path, phys: e.base + (va & ((1n << B(sh)) - 1n)), size: e.size, offBits: sh, level: l };
+      }
+      t = e.child;
+    }
+    throw new Error("unreachable");
+  }
+
+  function fieldsFor(L) {
+    const f = [{ n: "부호 확장", hi: 63, lo: LV[L].vaBits, sign: true }];
+    LV[L].names.forEach((n, k) => { const lo = LV[L].shifts[k]; f.push({ n, hi: lo + 8, lo, level: k }); });
+    f.push({ n: "오프셋", hi: 11, lo: 0, off: true });
+    return f;
+  }
+
+  const walkState = { L: 4, tree: null, va: 0x555555555149n, res: null, stepper: null };
+  const PRESETS = [
+    ["코드 (main)", "0x0000555555555149"],
+    ["힙 (첫 malloc)", "0x00005555555592A0"],
+    ["libc", "0x00007FFFF7DC2E10"],
+    ["THP 2MB", "0x00007FFFE8123456"],
+    ["스택", "0x00007FFFFFFFE3C0"],
+    ["커널 1GB", "0xFFFF888012345678"],
+    ["힙 끝 너머", "0x0000555555590000"],
+    ["중간 레벨 빈칸", "0x00007FFFF7A00000"],
+    ["PML4 빈칸", "0x00007F0000001000"],
+    ["0x8000_0000_0000", "0x0000800000000000"]
+  ];
+
+  function flagStr(e) {
+    const v = e.val, f = [];
+    f.push("P=" + (v & 1n)); f.push("RW=" + ((v >> 1n) & 1n)); f.push("US=" + ((v >> 2n) & 1n));
+    if (e.kind === "page" || ((v >> 7n) & 1n)) f.push("PS=" + ((v >> 7n) & 1n));
+    else f.push("PS=0");
+    f.push("NX=" + ((v >> 63n) & 1n));
+    return f.join(" ");
+  }
+
+  function renderFields(step) {
+    const { L, va, res } = walkState;
+    const flds = fieldsFor(L);
+    const nSteps = stepCount();
+    const last = step === nSteps - 1;
+    const curLevel = step - 2;
+    let html = '<div class="vfields">';
+    flds.forEach(f => {
+      const w = f.hi - f.lo + 1;
+      const v = bits(va, f.lo, w);
+      let cls = "vf";
+      if (f.sign) cls += " sign" + (res.type === "gp" ? " bad" : "");
+      if (f.off) cls += " offset";
+      if (f.level != null) {
+        if (res.type === "ok" && last && f.level > res.level) cls += " merged";
+        else if (f.level === curLevel) cls += " on";
+        else if (f.level < curLevel) cls += " done";
+      }
+      if (f.off && res.type === "ok" && last && res.offBits > 12) cls += " merged";
+      html += `<div class="${cls}" style="flex-grow:${w}"><div class="nm">${f.n}</div><div class="rg">${f.hi}:${f.lo}</div>` +
+        `<div class="hv">${f.sign ? hx(v) : hx(v, 3)}</div><div class="bv">${v.toString(2).padStart(w, "0")}</div></div>`;
+    });
+    html += "</div>";
+    $("walkFields").innerHTML = html;
+  }
+
+  function stepCount() {
+    const r = walkState.res;
+    if (r.type === "gp") return 2;
+    return 2 + r.path.length + 1;
+  }
+
+  function layoutTree() {
+    const { tree, L } = walkState;
+    const cols = [];
+    for (let l = 0; l < L; l++) cols.push([]);
+    (function dfs(t) {
+      cols[t.level].push(t);
+      [...t.entries.keys()].sort((a, b) => a - b).forEach(k => {
+        const e = t.entries.get(k); if (e.kind === "table") dfs(e.child);
+      });
+    })(tree.root);
+    const colW = L === 5 ? 128 : 150, x0 = 18, top = 46, H = 300, gap = 12;
+    const pos = {};
+    cols.forEach((list, c) => {
+      const n = list.length;
+      const th = Math.min(120, (H - gap * (n - 1)) / n);
+      const tot = n * th + gap * (n - 1);
+      let y = top + (H - tot) / 2;
+      list.forEach(t => { pos[t.id] = { x: x0 + colW * (c + 1), y, h: th }; y += th + gap; });
+    });
+    return { cols, pos, colW, x0, top, H, W: x0 + colW * (L + 2) + 20 };
+  }
+
+  function renderTree(step) {
+    const { tree, L, res } = walkState;
+    const lay = layoutTree();
+    const { pos, colW, x0, top, H } = lay;
+    const svg = $("walkSvg");
+    svg.setAttribute("viewBox", `0 0 ${lay.W} 380`);
+    const RW = 30;
+    const tickY = (t, i) => pos[t.id].y + 3 + (i + 0.5) / 512 * (pos[t.id].h - 6);
+    const cur = step - 2;
+    const visited = new Set();
+    if (res.type !== "gp" && step >= 2) res.path.forEach((p, k) => { if (k <= cur || step === stepCount() - 1) visited.add(p.table.id); });
+    let s = "";
+    // 열 제목
+    s += `<text x="${x0 + 20}" y="22" text-anchor="middle" class="sm b">CR3</text>`;
+    LV[L].names.forEach((n, c) => {
+      const cnt = lay.cols[c].length;
+      s += `<text x="${x0 + colW * (c + 1) + 15}" y="22" text-anchor="middle" class="sm b">${n}</text>` +
+        `<text x="${x0 + colW * (c + 1) + 15}" y="36" text-anchor="middle" class="sm muted">테이블 ${cnt}장</text>`;
+    });
+    s += `<text x="${x0 + colW * (L + 1) + 30}" y="22" text-anchor="middle" class="sm b">물리 페이지</text>`;
+    // 간선
+    tree.tables.forEach(t => {
+      t.entries.forEach((e, i) => {
+        if (e.kind !== "table") return;
+        const a = pos[t.id], b = pos[e.child.id];
+        const y1 = tickY(t, i), y2 = b.y + b.h / 2, x1 = a.x + RW, x2 = b.x;
+        let on = false;
+        if (res.type !== "gp") res.path.forEach((p, k) => { if (p.table === t && p.idx === i && (k <= cur || step === stepCount() - 1)) on = true; });
+        s += `<path d="M${x1},${y1} C${x1 + 40},${y1} ${x2 - 40},${y2} ${x2},${y2}" class="edge${on ? " on" : ""}"/>`;
+      });
+    });
+    // CR3
+    const rp = pos[tree.root.id];
+    const cr3on = step >= 1 && res.type !== "gp";
+    s += `<rect x="${x0}" y="${rp.y + rp.h / 2 - 18}" width="44" height="36" rx="5" class="${cr3on ? "f-acc" : "f-code"}"/>` +
+      `<text x="${x0 + 22}" y="${rp.y + rp.h / 2 + 4}" text-anchor="middle" class="sm b">CR3</text>` +
+      `<text x="${x0 + 22}" y="${rp.y + rp.h / 2 + 34}" text-anchor="middle" class="sm muted mono">${hx(tree.root.phys)}</text>` +
+      `<path d="M${x0 + 44},${rp.y + rp.h / 2} L${rp.x},${rp.y + rp.h / 2}" class="edge${cr3on ? " on" : ""}"/>`;
+    // 테이블
+    tree.tables.forEach(t => {
+      const p = pos[t.id];
+      const on = visited.has(t.id);
+      s += `<rect x="${p.x}" y="${p.y}" width="${RW}" height="${p.h}" rx="3" class="t-rect${on ? " on" : ""}"/>`;
+      t.entries.forEach((e, i) => {
+        const y = tickY(t, i);
+        let cls = "tk";
+        if (e.kind === "page") cls += e.size === "4K" ? " leaf" : " huge";
+        s += `<line x1="${p.x + 2}" x2="${p.x + RW - 2}" y1="${y}" y2="${y}" class="${cls}"/>`;
+      });
+      s += `<text x="${p.x + RW + 4}" y="${p.y + 12}" class="sm muted">${t.entries.size}/512</text>`;
+    });
+    // 현재 엔트리 강조
+    if (res.type !== "gp" && step >= 2) {
+      const k = Math.min(cur, res.path.length - 1);
+      const p = res.path[k];
+      const tp = pos[p.table.id];
+      const y = tickY(p.table, p.idx);
+      if (p.entry) s += `<line x1="${tp.x - 4}" x2="${tp.x + RW + 4}" y1="${y}" y2="${y}" class="tk cur"/>`;
+      else s += `<line x1="${tp.x - 6}" x2="${tp.x + RW + 6}" y1="${y}" y2="${y}" class="miss"/>` +
+        `<text x="${tp.x + RW + 8}" y="${y + 4}" class="sm b t-bad">[${hx(B(p.idx), 3)}] P=0</text>`;
+      if (p.entry) s += `<text x="${tp.x + RW + 4}" y="${Math.min(y + 4, tp.y + tp.h + 14)}" class="sm b t-acc">[${hx(B(p.idx), 3)}]</text>`;
+    }
+    // 최종 프레임
+    if (res.type === "ok" && step === stepCount() - 1) {
+      const p = res.path[res.path.length - 1];
+      const tp = pos[p.table.id];
+      const y = tickY(p.table, p.idx);
+      const fx = x0 + colW * (L + 1), fy = top + H / 2 - 40;
+      const label = { "4K": "4 KiB", "2M": "2 MiB", "1G": "1 GiB" }[res.size];
+      s += `<path d="M${tp.x + RW},${y} C${tp.x + RW + 60},${y} ${fx - 60},${fy + 40} ${fx},${fy + 40}" class="edge on"/>` +
+        `<rect x="${fx}" y="${fy}" width="66" height="80" rx="5" class="${res.size === "4K" ? "f-ok" : "f-warn"}"/>` +
+        `<text x="${fx + 33}" y="${fy + 36}" text-anchor="middle" class="sm b">${label}</text>` +
+        `<text x="${fx + 33}" y="${fy + 54}" text-anchor="middle" class="sm muted">프레임</text>`;
+    }
+    if (res.type === "gp") {
+      s += `<text x="${lay.W / 2}" y="${top + H + 26}" text-anchor="middle" class="b t-bad">non-canonical 주소: 페이지 워크를 시작하지 않는다 (#GP)</text>`;
+    } else {
+      s += `<text x="${x0}" y="${top + H + 26}" class="sm muted">눈금: 회색 = 하위 테이블 포인터, 초록 = 4KB 리프, 주황(굵게) = PS=1 대형 페이지 리프</text>`;
+    }
+    svg.innerHTML = s;
+  }
+
+  function caption(step) {
+    const { L, va, res, tree } = walkState;
+    const cfg = LV[L];
+    if (step === 0) {
+      const ok = res.type !== "gp";
+      const idxs = cfg.names.map((n, k) => `${n}=${hx(B(idxOf(va, cfg.shifts[k])), 3)}`).join(", ");
+      return `<b>1. 주소 분해</b> ${hx64(va)} → ${idxs}, offset=${hx(va & 0xFFFn, 3)}<br>` +
+        (ok ? `<span class="c-ok">canonical 확인 통과</span>: 비트 63:${cfg.vaBits} 가 비트 ${cfg.vaBits - 1}과 같다.`
+            : `<span class="c-bad">canonical 위반</span>: 비트 63:${cfg.vaBits}가 비트 ${cfg.vaBits - 1}의 부호 확장이 아니다.`);
+    }
+    if (res.type === "gp") return `<b>2. #GP 예외</b> MMU는 TLB도 페이지 테이블도 보지 않고 일반 보호 예외를 낸다. Linux는 사용자 모드라면 SIGSEGV를 보내고, 커널 모드라면 "general protection fault ... non-canonical address"로 oops를 낸다.`;
+    if (step === 1) return `<b>2. CR3</b> = ${hx(tree.root.phys)} → ${cfg.names[0]} 테이블의 물리 주소. (TLB 미스를 가정했다. 실제로는 TLB나 paging-structure cache에서 일부 단계를 건너뛸 수 있다.)`;
+    const k = step - 2;
+    if (k < res.path.length) {
+      const p = res.path[k];
+      const ea = p.table.phys + B(p.idx) * 8n;
+      const head = `<b>${k + 3}. ${cfg.names[k]}[${hx(B(p.idx), 3)}]</b> 엔트리 주소 = ${hx(p.table.phys)} + ${p.idx}×8 = <span class="mono">${hx(ea)}</span><br>`;
+      if (!p.entry) return head + `<span class="c-bad">엔트리 값 0 (P=0)</span>: 이 아래 하위 테이블은 존재하지 않는다. 워크 중단.`;
+      const e = p.entry;
+      if (e.kind === "table") return head + `값 <span class="mono">${hx(e.val, 16)}</span> (${flagStr(e)}) → 다음 테이블 ${cfg.names[k + 1]} @ ${hx(e.child.phys)}`;
+      const big = e.size !== "4K";
+      return head + `값 <span class="mono">${hx(e.val, 16)}</span> (${flagStr(e)}) → ` +
+        (big ? `<span class="c-warn"><b>PS=1</b>: ${e.size === "2M" ? "2MB" : "1GB"} 페이지 리프. 워크가 여기서 끝난다.</span>` : `4KB 페이지 프레임 ${hx(e.base)}`);
+    }
+    if (res.type === "pf") return `<b>#PF 예외</b> ${cfg.names[res.level]} 레벨에서 P=0을 만났다. CR2에 ${hx64(va)}를 기록하고 커널의 페이지 폴트 핸들러로 진입한다. 커널은 VMA를 확인해 요구 페이징이면 테이블과 페이지를 할당하고, 아니면 SIGSEGV를 보낸다 (6장).`;
+    const offMask = (1n << B(res.offBits)) - 1n;
+    return `<b>완료</b> 물리 주소 = 프레임 ${hx(res.phys - (va & offMask))} + 오프셋 ${hx(va & offMask)} (${res.offBits}비트) = <span class="mono c-ok"><b>${hx(res.phys)}</b></span>. ` +
+      `메모리 참조 ${res.path.length}회 + 데이터 접근 1회. 이 변환 결과는 TLB에 ${res.size === "4K" ? "4KB" : res.size === "2M" ? "2MB" : "1GB"} 엔트리로 캐시된다.`;
+  }
+
+  function renderStats() {
+    const t = walkState.tree;
+    const cfg = LV[walkState.L];
+    const single = (1n << B(cfg.vaBits - 12)) * 8n;
+    $("walkStats").innerHTML =
+      `<div class="stat"><div class="k">할당된 테이블</div><div class="v">${t.tables.length}장</div></div>` +
+      `<div class="stat"><div class="k">페이지 테이블 메모리</div><div class="v">${fmtBytes(B(t.tables.length) * 4096n)}</div></div>` +
+      `<div class="stat"><div class="k">단일 레벨이었다면</div><div class="v">${fmtBytes(single)}</div></div>`;
+  }
+
+  function walkRebuild() {
+    const va = parseVA($("walkVA").value);
+    if (va == null) { $("walkVA").style.borderColor = "var(--bad)"; return; }
+    $("walkVA").style.borderColor = "";
+    walkState.va = va;
+    walkState.tree = buildTree(walkState.L);
+    walkState.res = walk(va, walkState.tree);
+    const box = $("walkStep");
+    box.innerHTML = "";
+    walkState.stepper = MM.stepper(box, {
+      steps: stepCount(), interval: 1500,
+      render(i) { renderFields(i); renderTree(i); return caption(i); }
+    });
+    renderStats();
+  }
+
+  if ($("walkW")) {
+    const pr = $("walkPresets");
+    PRESETS.forEach(([n, v]) => {
+      const b = MM.el("button", { class: "btn", type: "button" }, n);
+      b.onclick = () => { $("walkVA").value = v; walkRebuild(); };
+      pr.append(b);
+    });
+    $("walkGo").onclick = walkRebuild;
+    $("walkVA").addEventListener("keydown", e => { if (e.key === "Enter") walkRebuild(); });
+    $("walkMode").addEventListener("click", e => {
+      const l = e.target.dataset.l; if (!l) return;
+      walkState.L = +l;
+      [...$("walkMode").children].forEach(b => b.classList.toggle("on", b.dataset.l === l));
+      walkRebuild();
+    });
+    walkRebuild();
+  }
+
+  /* ================= 위젯 2: 메모리 사용량 ================= */
+  const ARCH = {
+    x86_32: { vaBits: 32, levelBits: [10, 10], names: ["PD", "PT"], pte: 4, user: 3n << 30n },
+    x64_4: { vaBits: 48, levelBits: [9, 9, 9, 9], names: ["PML4", "PDPT", "PD", "PT"], pte: 8, user: 1n << 47n },
+    x64_5: { vaBits: 57, levelBits: [9, 9, 9, 9, 9], names: ["PML5", "PML4", "PDPT", "PD", "PT"], pte: 8, user: 1n << 56n }
+  };
+
+  function distinctPrefixes(regions, shift) {
+    const s = B(shift);
+    let cnt = 0n, last = -1n;
+    for (const r of regions) {
+      let lo = r.start >> s; const hi = (r.end - 1n) >> s;
+      if (hi <= last) continue;
+      if (lo <= last) lo = last + 1n;
+      cnt += hi - lo + 1n; last = hi;
+    }
+    return cnt;
+  }
+
+  function ptUsage(arch, regions, huge) {
+    let lb = arch.levelBits.slice(), names = arch.names.slice(), pageShift = 12;
+    if (huge) { lb = lb.slice(0, -1); names = names.slice(0, -1); pageShift = 21; }
+    const rows = []; let total = 0n;
+    for (let j = 0; j < lb.length; j++) {
+      const cover = pageShift + lb.slice(j).reduce((a, b) => a + b, 0);
+      const count = distinctPrefixes(regions, cover);
+      const tsize = (1n << B(lb[j])) * B(arch.pte);
+      rows.push({ name: names[j], cover, count, tsize, bytes: count * tsize });
+      total += count * tsize;
+    }
+    const single = (1n << B(arch.vaBits - pageShift)) * B(arch.pte);
+    return { rows, total, single, pageShift };
+  }
+
+  function makeRegions(arch, n, size, mode, huge) {
+    const align = huge ? 1n << 21n : 1n << 12n;
+    size = (size + align - 1n) / align * align;
+    const base = 0x400000n;
+    const avail = arch.user - base;
+    let note = "";
+    if (B(n) * size > avail) return { error: "영역 전체 크기가 사용자 주소 공간을 넘는다." };
+    let stride = size;
+    if (mode === "spread") {
+      stride = avail / B(n) / align * align;
+      if (stride < size) { stride = size; note = "영역이 커서 분산할 여유가 없어 연속 배치로 계산했다."; }
+    }
+    const regions = [];
+    for (let i = 0; i < n; i++) { const s = base + B(i) * stride; regions.push({ start: s, end: s + size }); }
+    return { regions, size, stride, note };
+  }
+
+  function memUpdate() {
+    const arch = ARCH[$("memArch").value];
+    const hugeBox = $("memHuge");
+    hugeBox.disabled = arch.vaBits === 32;
+    if (hugeBox.disabled) hugeBox.checked = false;
+    const huge = hugeBox.checked;
+    const n = +$("memN").value; $("memNv").textContent = n;
+    const size = B($("memSize").value);
+    const mode = $("memLayout").value;
+    const g = makeRegions(arch, n, size, mode, huge);
+    if (g.error) {
+      $("memTbl").innerHTML = ""; $("memBars").innerHTML = ""; $("memStats").innerHTML = "";
+      $("memNote").innerHTML = `<span class="c-bad">${g.error}</span>`; return;
+    }
+    const u = ptUsage(arch, g.regions, huge);
+    let t = `<tr><th>레벨</th><th>테이블 1장이 담당</th><th>테이블 수</th><th>메모리</th></tr>`;
+    u.rows.forEach(r => {
+      t += `<tr><td>${r.name}${huge && r === u.rows[u.rows.length - 1] ? " (PS=1 리프)" : ""}</td><td>${fmtBytes(1n << B(r.cover))}</td><td class="mono">${r.count}</td><td class="mono">${fmtBytes(r.bytes)}</td></tr>`;
+    });
+    t += `<tr><th colspan="2">다단계 합계</th><th class="mono">${u.rows.reduce((a, r) => a + r.count, 0n)}</th><th class="mono">${fmtBytes(u.total)}</th></tr>`;
+    $("memTbl").innerHTML = t;
+    const mapped = B(n) * g.size;
+    const lg = x => Math.log2(Number(x) || 1);
+    const maxL = Math.max(lg(u.single), lg(mapped), lg(u.total));
+    const minL = 10;
+    const w = x => Math.max(1, (lg(x) - minL) / (maxL - minL) * 100);
+    $("memBars").innerHTML =
+      `<div class="row"><span class="lbl">단일 레벨</span><span class="bar" style="width:${w(u.single) * 0.7}%;background:var(--bad)"></span><span class="val">${fmtBytes(u.single)}</span></div>` +
+      `<div class="row"><span class="lbl">다단계</span><span class="bar" style="width:${w(u.total) * 0.7}%;background:var(--accent)"></span><span class="val">${fmtBytes(u.total)}</span></div>` +
+      `<div class="row"><span class="lbl">매핑된 데이터</span><span class="bar" style="width:${w(mapped) * 0.7}%;background:var(--ok)"></span><span class="val">${fmtBytes(mapped)}</span></div>` +
+      `<div class="note">막대 길이는 로그 축(1KiB 기준)이다.</div>`;
+    const ratio = Number(u.single) / Number(u.total);
+    const ovh = Number(u.total) / Number(mapped) * 100;
+    $("memStats").innerHTML =
+      `<div class="stat"><div class="k">단일 레벨 / 다단계</div><div class="v">${ratio >= 1 ? (ratio < 10 ? ratio.toFixed(2) : Math.round(ratio).toLocaleString()) + "배" : "다단계가 더 큼"}</div></div>` +
+      `<div class="stat"><div class="k">데이터 대비 테이블 오버헤드</div><div class="v">${ovh < 1 ? ovh.toPrecision(2) : ovh.toFixed(1)}%</div></div>` +
+      `<div class="stat"><div class="k">영역 간격</div><div class="v">${fmtBytes(g.stride)}</div></div>`;
+    let note = g.note;
+    if (huge && size < (1n << 21n)) note += " 2MB 페이지는 영역을 2MB로 올림해 매핑한다(내부 단편화).";
+    $("memNote").textContent = note;
+  }
+
+  if ($("memW")) {
+    ["memArch", "memHuge", "memN", "memSize", "memLayout"].forEach(id => $(id).addEventListener("input", memUpdate));
+    memUpdate();
+  }
+
+  /* ================= 위젯 3: ARM64 granule ================= */
+  const ARM_VA = { 4: [39, 48, 52], 16: [36, 47, 48, 52], 64: [42, 48, 52] };
+  const ARM_BLOCK = { 4: { 1: "1GB 블록", 2: "2MB 블록" }, 16: { 2: "32MB 블록" }, 64: { 2: "512MB 블록" } };
+
+  function armSplit(gKB, vaBits) {
+    const g = Math.log2(gKB * 1024), per = g - 3, rem = vaBits - g;
+    const n = Math.ceil(rem / per), top = rem - (n - 1) * per;
+    const levels = []; let hi = vaBits - 1;
+    for (let k = 0; k < n; k++) {
+      const w = k === 0 ? top : per, lvl = 4 - n + k;
+      levels.push({ name: "L" + lvl, lvl, hi, lo: hi - w + 1, w, entries: 2 ** w });
+      hi -= w;
+    }
+    return { g, per, levels };
+  }
+  function armTTBR(va, vaBits) {
+    const top = va >> B(vaBits);
+    if (top === 0n) return 0;
+    if (top === (1n << B(64 - vaBits)) - 1n) return 1;
+    return -1;
+  }
+
+  function armFillBits() {
+    const g = +$("armG").value, sel = $("armBits"), prev = +sel.value;
+    sel.innerHTML = ARM_VA[g].map(b => `<option value="${b}">${b}비트${b === 52 ? (g === 64 ? " (LVA)" : " (LPA2)") : ""}</option>`).join("");
+    sel.value = ARM_VA[g].includes(prev) ? prev : (ARM_VA[g].includes(48) ? 48 : ARM_VA[g][0]);
+  }
+
+  function armUpdate() {
+    const g = +$("armG").value, vb = +$("armBits").value;
+    const va = parseVA($("armVA").value);
+    const out = $("armOut");
+    if (va == null) { out.innerHTML = `<p class="c-bad">16진수 64비트 주소를 입력하자.</p>`; return; }
+    const sp = armSplit(g, vb);
+    const tt = armTTBR(va, vb);
+    let html = '<div class="stage"><div class="vfields">';
+    html += `<div class="vf sign${tt < 0 ? " bad" : ""}" style="flex-grow:${Math.max(64 - vb, 4)}"><div class="nm">${tt === 0 ? "TTBR0" : tt === 1 ? "TTBR1" : "폴트"}</div><div class="rg">63:${vb}</div><div class="hv">${hx(va >> B(vb))}</div></div>`;
+    sp.levels.forEach(l => {
+      const v = bits(va, l.lo, l.w);
+      html += `<div class="vf on" style="flex-grow:${l.w}"><div class="nm">${l.name}</div><div class="rg">${l.hi}:${l.lo}</div><div class="hv">${hx(v)}</div><div class="bv">${v.toString(2).padStart(l.w, "0")}</div></div>`;
+    });
+    html += `<div class="vf offset" style="flex-grow:${sp.g}"><div class="nm">오프셋</div><div class="rg">${sp.g - 1}:0</div><div class="hv">${hx(bits(va, 0, sp.g))}</div></div>`;
+    html += "</div></div>";
+    html += `<div class="tbl-wrap"><table><tr><th>레벨</th><th>인덱스 비트</th><th>엔트리 수</th><th>테이블 크기</th><th>엔트리 하나가 담당</th><th>리프 가능 여부</th></tr>`;
+    sp.levels.forEach((l, k) => {
+      const last = k === sp.levels.length - 1;
+      const leaf = last ? `${g}KB 페이지` : (ARM_BLOCK[g][l.lvl] || "테이블만");
+      html += `<tr><td>${l.name}</td><td>${l.w}</td><td>${l.entries}</td><td>${fmtBytes(B(l.entries) * 8n)}</td><td>${fmtBytes(1n << B(l.lo))}</td><td>${leaf}</td></tr>`;
+    });
+    html += `</table></div>`;
+    html += `<div class="stat-row"><div class="stat"><div class="k">레벨 수</div><div class="v">${sp.levels.length}</div></div>` +
+      `<div class="stat"><div class="k">T${tt === 1 ? 1 : 0}SZ</div><div class="v">${64 - vb}</div></div>` +
+      `<div class="stat"><div class="k">레벨당 비트</div><div class="v">${sp.per}</div></div>` +
+      `<div class="stat"><div class="k">변환 레지스터</div><div class="v ${tt < 0 ? "c-bad" : ""}">${tt < 0 ? "변환 폴트" : "TTBR" + tt + "_EL1"}</div></div></div>`;
+    if (tt < 0) html += `<p class="note">비트 63:${vb}가 모두 0도 모두 1도 아니므로 어느 TTBR 범위에도 속하지 않는다. x86-64의 non-canonical 주소에 해당한다.</p>`;
+    out.innerHTML = html;
+  }
+
+  if ($("armW")) {
+    $("armG").addEventListener("change", () => { armFillBits(); armUpdate(); });
+    $("armBits").addEventListener("change", armUpdate);
+    $("armVA").addEventListener("input", armUpdate);
+    $("armW").querySelectorAll("[data-va]").forEach(b => b.onclick = () => { $("armVA").value = b.dataset.va; armUpdate(); });
+    armFillBits(); armUpdate();
+  }
+
+  /* ================= 위젯 4: Linux 레벨 접기 ================= */
+  const FOLD = [
+    { n: "x86-64 4단계", lv: ["PML4", null, "PDPT", "PD", "PT"], sh: [39, 39, 30, 21, 12], note: "p4d는 런타임에 접힌다(pgtable_l5_enabled()가 false). 같은 커널이 LA57 CPU에서는 5단계로 동작한다." },
+    { n: "x86-64 5단계 (LA57)", lv: ["PML5", "PML4", "PDPT", "PD", "PT"], sh: [48, 39, 30, 21, 12], note: "다섯 레벨이 모두 실제 하드웨어 테이블이다. 사용자 mmap은 힌트 없이는 47비트 아래에 배치된다." },
+    { n: "x86 32비트 (non-PAE)", lv: ["PD", null, null, null, "PT"], sh: [22, 22, 22, 22, 12], note: "CONFIG_PGTABLE_LEVELS=2. pgd가 페이지 디렉터리(1024개), pte가 페이지 테이블(1024개)이고 사이 세 레벨이 접힌다." },
+    { n: "x86 32비트 PAE", lv: ["PDPT", null, null, "PD", "PT"], sh: [30, 30, 30, 21, 12], note: "CONFIG_PGTABLE_LEVELS=3. pgd가 4개짜리 PDPT다." },
+    { n: "ARM64 4KB / 39비트", lv: ["L1", null, null, "L2", "L3"], sh: [30, 30, 30, 21, 12], note: "3단계. Android 기기에서 흔한 구성이다." },
+    { n: "ARM64 4KB / 48비트", lv: ["L0", null, "L1", "L2", "L3"], sh: [39, 39, 30, 21, 12], note: "4단계. x86-64 4단계와 같은 9|9|9|9|12 구조다." },
+    { n: "ARM64 16KB / 47비트", lv: ["L1", null, null, "L2", "L3"], sh: [36, 36, 36, 25, 14], note: "3단계, 레벨당 11비트. PMD 하나가 32MB를 담당한다." },
+    { n: "ARM64 64KB / 42비트", lv: ["L2", null, null, null, "L3"], sh: [29, 29, 29, 29, 16], note: "2단계, 레벨당 13비트. pgd 엔트리 하나가 512MB를 담당한다." },
+    { n: "ARM64 64KB / 48비트", lv: ["L1", null, null, "L2", "L3"], sh: [42, 42, 42, 29, 16], note: "3단계. L1은 6비트(64개)만 쓴다." }
+  ];
+  const LNAMES = ["pgd", "p4d", "pud", "pmd", "pte"];
+  const SHN = ["PGDIR_SHIFT", "P4D_SHIFT", "PUD_SHIFT", "PMD_SHIFT", "PAGE_SHIFT"];
+
+  function foldUpdate() {
+    const c = FOLD[+$("foldSel").value];
+    $("foldRow").innerHTML = LNAMES.map((n, k) => {
+      const hw = c.lv[k];
+      return `<div class="fold${hw ? "" : " folded"}"><b>${n}</b>${hw ? hw : "접힘"}<div class="note mono">${SHN[k]}=${c.sh[k]}</div></div>`;
+    }).join("");
+    const real = c.lv.filter(Boolean).length;
+    $("foldNote").innerHTML = `하드웨어 레벨 ${real}개. ${c.note} 접힌 레벨의 SHIFT는 바로 위 레벨과 같아서, 엔트리 1개짜리 테이블처럼 동작한다.`;
+  }
+  if ($("foldW")) {
+    $("foldSel").innerHTML = FOLD.map((c, i) => `<option value="${i}">${c.n}</option>`).join("");
+    $("foldSel").addEventListener("change", foldUpdate);
+    foldUpdate();
+  }
+
+  // node 검증용 내보내기
+  if (typeof module !== "undefined") module.exports = { parseVA, isCanonical, buildTree, walk, distinctPrefixes, ptUsage, makeRegions, ARCH, armSplit, armTTBR, fmtBytes, idxOf };
+})();
+</script>
+</body></html>

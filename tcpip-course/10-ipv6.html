@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10. IPv6 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.calc{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+@media (max-width:760px){.calc{grid-template-columns:1fr}}
+.calc .out{background:var(--surface-2);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:.86rem;line-height:1.9;word-break:break-all}
+.calc .out b{color:var(--primary-text)}
+.calc .out .big{font-size:1.15rem;font-weight:800;color:var(--primary-text)}
+.calc input[type=text]{width:100%;font-family:var(--mono)}
+.grp{display:inline-block;padding:2px 6px;border-radius:5px;margin:2px;background:var(--surface-3);font-family:var(--mono)}
+.grp.zero{background:var(--red-soft);color:var(--red)}
+.grp.run{background:var(--primary-soft);color:var(--primary-text);font-weight:700}
+.grp.pfx{background:var(--green-soft);color:var(--green)}
+.grp.sub{background:var(--accent-soft);color:var(--accent)}
+.grp.iid{background:var(--purple-soft);color:var(--purple)}
+.addr-bar{display:flex;height:44px;border-radius:8px;overflow:hidden;margin:10px 0;font-size:.8rem;color:#fff;font-weight:600}
+.addr-bar div{display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.2}
+.seq-msg{transition:opacity .4s}
+.ext-chain{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:10px 0}
+.ext-chain .hdr-box{padding:8px 12px;border-radius:8px;color:#fff;font-size:.8rem;font-weight:600;text-align:center;min-width:110px;cursor:pointer;transition:transform .12s}
+.ext-chain .hdr-box:hover{transform:translateY(-2px)}
+.ext-chain .hdr-box small{display:block;font-weight:400;opacity:.9;font-family:var(--mono);font-size:.7rem}
+.ext-chain .arr{color:var(--muted);font-weight:700}
+</style>
+</head>
+<body data-chapter="10">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 2 · 심화 — CHAPTER 10</div>
+  <h1>IPv6</h1>
+  <p class="lead">IPv6는 "주소가 길어진 IPv4"가 아닙니다. 헤더를 고정 길이로 단순화하고, 단편화를 종단으로 밀어내고, ARP·DHCP·ICMP의 역할을 ICMPv6 하나로 재편했으며, 호스트가 스스로 주소를 만들어 쓰도록 설계했습니다. 이 장은 그 설계 결정의 이유를 중심으로 IPv6를 익힙니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 80분</span><span class="chip l-net">인터넷</span><span class="chip l-link">링크</span><span class="chip">RFC 8200 · 4291 · 5952 · 4861 · 4862 · 8981 · 6146 · 8305</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>IPv6 주소를 RFC 5952 규칙대로 축약·전개하고, 주소 유형을 프리픽스만 보고 판별할 수 있다.</li>
+    <li>IPv4와 IPv6 헤더를 필드 단위로 비교하고, 사라진 필드의 이유를 설명할 수 있다.</li>
+    <li>NDP(이웃 탐색)가 ARP와 DHCP의 역할을 어떻게 대체하는지 패킷 흐름으로 설명할 수 있다.</li>
+    <li>SLAAC로 호스트가 주소를 얻는 전 과정(링크로컬 → DAD → RA → GUA)을 그릴 수 있다.</li>
+    <li>Dual Stack · 터널링 · NAT64/DNS64의 동작과 적용 상황을 구분할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="why"><span class="num">10.1</span>왜 IPv6인가: 2³²의 한계</h2>
+<p>IPv4 주소는 약 43억 개입니다. 1990년대 초 이미 클래스 B 고갈이 예측되었고, CIDR(1993)과 NAT(1994)로 수명을 20년 이상 연장했지만 2011년 2월 IANA의 중앙 풀이, 2019년 11월 RIPE NCC의 마지막 /22가 소진되었습니다. 오늘날 IPv4 주소는 <b>거래 시장</b>에서 개당 수십 달러에 팔립니다.</p>
+<p>IETF는 1990년대 중반 IPng 작업에서 "주소만 늘리자"가 아니라 20년간 드러난 IPv4의 설계 부채를 함께 정리하기로 했습니다(RFC 1752 → RFC 2460 → RFC 8200). 결과는 다음 네 가지로 요약됩니다.</p>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">주소 공간 128비트</h4><p>3.4 × 10³⁸개. 지구 표면 1 m²당 6.7 × 10²³개. 목적은 "모자라지 않게"가 아니라 <b>계층적 집계와 자동 구성을 위한 여유</b>다. 서브넷 하나가 /64 = 1.8 × 10¹⁹개.</p></div>
+  <div class="card"><h4 style="margin-top:0">헤더 단순화</h4><p>필드 13개 → 8개. 길이 가변(20–60) → <b>고정 40바이트</b>. 라우터가 체크섬 재계산·단편화를 하지 않는다. 옵션은 확장 헤더 체인으로.</p></div>
+  <div class="card"><h4 style="margin-top:0">자동 구성 내장</h4><p>DHCP 서버 없이 라우터 광고(RA)만으로 호스트가 주소를 만든다(SLAAC). 링크로컬 주소는 라우터조차 없어도 생긴다.</p></div>
+  <div class="card"><h4 style="margin-top:0">종단 간 복원</h4><p>NAT가 필요 없으므로 모든 호스트가 전역 주소를 가진다. P2P·IoT·IPsec이 NAT 통과 없이 동작한다. (방화벽은 여전히 필요하다 — 주소 도달성과 접근 허용은 별개.)</p></div>
+</div>
+
+<h2 id="notation"><span class="num">10.2</span>주소 표기와 축약 <small>(인터랙티브)</small></h2>
+<p>128비트를 16비트씩 8그룹으로 나눠 16진수로 쓰고 콜론으로 구분합니다. RFC 5952는 사람마다 다르게 쓰던 표기를 <b>하나의 정규형</b>으로 통일했습니다.</p>
+<ol>
+  <li>각 그룹의 <b>선행 0은 생략</b>한다. <code>0db8</code> → <code>db8</code>, <code>0000</code> → <code>0</code>.</li>
+  <li>연속된 0 그룹은 <b><code>::</code>로 한 번만</b> 줄인다. 가장 긴 연속 구간을 택하고, 길이가 같으면 <b>앞쪽</b>을 택한다. 0 그룹 하나는 <code>::</code>로 줄이지 않는다.</li>
+  <li>16진수는 <b>소문자</b>.</li>
+  <li>URL에서는 포트와 구분하기 위해 대괄호: <code>http://[2001:db8::1]:8080/</code>.</li>
+</ol>
+<div class="card calc">
+  <div>
+    <label class="small">IPv6 주소 입력 (전체 표기 또는 축약 표기)</label>
+    <input type="text" id="v6-in" value="2001:0db8:0000:0000:0000:ff00:0042:8329">
+    <div class="row" style="margin-top:8px">
+      <button class="btn sm" data-ex="2001:0db8:0000:0000:0000:ff00:0042:8329">예시 1</button>
+      <button class="btn sm" data-ex="fe80:0:0:0:0:0:0:1">예시 2 (fe80)</button>
+      <button class="btn sm" data-ex="2001:db8:0:0:1:0:0:1">예시 3 (동률)</button>
+      <button class="btn sm" data-ex="::ffff:192.0.2.128">예시 4 (IPv4-mapped)</button>
+      <button class="btn sm" data-ex="2001:DB8::ABCD:0:0:1">예시 5 (대문자)</button>
+    </div>
+  </div>
+  <div class="out" id="v6-out"></div>
+</div>
+
+<h2 id="types"><span class="num">10.3</span>주소 유형: 프리픽스로 읽는다</h2>
+<p>IPv6에는 <b>브로드캐스트가 없습니다</b>. "모두에게"는 멀티캐스트 ff02::1(링크의 모든 노드)로 대신하고, 그 밖의 모든 일대다 통신도 멀티캐스트로 합니다. 또 하나의 특징은 인터페이스가 <b>여러 주소를 동시에</b> 갖는 것이 정상이라는 점입니다(링크로컬 1개 + GUA 1개 이상 + 임시 주소들).</p>
+<table>
+  <thead><tr><th>프리픽스</th><th>유형</th><th>범위</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>2000::/3</code></td><td>Global Unicast (GUA)</td><td>전역</td><td>인터넷 라우팅 가능. 2000:–3fff:로 시작. ISP/RIR에서 할당 (보통 /48 조직, /56 가정, /64 서브넷).</td></tr>
+    <tr><td><code>fc00::/7</code></td><td>Unique Local (ULA)</td><td>사이트</td><td>IPv4 사설 주소의 대응물. 실제로는 <code>fd00::/8</code>(L 비트=1)만 사용, 40비트 Global ID를 <b>무작위</b> 생성해 조직 합병 시 충돌을 피한다(RFC 4193).</td></tr>
+    <tr><td><code>fe80::/10</code></td><td>Link-Local</td><td>링크</td><td>모든 인터페이스가 자동 생성. 라우터가 포워딩하지 않음. NDP·라우팅 프로토콜의 다음 홉 주소로 쓰인다. 같은 호스트의 여러 링크에 같은 주소가 있을 수 있어 zone ID가 필요(<code>fe80::1%eth0</code>).</td></tr>
+    <tr><td><code>ff00::/8</code></td><td>Multicast</td><td>플래그·스코프별</td><td><code>ff02::1</code> 모든 노드, <code>ff02::2</code> 모든 라우터, <code>ff02::1:ffXX:XXXX</code> solicited-node, <code>ff05::1:3</code> 사이트 DHCP 서버. 두 번째 바이트 하위 4비트가 스코프(1 인터페이스, 2 링크, 5 사이트, e 전역).</td></tr>
+    <tr><td><code>::1/128</code></td><td>Loopback</td><td>호스트</td><td>IPv4 127.0.0.1의 대응. 단 하나뿐.</td></tr>
+    <tr><td><code>::/128</code></td><td>Unspecified</td><td>—</td><td>"아직 주소 없음". DAD 중인 NS의 출발지, SYN 전 소켓 바인딩.</td></tr>
+    <tr><td><code>::ffff:0:0/96</code></td><td>IPv4-mapped</td><td>호스트 내부</td><td><code>::ffff:192.0.2.1</code>. dual-stack 소켓이 IPv4 연결을 IPv6 API로 표현할 때. 네트워크에 나가지 않는다.</td></tr>
+    <tr><td><code>64:ff9b::/96</code></td><td>NAT64 Well-Known</td><td>전역</td><td>IPv4 주소를 IPv6로 매핑하는 기본 프리픽스(RFC 6052). 10.7절.</td></tr>
+    <tr><td><code>2001:db8::/32</code></td><td>Documentation</td><td>—</td><td>문서·예제 전용. 이 과정의 모든 예시가 사용.</td></tr>
+  </tbody>
+</table>
+<div class="callout"><div class="t">📌 Anycast</div><p>IPv6는 유니캐스트 주소를 여러 인터페이스에 할당하는 <b>anycast</b>를 공식 지원합니다(별도 주소 공간 없음). 가장 가까운 인스턴스로 라우팅되므로 DNS 루트 서버(13개 주소, 1,900개 이상 인스턴스), CDN, DDoS 흡수에 쓰입니다. IPv4에서도 BGP로 같은 효과를 내지만, IPv6는 서브넷-라우터 anycast(프리픽스::0)를 규격에 넣었습니다.</p></div>
+
+<h2 id="structure"><span class="num">10.4</span>주소 구조와 인터페이스 식별자 <small>(인터랙티브)</small></h2>
+<p>GUA는 세 부분으로 나뉩니다. 핵심은 <b>인터페이스 ID가 64비트로 고정</b>되어 있어 하위 64비트를 호스트가 스스로 만들 수 있다는 점입니다. 이것이 SLAAC의 전제입니다.</p>
+<div class="addr-bar">
+  <div style="flex:48;background:var(--l-net)">글로벌 라우팅 프리픽스<br>n비트 (보통 48)</div>
+  <div style="flex:16;background:var(--accent)">서브넷 ID<br>64−n (보통 16)</div>
+  <div style="flex:64;background:var(--l-app)">인터페이스 ID<br>64비트</div>
+</div>
+<p>/48을 받은 조직은 서브넷 ID 16비트로 65,536개의 /64를 만들 수 있습니다. IPv4처럼 "호스트 수에 맞춰 서브넷을 쪼개는" 계산은 하지 않습니다. <b>모든 서브넷은 /64</b>입니다(점대점 링크에 /127을 쓰는 예외 RFC 6164 제외).</p>
+<h3>인터페이스 ID 만들기: Modified EUI-64</h3>
+<p>초기 방식(RFC 4291 부록 A)은 48비트 MAC을 64비트로 늘립니다. 가운데에 <code>ff:fe</code>를 끼우고, 첫 바이트의 <b>U/L 비트(0x02)를 반전</b>합니다. 반전하는 이유: 관리자가 손으로 <code>::1</code>, <code>::2</code>처럼 짧은 주소를 쓸 때 "로컬 관리"를 뜻하는 0을 자연스럽게 쓰도록, 제조사 MAC에서 온 주소는 1이 되게 한 것입니다.</p>
+<div class="card calc">
+  <div>
+    <label class="small">MAC 주소</label>
+    <input type="text" id="eui-in" value="00:1a:2b:3c:4d:5e">
+    <label class="small" style="margin-top:8px;display:block">프리픽스 (/64)</label>
+    <input type="text" id="eui-pfx" value="2001:db8:1:2::">
+  </div>
+  <div class="out" id="eui-out"></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: Privacy Extensions(RFC 8981)와 안정적 비밀 주소(RFC 7217)</div><p>EUI-64 주소는 MAC을 그대로 드러냅니다. 노트북이 집·카페·회사를 옮겨 다녀도 하위 64비트가 같으므로 <b>어떤 사이트든 사용자를 추적</b>할 수 있습니다. RFC 4941(→ 8981)은 하위 64비트를 무작위로 만든 <b>임시 주소</b>를 주기적으로(기본 1일) 바꿔 가며 나가는 연결에 쓰도록 합니다. 들어오는 연결용 안정 주소도 MAC 대신 (프리픽스, 인터페이스, 비밀키)의 해시로 만드는 RFC 7217이 권장됩니다. 리눅스 <code>net.ipv6.conf.*.use_tempaddr=2</code>, <code>addr_gen_mode=3</code>(stable-privacy)이 그 설정입니다. 현대 OS는 모두 기본으로 켜져 있어, 실제 <code>ip -6 addr</code> 출력에서 EUI-64 주소를 보기는 오히려 어렵습니다.</p></div>
+
+<h2 id="header"><span class="num">10.5</span>IPv4 vs IPv6 헤더 <small>(인터랙티브)</small></h2>
+<p>두 헤더를 나란히 놓고 비교합니다. 필드를 클릭해 보세요. IPv6에서 <b>사라진</b> 필드(IHL, Identification, Flags, Fragment Offset, Header Checksum, Options)와 <b>이름이 바뀐</b> 필드(TTL → Hop Limit, Protocol → Next Header, Total Length → Payload Length), 그리고 <b>새로 생긴</b> Flow Label을 주목하세요.</p>
+<div class="tabs">
+  <div class="tab-bar"><button>IPv6 헤더 (고정 40바이트)</button><button>IPv4 헤더 (20–60바이트)</button></div>
+  <div class="tab-panel"><div id="v6-hdr"></div></div>
+  <div class="tab-panel"><div id="v4-hdr"></div></div>
+</div>
+<table>
+  <thead><tr><th>IPv4 필드</th><th>IPv6에서는</th><th>이유</th></tr></thead>
+  <tbody>
+    <tr><td>IHL (헤더 길이)</td><td>삭제</td><td>헤더가 40바이트 고정. 옵션은 확장 헤더로 분리 → 라우터 파싱이 단순·고속.</td></tr>
+    <tr><td>Identification / Flags / Fragment Offset</td><td>삭제 → Fragment 확장 헤더</td><td>라우터는 단편화하지 않는다. 송신자만 PMTUD 후 단편화. 평소에는 헤더에 없으니 공간 절약.</td></tr>
+    <tr><td>Header Checksum</td><td>삭제</td><td>링크 계층(FCS)과 전송 계층(TCP/UDP 체크섬, IPv6에선 UDP도 필수)이 이미 보호. 홉마다 재계산 비용 제거.</td></tr>
+    <tr><td>Options</td><td>확장 헤더 체인</td><td>필요한 경우에만 붙이고, 라우터가 봐야 하는 것(Hop-by-Hop)과 종단만 보는 것을 분리.</td></tr>
+    <tr><td>Type of Service</td><td>Traffic Class (8) + <b>Flow Label (20)</b></td><td>Flow Label은 같은 흐름의 패킷을 라우터가 전송 헤더를 열지 않고도 식별(ECMP 해싱, QoS)하게 한다(RFC 6437).</td></tr>
+    <tr><td>TTL</td><td>Hop Limit</td><td>실제로는 처음부터 홉 수였으므로 이름을 바로잡음.</td></tr>
+  </tbody>
+</table>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 왜 IPv6에는 헤더 체크섬이 없나</div><p>IPv4 체크섬은 TTL이 1 줄 때마다 라우터가 다시 계산해야 합니다(증분 갱신 RFC 1624로 비용은 작지만 0은 아님). 그런데 이 체크섬이 잡아내는 오류는 거의 모두 링크 계층 CRC-32가 먼저 잡고, 잡지 못한 오류는 TCP/UDP 체크섬이 다시 잡습니다. 즉 삼중 보호 중 가장 약한 16비트 1의 보수 합을 빼도 안전성이 거의 줄지 않습니다. 대신 IPv4에서 선택이었던 <b>UDP 체크섬을 IPv6에서는 필수</b>로 만들어(RFC 8200 §8.1) 주소 오류가 상위 계층에서 반드시 잡히게 했습니다. 전송 계층 의사 헤더에 128비트 주소가 들어가므로 IP 헤더가 깨져 엉뚱한 호스트에 도착해도 체크섬이 실패합니다. 터널 캡슐화 등으로 UDP 체크섬 0이 꼭 필요한 경우를 위한 예외가 RFC 6935/6936입니다.</p></div>
+
+<h2 id="ext"><span class="num">10.6</span>확장 헤더 체인</h2>
+<p>IPv6 헤더의 Next Header는 "다음에 오는 것"의 번호입니다. 확장 헤더가 있으면 그 번호, 없으면 바로 전송 프로토콜(TCP 6, UDP 17, ICMPv6 58)입니다. 각 확장 헤더도 자기 Next Header를 가지므로 연결 리스트처럼 이어집니다. 권장 순서(RFC 8200 §4.1)가 있으며, <b>Hop-by-Hop은 반드시 첫 번째</b>여야 합니다 — 경로상의 모든 라우터가 봐야 하기 때문입니다.</p>
+<div class="card">
+  <div class="ext-chain" id="ext-chain"></div>
+  <div id="ext-desc" class="callout" style="margin-bottom:0"><div class="t">헤더 상자를 클릭하세요</div></div>
+</div>
+<div class="callout warn"><div class="t">⚠️ 확장 헤더의 현실</div><p>라우터·방화벽은 전송 헤더를 찾기 위해 체인을 끝까지 따라가야 합니다. 체인이 길거나 Fragment 헤더 뒤에 전송 헤더가 숨어 있으면 하드웨어 파서가 포기하고 <b>패킷을 버리는</b> 장비가 많습니다(RFC 7872 측정: 인터넷 경로의 수십 %에서 드롭). Routing Header Type 0은 증폭 공격에 악용되어 폐기되었습니다(RFC 5095). 실무에서 확장 헤더는 Fragment, ESP/AH, 그리고 세그먼트 라우팅(SRv6, Routing Type 4) 정도만 쓰입니다.</p></div>
+
+<h2 id="ndp"><span class="num">10.7</span>NDP: ARP를 대체하는 이웃 탐색 <small>(애니메이션)</small></h2>
+<p>IPv6에는 ARP가 없습니다. 같은 링크의 IPv6 주소 → MAC 변환은 <b>ICMPv6</b> 메시지인 Neighbor Solicitation(Type 135)과 Neighbor Advertisement(Type 136)로 합니다(RFC 4861). ARP와의 결정적 차이는 <b>브로드캐스트 대신 solicited-node 멀티캐스트</b>를 쓴다는 점입니다.</p>
+<div class="mini-eq" style="font-family:var(--mono);background:var(--surface-2);padding:10px 14px;border-radius:8px;font-size:.88rem">solicited-node 멀티캐스트 = ff02::1:ff<b>XX:XXXX</b>  (XX:XXXX = 대상 유니캐스트 주소의 하위 24비트)<br>대응 MAC = 33:33:ff:<b>XX:XX:XX</b></div>
+<div class="anim" id="ndp-anim">
+  <div class="stage">
+    <svg viewBox="0 0 860 300" id="ndp-svg">
+      <defs><marker id="a10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+      <line x1="60" y1="150" x2="800" y2="150" class="wire" stroke-width="4"/>
+      <g id="ndp-hosts"></g>
+      <g id="ndp-pkt" class="anim-move" style="opacity:0"><rect x="-70" y="-16" width="140" height="32" rx="6" fill="var(--l-net)"/><text x="0" y="4" text-anchor="middle" fill="#fff" font-size="10" class="mono" id="ndp-pkt-t">NS</text></g>
+      <text x="430" y="250" text-anchor="middle" font-size="11" class="mono" id="ndp-l2"></text>
+      <text x="430" y="270" text-anchor="middle" font-size="11" class="mono" id="ndp-l3"></text>
+      <text x="430" y="292" text-anchor="middle" font-size="11" class="muted" id="ndp-msg"></text>
+    </svg>
+  </div>
+</div>
+<table>
+  <thead><tr><th></th><th>ARP (IPv4)</th><th>NDP (IPv6)</th></tr></thead>
+  <tbody>
+    <tr><td>계층</td><td>링크 계층 바로 위의 별도 프로토콜 (EtherType 0x0806)</td><td>ICMPv6, 즉 IPv6 패킷 (IPsec으로 보호 가능, SEND RFC 3971)</td></tr>
+    <tr><td>요청 수신 범위</td><td>브로드캐스트 — 링크의 <b>모든</b> 노드가 인터럽트</td><td>solicited-node 멀티캐스트 — 하위 24비트가 같은 노드만 (사실상 대상 하나). NIC 필터링으로 나머지는 CPU도 안 깨움</td></tr>
+    <tr><td>캐시 상태</td><td>있음/없음</td><td>INCOMPLETE · REACHABLE · STALE · DELAY · PROBE — <b>도달 가능성 검출(NUD)</b>: 상위 계층 진행(TCP ACK)을 힌트로 캐시 갱신</td></tr>
+    <tr><td>라우터 발견</td><td>DHCP 옵션 3 또는 수동</td><td>RS/RA (Type 133/134)로 내장</td></tr>
+    <tr><td>중복 주소 검출</td><td>Gratuitous ARP (선택)</td><td>DAD (필수, 모든 주소에 대해)</td></tr>
+    <tr><td>리다이렉트</td><td>ICMP Redirect</td><td>ICMPv6 Redirect (Type 137) 통합</td></tr>
+  </tbody>
+</table>
+
+<h2 id="slaac"><span class="num">10.8</span>SLAAC: 서버 없는 주소 자동 구성 <small>(애니메이션)</small></h2>
+<p>호스트는 전원이 켜지면 아무 도움 없이 링크로컬 주소를 만들고, 라우터에게 프리픽스를 물어 전역 주소를 완성합니다(RFC 4862). DHCPv6(RFC 8415)는 선택 사항이며, RA의 두 플래그가 어느 쪽을 쓸지 알려 줍니다.</p>
+<div class="anim" id="slaac-anim">
+  <div class="stage">
+    <svg viewBox="0 0 860 330" id="slaac-svg">
+      <line x1="60" y1="170" x2="800" y2="170" class="wire" stroke-width="4"/>
+      <rect x="90" y="80" width="150" height="70" rx="10" class="node"/><text x="165" y="105" text-anchor="middle" font-weight="700">새 호스트</text><text x="165" y="122" text-anchor="middle" font-size="9.5" class="mono muted">MAC 00:1a:2b:3c:4d:5e</text><text x="165" y="138" text-anchor="middle" font-size="9.5" class="mono" id="sl-addr" fill="var(--primary-text)">주소 없음 (::)</text>
+      <rect x="620" y="80" width="150" height="70" rx="10" class="node"/><text x="695" y="105" text-anchor="middle" font-weight="700">라우터</text><text x="695" y="122" text-anchor="middle" font-size="9.5" class="mono muted">fe80::1</text><text x="695" y="138" text-anchor="middle" font-size="9.5" class="mono muted">프리픽스 2001:db8:1:2::/64</text>
+      <rect x="355" y="80" width="150" height="70" rx="10" class="node" opacity=".6"/><text x="430" y="110" text-anchor="middle" font-weight="700" class="muted">다른 호스트들</text><text x="430" y="130" text-anchor="middle" font-size="9.5" class="muted">ff02::1 멤버</text>
+      <g id="sl-pkt" class="anim-move" style="opacity:0"><rect x="-80" y="-16" width="160" height="32" rx="6" fill="var(--l-net)"/><text x="0" y="4" text-anchor="middle" fill="#fff" font-size="10" class="mono" id="sl-pkt-t"></text></g>
+      <g id="sl-steps" transform="translate(60,210)"></g>
+      <text x="430" y="318" text-anchor="middle" font-size="11" class="mono" id="sl-msg"></text>
+    </svg>
+  </div>
+</div>
+<table>
+  <thead><tr><th>RA 플래그</th><th>M=0, O=0</th><th>M=0, O=1</th><th>M=1</th></tr></thead>
+  <tbody>
+    <tr><td>주소</td><td>SLAAC</td><td>SLAAC</td><td>DHCPv6 (stateful)</td></tr>
+    <tr><td>DNS 등 기타 정보</td><td>RA 옵션 (RDNSS, RFC 8106)</td><td>DHCPv6 (stateless)</td><td>DHCPv6</td></tr>
+    <tr><td>용도</td><td>가정, 소규모</td><td>기존 DHCP 인프라 활용</td><td>기업 — 주소 할당 기록·감사 필요 시</td></tr>
+  </tbody>
+</table>
+<div class="callout"><div class="t">📌 IPv6에서 "기본 게이트웨이"는 설정하지 않는다</div><p>호스트는 RA를 보낸 라우터의 <b>링크로컬 주소</b>(fe80::…)를 기본 라우터 목록에 넣습니다. RA의 Router Lifetime이 0이면 "나는 기본 라우터가 아님"(프리픽스만 광고). 라우팅 테이블의 다음 홉이 링크로컬인 것이 IPv6에서는 정상입니다. 반대로 <b>악성 RA</b>(rogue RA) 하나로 서브넷 전체의 트래픽을 가로챌 수 있으므로, 스위치의 RA Guard(RFC 6105)가 IPv4의 DHCP snooping에 해당하는 필수 방어입니다.</p></div>
+
+<h2 id="transition"><span class="num">10.9</span>전환 기술: 두 세계를 잇는 세 가지 방법</h2>
+<div class="grid-3">
+  <div class="card"><h4 style="margin-top:0;color:var(--l-net)">① Dual Stack</h4><p>호스트와 네트워크가 IPv4·IPv6를 <b>동시에</b> 운용. 가장 단순하고 성능 손실 없음. 단점: IPv4 주소가 여전히 필요하므로 고갈 문제 자체는 해결 못 함. 오늘날 대부분의 ISP·클라우드 방식.</p></div>
+  <div class="card"><h4 style="margin-top:0;color:var(--accent)">② 터널링</h4><p>IPv6 패킷을 IPv4 패킷 안에 <b>캡슐화</b>해 IPv4 전용 구간을 통과. 6in4(프로토콜 41, 수동), 6to4(2002::/16, 폐기 RFC 7526), Teredo(UDP, NAT 통과, 폐기 수순), 6rd(ISP용, RFC 5969). 반대 방향(IPv4 in IPv6)은 DS-Lite(RFC 6333), MAP-E/T.</p></div>
+  <div class="card"><h4 style="margin-top:0;color:var(--purple)">③ 변환 (NAT64/DNS64)</h4><p>IPv6 전용 호스트가 IPv4 전용 서버와 통신하도록 <b>헤더를 번역</b>. 모바일 통신사(T-Mobile US 등)와 애플의 IPv6-only 네트워크 요구 사항의 핵심. 464XLAT(RFC 6877)는 IPv4 전용 앱까지 지원.</p></div>
+</div>
+<h3>NAT64 + DNS64 동작 <small>(애니메이션)</small></h3>
+<div class="anim" id="nat64-anim">
+  <div class="stage">
+    <svg viewBox="0 0 860 300" id="nat64-svg">
+      <defs><marker id="a10n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+      <rect x="20" y="40" width="140" height="60" rx="10" class="node"/><text x="90" y="62" text-anchor="middle" font-weight="700">IPv6 전용 호스트</text><text x="90" y="82" text-anchor="middle" font-size="9.5" class="mono muted">2001:db8::a</text>
+      <rect x="360" y="40" width="140" height="60" rx="10" class="node"/><text x="430" y="62" text-anchor="middle" font-weight="700">DNS64 리졸버</text><text x="430" y="82" text-anchor="middle" font-size="9.5" class="mono muted">프리픽스 64:ff9b::/96</text>
+      <rect x="360" y="170" width="140" height="60" rx="10" class="node"/><text x="430" y="192" text-anchor="middle" font-weight="700">NAT64 게이트웨이</text><text x="430" y="212" text-anchor="middle" font-size="9.5" class="mono muted">v6 ⇄ v4 변환, 풀 198.51.100.7</text>
+      <rect x="700" y="170" width="140" height="60" rx="10" class="node"/><text x="770" y="192" text-anchor="middle" font-weight="700">IPv4 전용 서버</text><text x="770" y="212" text-anchor="middle" font-size="9.5" class="mono muted">example.com = 93.184.216.34</text>
+      <line x1="160" y1="60" x2="360" y2="60" class="wire"/><line x1="90" y1="100" x2="90" y2="200" class="wire"/><line x1="90" y1="200" x2="360" y2="200" class="wire"/><line x1="500" y1="200" x2="700" y2="200" class="wire" stroke-dasharray="4 4"/>
+      <text x="600" y="190" text-anchor="middle" font-size="10" class="muted">IPv4 인터넷</text>
+      <g id="n64-pkt" class="anim-move" style="opacity:0"><rect x="-90" y="-16" width="180" height="32" rx="6" fill="var(--l-net)"/><text x="0" y="4" text-anchor="middle" fill="#fff" font-size="10" class="mono" id="n64-pkt-t"></text></g>
+      <text x="430" y="262" text-anchor="middle" font-size="11" class="mono" id="n64-l1"></text>
+      <text x="430" y="284" text-anchor="middle" font-size="11" class="muted" id="n64-l2"></text>
+    </svg>
+  </div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 단편화를 종단에만 맡긴 이유와 최소 MTU 1280</div><p>IPv4 라우터는 MTU가 작은 링크를 만나면 패킷을 쪼갭니다. 이 작업은 라우터 CPU를 쓰고, 조각 하나만 잃어도 전체를 재전송해야 하며, 조각 재조립은 방화벽 우회(RFC 1858 tiny fragment)와 DoS의 온상이었습니다. IPv6는 <b>라우터의 단편화를 금지</b>하고(DF가 항상 켜진 셈), 송신자가 PMTUD(RFC 8201)로 경로 MTU를 알아내 필요하면 Fragment 확장 헤더로 직접 쪼개게 했습니다. 그리고 "모든 IPv6 링크는 <b>최소 1280바이트</b>를 단편화 없이 전달해야 한다"고 못 박았습니다(RFC 8200 §5). 1280은 IPv4 최소 576보다 크면서도 터널 오버헤드(IPv6 40 + 각종 캡슐화)를 감안해 1500에서 여유를 둔 값입니다. 따라서 "1280으로 보내면 어디든 통한다"가 보장되며, PMTUD 블랙홀이 의심되면 MTU를 1280으로 내리는 것이 표준 대응입니다. 반대로 ICMPv6 Packet Too Big(Type 2)을 방화벽이 막으면 IPv6는 IPv4보다 <b>더 심하게</b> 깨집니다 — 라우터가 대신 쪼개 주는 안전망이 없기 때문입니다.</p></div>
+
+<h2 id="happy"><span class="num">10.10</span>Happy Eyeballs: 느린 IPv6를 숨기는 법</h2>
+<p>Dual stack 호스트가 IPv6 연결을 먼저 시도했는데 경로가 깨져 있으면, 타임아웃(수십 초) 뒤에야 IPv4로 넘어가 사용자는 "IPv6를 켜니 느려졌다"고 느낍니다. Happy Eyeballs v2(RFC 8305)는 이를 해결합니다.</p>
+<ol class="steps">
+  <li>AAAA와 A 질의를 <b>동시에</b> 보낸다. AAAA가 먼저 오면 바로 진행, A가 먼저 오면 AAAA를 50 ms만 더 기다린다.</li>
+  <li>주소 목록을 정렬(RFC 6724)하되 IPv6 우선. 첫 주소로 TCP connect()를 시작한다.</li>
+  <li><b>250 ms</b>(Connection Attempt Delay) 안에 연결되지 않으면 다음 주소(보통 IPv4)로 <b>병렬</b>로 시도한다. 먼저 성공한 쪽을 쓰고 나머지는 닫는다.</li>
+  <li>결과를 캐시해 다음에는 성공했던 패밀리를 먼저 시도한다.</li>
+</ol>
+<p>브라우저(Chrome, Firefox, Safari)와 macOS/iOS 소켓 API(<code>connectx</code>), curl(<code>--happy-eyeballs-timeout-ms</code>)이 구현합니다. 효과: 인터넷의 IPv6 경로 중 일부가 깨져 있어도 사용자는 알아채지 못합니다. 부작용: 그 덕분에 깨진 IPv6가 <b>방치</b>되기도 합니다.</p>
+
+<h2 id="practice"><span class="num">10.11</span>실습</h2>
+<pre><code># 인터페이스의 IPv6 주소들 — 링크로컬(fe80), GUA, 임시 주소(temporary), 유효 기간(valid_lft/preferred_lft)
+ip -6 addr show
+# 라우팅 테이블: default via fe80::... 인 것이 정상
+ip -6 route
+# 이웃 캐시 (ARP 캐시의 대응물) — 상태 REACHABLE/STALE/DELAY/PROBE 확인
+ip -6 neigh
+# 링크로컬로 핑: zone ID(%인터페이스) 필수. ff02::1 은 링크의 모든 노드
+ping -6 fe80::1%eth0
+ping -6 ff02::1%eth0
+# 전역 연결 확인과 PMTUD 테스트
+ping -6 -M do -s 1400 2001:4860:4860::8888
+traceroute -6 ipv6.google.com
+# DNS
+dig AAAA www.google.com +short
+dig AAAA ipv4only.arpa     # NAT64 환경이면 64:ff9b::... 가 합성되어 나온다 (RFC 7050)
+# RA 받아 보기 / NDP 패킷 캡처
+sudo rdisc6 eth0
+sudo tcpdump -i eth0 -vv 'icmp6 and (ip6[40] == 133 or ip6[40] == 134 or ip6[40] == 135 or ip6[40] == 136)'
+# 주요 sysctl
+sysctl net.ipv6.conf.all.forwarding          # 1이면 라우터 모드 → RA를 무시한다!
+sysctl net.ipv6.conf.eth0.accept_ra          # 0 끔, 1 호스트, 2 forwarding이어도 수락
+sysctl net.ipv6.conf.eth0.use_tempaddr       # 2 = 임시 주소 생성 + 우선 사용
+sysctl net.ipv6.conf.eth0.addr_gen_mode      # 0 EUI-64, 2 stable-privacy(secret 필요), 3 stable-privacy 자동</code></pre>
+<div class="callout tip"><div class="t">✅ 확인 질문</div><p>① 내 인터페이스의 링크로컬 주소가 EUI-64 방식인가, 무작위인가? (ff:fe가 가운데 있는지 보라.) ② <code>ip -6 neigh</code>에서 라우터 항목의 MAC과 <code>ip -6 route</code>의 default via 주소를 대조해 보라. ③ <code>dig AAAA ipv4only.arpa</code>의 결과로 현재 네트워크에 NAT64가 있는지 판단해 보라.</p></div>
+
+<h2 id="quiz"><span class="num">10.12</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>128비트 주소, 16진수 8그룹. RFC 5952: 선행 0 제거, 가장 긴 0 구간 하나만 <code>::</code>(동률이면 앞), 소문자.</li>
+    <li>GUA 2000::/3, ULA fd00::/8, 링크로컬 fe80::/10, 멀티캐스트 ff00::/8. 브로드캐스트 없음. 서브넷은 항상 /64.</li>
+    <li>헤더 40바이트 고정. 체크섬·라우터 단편화·IHL 삭제, 옵션은 확장 헤더 체인(Hop-by-Hop이 첫 번째), Flow Label 신설.</li>
+    <li>NDP(ICMPv6 133–137)가 ARP·라우터 발견·리다이렉트·DAD·NUD를 통합. NS는 solicited-node 멀티캐스트 ff02::1:ffXX:XXXX로.</li>
+    <li>SLAAC: 링크로컬 생성 → DAD → RS → RA(프리픽스, M/O 플래그) → GUA. 기본 라우터는 RA 송신자의 링크로컬 주소.</li>
+    <li>전환: Dual Stack(주류), 터널링(6in4, 6rd, DS-Lite), 변환(NAT64/DNS64, 464XLAT). Happy Eyeballs가 깨진 IPv6를 가려 준다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, HeaderDiagram, Stepper, Quiz} = TCPIP;
+
+  /* ---------- IPv6 파서 ---------- */
+  function expand6(s){
+    s = s.trim().toLowerCase(); if(!s) return null;
+    // IPv4 꼬리 처리
+    const m = s.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+    if(m){ const p=m[2].split('.').map(Number); if(p.some(x=>x>255)) return null; s = m[1] + ((p[0]<<8|p[1]).toString(16)) + ':' + ((p[2]<<8|p[3]).toString(16)); }
+    if((s.match(/::/g)||[]).length>1) return null;
+    let groups;
+    if(s.includes('::')){ const [a,b]=s.split('::'); const ga=a?a.split(':'):[], gb=b?b.split(':'):[]; if(ga.length+gb.length>7) return null; groups=[...ga, ...Array(8-ga.length-gb.length).fill('0'), ...gb]; }
+    else { groups=s.split(':'); if(groups.length!==8) return null; }
+    if(groups.some(g=>!/^[0-9a-f]{1,4}$/.test(g))) return null;
+    return groups.map(g=>g.padStart(4,'0'));
+  }
+  function longestZeroRun(groups){
+    let best={start:-1,len:0}, cur={start:-1,len:0};
+    groups.forEach((g,i)=>{ if(parseInt(g,16)===0){ if(cur.start<0) cur={start:i,len:1}; else cur.len++; if(cur.len>best.len) best={...cur}; } else cur={start:-1,len:0}; });
+    return best.len>=2?best:null;
+  }
+  function compress6(groups){
+    const short=groups.map(g=>g.replace(/^0+(?=.)/,''));
+    const run=longestZeroRun(groups);
+    if(!run) return short.join(':');
+    const a=short.slice(0,run.start).join(':'), b=short.slice(run.start+run.len).join(':');
+    return a+'::'+b;
+  }
+  function typeOf(groups){
+    const full=groups.join(''); const g0=parseInt(groups[0],16);
+    if(full==='0'.repeat(32)) return 'Unspecified (::)';
+    if(full==='0'.repeat(31)+'1') return 'Loopback (::1)';
+    if(groups.slice(0,5).join('')==='0'.repeat(20) && groups[5]==='ffff') return 'IPv4-mapped (::ffff:a.b.c.d)';
+    if(groups[0]==='0064'&&groups[1]==='ff9b') return 'NAT64 Well-Known Prefix (64:ff9b::/96)';
+    if((g0&0xff00)===0xff00) { const sc={1:'interface-local',2:'link-local',5:'site-local',8:'organization-local',14:'global'}[g0&0xf]||'?'; return `Multicast (ff00::/8), scope=${sc}`+(groups[1]==='0000'&&groups[2]==='0000'&&groups[3]==='0000'&&groups[4]==='0000'&&groups[5]==='0001'&&groups[6].startsWith('ff')?' · solicited-node':''); }
+    if((g0&0xffc0)===0xfe80) return 'Link-Local Unicast (fe80::/10)';
+    if((g0&0xfe00)===0xfc00) return 'Unique Local (fc00::/7)'+((g0&0x0100)?' · fd00::/8 로컬 생성':' · fc00::/8 (미정의)');
+    if(groups[0]==='2001'&&groups[1]==='0db8') return 'Documentation (2001:db8::/32) — GUA 공간 안의 예시용';
+    if(groups[0]==='2002') return '6to4 (2002::/16, 폐기됨)';
+    if((g0&0xe000)===0x2000) return 'Global Unicast (2000::/3)';
+    return '미할당/예약 영역';
+  }
+  function renderV6(){
+    const g=expand6($('#v6-in').value); const out=$('#v6-out');
+    if(!g){ out.innerHTML='<span style="color:var(--red)">올바른 IPv6 주소가 아닙니다.</span>'; return; }
+    const run=longestZeroRun(g);
+    const step1=g.map((x,i)=>`<span class="grp ${parseInt(x,16)===0?'zero':''}">${x}</span>`).join('');
+    const step2=g.map((x,i)=>`<span class="grp ${run&&i>=run.start&&i<run.start+run.len?'run':''}">${x.replace(/^0+(?=.)/,'')}</span>`).join('');
+    out.innerHTML=`<div><b>① 전체 표기 (8그룹 × 4자리)</b><br>${step1}</div>
+      <div style="margin-top:6px"><b>② 선행 0 제거, 가장 긴 0 구간 선택</b>${run?` (${run.start+1}~${run.start+run.len}번째, ${run.len}그룹)`:' (2그룹 이상 연속된 0 없음 → :: 사용 안 함)'}<br>${step2}</div>
+      <div style="margin-top:6px"><b>③ RFC 5952 정규형</b><br><span class="big">${compress6(g)}</span></div>
+      <div style="margin-top:6px"><b>유형</b>: ${typeOf(g)}<br><b>URL</b>: http://[${compress6(g)}]:443/</div>`;
+  }
+  $('#v6-in').addEventListener('input',renderV6);
+  $$('[data-ex]').forEach(b=>b.onclick=()=>{ $('#v6-in').value=b.dataset.ex; renderV6(); });
+  renderV6();
+
+  /* ---------- EUI-64 ---------- */
+  function renderEui(){
+    const out=$('#eui-out'); const mac=$('#eui-in').value.trim().toLowerCase().replace(/-/g,':');
+    const parts=mac.split(':');
+    if(parts.length!==6||parts.some(p=>!/^[0-9a-f]{2}$/.test(p))){ out.innerHTML='<span style="color:var(--red)">MAC 형식: xx:xx:xx:xx:xx:xx</span>'; return; }
+    const b=parts.map(p=>parseInt(p,16)); const b0=b[0]^0x02;
+    const ins=[...b.slice(0,3),0xff,0xfe,...b.slice(3)]; const flipped=[b0,...ins.slice(1)];
+    const hex=flipped.map(x=>x.toString(16).padStart(2,'0'));
+    const iid=[hex[0]+hex[1],hex[2]+hex[3],hex[4]+hex[5],hex[6]+hex[7]];
+    const pfx=expand6($('#eui-pfx').value||'::');
+    const ll=expand6('fe80::'); const mk=p=>p?compress6([...p.slice(0,4),...iid]):'(프리픽스 오류)';
+    out.innerHTML=`<b>① MAC 48비트</b><br>${parts.map(p=>`<span class="grp">${p}</span>`).join('')}<br>
+      <b>② 가운데 ff:fe 삽입 → 64비트</b><br>${ins.map((x,i)=>`<span class="grp ${i===3||i===4?'run':''}">${x.toString(16).padStart(2,'0')}</span>`).join('')}<br>
+      <b>③ 첫 바이트 U/L 비트(0x02) 반전</b>: ${parts[0]} (${b[0].toString(2).padStart(8,'0')}) → <span class="grp run">${hex[0]}</span> (${b0.toString(2).padStart(8,'0')})<br>
+      <b>인터페이스 ID</b> = <span class="big">${iid.join(':')}</span><br>
+      링크로컬 = <b>${mk(ll)}</b><br>GUA = <b>${mk(pfx)}</b>`;
+  }
+  $('#eui-in').addEventListener('input',renderEui); $('#eui-pfx').addEventListener('input',renderEui); renderEui();
+
+  /* ---------- 헤더 비교 ---------- */
+  HeaderDiagram('#v6-hdr',{fields:[
+    {name:'Version',bits:4,cls:'c2',desc:'항상 6. 링크 계층 EtherType(0x86DD)으로 이미 구분되므로 사실상 중복이지만 호환을 위해 유지.'},
+    {name:'Traffic Class',bits:8,cls:'c2',desc:'IPv4 ToS/DSCP+ECN과 동일 구조. 상위 6비트 DSCP, 하위 2비트 ECN.'},
+    {name:'Flow Label',bits:20,cls:'c4',desc:'신설. 송신자가 같은 흐름(예: 한 TCP 연결)에 같은 값을 찍는다(RFC 6437). 라우터·로드밸런서가 확장 헤더를 따라가 전송 헤더를 열지 않고도 흐름을 식별해 ECMP 해싱에 쓴다. 0이면 미사용.'},
+    {name:'Payload Length',bits:16,cls:'c2',desc:'기본 헤더 40바이트를 제외한 나머지(확장 헤더 포함) 길이. IPv4 Total Length는 헤더를 포함했다. 65,535 초과는 Hop-by-Hop의 Jumbo Payload 옵션(RFC 2675).'},
+    {name:'Next Header',bits:8,cls:'c1',desc:'IPv4 Protocol 필드의 후계. 다음 확장 헤더 또는 전송 프로토콜 번호(TCP 6, UDP 17, ICMPv6 58, Hop-by-Hop 0, Routing 43, Fragment 44, ESP 50, AH 51, Destination Options 60, No Next Header 59).'},
+    {name:'Hop Limit',bits:8,cls:'c1',desc:'IPv4 TTL과 동일 동작: 라우터마다 1 감소, 0이면 폐기하고 ICMPv6 Time Exceeded. 이름을 실제 의미에 맞게 바꿈.'},
+    {name:'Source Address',bits:128,cls:'c3',desc:'128비트 출발지. 4행(16바이트)을 차지한다.'},
+    {name:'Destination Address',bits:128,cls:'c3',desc:'128비트 목적지. Routing 확장 헤더가 있으면 "다음 경유지"이고 최종 목적지는 그 헤더 안에 있다.'},
+  ], selected:2});
+  HeaderDiagram('#v4-hdr',{fields:[
+    {name:'Ver',bits:4,cls:'c2',desc:'4'},{name:'IHL',bits:4,cls:'c5',desc:'헤더 길이(4바이트 단위). IPv6에서 삭제 — 헤더 고정.'},{name:'DSCP',bits:6,cls:'c2',desc:'Traffic Class 상위 6비트에 대응'},{name:'ECN',bits:2,cls:'c2',desc:'Traffic Class 하위 2비트에 대응'},{name:'Total Length',bits:16,cls:'c2',desc:'헤더 포함 전체 길이. IPv6 Payload Length는 헤더 제외.'},
+    {name:'Identification',bits:16,cls:'c5',desc:'단편 재조립용. IPv6에서는 Fragment 확장 헤더로 이동(32비트로 확장).'},{name:'Flags',bits:3,cls:'c5',desc:'DF/MF. IPv6 기본 헤더에서 삭제.'},{name:'Fragment Offset',bits:13,cls:'c5',desc:'IPv6 Fragment 확장 헤더로 이동.'},
+    {name:'TTL',bits:8,cls:'c1',desc:'→ Hop Limit'},{name:'Protocol',bits:8,cls:'c1',desc:'→ Next Header'},{name:'Header Checksum',bits:16,cls:'c5',desc:'IPv6에서 삭제. 링크 FCS와 전송 체크섬(UDP 필수화)이 대신.'},
+    {name:'Source Address',bits:32,cls:'c3',desc:'32비트'},{name:'Destination Address',bits:32,cls:'c3',desc:'32비트'},{name:'Options',bits:32,cls:'c5',variable:true,desc:'IPv6에서는 확장 헤더 체인으로 분리.'},
+  ]});
+
+  /* ---------- 확장 헤더 체인 ---------- */
+  const EXT=[
+    {n:'IPv6 기본 헤더',nh:'NH=0',c:'var(--l-net)',d:'40바이트 고정. Next Header=0은 "다음은 Hop-by-Hop 옵션 헤더".'},
+    {n:'Hop-by-Hop Options',nh:'0 → NH=43',c:'var(--accent)',d:'경로상 모든 라우터가 검사해야 하는 옵션. 반드시 첫 번째. Jumbo Payload, Router Alert(MLD용). 하드웨어 라우터는 이 헤더를 보면 slow path로 보내므로 DoS 벡터가 되어 RFC 9673에서 처리 규칙을 완화.'},
+    {n:'Routing',nh:'43 → NH=44',c:'var(--purple)',d:'경유지 목록. Type 0(소스 라우팅)은 증폭 공격으로 폐기(RFC 5095). Type 2는 Mobile IPv6, Type 4는 SRv6 세그먼트 라우팅(RFC 8754).'},
+    {n:'Fragment',nh:'44 → NH=50',c:'var(--red)',d:'8바이트: Fragment Offset(13) + M 플래그 + Identification(32). 송신 종단만 생성. 첫 조각은 반드시 전송 헤더까지 포함해야 함(RFC 8200 §4.5, 방화벽 우회 방지).'},
+    {n:'ESP / AH',nh:'50/51 → NH=6',c:'var(--pink)',d:'IPsec. ESP(50)는 이후 내용을 암호화, AH(51)는 인증만. IPv6에서 IPsec 구현은 "SHOULD"(RFC 6434에서 MUST에서 완화).'},
+    {n:'Destination Options',nh:'60',c:'var(--cyan)',d:'최종 목적지만 검사. Routing 헤더 앞에 오면 각 경유지도 검사. Mobile IPv6 Home Address 옵션 등.'},
+    {n:'TCP 헤더 + 데이터',nh:'6',c:'var(--l-tr)',d:'전송 계층. 체인의 끝. "No Next Header"(59)이면 뒤에 아무것도 없음.'},
+  ];
+  const ec=$('#ext-chain');
+  EXT.forEach((h,i)=>{ if(i) ec.appendChild(el('span','arr','→')); const b=el('div','hdr-box',`${h.n}<small>${h.nh}</small>`); b.style.background=h.c; b.onclick=()=>{ $('#ext-desc').innerHTML=`<div class="t">${h.n}</div><p>${h.d}</p>`; }; ec.appendChild(b); });
+
+  /* ---------- NDP 애니메이션 ---------- */
+  const HOSTS=[{x:120,n:'A (송신)',ip:'2001:db8::a',mac:'aa'},{x:330,n:'B',ip:'2001:db8::b',mac:'bb'},{x:540,n:'C',ip:'2001:db8::c',mac:'cc'},{x:750,n:'D (대상)',ip:'2001:db8::1234:5678',mac:'dd'}];
+  const hg=$('#ndp-hosts');
+  HOSTS.forEach(h=>{ const g=svg('g',{id:'nh-'+h.mac}); g.appendChild(svg('line',{x1:h.x,y1:150,x2:h.x,y2:100,class:'wire'})); g.appendChild(svg('rect',{x:h.x-70,y:40,width:140,height:60,rx:10,class:'node',id:'nb-'+h.mac,class:'node fade'})); g.appendChild(svg('text',{x:h.x,y:62,'text-anchor':'middle','font-weight':'700'},h.n)); g.appendChild(svg('text',{x:h.x,y:78,'text-anchor':'middle','font-size':9.5,class:'mono muted'},h.ip)); g.appendChild(svg('text',{x:h.x,y:92,'text-anchor':'middle','font-size':9.5,class:'mono muted'},'MAC '+h.mac+':…')); g.appendChild(svg('text',{x:h.x,y:200,'text-anchor':'middle','font-size':10,class:'mono',id:'ns-'+h.mac,fill:'var(--muted)'},'')); hg.appendChild(g); });
+  const npk=$('#ndp-pkt'); const nmv=(x,show=true)=>{ npk.style.transform=`translate(${x}px,150px)`; npk.style.opacity=show?1:0; };
+  const hl=(mac,on,color)=>{ const r=$('#nb-'+mac); r.setAttribute('stroke',on?color:'var(--border)'); r.setAttribute('stroke-width',on?3:1.5); };
+  const nst=(mac,t)=>$('#ns-'+mac).textContent=t;
+  const nset=(l2,l3,m)=>{ $('#ndp-l2').textContent=l2; $('#ndp-l3').textContent=l3; $('#ndp-msg').textContent=m; };
+  Stepper('#ndp-anim',{steps:[
+    {title:'A: 이웃 캐시 miss', text:'A가 2001:db8::<b>1234:5678</b>(D)에게 보낼 패킷이 있는데 MAC을 모른다. 캐시 항목을 INCOMPLETE로 만들고 solicited-node 멀티캐스트 주소를 계산한다: 하위 24비트 <b>34:5678</b> → <b>ff02::1:ff34:5678</b>, MAC 33:33:ff:34:56:78.', run(){ hl('aa',true,'var(--primary)'); nst('aa','캐시: D → INCOMPLETE'); nset('계산: ff02::1:ff34:5678 ↔ 33:33:ff:34:56:78','','') }},
+    {title:'Neighbor Solicitation 송신', text:'ICMPv6 Type 135. 목적지는 solicited-node 멀티캐스트. 옵션에 자기 MAC(Source Link-Layer Address)을 실어 D가 되묻지 않게 한다.', run(){ $('#ndp-pkt-t').textContent='NS: who has ::1234:5678?'; nmv(120); setTimeout(()=>nmv(540),50); nset('L2: src aa → dst 33:33:ff:34:56:78 (멀티캐스트)','L3: src 2001:db8::a → dst ff02::1:ff34:5678  ICMPv6 135, Target=2001:db8::1234:5678, opt SLLA=aa','NIC 필터: B·C는 33:33:ff:34:56:78 그룹이 아니므로 하드웨어에서 폐기 (CPU 미사용)'); hl('bb',true,'var(--muted)'); hl('cc',true,'var(--muted)'); }},
+    {title:'D만 수신', text:'D는 자기 주소의 solicited-node 그룹(MLD로 가입해 둠)이므로 받는다. Target이 자기 주소임을 확인하고, NS의 SLLA 옵션으로 A의 MAC을 <b>STALE</b> 상태로 캐시에 넣는다(공짜 학습).', run(){ nmv(750); hl('bb',false); hl('cc',false); hl('dd',true,'var(--green)'); nst('dd','캐시: A → STALE (SLLA 학습)'); nset('','','B, C는 패킷을 보지 못했다 — ARP 브로드캐스트와의 차이'); }},
+    {title:'Neighbor Advertisement (유니캐스트)', text:'ICMPv6 Type 136. A에게 직접 유니캐스트. 플래그 S(Solicited)=1, O(Override)=1. 옵션 Target Link-Layer Address = dd.', run(){ $('#ndp-pkt-t').textContent='NA: ::1234:5678 is at dd'; nmv(750); setTimeout(()=>nmv(120),50); nset('L2: src dd → dst aa (유니캐스트)','L3: src 2001:db8::1234:5678 → dst 2001:db8::a  ICMPv6 136, flags S|O, opt TLLA=dd',''); }},
+    {title:'A: REACHABLE', text:'Solicited NA를 받았으므로 캐시를 <b>REACHABLE</b>로 올리고 대기 중이던 패킷을 보낸다. 이후 약 30초간 상위 계층 진행 증거(TCP ACK 등)가 없으면 STALE로 내려가고, 다음 송신 때 DELAY(5초) → PROBE(유니캐스트 NS 재확인)를 거친다 — 이것이 NUD.', run(){ nmv(120,false); hl('dd',false); nst('aa','캐시: D → REACHABLE (dd)'); nset('','','NUD 상태: INCOMPLETE → REACHABLE → STALE → DELAY → PROBE'); }},
+  ], reset(){ nmv(120,false); HOSTS.forEach(h=>{hl(h.mac,false); nst(h.mac,'');}); nset('','',''); }, intro:'A가 D의 MAC을 알아내는 과정. ARP와 달리 B·C는 방해받지 않는다.'});
+
+  /* ---------- SLAAC 애니메이션 ---------- */
+  const spk=$('#sl-pkt'); const smv=(x,y,show=true)=>{ spk.style.transform=`translate(${x}px,${y}px)`; spk.style.opacity=show?1:0; };
+  const sg=$('#sl-steps'); const SL=['링크로컬 생성','DAD','RS','RA','GUA 생성·DAD','완료'];
+  SL.forEach((s,i)=>{ sg.appendChild(svg('rect',{x:i*125,y:0,width:115,height:36,rx:6,class:'node fade',id:'sls-'+i})); sg.appendChild(svg('text',{x:i*125+57,y:22,'text-anchor':'middle','font-size':10.5},`${i+1}. ${s}`)); });
+  const slOn=i=>{ for(let k=0;k<SL.length;k++){ const r=$('#sls-'+k); r.setAttribute('fill',k<=i?'var(--primary-soft)':'var(--surface-2)'); r.setAttribute('stroke',k===i?'var(--primary)':'var(--border)'); } };
+  Stepper('#slaac-anim',{steps:[
+    {title:'링크로컬 주소 생성', text:'전원이 켜지면 호스트는 fe80::/64 + 인터페이스 ID(여기서는 EUI-64: 21a:2bff:fe3c:4d5e)로 <b>fe80::21a:2bff:fe3c:4d5e</b>를 만든다. 아직 "tentative"(잠정) 상태 — 사용 금지.', run(){ slOn(0); $('#sl-addr').textContent='fe80::21a:2bff:fe3c:4d5e (tentative)'; $('#sl-msg').textContent='라우터·서버 없이도 가능'; }},
+    {title:'DAD: 중복 주소 검출', text:'출발지 <b>::</b>(unspecified), 목적지는 자기 주소의 solicited-node 그룹으로 NS를 보낸다. 1초 안에 누군가 NA로 답하면 중복 → 주소 폐기. 답이 없으면 "preferred"로 승격.', run(){ slOn(1); $('#sl-pkt-t').textContent='NS src=:: tgt=fe80::21a:…'; smv(165,170); setTimeout(()=>smv(430,170),50); $('#sl-msg').textContent='DAD: 응답 없음 → 주소 확정'; setTimeout(()=>{ $('#sl-addr').textContent='fe80::21a:2bff:fe3c:4d5e ✓'; },900); }},
+    {title:'Router Solicitation', text:'다음 RA(기본 200초 주기)를 기다리지 않고 <b>ff02::2</b>(모든 라우터)로 RS(Type 133)를 보낸다. 출발지는 방금 확정한 링크로컬.', run(){ slOn(2); $('#sl-pkt-t').textContent='RS → ff02::2'; smv(165,170); setTimeout(()=>smv(695,170),50); $('#sl-msg').textContent='src fe80::21a:… → dst ff02::2  ICMPv6 133'; }},
+    {title:'Router Advertisement', text:'라우터가 RA(Type 134)로 응답(요청자에게 유니캐스트 또는 ff02::1). 내용: <b>프리픽스 2001:db8:1:2::/64</b>(A 플래그=자동 구성 가능, L=on-link), 기본 라우터 수명 1800초, MTU, RDNSS(DNS 서버), M/O 플래그(둘 다 0 → SLAAC만).', run(){ slOn(3); $('#sl-pkt-t').textContent='RA prefix 2001:db8:1:2::/64 A=1 M=0 O=0'; smv(695,170); setTimeout(()=>smv(165,170),50); $('#sl-msg').textContent='src fe80::1 (라우터 링크로컬) → 기본 게이트웨이 = fe80::1'; }},
+    {title:'GUA 생성 + DAD', text:'프리픽스 + 인터페이스 ID로 <b>2001:db8:1:2:21a:2bff:fe3c:4d5e</b>를 만들고 다시 DAD. 동시에 Privacy Extensions가 켜져 있으면 무작위 IID의 임시 주소(예: 2001:db8:1:2:7c3e:…)도 만든다.', run(){ slOn(4); smv(165,170,false); $('#sl-addr').textContent='+ 2001:db8:1:2:21a:2bff:fe3c:4d5e'; $('#sl-msg').textContent='valid_lft 2592000s, preferred_lft 604800s (RA 프리픽스 옵션 값)'; }},
+    {title:'완료', text:'호스트는 링크로컬 1개 + GUA 1개(+임시 주소), 기본 라우터 fe80::1, DNS 서버를 가졌다. DHCP 서버와의 대화는 한 번도 없었다. 라우터는 이후에도 주기적으로 RA를 보내 수명을 갱신한다.', run(){ slOn(5); $('#sl-msg').textContent='ip -6 route: default via fe80::1 dev eth0 proto ra'; }},
+  ], reset(){ slOn(-1); smv(165,170,false); $('#sl-addr').textContent='주소 없음 (::)'; $('#sl-msg').textContent=''; }, intro:'새 호스트가 서버 없이 전역 주소를 얻는 과정.'});
+
+  /* ---------- NAT64 ---------- */
+  const n64=$('#n64-pkt'); const n64mv=(x,y,show=true)=>{ n64.style.transform=`translate(${x}px,${y}px)`; n64.style.opacity=show?1:0; };
+  const n64t=t=>$('#n64-pkt-t').textContent=t; const n64s=(a,b)=>{ $('#n64-l1').textContent=a; $('#n64-l2').textContent=b; };
+  Stepper('#nat64-anim',{steps:[
+    {title:'AAAA 질의', text:'IPv6 전용 호스트가 example.com의 AAAA 레코드를 묻는다. 호스트는 IPv4 주소를 써 봐야 보낼 방법이 없다.', run(){ n64t('AAAA? example.com'); n64mv(90,60); setTimeout(()=>n64mv(430,60),50); n64s('DNS 질의: example.com IN AAAA',''); }},
+    {title:'DNS64: AAAA 합성', text:'리졸버가 AAAA를 조회했으나 없다(IPv4 전용 서버). A 레코드 93.184.216.34를 얻어 NAT64 프리픽스 뒤에 붙여 <b>64:ff9b::5db8:d822</b>를 만들어 돌려준다(RFC 6147). 호스트는 가짜인지 모른다.', run(){ n64t('AAAA = 64:ff9b::5db8:d822'); n64mv(430,60); setTimeout(()=>n64mv(90,60),50); n64s('93.184.216.34 = 5d.b8.d8.22 → 64:ff9b::5db8:d822','DNSSEC 검증을 하는 클라이언트는 합성 레코드를 거부한다 — DNS64의 알려진 한계'); }},
+    {title:'IPv6 패킷 송신', text:'호스트는 평범한 IPv6 TCP SYN을 보낸다. 목적지 64:ff9b::/96은 라우팅상 NAT64 게이트웨이로 향한다.', run(){ n64t('v6: 2001:db8::a → 64:ff9b::5db8:d822'); n64mv(90,200); setTimeout(()=>n64mv(430,200),50); n64s('IPv6 SYN  src 2001:db8::a:51234 → dst [64:ff9b::5db8:d822]:443',''); }},
+    {title:'NAT64: 헤더 변환', text:'게이트웨이(RFC 6146)는 IPv6 헤더를 벗기고 IPv4 헤더를 씌운다. 목적지는 프리픽스를 떼어 낸 93.184.216.34, 출발지는 자기 IPv4 풀 주소 198.51.100.7과 새 포트. 매핑 (2001:db8::a,51234) ↔ (198.51.100.7,40001)을 테이블에 기록한다. TCP 체크섬도 의사 헤더가 바뀌므로 재계산.', run(){ n64t('v4: 198.51.100.7 → 93.184.216.34'); n64mv(430,200); setTimeout(()=>n64mv(770,200),50); n64s('IPv4 SYN  src 198.51.100.7:40001 → dst 93.184.216.34:443','IPv4 NAPT와 같은 상태 테이블 — 같은 한계(인바운드 불가, 포트 고갈)'); }},
+    {title:'응답 역변환', text:'서버의 SYN-ACK는 198.51.100.7로 온다. 게이트웨이가 테이블을 찾아 IPv6로 되돌려 보낸다. 출발지는 64:ff9b::5db8:d822로 합성. 호스트는 끝까지 IPv4의 존재를 모른다.', run(){ n64t('v6: 64:ff9b::5db8:d822 → 2001:db8::a'); n64mv(770,200); setTimeout(()=>n64mv(430,200),400); setTimeout(()=>n64mv(90,200),1200); n64s('IPv6 SYN-ACK  src [64:ff9b::5db8:d822]:443 → dst [2001:db8::a]:51234','IP 주소를 직접 쓰는 앱(리터럴 IPv4)은 실패 → 464XLAT(CLAT)가 호스트 쪽에서 v4→v6 변환해 보완'); }},
+  ], reset(){ n64mv(90,60,false); n64s('',''); }, intro:'IPv6 전용 호스트가 IPv4 전용 서버에 접속하는 과정.'});
+
+  /* ---------- 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'2001:0db8:0000:0000:0001:0000:0000:0001 의 RFC 5952 정규 표기는?',options:['2001:db8::1:0:0:1','2001:db8:0:0:1::1','2001:db8::1::1','2001:0db8::1:0:0:1'],answer:0,explain:'0 구간이 2그룹(3~4번째)과 2그룹(6~7번째)으로 동률이면 앞쪽을 :: 로 줄인다. :: 는 한 번만 쓸 수 있다.'},
+    {q:'fe80::/10 링크로컬 주소에 대한 설명으로 옳은 것은?',options:['라우터가 다른 서브넷으로 포워딩한다','인터페이스마다 자동 생성되며 NDP와 기본 라우터 주소로 쓰인다','DHCPv6 서버가 할당한다','전역에서 유일하다'],answer:1,explain:'링크로컬은 라우터를 넘지 않는다. 기본 라우터의 다음 홉이 fe80::인 것이 정상이며, 같은 주소가 여러 링크에 있을 수 있어 zone ID(%eth0)가 필요하다.'},
+    {q:'IPv6 기본 헤더에서 IPv4의 Header Checksum이 삭제된 근거로 적절한 것은?',options:['IPv6는 오류가 발생하지 않는 링크만 사용하기 때문','링크 계층 FCS와 전송 계층 체크섬(UDP 필수화)이 이미 보호하므로 홉마다 재계산하는 비용을 없애기 위해','Flow Label이 체크섬 역할을 대신하기 때문','확장 헤더에 체크섬이 들어 있기 때문'],answer:1,explain:'삼중 보호 중 가장 약한 것을 제거하고, 대신 UDP 체크섬을 필수로 만들어 주소 오류가 전송 계층에서 잡히게 했다.'},
+    {q:'NDP의 Neighbor Solicitation이 ARP 요청과 다른 핵심 효율성은?',options:['TCP 위에서 동작한다','브로드캐스트 대신 solicited-node 멀티캐스트로 보내 대상 외 노드는 NIC에서 걸러진다','라우터가 대신 응답한다','MAC 주소를 포함하지 않는다'],answer:1,explain:'ff02::1:ffXX:XXXX(하위 24비트)로 보내므로 하위 24비트가 같은 노드만 수신한다. 나머지 노드의 CPU는 깨어나지 않는다.'},
+    {q:'2001:db8::1234:5678 에 대한 solicited-node 멀티캐스트 주소는?',options:['ff02::1:ff34:5678','ff02::1:ff12:3456','ff02::1234:5678','ff02::2'],answer:0,explain:'ff02::1:ff + 대상 주소의 하위 24비트(34:5678).'},
+    {q:'SLAAC에서 호스트가 전역 주소를 얻는 순서로 옳은 것은?',options:['RS → RA → 링크로컬 생성 → DAD','링크로컬 생성 → DAD → RS → RA → GUA 생성 → DAD','DHCPv6 Solicit → Advertise → Request → Reply','DAD → RA → 링크로컬 → GUA'],answer:1,explain:'링크로컬이 있어야 RS를 보낼 출발지가 생긴다. 모든 주소는 사용 전 DAD를 거친다.'},
+    {q:'RA의 M 플래그가 1일 때 의미는?',options:['멀티캐스트를 지원한다','주소는 DHCPv6(stateful)로 받으라','MTU가 1280이다','이 라우터는 기본 라우터가 아니다'],answer:1,explain:'M(Managed)=1 → stateful DHCPv6로 주소 할당. O(Other)=1 → DNS 등 기타 정보만 DHCPv6. 둘 다 0 → RA만으로 구성(RDNSS 옵션).'},
+    {q:'IPv6에서 라우터가 패킷을 단편화하지 않도록 바꾼 결과로 옳은 것은?',options:['IPv6는 단편화가 전혀 불가능하다','송신자가 PMTUD로 경로 MTU를 알아내야 하며, ICMPv6 Packet Too Big이 막히면 IPv4보다 심각하게 깨진다','MTU는 항상 1500으로 고정된다','확장 헤더는 쓸 수 없다'],answer:1,explain:'단편화는 송신 종단만 Fragment 확장 헤더로 수행한다. 최소 링크 MTU 1280이 보장되므로 블랙홀 시 1280으로 내리는 것이 대응책.'},
+    {q:'NAT64 환경에서 DNS64가 하는 일은?',options:['IPv4 주소를 IPv6 주소로 변환하는 라우터','AAAA가 없는 도메인에 대해 A 레코드를 NAT64 프리픽스 뒤에 붙인 AAAA를 합성해 응답','IPv6 패킷을 IPv4 패킷 안에 캡슐화','IPv6 주소를 압축'],answer:1,explain:'DNS64(RFC 6147)가 합성한 64:ff9b::a.b.c.d 목적지는 NAT64 게이트웨이(RFC 6146)로 라우팅되어 헤더가 변환된다.'},
+    {q:'Happy Eyeballs(RFC 8305)의 목적은?',options:['IPv6를 항상 IPv4보다 먼저 쓰도록 강제','IPv6 경로가 깨졌을 때 사용자가 지연을 느끼지 않도록 약 250 ms 후 IPv4를 병렬 시도','DNS 질의를 암호화','MTU를 자동 조정'],answer:1,explain:'AAAA/A 동시 질의, IPv6 우선 시도, 250 ms 뒤 다음 주소 병렬 시도, 결과 캐시.'},
+    {q:'Modified EUI-64로 MAC 00:1a:2b:3c:4d:5e 에서 만든 인터페이스 ID는?',options:['001a:2bff:fe3c:4d5e','021a:2bff:fe3c:4d5e','001a:2b3c:4d5e:fffe','021a:2b3c:4d5e:0000'],answer:1,explain:'가운데 ff:fe 삽입 후 첫 바이트의 U/L 비트(0x02)를 반전: 00 → 02.'},
+  ]);
+})();
+</script>
+</body>
+</html>

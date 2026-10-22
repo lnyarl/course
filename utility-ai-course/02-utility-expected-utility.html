@@ -1,0 +1,1144 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>효용과 기대 효용</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 02장 전용 */
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.sliders { display: grid; grid-template-columns: minmax(110px, auto) 1fr minmax(64px, auto); gap: 6px 12px; align-items: center; font-size: 14px; margin: 8px 0; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.chart-svg { width: 100%; height: auto; display: block; font-family: var(--sans); }
+.chart-svg .grid { stroke: var(--border); stroke-width: 1; }
+.chart-svg .axis { stroke: var(--muted); stroke-width: 1.2; }
+.chart-svg text { fill: var(--muted); font-size: 11.5px; }
+.chart-svg text.strong { fill: var(--text); font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.preset-row .btn.on { border-color: var(--accent); background: var(--accent-soft); }
+.num-in { width: 76px; }
+/* 정규화 표 */
+.norm-tbl td { vertical-align: middle; }
+.norm-tbl .cellbar { display: flex; align-items: center; gap: 6px; }
+.norm-tbl .cellbar .bar { flex: 1; min-width: 50px; }
+.norm-tbl .u { font-family: var(--mono); font-size: 12.5px; min-width: 34px; text-align: right; }
+.div-rows { display: grid; grid-template-columns: minmax(64px, auto) 1fr minmax(64px, auto); gap: 6px 10px; align-items: center; font-size: 13.5px; margin-top: 8px; }
+.div-track { position: relative; height: 14px; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border); }
+.div-track::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--muted); }
+.div-track > i { position: absolute; top: 0; bottom: 0; border-radius: 3px; transition: left .25s, width .25s; }
+.div-track > i.pos { background: var(--accent); }
+.div-track > i.neg { background: var(--warn); }
+.div-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); grid-column: 2; }
+/* 사냥꾼 위젯 */
+.hunt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 640px) { .hunt-grid { grid-template-columns: 1fr; } }
+.hunt-col { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; background: var(--bg); }
+.hunt-col h4 { margin: 2px 0 4px; font-size: 15px; display: flex; justify-content: space-between; align-items: baseline; }
+.hunt-col h4 .eu { font-family: var(--mono); font-size: 14px; }
+.hunt-col .oname { font-weight: 700; font-size: 13.5px; margin-top: 6px; }
+.hunt-col .psum { font-size: 12.5px; color: var(--muted); }
+.hunt-col .psum.bad { color: var(--bad); font-weight: 700; }
+.tree-svg { min-width: 560px; }
+.tree-svg text { font-size: 13px; }
+.tree-svg .small { font-size: 11.5px; }
+.tree-svg .b { font-weight: 700; }
+.mc-svg { min-width: 520px; }
+/* 개미 */
+.ant-svg { min-width: 560px; }
+.ant-svg text { font-size: 13px; }
+.ant-svg .small { font-size: 11.5px; }
+/* 빵 */
+.bread-wrap { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 640px) { .bread-wrap { grid-template-columns: 1fr; } }
+.bread-rows { display: grid; grid-template-columns: auto auto 1fr auto; gap: 6px 10px; align-items: center; font-size: 13.5px; }
+.bread-rows .bar { min-width: 60px; }
+.bread-rows .hidden { opacity: .18; }
+.bread-rows .tag { font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+svg.plot { width: 100%; max-width: 280px; display: block; }
+</style>
+</head>
+<body data-chapter="02">
+<main>
+  <header class="chapter-head">
+    <span class="label">기초 · Chapter 02</span>
+    <h1>효용과 기대 효용</h1>
+    <p class="lead">효용 AI가 다루는 숫자는 모두 "그것을 얼마나 원하는가"를 뜻한다. 이 장에서는 그 숫자가 가격이나 HP 같은 <b>값</b>과 어떻게 다른지, 단위가 제각각인 고려요소를 왜 0~1이라는 한 척도로 맞춰야 하는지, 결과가 불확실할 때 <b>기대 효용</b>으로 행동을 비교하는 법을 차례로 다룬다. 마지막으로 이 원칙이 실제 사람의 선택과 어긋나는 지점(전망 이론)을 보고, 그 어긋남을 게임 캐릭터의 개성으로 쓰는 관점을 살펴본다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>값(value)과 효용(utility)의 차이를 예로 설명하고, 맥락이 바뀌면 같은 선택지의 효용이 왜 달라지는지 말할 수 있다.</li>
+      <li>단위가 다른 고려요소를 bookend 정규화로 0~1에 맞추고, 정규화하지 않았을 때 생기는 버그를 재현할 수 있다.</li>
+      <li>기대 효용 EU = Σ Dᵢ·Pᵢ를 계산하고, 몬테카를로 시뮬레이션으로 그 뜻(장기 평균)을 확인한다.</li>
+      <li>Graham의 개미 군락 예를 재현하며 decision factor를 평균으로 결합하고, 1−x로 방향을 뒤집는다.</li>
+      <li>한계효용 체감과 전망 이론이 효용 설계(커브·성격)에 주는 시사점을 설명한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>UAI.clamp01()</code> <code>UAI.normalize()</code> <code>UAI.combine(vals, "mean")</code> <code>UAI.rng()</code> <code>UAI.adValue()</code>(미리보기) — 모든 점수를 0~1 한 단위로 맞추는 약속과, 불확실한 결과를 확률 가중 평균으로 접는 방법을 정한다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">점수가 필요한 이유: 불확실성 속의 최선의 추측</a></li>
+    <li><a href="#s2">효용은 값이 아니다: 고양이 장난감 두 개</a></li>
+    <li><a href="#s3">공통 단위 문제와 0~1 정규화</a></li>
+    <li><a href="#s4">기대 효용과 최대 기대효용 원칙</a></li>
+    <li><a href="#s5">결과가 여러 개일 때, 그리고 한 번뿐인 결정</a></li>
+    <li><a href="#s6">Decision factor: 개미 군락 예제</a></li>
+    <li><a href="#s7">한계효용 체감: 같은 빵, 다른 효용</a></li>
+    <li><a href="#s8">최대 기대효용의 한계와 전망 이론</a></li>
+    <li><a href="#s9">엔진으로 가는 길: 이 장이 정하는 약속</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. 점수가 필요한 이유: 불확실성 속의 최선의 추측</h2>
+    <p>효용 기반 시스템의 기본 형태는 단순하다. <b>할 수 있는 모든 행동에 한꺼번에 점수를 매기고, 점수가 가장 높은(또는 높은 편인) 행동 하나를 고른다</b> (Graham, Game AI Pro 9장). <a class="xref" href="01-decision-landscape.html">01장 의사결정 아키텍처 지형도</a>에서 본 FSM과 행동 트리가 "조건이 참이면 한다"는 Boolean 판단으로 움직인다면, 효용 시스템은 "지금 이걸 얼마나 하고 싶은가"를 연속적인 숫자로 묻는다. Merrill(Game AI Pro 10장)이 지적했듯 Boolean 판단은 회색지대에 약하고, 점수는 바로 그 회색지대를 다루는 도구다.</p>
+    <p>그런데 애초에 왜 점수를 매겨야 할까? Graham은 체스로 설명한다. 체스의 게임 트리 전체를 계산할 연산 능력이 있다면 수에 점수를 매길 필요가 없다. 어떤 수순이 승리·패배·무승부로 끝나는지 그냥 알면 되기 때문이다. 우리에게는 그런 능력이 없으니, 각 수가 <b>얼마나 강해 보이는지</b>를 점수로 매긴다. 게임 세계는 대개 비결정적이라 행동의 결과를 미리 확정할 수 없고, 정확한 효용을 계산하는 것도 보통 불가능하다. 효용은 그 불완전한 정보 위에서 내리는 "최선의 추측(best guess)"이다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 250" role="img" aria-label="완전 계산 가능한 트리와 점수로 추정하는 결정의 비교">
+        <defs>
+          <marker id="ar0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <text x="165" y="20" text-anchor="middle" font-weight="700">끝까지 계산할 수 있다면</text>
+        <text x="515" y="20" text-anchor="middle" font-weight="700">현실의 게임 세계</text>
+        <line x1="340" y1="32" x2="340" y2="235" style="stroke:var(--border);stroke-dasharray:4 4"/>
+        <!-- 왼쪽: 완전 트리 -->
+        <circle cx="165" cy="55" r="14" class="box"/><text x="165" y="60" text-anchor="middle" class="muted">지금</text>
+        <g class="line">
+          <line x1="155" y1="66" x2="75" y2="110"/><line x1="165" y1="69" x2="165" y2="110"/><line x1="175" y1="66" x2="255" y2="110"/>
+          <line x1="75" y1="124" x2="45" y2="170"/><line x1="75" y1="124" x2="105" y2="170"/>
+          <line x1="165" y1="124" x2="135" y2="170"/><line x1="165" y1="124" x2="195" y2="170"/>
+          <line x1="255" y1="124" x2="225" y2="170"/><line x1="255" y1="124" x2="285" y2="170"/>
+        </g>
+        <circle cx="75" cy="117" r="8" class="box"/><circle cx="165" cy="117" r="8" class="box"/><circle cx="255" cy="117" r="8" class="box"/>
+        <g font-weight="700">
+          <rect x="31" y="170" width="28" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="45" y="186" text-anchor="middle">승</text>
+          <rect x="91" y="170" width="28" height="22" rx="4" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="105" y="186" text-anchor="middle">패</text>
+          <rect x="121" y="170" width="28" height="22" rx="4" class="box"/><text x="135" y="186" text-anchor="middle">무</text>
+          <rect x="181" y="170" width="28" height="22" rx="4" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="195" y="186" text-anchor="middle">패</text>
+          <rect x="211" y="170" width="28" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="225" y="186" text-anchor="middle">승</text>
+          <rect x="271" y="170" width="28" height="22" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="285" y="186" text-anchor="middle">승</text>
+        </g>
+        <text x="165" y="216" text-anchor="middle" class="muted">결과를 알면 점수가 필요 없다</text>
+        <text x="165" y="234" text-anchor="middle" class="muted">"승리로 이어지는 수를 둔다"</text>
+        <!-- 오른쪽: 점수 추정 -->
+        <circle cx="515" cy="55" r="14" class="box"/><text x="515" y="60" text-anchor="middle" class="muted">지금</text>
+        <line x1="503" y1="64" x2="420" y2="108" class="line" marker-end="url(#ar0)"/>
+        <line x1="515" y1="69" x2="515" y2="108" class="line" marker-end="url(#ar0)"/>
+        <line x1="527" y1="64" x2="610" y2="108" class="line" marker-end="url(#ar0)"/>
+        <rect x="372" y="112" width="96" height="44" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="420" y="131" text-anchor="middle">활 쏘기</text><text x="420" y="148" text-anchor="middle" class="mono" font-weight="700">0.51</text>
+        <rect x="467" y="112" width="96" height="44" rx="8" style="fill:var(--ok-soft);stroke:var(--ok);stroke-width:2"/>
+        <text x="515" y="131" text-anchor="middle">창 찌르기</text><text x="515" y="148" text-anchor="middle" class="mono" font-weight="700">0.54</text>
+        <rect x="562" y="112" width="96" height="44" rx="8" class="box"/>
+        <text x="610" y="131" text-anchor="middle">도망치기</text><text x="610" y="148" text-anchor="middle" class="mono" font-weight="700">0.30</text>
+        <text x="420" y="182" text-anchor="middle" class="muted" font-size="20">?</text>
+        <text x="515" y="182" text-anchor="middle" class="muted" font-size="20">?</text>
+        <text x="610" y="182" text-anchor="middle" class="muted" font-size="20">?</text>
+        <text x="515" y="216" text-anchor="middle" class="muted">결과는 확률적이고 트리는 너무 크다</text>
+        <text x="515" y="234" text-anchor="middle" class="muted">"얼마나 좋아 보이는지" 점수로 추정한다</text>
+      </svg>
+      <figcaption>그림 2-1. 결과를 끝까지 계산할 수 있으면 점수가 필요 없다. 효용 점수는 계산할 수 없는 미래를 압축한 추정치다. (오른쪽 숫자는 4절에서 계산한다)</figcaption>
+    </figure>
+
+    <p>Hamlet 마을의 사냥꾼 <b>찬</b>이 마을 어귀에서 늑대와 마주쳤다고 하자. 찬은 활을 쏠지, 창으로 찌를지, 도망칠지 정해야 한다. 화살이 맞을지는 쏘기 전에 알 수 없다. 이 장 전체가 이 질문 하나를 푸는 과정이다. <b>결과를 모르는 상태에서, 서로 다른 성격의 선택지를 어떻게 하나의 숫자로 비교할 것인가.</b></p>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. 효용은 값이 아니다: 고양이 장난감 두 개</h2>
+    <p>Graham이 든 예를 그대로 따라가 보자. 고양이 장난감을 사려는데 한 사이트는 $4.99, 다른 사이트는 똑같은 물건을 $2.99에 판다. 배송 기간이 같다면 당연히 $2.99를 고른다. 돈이 더 남으니 그쪽 효용이 높다.</p>
+    <p>이제 배송 기간이 다르다고 하자. $4.99짜리는 <b>2일</b>, $2.99짜리는 <b>5일</b> 뒤에 온다. 더는 가격만 비교할 수 없고, 시간과 돈 사이의 환산이 필요하다. Graham은 "하루 = $1"로 놓는다. 그러면 빠른 상점의 총비용은 4.99 + 2 = <b>$6.99</b>, 싼 상점은 2.99 + 5 = <b>$7.99</b>로, 비싼 쪽이 오히려 이득이다.</p>
+    <p>핵심은 다음 문장이다. <b>효용은 값과 같지 않다.</b> 값은 가격처럼 측정할 수 있는 양이다. 효용은 우리가 그것을 <b>얼마나 원하는가</b>를 재며, 성격과 상황에 따라 달라진다. 억만장자라면 $2 차이는 무시할 만하니 시간을 아끼려고 $4.99를 고를 것이다. 아주 가난하다면 $2가 정말 중요하니 싼 쪽을 사고 사흘을 더 기다린다. $2라는 <b>값</b>은 똑같은데 그 돈의 <b>효용</b>이 맥락에 따라 다른 것이다. 이 효용은 순간순간 바뀌기도 한다. 지금 붕대를 들고 다니는 효용은 작지만, 손을 베는 순간 크게 오른다 (Graham 9.2).</p>
+
+    <div class="widget" id="toy">
+      <div class="w-title">하루의 가치 슬라이더: 어느 상점이 이득인가</div>
+      <div class="w-desc">"하루를 몇 달러로 치는가"에 따라 두 상점의 총비용(가격 + 배송일 × 하루 가치)이 달라진다. 두 직선이 만나는 손익분기점보다 하루 가치가 높으면 빠른 상점, 낮으면 싼 상점이 이긴다. 가격과 배송일도 바꿔 볼 수 있다.</div>
+      <div class="controls preset-row" id="toyPresets">
+        <span>프리셋</span>
+        <button class="btn" data-v="0.25">가난한 학생 ($0.25/일)</button>
+        <button class="btn" data-v="1">보통 (Graham: $1/일)</button>
+        <button class="btn" data-v="3">바쁜 부자 ($3/일)</button>
+      </div>
+      <div class="sliders">
+        <label for="toyV">하루의 가치</label><input type="range" id="toyV" min="0" max="3" step="0.01" value="1"><output id="toyVo">$1.00</output>
+      </div>
+      <div class="controls">
+        <span class="c-accent"><b>빠른 상점</b></span>
+        <label>$ <input type="number" class="num-in" id="toyPA" value="4.99" step="0.01" min="0" max="50"></label>
+        <label><input type="number" class="num-in" id="toyDA" value="2" step="1" min="0" max="30"> 일</label>
+        <span class="c-warn" style="margin-left:8px"><b>싼 상점</b></span>
+        <label>$ <input type="number" class="num-in" id="toyPB" value="2.99" step="0.01" min="0" max="50"></label>
+        <label><input type="number" class="num-in" id="toyDB" value="5" step="1" min="0" max="30"> 일</label>
+      </div>
+      <div class="stage"><svg class="chart-svg" id="toyChart" viewBox="0 0 640 280" role="img" aria-label="하루 가치에 따른 두 상점의 총비용"></svg></div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>빠른 상점 총비용</span><span><i style="background:var(--warn)"></i>싼 상점 총비용</span><span><i style="background:var(--bad)"></i>손익분기점</span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">빠른 상점 총비용</div><div class="v c-accent" id="toyCA">-</div></div>
+        <div class="stat"><div class="k">싼 상점 총비용</div><div class="v c-warn" id="toyCB">-</div></div>
+        <div class="stat"><div class="k">선택</div><div class="v" id="toyPick">-</div></div>
+        <div class="stat"><div class="k">손익분기 하루 가치</div><div class="v" id="toyBE">-</div></div>
+      </div>
+      <div class="callout" id="toyMsg" style="margin-bottom:0"></div>
+    </div>
+
+    <p>손익분기점은 두 총비용이 같아지는 하루 가치 v다. 4.99 + 2v = 2.99 + 5v를 풀면 다음과 같다.</p>
+    <div class="formula">v* = (4.99 − 2.99) / (5 − 2) = $2 / 3일 ≈ $0.67 / 일</div>
+    <p>하루를 67센트보다 비싸게 치는 사람은 빠른 상점을, 싸게 치는 사람은 싼 상점을 고른다. "하루 가치"라는 숫자를 다시 보자. 이것은 시간의 효용을 <b>돈의 효용으로 나눈 환율</b>이다. 가난한 사람의 하루 가치가 낮은 이유는 하루를 하찮게 여겨서가 아니라 1달러의 효용이 크기 때문이다. 같은 직선 두 개를 놓고도 환율 하나로 결정이 뒤집힌다.</p>
+
+    <div class="callout tip"><span class="title">게임 설계로 옮기면</span>
+      게임 안의 <b>값</b>(가격, HP, 거리, 탄약 수)은 그대로 두고, 그 값을 <b>효용으로 바꾸는 함수</b>를 성격과 상황에 따라 바꾼다. 같은 금화 10닢이라도 구두쇠 상인에게는 크고 귀족 NPC에게는 작다. 이 "값 → 효용" 변환이 <a class="xref" href="03-response-curves.html">03장 반응 커브</a>의 주제이고, 성격별로 커브에 가중치를 거는 방식은 <a class="xref" href="07-needs-smart-objects.html">07장 욕구 모델</a>에서 엔진의 <code>agent.traits</code>로 구현된다.
+    </div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. 공통 단위 문제와 0~1 정규화</h2>
+    <p>장난감 예에서는 고려요소가 가격과 배송일 두 개뿐이라 "모든 것을 돈으로 환산"하는 방법이 통했다. 하지만 Graham도 말하듯 실제로는 사이트 충성도, 지인 추천, 과거 경험, 고객 리뷰처럼 따질 것이 더 많다. 리뷰 별점 0.1점은 몇 달러인가? 판매자 신뢰도 5%는 며칠의 배송 지연과 맞먹는가? 요소가 늘수록 모든 쌍 사이의 환율을 정해야 하고, 그 환율에는 근거가 없다.</p>
+    <p>효용 시스템의 해법은 방향을 바꾸는 것이다. 요소끼리 환율을 정하지 않고, <b>각 요소를 각자 0~1 효용으로 바꾼 뒤</b> 그 효용들을 결합한다. Graham이 정규화된 점수(0~1)를 권하는 이유는 세 가지다.</p>
+    <ul>
+      <li><b>쉽게 결합된다.</b> 평균만 내도 다시 0~1 점수가 나온다.</li>
+      <li><b>쉽게 계산된다.</b> 범위가 정해진 값이면 어떤 값이든 0~1로 옮길 수 있다.</li>
+      <li><b>바로 비교된다.</b> 모든 점수가 같은 척도 위에 있다.</li>
+    </ul>
+    <p>Graham은 0~1이 유일한 답은 아니라고 덧붙인다. 변수 사이에 일관성만 있으면 어떤 범위든 된다. 중요한 것은 <b>시스템 전체에서 같은 척도</b>를 쓰는 일이다. 점수는 결국 서로 비교되어 최종 결정을 만들기 때문이다.</p>
+
+    <div class="callout warn"><span class="title">"15점"은 무슨 뜻인가</span>
+      Graham의 질문: AI가 어떤 행동에 15점을 매겼다면, 그 숫자가 시스템 전체에서 무엇을 뜻하는지 즉시 알아야 한다. 25점 만점의 15점인가, 15%인가? 이 질문에 바로 답할 수 없다면 그 점수 체계는 이미 고장 나 있다. 실제 프로젝트에서는 한 디자이너가 0~100 척도로, 다른 디자이너가 0~1 척도로 행동을 만들면, 0~100 쪽 행동이 사실상 항상 이기는 식으로 드러난다.
+    </div>
+
+    <h3>Bookend 정규화: 원시값을 0~1로</h3>
+    <p>가장 기본적인 변환은 원시값의 의미 있는 범위 [lo, hi]를 정하고 그 구간을 [0, 1]로 선형 대응시키는 것이다. Lewis(Game AI Pro 3, 13장)는 이를 <b>bookend</b>라고 부른다. 거리 0~100m를 0~1로 옮기면 25m는 0.25가 되고, 100m를 넘으면 그냥 1로 고정한다. "낮을수록 좋은" 요소(가격, 배송일)는 1 − x로 방향을 뒤집는다. 엔진에서는 이렇게 생겼다.</p>
+<pre class="engine"><code>  const clamp01 = x => (x > 1 ? 1 : x > 0 ? x : 0); // NaN → 0
+  UAI.clamp01 = clamp01;
+
+  // bookend 정규화: [lo, hi] 구간을 [0, 1]로. 범위를 벗어나면 끝값에 고정 (GAP3 13장)
+  UAI.normalize = (v, lo, hi) => (hi === lo ? 0 : clamp01((v - lo) / (hi - lo)));</code></pre>
+    <p><code>clamp01</code>은 NaN도 0으로 만든다. 입력 하나가 깨져도 점수 전체가 NaN으로 오염되지 않도록 하는 방어선이다. 정규화 다음 단계는 커브를 거쳐 모양을 다듬는 일인데, 이것은 <a class="xref" href="03-response-curves.html">03장</a>에서 다룬다. 이 장에서는 직선(정규화 그 자체)만 쓴다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 230" role="img" aria-label="원시값에서 정규화를 거쳐 결합 점수까지의 파이프라인">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <text x="70" y="18" text-anchor="middle" class="muted">원시값 (단위 제각각)</text>
+        <text x="270" y="18" text-anchor="middle" class="muted">bookend 정규화 (+방향)</text>
+        <text x="455" y="18" text-anchor="middle" class="muted">0~1 효용</text>
+        <text x="605" y="18" text-anchor="middle" class="muted">결합</text>
+        <g>
+          <rect x="10" y="30" width="120" height="36" rx="6" class="box"/><text x="70" y="53" text-anchor="middle">가격 $4.99</text>
+          <rect x="10" y="76" width="120" height="36" rx="6" class="box"/><text x="70" y="99" text-anchor="middle">배송 2일</text>
+          <rect x="10" y="122" width="120" height="36" rx="6" class="box"/><text x="70" y="145" text-anchor="middle">신뢰도 70%</text>
+          <rect x="10" y="168" width="120" height="36" rx="6" class="box"/><text x="70" y="191" text-anchor="middle">리뷰 ★4.0</text>
+        </g>
+        <g class="line">
+          <line x1="130" y1="48" x2="184" y2="48" marker-end="url(#ar3)"/><line x1="130" y1="94" x2="184" y2="94" marker-end="url(#ar3)"/>
+          <line x1="130" y1="140" x2="184" y2="140" marker-end="url(#ar3)"/><line x1="130" y1="186" x2="184" y2="186" marker-end="url(#ar3)"/>
+        </g>
+        <g>
+          <rect x="188" y="30" width="164" height="36" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="270" y="53" text-anchor="middle" class="mono" font-size="12">1 − norm(4.99, 0, 10)</text>
+          <rect x="188" y="76" width="164" height="36" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="270" y="99" text-anchor="middle" class="mono" font-size="12">1 − norm(2, 0, 10)</text>
+          <rect x="188" y="122" width="164" height="36" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="270" y="145" text-anchor="middle" class="mono" font-size="12">norm(70, 0, 100)</text>
+          <rect x="188" y="168" width="164" height="36" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="270" y="191" text-anchor="middle" class="mono" font-size="12">norm(4.0, 1, 5)</text>
+        </g>
+        <g class="line">
+          <line x1="352" y1="48" x2="406" y2="48" marker-end="url(#ar3)"/><line x1="352" y1="94" x2="406" y2="94" marker-end="url(#ar3)"/>
+          <line x1="352" y1="140" x2="406" y2="140" marker-end="url(#ar3)"/><line x1="352" y1="186" x2="406" y2="186" marker-end="url(#ar3)"/>
+        </g>
+        <g class="mono" font-weight="700">
+          <rect x="410" y="30" width="90" height="36" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="455" y="53" text-anchor="middle">0.50</text>
+          <rect x="410" y="76" width="90" height="36" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="455" y="99" text-anchor="middle">0.80</text>
+          <rect x="410" y="122" width="90" height="36" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="455" y="145" text-anchor="middle">0.70</text>
+          <rect x="410" y="168" width="90" height="36" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="455" y="191" text-anchor="middle">0.75</text>
+        </g>
+        <g class="line">
+          <path d="M500,48 C530,48 530,117 556,117" marker-end="url(#ar3)"/><path d="M500,94 C530,94 530,117 556,117" marker-end="url(#ar3)"/>
+          <path d="M500,140 C530,140 530,117 556,117" marker-end="url(#ar3)"/><path d="M500,186 C530,186 530,117 556,117" marker-end="url(#ar3)"/>
+        </g>
+        <rect x="560" y="88" width="110" height="58" rx="8" style="fill:var(--ok-soft);stroke:var(--ok);stroke-width:2"/>
+        <text x="615" y="111" text-anchor="middle">mean(…)</text>
+        <text x="615" y="133" text-anchor="middle" class="mono" font-weight="700">0.69</text>
+      </svg>
+      <figcaption>그림 2-2. 단위가 다른 원시값을 각자 0~1로 옮긴 뒤 결합한다. 요소끼리 직접 환율을 정할 필요가 없다. (빠른 상점 기준. 평균 결합은 6절, 다른 결합 방식은 04장)</figcaption>
+    </figure>
+
+    <div class="widget" id="norm">
+      <div class="w-title">정규화 비교기: 원시값을 그냥 더하면 무슨 일이 생기나</div>
+      <div class="w-desc">두 상점을 네 요소로 비교한다. <b>원시값 합</b>은 좋은 방향으로 부호만 맞춰(가격·배송은 빼고, 신뢰도·리뷰는 더함) 그대로 더하는 순진한 방식이다. <b>정규화 평균</b>은 각 요소를 bookend로 0~1에 옮긴 뒤 가중 평균한다. 아래 막대는 각 요소가 두 상점의 점수 차이에 얼마나 기여했는지 보여 준다.</div>
+      <div class="controls" id="normMode">
+        <label><input type="radio" name="normMode" value="naive"> 원시값 합 (잘못된 방식)</label>
+        <label><input type="radio" name="normMode" value="norm" checked> 정규화 평균 (엔진 방식)</label>
+      </div>
+      <div class="tbl-wrap"><table class="norm-tbl" id="normTbl"></table></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">빠른 상점 점수</div><div class="v c-accent" id="normSA">-</div></div>
+        <div class="stat"><div class="k">싼 상점 점수</div><div class="v c-warn" id="normSB">-</div></div>
+        <div class="stat"><div class="k">선택</div><div class="v" id="normPick">-</div></div>
+      </div>
+      <div class="div-rows" id="normDiv"></div>
+      <div class="callout" id="normMsg" style="margin-bottom:0"></div>
+    </div>
+
+    <p>원시값 합 모드로 바꿔 보면, 0~100 범위를 쓰는 신뢰도가 결정을 거의 혼자 좌우한다. 원시값으로 보면 신뢰도 8%p 차이(8)가 가격 차이 $2와 배송 3일을 합친 것(5)보다 크게 잡히기 때문이다. 이것은 "신뢰도가 중요하다"는 설계 의도가 아니라 <b>단위의 사고</b>다. 정규화 평균에서는 모든 요소가 같은 0~1 위에서 겨루고, 어떤 요소를 더 중시할지는 가중치 슬라이더로 <b>명시적으로</b> 정한다. Graham은 이런 요소별 가중치가 "AI가 그 요소를 얼마나 신경 쓰는지"를 정해 성격을 흉내 낸다고 설명한다.</p>
+
+    <details class="deep"><summary>심화: 0~1이 아닌 일관된 척도 (Dragon Age: Inquisition)</summary><div>
+      <p>일관성만 지키면 0~1이 아니어도 된다는 Graham의 말을 실제로 따른 사례가 있다. BioWare의 Dragon Age: Inquisition 행동 결정 시스템(Hanlon & Watts, Game AI Pro 3, 31장)은 자동 정규화 대신 디자이너 점수 관례를 썼다. 기본 행동 10점, 공격 20~40점, 지원 25~45점, 반응 50~70점처럼 범주마다 점수대를 정해 두는 식이다. 숫자 자체는 0~1이 아니지만 "40점"이 시스템 전체에서 무엇을 뜻하는지 모두가 안다는 점에서 일관된 척도다. 이 방식과 rank 기반 체계의 비교는 <a class="xref" href="10-hybrid-architectures.html">10장</a>에서 다룬다.</p>
+    </div></details>
+
+    <div class="callout"><span class="title">왜 엔진의 combine에는 요소별 가중치가 없나</span>
+      위젯의 가중 평균은 이 장에서만 쓰는 교육용 계산이다. 이 코스의 엔진은 요소별 중요도를 <b>커브의 모양과 높이</b>로 표현하고(<a class="xref" href="03-response-curves.html">03장</a>), 행동 전체의 중요도를 <code>action.weight</code>로 곱한다(<a class="xref" href="04-considerations.html">04장</a>). 가중치를 둘 곳을 한 군데로 정해 두지 않으면, 같은 효과를 내는 손잡이가 세 군데 생겨 튜닝이 꼬인다.
+    </div>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 기대 효용과 최대 기대효용 원칙</h2>
+    <p>찬에게로 돌아가자. 활을 쏘면 맞을 수도, 빗나갈 수도 있다. 결과가 확률적일 때 한 행동의 가치를 하나의 숫자로 접는 가장 흔한 방법은 <b>각 결과의 효용에 그 결과가 일어날 확률을 곱해 모두 더하는 것</b>이다. 이것이 그 행동의 <b>기대 효용(expected utility)</b>이다 (Graham 식 9.1).</p>
+    <div class="formula">EU = Σᵢ₌₁ⁿ Dᵢ · Pᵢ &nbsp;&nbsp;&nbsp;(Σ Pᵢ = 1)</div>
+    <p>D는 그 결과에 대한 욕구(desire), 즉 효용이고 P는 그 결과가 일어날 확률이다. 확률은 합이 1이 되도록 정규화되어 있어야 한다. 가능한 모든 행동에 이 계산을 하고 기대 효용이 가장 높은 행동을 고르는 것을 <b>최대 기대효용 원칙(principle of maximum expected utility)</b>이라고 한다 (Russell & Norvig, Graham 인용).</p>
+    <p>Graham의 RPG 예는 다음과 같다. 플레이어를 공격하는 적 AI가 명중률 85%이고, 명중했을 때의 효용이 0.6이라면 기대 효용은 0.85 × 0.6 = <b>0.51</b>이다. 빗나감의 효용은 0이므로 계산에서 빼도 된다. 다른 무기는 명중률 60%에 명중 효용 0.9라면 0.60 × 0.9 = <b>0.54</b>다. 명중률은 낮아도 기대 효용은 두 번째 무기가 더 크다. 아래 위젯에서는 이것을 Hamlet 세계관으로 옮겨, 늑대를 만난 찬의 활(명중 85%, 효용 0.6)과 창(명중 60%, 효용 0.9)으로 재현한다.</p>
+
+    <div class="widget" id="hunt">
+      <div class="w-title">사냥꾼 찬의 선택: 결과 분기 트리와 몬테카를로 시뮬레이션</div>
+      <div class="w-desc">각 무기의 결과별 확률 P와 효용 D를 바꾸면 분기 트리와 EU가 즉시 다시 계산된다. 가지 굵기는 확률, 초록 가지는 EU가 가장 높은 선택이다. <b>1000회 시뮬레이션</b>은 같은 결투를 1000번 실제로 굴려 결과 효용의 누적 평균이 EU(점선)로 수렴하는 모습을 보여 준다. 가로축은 로그 눈금이다.</div>
+      <div class="controls preset-row" id="huntMode">
+        <span>결과 모델</span>
+        <button class="btn on" data-mode="two">2결과 (명중/빗나감)</button>
+        <button class="btn" data-mode="three">3결과 (대성공/성공/실패)</button>
+        <label style="margin-left:6px"><input type="checkbox" id="huntAuto" checked> 확률 합을 1로 자동 유지</label>
+      </div>
+      <div class="hunt-grid" id="huntCtl"></div>
+      <div class="stage" style="margin-top:12px"><svg class="chart-svg tree-svg" id="huntTree" role="img" aria-label="결과 분기 트리"></svg></div>
+      <div class="controls">
+        <button class="btn primary" id="mcRun">▶ 1000회 시뮬레이션</button>
+        <label>시드 <input type="number" class="num-in" id="mcSeed" value="2" min="1" max="99999"></label>
+        <button class="btn" id="mcSeedNext">다른 시드</button>
+      </div>
+      <div class="stage"><svg class="chart-svg mc-svg" id="mcChart" viewBox="0 0 640 250" role="img" aria-label="시뮬레이션 누적 평균"></svg></div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>활 누적 평균</span><span><i style="background:var(--violet)"></i>창 누적 평균</span><span>점선: 이론 EU</span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">실행 횟수</div><div class="v" id="mcN">0</div></div>
+        <div class="stat"><div class="k">활 평균 / EU</div><div class="v c-accent" id="mcBow">-</div></div>
+        <div class="stat"><div class="k">창 평균 / EU</div><div class="v c-violet" id="mcSpear">-</div></div>
+        <div class="stat"><div class="k">EU 우세 무기가 한 판에서 더 나빴던 비율</div><div class="v" id="mcWorse">-</div></div>
+      </div>
+      <div class="callout" id="huntMsg" style="margin-bottom:0"></div>
+    </div>
+
+    <p>시뮬레이션을 여러 시드로 돌려 보면 두 가지를 알 수 있다. 첫째, 실행 횟수가 늘수록 누적 평균은 이론 EU로 모인다. 기대 효용은 "같은 상황을 아주 많이 반복했을 때 한 번당 평균적으로 얻는 효용"이라는 뜻이고, 이것은 대수의 법칙이 보장한다. 둘째, 처음 수십 번은 평균이 크게 출렁이고, 1000번을 돌려도 ±0.02~0.03 정도의 흔들림은 남는다. 2결과 기본값에서 두 무기의 EU 차이는 0.03뿐이라, 운 나쁜 시드에서는 1000번을 돌린 평균마저 순서가 뒤집혀 보일 수 있다. EU는 이 흔들림을 걷어 낸 값을 <b>시뮬레이션 없이 공식으로 바로</b> 준다. AI가 매 프레임 1000번씩 굴려 볼 수는 없으니, 공식이 있다는 것은 큰 이점이다.</p>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 결과가 여러 개일 때, 그리고 한 번뿐인 결정</h2>
+    <h3>결과를 더 잘게 나누면 결정이 바뀔 수 있다</h3>
+    <p>위젯의 결과 모델을 <b>3결과</b>로 바꿔 보자. 명중을 "대성공(급소에 맞아 늑대가 쓰러짐, D=1.0)"과 "성공(상처만 입혀 쫓아냄)"으로 나눴다. 기본값에서 활은 0.15×1.0 + 0.70×0.6 = <b>0.57</b>, 창은 0.20×1.0 + 0.40×0.8 = <b>0.52</b>가 되어 2결과 모델과 반대로 활이 이긴다. 수식은 그대로인데 <b>결과를 어떻게 나눌지라는 모델링 해상도</b>가 결정을 바꾼 것이다. 결과를 몇 개로 나누고 각각에 어떤 효용을 줄지는 수학이 정해 주지 않는다. 설계자가 정하는 부분이다.</p>
+
+    <h3>함정 1: 확률 합이 1이 아니다</h3>
+    <p>"확률 합을 1로 자동 유지"를 끄고 한 결과의 확률만 올려 보자. 공식 EU는 부풀려지지만 시뮬레이션 평균은 그 값으로 가지 않는다. 현실의 결과는 그중 하나만 일어나므로, 시뮬레이션은 확률을 합으로 나눈 값(합이 1인 분포)으로 굴러가기 때문이다. 실제 코드에서는 명중률, 치명타율, 회피율을 따로 계산해 서로 겹치게 더하는 식으로 이 버그가 생긴다. 확률 합이 1인지 검사하는 assert 하나로 막을 수 있다.</p>
+
+    <h3>함정 2: 플레이어는 평균이 아니라 한 장면을 본다</h3>
+    <p>최대 기대효용 원칙은 <b>평균적으로</b> 가장 좋은 선택을 보장할 뿐, 한 번의 결과를 보장하지 않는다. 2결과 기본값에서 창을 들면 40%는 빗나간다. 같은 상황에서 활을 들었다면 맞았을 확률은 85%이니, 한 판만 놓고 보면 EU가 높은 창이 활보다 나쁜 결과를 내는 경우가 0.4 × 0.85 = <b>34%</b>나 된다(위젯의 마지막 통계 칸). 플레이어는 1000번의 평균이 아니라 지금 눈앞의 한 장면을 본다. "명중률 낮은 창을 들었다가 놓친 사냥꾼"은 합리적이었어도 멍청해 보일 수 있다.</p>
+
+    <div class="callout deep"><span class="title">실제 사례: Graham이 평균 대신 최대 피해를 쓴 이유</span>
+      Graham의 결투 데모에서 AI는 "위협(Threat)"을 플레이어가 <b>최대 피해</b>로 때렸을 때 잃는 HP 비율로 계산한다. Graham은 처음에 기대 효용의 정신에 더 가까운 <b>평균 피해</b>를 썼지만 결과가 충분히 엄격하지 않아 최대 피해로 바꿨다고 밝힌다. 그리고 이것을 "효용 커브와 공식 튜닝은 과학보다 예술에 가깝다"는 예로 든다. 기대값을 그대로 쓰는 대신 최악의 경우 쪽으로 기울인 이 선택은, 8절에서 볼 "위험을 싫어하는 선택"을 설계자가 직접 넣은 셈이다.
+    </div>
+
+    <p>게임에서 확률 P는 어디서 오는가? 많은 경우 게임 규칙 자체(명중률 공식, 피해 범위, 드롭률)를 AI가 그대로 읽을 수 있다. 사람은 이 확률을 정확히 모르지만 AI는 안다. 그래서 확률을 정확히 쓰는 AI는 사람 눈에 지나치게 계산적으로 보이기도 하고, 반대로 확률을 일부러 흐리거나 왜곡하는 것이 "인간적인" AI를 만드는 손잡이가 되기도 한다(8절).</p>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. Decision factor: 개미 군락 예제</h2>
+    <p>하나의 결정이 데이터 하나에만 기대는 경우는 드물다. Graham은 결정에 들어가는 고려 지점 하나하나를 <b>decision factor</b>라고 부른다. 장난감을 살 때 가격만이 아니라 브랜드 충성도, 배송 시간, 리뷰를 따지는 것처럼 말이다. 각 factor의 효용은 필요하면 식 9.1(기대 효용)을 적용해 구하고, 점수들이 모두 정규화되어 있다면 <b>평균을 내서</b> 그 결정의 최종 효용으로 삼을 수 있다. 결정은 결국 "decision factor들의 어떤 조합"일 뿐이다.</p>
+    <p>Graham의 예는 개미 군락 시뮬레이션이다. AI는 군락을 <b>확장(Expand)</b>할지 <b>번식(Breed)</b>할지 정한다. factor는 세 개다.</p>
+    <ul>
+      <li><b>붐빔(Crowdedness)</b> = 인구 / 최대 인구. 4500 / 5000 = 0.9. 너무 붐비면 확장해야 한다.</li>
+      <li><b>건강(Health)</b> = 식량 저장량 / 100. 92 / 100 = 0.92.</li>
+      <li><b>보육실(Nursery)</b> = 보육실 여유 공간 / 100. 15 / 100 = 0.15. 알은 특정 온도로 보육실에서 돌봐야 한다.</li>
+    </ul>
+    <p>확장 = 평균(붐빔, 건강) = (0.9 + 0.92) / 2 = <b>0.91</b>, 번식 = 평균(건강, 보육실) = (0.92 + 0.15) / 2 = <b>0.535</b>. 확장이 이긴다.</p>
+
+    <div class="widget" id="ant">
+      <div class="w-title">개미 군락 decision factor 계산기 (Graham 그림 9.1 재현)</div>
+      <div class="w-desc">게임 통계를 바꾸면 factor(0~1)와 행동 점수가 다시 계산된다. "번식에 붐빔을 반대로 반영"을 켜면 Graham이 제안한 대로 1 − 붐빔을 번식 평균에 넣는다. 결합 방식은 04장 미리보기다. 평균 말고 곱·최솟값으로 바꿔 보자.</div>
+      <div class="controls preset-row" id="antPresets">
+        <span>프리셋</span>
+        <button class="btn on" data-p="graham">Graham 원문</button>
+        <button class="btn" data-p="famine">식량 부족</button>
+        <button class="btn" data-p="fresh">새 둥지 직후</button>
+        <button class="btn" data-p="full">보육실 꽉 참</button>
+      </div>
+      <div class="sliders">
+        <label for="antPop">인구</label><input type="range" id="antPop" min="0" max="10000" step="100" value="4500"><output id="antPopO"></output>
+        <label for="antMax">최대 인구</label><input type="range" id="antMax" min="1000" max="10000" step="100" value="5000"><output id="antMaxO"></output>
+        <label for="antFood">식량 (0~100)</label><input type="range" id="antFood" min="0" max="100" step="1" value="92"><output id="antFoodO"></output>
+        <label for="antNur">보육실 여유 (0~100)</label><input type="range" id="antNur" min="0" max="100" step="1" value="15"><output id="antNurO"></output>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="antInv"> 번식에 붐빔을 반대로 반영 (1 − 붐빔)</label>
+        <label>결합 <select id="antMethod">
+          <option value="mean" selected>mean (평균, Graham)</option>
+          <option value="product">product (곱)</option>
+          <option value="min">min (최솟값)</option>
+          <option value="max">max (최댓값)</option>
+        </select></label>
+      </div>
+      <div class="stage"><svg class="chart-svg ant-svg" id="antSvg" viewBox="0 0 680 300" role="img" aria-label="개미 군락 decision factor 결합도"></svg></div>
+      <div class="callout" id="antMsg" style="margin-bottom:0"></div>
+    </div>
+
+    <p>평균으로 정규화 점수를 결합하면 조합을 끝없이 이어 붙일 수 있다. Graham은 이것을 "정말 강력한 개념"이라고 부른다. 각 factor는 다른 factor와 완전히 분리되어 있고, 서로 아는 것은 "출력이 정규화된 점수"라는 사실뿐이다. 그래서 적 군락까지의 거리 같은 새 입력을 붙여 "어떤 개미를 번식할지" 결정하는 factor를 만들 수도 있고, factor를 다른 결정으로 옮겨 다른 방식으로 조합할 수도 있다. 반대 방향으로 작용해야 하는 factor는 1.0에서 빼서 넣으면 된다. 위젯의 체크박스를 켜면 번식 = 평균(0.92, 0.15, 1 − 0.9) = 1.17 / 3 = <b>0.39</b>가 된다.</p>
+
+    <p>엔진에는 이 결합 방식들이 한 함수에 모여 있다.</p>
+<pre class="engine"><code>  UAI.combine = function (vals, method) {
+    const n = vals.length;
+    if (!n) return 0;
+    switch (method || "product") {
+      case "product": return vals.reduce((a, v) => a * v, 1);
+      case "compensated": return vals.reduce((a, v) => a * UAI.compensate(v, n), 1);
+      case "mean": return vals.reduce((a, v) => a + v, 0) / n;
+      case "min": return Math.min(...vals);
+      case "max": return Math.max(...vals);
+      case "geomean": return Math.pow(vals.reduce((a, v) => a * v, 1), 1 / n);
+    }
+    throw new Error("unknown combine: " + method);
+  };</code></pre>
+
+    <div class="callout danger"><span class="title">평균의 함정: 보육실이 꽉 찼는데도 번식 점수 0.46</span>
+      프리셋 "보육실 꽉 참"을 눌러 보자. 보육실 여유가 0이면 알을 낳아도 돌볼 곳이 없으니 번식은 불가능해야 한다. 그런데 평균 결합에서는 번식 = (0.92 + 0) / 2 = <b>0.46</b>으로, 결정을 뒤집기에 충분한 점수가 남는다. 평균은 "하나라도 0이면 안 되는" 조건을 표현하지 못한다. 결합을 곱이나 최솟값으로 바꾸면 0이 된다. 그래서 이 코스 엔진의 <code>Reasoner</code>는 기본 결합으로 평균이 아닌 <code>"compensated"</code>(보정된 곱)를 쓴다. 곱이 가진 다른 문제와 그 보정 방법은 <a class="xref" href="04-considerations.html">04장 Consideration과 점수 결합</a>에서 다룬다.
+    </div>
+
+    <p>Graham은 한 걸음 더 나아가 <b>도구</b>를 권한다. 디자이너가 factor와 게임 상태를 상자로 놓고 화살표로 연결하면, 화살표마다 평균·곱·최댓값·최솟값 같은 결합 방식과 가중치를 정할 수 있는 드래그 앤 드롭 편집기다. 그림 9.1(위젯의 도식)이 바로 그 화면의 모습이다. 결합 규칙을 코드가 아닌 데이터로 두는 이 발상은 <a class="xref" href="11-tuning-debugging.html">11장 튜닝과 디버깅</a>의 출발점이 된다.</p>
+    <p>하나 더 짚을 것이 있다. Graham은 건강을 식량 / 100이라는 <b>선형 비율</b>로 표현한 것이 그다지 현실적이지 않다고 스스로 지적한다. 저장고가 거의 찼을 때 군락은 식량을 신경 쓸 이유가 없으니, 2차 곡선 같은 모양이 더 맞다는 것이다. 이 "값을 효용으로 바꾸는 곡선"이 다음 장의 주제다.</p>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 한계효용 체감: 같은 빵, 다른 효용</h2>
+    <p>붕대 예를 다시 떠올리자. 다치지 않았을 때 붕대의 효용은 작고, 베인 순간 커진다. 같은 원리로, 같은 빵 한 개라도 굶주린 주민에게는 매우 크고 배부른 주민에게는 거의 0이다. 한 주민이 빵을 연달아 먹는다면 첫 번째 빵의 효용이 가장 크고, 두 번째, 세 번째로 갈수록 줄어든다. 경제학에서 <b>한계효용 체감</b>이라고 부르는 오래된 개념이다. 추가 한 단위가 주는 효용은 이미 가진 양에 따라 줄어든다.</p>
+    <p>효용 AI에서 이 원리는 두 가지 장치로 나타난다. 하나는 <b>긴급도 커브</b>로, 현재 상태(포만도)가 낮을수록 그 욕구를 채우는 일이 급하다. 다른 하나는 <b>채울 여지</b>다. 이미 거의 찬 욕구는 빵이 아무리 커도 남은 만큼만 채울 수 있다. 이 코스 엔진의 <code>UAI.adValue</code>는 두 장치를 모두 쓴다. <a class="xref" href="07-needs-smart-objects.html">07장</a>에서 자세히 다룰 함수지만 미리 보자.</p>
+<pre class="engine"><code>  // 오브젝트 광고 가치: Σ (충족량/100 × 그 욕구의 긴급도 × 성격 가중치), 0~1로 제한
+  UAI.adValue = function (agent, obj) {
+    let v = 0;
+    for (const n in obj.ads) {
+      const urgency = UAI.curve(UAI.NEED_CURVE[n])(agent.needs[n] / 100);
+      const room = Math.min(obj.ads[n], 100 - agent.needs[n]); // 한계효용: 이미 찬 만큼은 의미 없음
+      v += (Math.max(room, Math.min(0, obj.ads[n])) / 100) * urgency * (agent.traits[n] || 1);
+    }
+    return clamp01(v);
+  };</code></pre>
+
+    <div class="widget" id="bread">
+      <div class="w-title">빵 n번째의 효용: 한계효용 체감 막대</div>
+      <div class="w-desc">주민이 빵을 하나씩 연달아 먹는다. 빵 하나는 포만도(엔진의 <code>needs.hunger</code>, 0 = 굶주림, 100 = 배부름)를 정해진 양만큼 올린다. 각 막대는 엔진의 <code>UAI.adValue</code>로 계산한 그 빵의 효용이며, 막대 끝(100%)은 "완전히 굶주렸을 때 같은 빵이 줄 수 있는 최대 효용"이다. 왼쪽 그래프는 엔진의 배고픔 긴급도 커브 <code>UAI.NEED_CURVE.hunger</code>다.</div>
+      <div class="controls preset-row" id="breadPresets">
+        <span>주민</span>
+        <button class="btn on" data-h="15">아리 (포만도 15)</button>
+        <button class="btn" data-h="80">보람 (포만도 80)</button>
+      </div>
+      <div class="sliders">
+        <label for="breadH">시작 포만도</label><input type="range" id="breadH" min="0" max="100" step="1" value="15"><output id="breadHo"></output>
+        <label for="breadG">빵 하나 충족량</label><input type="range" id="breadG" min="5" max="40" step="1" value="20"><output id="breadGo"></output>
+      </div>
+      <div class="controls"><button class="btn primary" id="breadPlay">▶ 하나씩 먹이기</button></div>
+      <div class="bread-wrap">
+        <svg id="breadCurve" viewBox="0 0 240 200" role="img" aria-label="배고픔 긴급도 커브"></svg>
+        <div class="bread-rows" id="breadRows"></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">첫 빵 효용</div><div class="v" id="breadFirst">-</div></div>
+        <div class="stat"><div class="k">셋째 빵 / 첫 빵</div><div class="v" id="breadRatio">-</div></div>
+        <div class="stat"><div class="k">6개 총 효용</div><div class="v" id="breadTotal">-</div></div>
+      </div>
+    </div>
+
+    <p>아리(포만도 15)와 보람(포만도 80)을 번갈아 눌러 보자. <b>값</b>은 똑같이 "빵 하나, 포만도 +20"인데 효용은 몇 배씩 차이가 난다. 2절의 $2와 같은 이야기다. 아리가 빵을 연달아 먹으면 막대는 계단처럼 줄어든다. 처음 두어 개까지는 긴급도가 높게 유지되다가, 포만도가 60을 넘는 순간 커브가 급히 떨어지기 때문이다. 이 커브 모양은 구간 선형(piecewise linear)이다. Graham은 The Sims의 배고픔을 예로 들어, 단순한 2차 곡선을 쓰면 배가 거의 부른 Sim도 낮은 확률로 가끔 음식을 고르게 되는 문제가 있어 디자이너가 직접 점을 찍는 구간 선형 커브를 쓴다고 설명한다. 이 곡선의 종류와 고르는 법이 <a class="xref" href="03-response-curves.html">03장 반응 커브</a>의 주제다.</p>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 최대 기대효용의 한계와 전망 이론</h2>
+    <p>최대 기대효용 원칙은 "합리적인" 결정의 표준 모형이지만, 사람이 실제로 그렇게 선택하지는 않는다. 이 어긋남을 체계적으로 정리한 것이 Kahneman과 Tversky의 <b>전망 이론(Prospect Theory, 1979)</b>이다. 이 장의 출발점이 된 블로그 글도 이 이론을 다음 이야기로 예고하고 끝난다. 여기서는 널리 확립된 핵심만 짧게 짚는다.</p>
+    <ul>
+      <li><b>기준점 의존</b>: 사람은 결과를 최종 상태가 아니라 기준점(보통 현재 상태)에서 본 <b>이득과 손실</b>로 평가한다.</li>
+      <li><b>손실 회피</b>: 같은 크기라면 손실이 이득보다 더 크게 느껴진다. 그래서 가치 함수는 손실 쪽이 더 가파르다.</li>
+      <li><b>감응도 체감</b>: 이득 쪽에서는 오목(위험 회피), 손실 쪽에서는 볼록(위험 추구)한 S자 모양이다. 7절의 한계효용 체감이 이득과 손실 양쪽에 대칭으로 나타나는 셈이다.</li>
+      <li><b>확률 가중</b>: 사람은 확률을 그대로 쓰지 않는다. 아주 작은 확률은 과대평가하고, 중간 이상의 확률은 과소평가하는 경향이 있다.</li>
+    </ul>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 300" role="img" aria-label="전망 이론의 가치 함수 개념도">
+        <defs>
+          <marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <line x1="40" y1="150" x2="640" y2="150" class="line" marker-end="url(#ar8)"/>
+        <line x1="340" y1="285" x2="340" y2="16" class="line" marker-end="url(#ar8)"/>
+        <text x="636" y="170" text-anchor="end" class="muted">이득 →</text>
+        <text x="44" y="170" class="muted">← 손실</text>
+        <text x="348" y="26" class="muted">주관적 가치</text>
+        <text x="348" y="166" class="muted">기준점</text>
+        <path d="M340,150 C400,92 480,70 630,58" style="fill:none;stroke:var(--ok);stroke-width:3"/>
+        <path d="M340,150 C318,232 230,268 50,282" style="fill:none;stroke:var(--bad);stroke-width:3"/>
+        <line x1="440" y1="150" x2="440" y2="94" style="stroke:var(--ok);stroke-dasharray:3 3"/>
+        <line x1="240" y1="150" x2="240" y2="244" style="stroke:var(--bad);stroke-dasharray:3 3"/>
+        <text x="448" y="118" style="fill:var(--ok)" font-weight="700">+100의 기쁨</text>
+        <text x="232" y="214" text-anchor="end" style="fill:var(--bad)" font-weight="700">−100의 아픔이 더 크다</text>
+        <text x="560" y="52" text-anchor="middle" class="muted">오목: 이득에선 위험 회피</text>
+        <text x="130" y="262" text-anchor="middle" class="muted">볼록: 손실에선 위험 추구</text>
+      </svg>
+      <figcaption>그림 2-3. 전망 이론 가치 함수의 개념도 (모양만 나타낸 것으로, 정량적인 추정치가 아니다). 기준점에서 손실 쪽이 이득 쪽보다 가파르다.</figcaption>
+    </figure>
+
+    <h3>게임 AI에서는 "비합리성"이 기능이다</h3>
+    <p>전망 이론은 원래 사람의 선택을 <b>설명</b>하는 이론이다. 그런데 게임 AI 설계자에게는 다른 쓸모가 있다. 우리가 만드는 것은 최적의 의사결정기가 아니라 <b>그럴듯한 캐릭터</b>이고, 그럴듯함의 상당 부분은 바로 이런 "인간적인" 치우침에서 온다. Graham도 The Sims 같은 게임에서는 절대 최고점만 고르면 로봇처럼 느껴진다고 말한다(행동 선택 전략은 <a class="xref" href="05-action-selection.html">05장</a>). 다음은 문헌의 주장이 아니라 이 장의 개념을 Hamlet에 적용해 보는 설계 아이디어다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>현상</th><th>Hamlet에서 쓰는 법</th><th>구현 손잡이</th></tr>
+      <tr><td>손실 회피</td><td>겁 많은 은솔은 늑대에게 다칠 가능성을 같은 크기의 이득보다 크게 본다. 그래서 EU가 조금 높아도 창보다 도망을 고른다.</td><td>나쁜 결과의 효용에 성격 계수를 곱해 더 깎는다. 6절처럼 factor를 1−x로 반전해 "위험" factor로 넣을 수도 있다.</td></tr>
+      <tr><td>위험 회피 (분산 기피)</td><td>신중한 두리는 평균이 같으면 결과가 들쭉날쭉한 창보다 안정적인 활을 고른다.</td><td>EU에서 결과 분산에 비례하는 값을 뺀다. Graham의 "평균 대신 최대 피해" 튜닝도 같은 방향이다.</td></tr>
+      <tr><td>작은 확률 과대평가</td><td>파랑은 대성공 확률 5%짜리 묘기에 자꾸 도전한다.</td><td>확률을 그대로 쓰지 않고 성격별 가중 함수를 거친 값을 쓴다.</td></tr>
+      <tr><td>기준점 의존</td><td>방금 식사를 마친 보람에게 같은 빵은 "추가 이득"이 아니라 거의 0이다.</td><td>7절의 <code>adValue</code>처럼 효용을 현재 상태 기준으로 계산한다.</td></tr>
+    </table></div>
+    <div class="callout warn"><span class="title">주의: 비합리성은 읽혀야 의미가 있다</span>
+      치우침을 넣는 목적은 플레이어가 "아, 겁이 많은 캐릭터구나" 하고 <b>읽어 내게 하는 것</b>이다. 같은 상황에서 같은 방향으로 일관되게 치우쳐야 성격으로 보이고, 매번 다르게 엇나가면 버그로 보인다. 그래서 무작위 잡음보다 성격 계수처럼 <b>재현 가능한</b> 장치가 낫다.
+    </div>
+  </section>
+
+  <!-- ============================== S9 ============================== -->
+  <section id="s9">
+    <h2>9. 엔진으로 가는 길: 이 장이 정하는 약속</h2>
+    <p>Graham의 글은 텍스트 RPG 결투 데모로 끝난다. AI는 공격·물약으로 회복·도주 중 하나를 고르고, 각 행동의 점수는 몇 개의 decision factor를 조합해 만든다. 공격 = 공격 욕구, 회복 = 회복 욕구 × 위협, 도주 = 도주 욕구 × 위협이다. 위협은 가장 단순한 형태인 <span class="mono">U = min(maxDmg / hp, 1)</span>(식 9.6)이고, 나머지 욕구는 HP에 따라 모양이 다른 곡선(식 9.5, 9.7, 9.8)이다. 곡선의 모양은 <a class="xref" href="03-response-curves.html">03장</a>, 곱으로 결합하는 이유와 그 함정은 <a class="xref" href="04-considerations.html">04장</a>에서 이 데모를 직접 재현하며 다룬다. 여기서는 구조만 기억하자. <b>값 → (정규화·커브) → factor 효용 → 결합 → 행동 점수 → 선택</b>.</p>
+    <p>이 장에서 정한 약속은 엔진 전체에서 그대로 쓰인다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>이 장의 개념</th><th>엔진에서의 모습</th><th>자세히</th></tr>
+      <tr><td>모든 효용은 같은 척도 (0~1)</td><td>모든 consideration 출력을 <code>clamp01</code>로 0~1에 묶는다</td><td>03장</td></tr>
+      <tr><td>bookend 정규화, 1−x 반전</td><td><code>UAI.normalize(v, lo, hi)</code>, 커브 spec의 <code>invert</code></td><td>03장</td></tr>
+      <tr><td>decision factor 결합</td><td><code>UAI.combine(vals, method)</code>, Reasoner 기본값 <code>"compensated"</code></td><td>04장</td></tr>
+      <tr><td>점수를 확률로 쓰기, 재현 가능한 난수</td><td><code>UAI.select(…, {strategy:"weighted"})</code>, <code>UAI.rng(seed)</code></td><td>05장</td></tr>
+      <tr><td>한계효용 체감, 성격</td><td><code>UAI.NEED_CURVE</code>, <code>UAI.adValue</code>, <code>agent.traits</code></td><td>07장</td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">기대 효용은 엔진 어디에 있나</span>
+      엔진에 <code>expectedUtility()</code> 같은 함수는 따로 없다. 기대 효용은 consideration 하나를 계산하는 <b>방법</b> 중 하나이기 때문이다. 명중률처럼 확률을 알 수 있는 입력이라면 consideration의 <code>input</code> 함수 안에서 Σ D·P를 계산해 넘기면 된다(Graham도 decision factor 각각에 식 9.1을 적용할 수 있다고 말한다). 엔진은 그 값이 0~1이라는 약속만 지키면 어디서 왔는지 묻지 않는다.
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>효용은 값이 아니다. 값은 측정 가능한 양이고, 효용은 성격과 상황에 따라 변하는 "얼마나 원하는가"다. 장난감 예에서 손익분기 하루 가치는 $2/3일 ≈ $0.67이다.</li>
+    <li>단위가 다른 요소끼리 환율을 정하지 말고, 각각을 0~1로 정규화(bookend, 낮을수록 좋으면 1−x)한 뒤 결합한다. 원시값을 그냥 더하면 범위가 큰 요소가 결정을 독차지한다.</li>
+    <li>시스템 전체가 같은 척도를 써야 한다. "15점"이 무슨 뜻인지 바로 답할 수 있어야 한다.</li>
+    <li>기대 효용 EU = Σ Dᵢ·Pᵢ (Σ P = 1). 명중 85%×0.6 = 0.51 &lt; 60%×0.9 = 0.54. EU는 같은 상황을 많이 반복했을 때의 평균이며, 시뮬레이션 평균은 EU로 수렴한다.</li>
+    <li>결과를 나누는 해상도가 결정을 바꿀 수 있고, 확률 합이 1이 아니면 EU가 왜곡된다. EU 최대화는 한 판의 결과를 보장하지 않는다.</li>
+    <li>개미 예: 확장 0.91, 번식 0.535. 평균 결합은 쉽지만 "하나라도 0이면 불가"를 표현하지 못한다(→ 04장).</li>
+    <li>한계효용 체감은 긴급도 커브와 "채울 여지"로 구현된다. 전망 이론의 손실 회피·확률 가중은 게임 캐릭터의 성격을 만드는 손잡이가 될 수 있다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">빠른 상점($4.99, 2일)과 싼 상점($2.99, 5일)의 총비용이 같아지는 하루 가치는?</div>
+    <button class="opt">$1.00 / 일</button>
+    <button class="opt">$0.40 / 일</button>
+    <button class="opt">약 $0.67 / 일</button>
+    <button class="opt">$2.00 / 일</button>
+    <div class="explain">4.99 + 2v = 2.99 + 5v → 3v = 2 → v = 2/3 ≈ $0.67. 하루를 이보다 비싸게 치는 사람은 빠른 상점을 고른다. $2.00은 가격 차이일 뿐 하루 가치가 아니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">가격($), 배송(일), 신뢰도(0~100%), 리뷰(★1~5)를 정규화 없이 부호만 맞춰 더했다. 가장 먼저 생기는 문제는?</div>
+    <button class="opt">점수가 음수가 될 수 있어 선택이 불가능해진다</button>
+    <button class="opt">범위가 가장 큰 신뢰도가 다른 요소의 차이를 압도해 결정을 사실상 혼자 정한다</button>
+    <button class="opt">리뷰가 정수가 아니라서 계산이 부정확해진다</button>
+    <button class="opt">문제없다. 부호만 맞으면 합은 올바른 효용이다</button>
+    <div class="explain">원시값의 크기는 단위에 따라 정해질 뿐 중요도와 무관하다. 0~100 범위를 쓰는 요소의 8포인트 차이가 $2와 3일을 합친 것보다 크게 잡힌다. 각 요소를 0~1로 정규화한 뒤 중요도는 가중치나 커브로 명시해야 한다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">활: 명중 85%, 명중 효용 0.6 / 창: 명중 60%, 명중 효용 0.9 (빗나감 효용은 둘 다 0). 최대 기대효용 원칙에 따른 선택과 그 EU는?</div>
+    <button class="opt">활, 0.85 — 명중률이 높으므로</button>
+    <button class="opt">창, 0.90 — 명중 효용이 높으므로</button>
+    <button class="opt">활, 0.51</button>
+    <button class="opt">창, 0.54</button>
+    <div class="explain">EU(활) = 0.85 × 0.6 = 0.51, EU(창) = 0.60 × 0.9 = 0.54. 명중률이나 효용 하나만 보면 안 되고 둘을 곱해 더한 값을 비교한다. 다만 한 판만 보면 창이 빗나가고 활은 맞았을 경우(0.4 × 0.85 = 34%)도 많다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">개미 군락에서 붐빔 0.9, 건강 0.92, 보육실 0.15일 때, 번식 점수에 "붐빔을 반대로" 반영해 평균(건강, 보육실, 1 − 붐빔)을 내면?</div>
+    <button class="opt">0.39</button>
+    <button class="opt">0.535</button>
+    <button class="opt">0.657</button>
+    <button class="opt">0.91</button>
+    <div class="explain">(0.92 + 0.15 + (1 − 0.9)) / 3 = 1.17 / 3 = 0.39. 0.535는 반전 없이 건강과 보육실만 평균한 값이고, 0.657은 1 − x 대신 0.9를 그대로 넣은 값이다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">보육실 여유가 0인데도 번식 점수가 0.46으로 꽤 높게 나온다. 원인과 해결로 가장 알맞은 것은?</div>
+    <button class="opt">건강 값이 정규화되지 않았다. 건강을 0~1로 다시 정규화하면 된다</button>
+    <button class="opt">확률 합이 1이 아니다. 기대 효용으로 바꾸면 된다</button>
+    <button class="opt">평균은 0인 factor를 다른 factor가 메워 준다. "하나라도 0이면 불가"를 표현하려면 곱이나 최솟값 결합이 필요하다</button>
+    <button class="opt">보육실 factor가 반대 방향이다. 1 − x로 뒤집으면 된다</button>
+    <div class="explain">평균은 보상적(compensatory) 결합이라 한 요소가 0이어도 나머지가 점수를 끌어올린다. 곱이나 min이면 0이 된다. 엔진의 Reasoner가 기본으로 보정된 곱(compensated)을 쓰는 이유이며, 04장에서 자세히 다룬다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">전망 이론의 "손실 회피"를 Hamlet 주민의 성격으로 넣는 방법으로 가장 알맞은 것은?</div>
+    <button class="opt">매 결정마다 무작위 잡음을 크게 더해 예측 불가능하게 만든다</button>
+    <button class="opt">나쁜 결과(다침 등)의 효용을 같은 크기의 좋은 결과보다 더 크게 깎는 성격 계수를 둔다</button>
+    <button class="opt">모든 확률을 0.5로 바꿔 계산한다</button>
+    <button class="opt">기대 효용 대신 항상 가장 높은 효용의 결과만 본다</button>
+    <div class="explain">손실 회피는 같은 크기라면 손실이 이득보다 크게 느껴진다는 것이다. 나쁜 결과 쪽에 일관된 계수를 걸면 플레이어가 "겁 많은 캐릭터"로 읽을 수 있다. 무작위 잡음은 성격이 아니라 버그처럼 보인다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b>이 장에서는 식량 / 100처럼 값을 <b>직선</b>으로만 효용에 옮겼다. 그러나 Graham도 지적했듯 저장고가 거의 찬 군락은 식량을 신경 쓰지 않아야 하고, The Sims의 배고픔은 문턱을 넘을 때까지 무시되다가 갑자기 급해져야 한다. <a class="xref" href="03-response-curves.html">03장</a>에서는 상태값을 효용으로 바꾸는 <b>반응 커브</b>(선형·다항·로지스틱·구간 선형)와 엔진의 <code>UAI.curve()</code>, <code>UAI.PRESETS</code>를 다룬다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>D. "Rez" Graham, "An Introduction to Utility Theory", <i>Game AI Pro</i> 9장, S. Rabin 편, CRC Press, 2013. (장난감 예, 식 9.1, 개미 군락 그림 9.1, 결투 데모 식 9.5~9.8)</li>
+    <li>DeepBlue, "효용기반 의사결정 (Utility based Decision Making)", 네이버 블로그, 2015. blog.naver.com/devdeepblue/220289807509</li>
+    <li>S. Russell, P. Norvig, <i>Artificial Intelligence: A Modern Approach</i>, Prentice Hall, 2009, pp. 480–509. (최대 기대효용 원칙, Graham 인용)</li>
+    <li>D. Mark, <i>Behavioral Mathematics for Game AI</i>, Charles River Media, 2009.</li>
+    <li>B. Merrill, "Building Utility Decisions into Your Existing Behavior Tree", <i>Game AI Pro</i> 10장, 2013.</li>
+    <li>M. Lewis, "Choosing Effective Utility-Based Considerations", <i>Game AI Pro 3</i> 13장. (bookend 정규화)</li>
+    <li>S. Hanlon, C. Watts, "Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture", <i>Game AI Pro 3</i> 31장. (디자이너 점수 관례)</li>
+    <li>D. Kahneman, A. Tversky, "Prospect Theory: An Analysis of Decision under Risk", <i>Econometrica</i> 47(2), 1979, pp. 263–291.</li>
+  </ul></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const f2 = v => (+v).toFixed(2);
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function presetOn(row, btn) { row.querySelectorAll(".btn").forEach(b => b.classList.toggle("on", b === btn)); }
+
+  // ═══════════════════ 위젯 1: 장난감 두 개 ═══════════════════
+  (function toyWidget() {
+    const v = $("toyV"), vo = $("toyVo"), svg = $("toyChart");
+    const ins = ["toyPA", "toyDA", "toyPB", "toyDB"].map($);
+    const XMAX = 3;
+    function draw() {
+      const day = +v.value;
+      vo.textContent = "$" + day.toFixed(2);
+      const [pA, dA, pB, dB] = ins.map(i => Math.max(0, +i.value || 0));
+      const cA = x => pA + dA * x, cB = x => pB + dB * x;
+      const be = dA === dB ? null : (pA - pB) / (dB - dA);
+      const yMax = Math.max(5, Math.ceil(Math.max(cA(0), cB(0), cA(XMAX), cB(XMAX)) / 5) * 5);
+      const L = 50, R = 18, T = 14, B = 40, W = 640, H = 280, pw = W - L - R, ph = H - T - B;
+      const X = x => L + (x / XMAX) * pw, Y = y => T + (1 - y / yMax) * ph;
+      const winAt = x => (cA(x) < cB(x) - 1e-9 ? "A" : cB(x) < cA(x) - 1e-9 ? "B" : "=");
+      let h = "";
+      // 선택 구간 배경
+      const cuts = [0];
+      if (be !== null && be > 0 && be < XMAX) cuts.push(be);
+      cuts.push(XMAX);
+      for (let i = 0; i < cuts.length - 1; i++) {
+        const w = winAt((cuts[i] + cuts[i + 1]) / 2);
+        if (w === "=") continue;
+        h += `<rect x="${X(cuts[i])}" y="${T}" width="${X(cuts[i + 1]) - X(cuts[i])}" height="${ph}" style="fill:var(${w === "A" ? "--accent-soft" : "--warn-soft"})"/>`;
+        const mid = (X(cuts[i]) + X(cuts[i + 1])) / 2;
+        if (X(cuts[i + 1]) - X(cuts[i]) > 90)
+          h += `<text x="${mid}" y="${T + 16}" text-anchor="middle" class="strong">${w === "A" ? "빠른 상점이 이득" : "싼 상점이 이득"}</text>`;
+      }
+      // 격자·축
+      for (let i = 0; i <= 6; i++) {
+        const x = (i / 6) * XMAX;
+        h += `<line class="grid" x1="${X(x)}" y1="${T}" x2="${X(x)}" y2="${T + ph}"/><text x="${X(x)}" y="${T + ph + 16}" text-anchor="middle">$${x.toFixed(1)}</text>`;
+      }
+      for (let i = 0; i <= 5; i++) {
+        const y = (i / 5) * yMax;
+        h += `<line class="grid" x1="${L}" y1="${Y(y)}" x2="${L + pw}" y2="${Y(y)}"/><text x="${L - 6}" y="${Y(y) + 4}" text-anchor="end">$${y.toFixed(0)}</text>`;
+      }
+      h += `<line class="axis" x1="${L}" y1="${T + ph}" x2="${L + pw}" y2="${T + ph}"/><line class="axis" x1="${L}" y1="${T}" x2="${L}" y2="${T + ph}"/>`;
+      h += `<text x="${L + pw / 2}" y="${H - 4}" text-anchor="middle">하루의 가치 ($/일)</text>`;
+      h += `<text x="12" y="${T + ph / 2}" text-anchor="middle" transform="rotate(-90 12 ${T + ph / 2})">총비용</text>`;
+      // 두 직선
+      h += `<line x1="${X(0)}" y1="${Y(cA(0))}" x2="${X(XMAX)}" y2="${Y(cA(XMAX))}" style="stroke:var(--accent);stroke-width:2.5"/>`;
+      h += `<line x1="${X(0)}" y1="${Y(cB(0))}" x2="${X(XMAX)}" y2="${Y(cB(XMAX))}" style="stroke:var(--warn);stroke-width:2.5"/>`;
+      // 손익분기
+      if (be !== null && be >= 0 && be <= XMAX) {
+        h += `<line x1="${X(be)}" y1="${T}" x2="${X(be)}" y2="${T + ph}" style="stroke:var(--bad);stroke-dasharray:5 4;stroke-width:1.5"/>`;
+        h += `<circle cx="${X(be)}" cy="${Y(cA(be))}" r="4" style="fill:var(--bad)"/>`;
+        h += `<text x="${X(be) + 6}" y="${T + ph - 8}" style="fill:var(--bad);font-weight:700">손익분기 $${be.toFixed(2)}</text>`;
+      }
+      // 현재 하루 가치
+      const a = cA(day), b = cB(day), w = winAt(day);
+      h += `<line x1="${X(day)}" y1="${T}" x2="${X(day)}" y2="${T + ph}" style="stroke:var(--text);stroke-width:1.2;stroke-dasharray:2 3"/>`;
+      h += `<circle cx="${X(day)}" cy="${Y(a)}" r="${w === "A" ? 7 : 4.5}" style="fill:var(--accent);stroke:var(--surface);stroke-width:2"/>`;
+      h += `<circle cx="${X(day)}" cy="${Y(b)}" r="${w === "B" ? 7 : 4.5}" style="fill:var(--warn);stroke:var(--surface);stroke-width:2"/>`;
+      const tx = X(day) > L + pw - 90 ? X(day) - 8 : X(day) + 8, anc = X(day) > L + pw - 90 ? "end" : "start";
+      h += `<text x="${tx}" y="${Y(a) - 8}" text-anchor="${anc}" style="fill:var(--accent);font-weight:700">$${a.toFixed(2)}</text>`;
+      h += `<text x="${tx}" y="${Y(b) + 18}" text-anchor="${anc}" style="fill:var(--warn);font-weight:700">$${b.toFixed(2)}</text>`;
+      svg.innerHTML = h;
+
+      $("toyCA").textContent = "$" + a.toFixed(2);
+      $("toyCB").textContent = "$" + b.toFixed(2);
+      $("toyPick").textContent = w === "A" ? "빠른 상점" : w === "B" ? "싼 상점" : "무차별";
+      $("toyPick").className = "v " + (w === "A" ? "c-accent" : w === "B" ? "c-warn" : "");
+      $("toyBE").textContent = be === null ? "없음" : be < 0 ? "없음" : "$" + be.toFixed(2);
+      let msg;
+      if (be === null) msg = "배송일이 같으면 직선이 평행하다. 하루 가치와 무관하게 가격이 싼 쪽이 항상 이긴다.";
+      else if (be < 0) msg = "한 상점이 가격과 배송 모두에서 앞서므로(지배), 하루 가치가 얼마든 결정이 바뀌지 않는다. 비교가 필요한 것은 장단점이 엇갈릴 때뿐이다.";
+      else msg = `하루를 <b>$${be.toFixed(2)}</b>보다 비싸게 치면 ${pA > pB ? "빠른 상점" : "싼 상점"}, 싸게 치면 ${pA > pB ? "싼 상점" : "빠른 상점"}이 이긴다. 지금($${day.toFixed(2)}/일)은 ` +
+        (w === "=" ? "두 총비용이 같아 <b>무차별</b>하다." : `<b>${w === "A" ? "빠른 상점" : "싼 상점"}</b>이 $${Math.abs(a - b).toFixed(2)} 이득이다.`) +
+        " 가격이라는 <b>값</b>은 그대로인데 시간의 효용(환율)이 바뀌어 결정이 달라진다.";
+      $("toyMsg").innerHTML = msg;
+    }
+    v.addEventListener("input", () => { presetOn($("toyPresets"), null); draw(); });
+    ins.forEach(i => i.addEventListener("input", draw));
+    $("toyPresets").addEventListener("click", e => {
+      const btn = e.target.closest("[data-v]"); if (!btn) return;
+      v.value = btn.dataset.v; draw(); presetOn($("toyPresets"), btn);
+    });
+    draw();
+    presetOn($("toyPresets"), $("toyPresets").querySelector('[data-v="1"]'));
+  })();
+
+  // ═══════════════════ 위젯 2: 정규화 비교기 ═══════════════════
+  (function normWidget() {
+    const FACT = [
+      { name: "가격", unit: "$", lo: 0, hi: 10, low: true, A: 4.99, B: 2.99, step: 0.01, w: 1 },
+      { name: "배송", unit: "일", lo: 0, hi: 10, low: true, A: 2, B: 5, step: 1, w: 1 },
+      { name: "신뢰도", unit: "%", lo: 0, hi: 100, low: false, A: 70, B: 78, step: 1, w: 1 },
+      { name: "리뷰", unit: "★", lo: 1, hi: 5, low: false, A: 4.0, B: 3.8, step: 0.1, w: 1 },
+    ];
+    const util = (f, raw) => (f.low ? 1 - UAI.normalize(raw, f.lo, f.hi) : UAI.normalize(raw, f.lo, f.hi));
+    const tbl = $("normTbl");
+    let h = `<tr><th>요소</th><th>범위 · 방향</th><th class="c-accent">빠른 상점 (원시값 → 효용)</th><th class="c-warn">싼 상점 (원시값 → 효용)</th><th>가중치</th></tr>`;
+    FACT.forEach((f, i) => {
+      h += `<tr><td><b>${f.name}</b></td><td class="mono" style="font-size:12.5px">${f.lo}~${f.hi}${f.unit}<br>${f.low ? "낮을수록 좋음 (1−x)" : "높을수록 좋음"}</td>`;
+      for (const s of ["A", "B"]) {
+        h += `<td><div class="cellbar"><input type="number" class="num-in" data-i="${i}" data-s="${s}" value="${f[s]}" step="${f.step}">` +
+          `<div class="bar ${s === "A" ? "" : "warn"}"><i id="nb${s}${i}"></i></div><span class="u" id="nu${s}${i}"></span></div></td>`;
+      }
+      h += `<td><input type="range" min="0" max="3" step="0.1" value="1" data-w="${i}" style="width:80px"> <span class="mono" id="nw${i}">1.0</span></td></tr>`;
+    });
+    tbl.innerHTML = h;
+    tbl.addEventListener("input", e => {
+      const t = e.target;
+      if (t.dataset.s) FACT[+t.dataset.i][t.dataset.s] = +t.value;
+      if (t.dataset.w) FACT[+t.dataset.w].w = +t.value;
+      draw();
+    });
+    $("normMode").addEventListener("change", draw);
+
+    function draw() {
+      const mode = document.querySelector('input[name="normMode"]:checked').value;
+      const wsum = FACT.reduce((a, f) => a + f.w, 0) || 1;
+      let sA = 0, sB = 0;
+      const contrib = [];
+      FACT.forEach((f, i) => {
+        const uA = util(f, f.A), uB = util(f, f.B);
+        $("nbA" + i).style.width = uA * 100 + "%"; $("nuA" + i).textContent = f2(uA);
+        $("nbB" + i).style.width = uB * 100 + "%"; $("nuB" + i).textContent = f2(uB);
+        $("nw" + i).textContent = f.w.toFixed(1);
+        if (mode === "naive") {
+          const sg = f.low ? -1 : 1;
+          sA += f.w * sg * f.A; sB += f.w * sg * f.B;
+          contrib.push(f.w * sg * (f.A - f.B));
+        } else {
+          sA += (f.w * uA) / wsum; sB += (f.w * uB) / wsum;
+          contrib.push((f.w * (uA - uB)) / wsum);
+        }
+      });
+      const d = mode === "naive" ? 2 : 3;
+      $("normSA").textContent = sA.toFixed(d);
+      $("normSB").textContent = sB.toFixed(d);
+      const pick = Math.abs(sA - sB) < 1e-9 ? "무차별" : sA > sB ? "빠른 상점" : "싼 상점";
+      $("normPick").textContent = pick;
+      $("normPick").className = "v " + (pick === "빠른 상점" ? "c-accent" : pick === "싼 상점" ? "c-warn" : "");
+      // 기여도 막대
+      const mx = Math.max(1e-9, ...contrib.map(Math.abs));
+      let g = `<span></span><div class="div-axis"><span>← 싼 상점에 유리</span><span>빠른 상점에 유리 →</span></div><span></span>`;
+      contrib.forEach((c, i) => {
+        const wpct = (Math.abs(c) / mx) * 50;
+        const style = c >= 0 ? `left:50%;width:${wpct}%` : `left:${50 - wpct}%;width:${wpct}%`;
+        g += `<span>${FACT[i].name}</span><div class="div-track"><i class="${c >= 0 ? "pos" : "neg"}" style="${style}"></i></div><span class="mono">${c >= 0 ? "+" : ""}${c.toFixed(d)}</span>`;
+      });
+      $("normDiv").innerHTML = g;
+      const tot = contrib.reduce((a, c) => a + Math.abs(c), 0) || 1;
+      const domI = contrib.map(Math.abs).indexOf(Math.max(...contrib.map(Math.abs)));
+      const share = Math.abs(contrib[domI]) / tot;
+      const m = $("normMsg");
+      if (mode === "naive") {
+        m.className = "callout danger";
+        m.innerHTML = `원시값 합에서는 가장 큰 기여 요소인 <b>${FACT[domI].name}</b> 하나가 점수 차이의 <b>${MM.pct(share)}</b>를 차지한다. 신뢰도처럼 0~100 범위를 쓰는 요소는 몇 포인트만 달라도 $나 일 단위 요소를 압도한다. 이것은 설계 의도가 아니라 단위가 만든 사고다. "15점"이 무슨 뜻인지 답할 수 없는 상태다.`;
+      } else {
+        m.className = "callout tip";
+        m.innerHTML = `정규화 평균에서는 가장 큰 기여 요소(<b>${FACT[domI].name}</b>)도 차이의 ${MM.pct(share)}다. 모든 요소가 0~1 위에서 겨루고, 중요도는 가중치로 <b>명시적으로</b> 정한다. 원시값 합 모드로 바꿔 선택이 뒤집히는지 확인해 보자.`;
+      }
+    }
+    draw();
+  })();
+
+  // ═══════════════════ 위젯 3: 사냥꾼 찬 (EU 트리 + 몬테카를로) ═══════════════════
+  const HUNT = (function huntWidget() {
+    const PRESET = {
+      two: {
+        bow: [{ n: "명중", p: 0.85, d: 0.6 }, { n: "빗나감", p: 0.15, d: 0 }],
+        spear: [{ n: "명중", p: 0.6, d: 0.9 }, { n: "빗나감", p: 0.4, d: 0 }],
+      },
+      three: {
+        bow: [{ n: "대성공", p: 0.15, d: 1 }, { n: "성공", p: 0.7, d: 0.6 }, { n: "실패", p: 0.15, d: 0 }],
+        spear: [{ n: "대성공", p: 0.2, d: 1 }, { n: "성공", p: 0.4, d: 0.8 }, { n: "실패", p: 0.4, d: 0 }],
+      },
+    };
+    const WEAP = [{ key: "bow", label: "활", color: "--accent" }, { key: "spear", label: "창", color: "--violet" }];
+    let mode = "two";
+    let st = clone(PRESET.two);
+    function clone(o) { return JSON.parse(JSON.stringify(o)); }
+    const psum = outs => outs.reduce((a, o) => a + o.p, 0);
+    const eu = outs => outs.reduce((a, o) => a + o.p * o.d, 0);              // 공식 그대로 (확률 합 검사 없음)
+    const euNorm = outs => { const s = psum(outs); return s > 0 ? eu(outs) / s : 0; }; // 실제 세계의 분포
+    // k번째 확률을 val로 바꾸고, 나머지는 비율을 유지하며 합이 1이 되게 재분배
+    function setP(outs, k, val, auto) {
+      outs[k].p = val;
+      if (!auto) return;
+      const rest = outs.filter((_, i) => i !== k);
+      const S = rest.reduce((a, o) => a + o.p, 0);
+      rest.forEach(o => { o.p = S > 1e-12 ? (o.p * (1 - val)) / S : (1 - val) / rest.length; });
+    }
+
+    const ctl = $("huntCtl"), auto = $("huntAuto");
+    function buildCtl() {
+      let h = "";
+      WEAP.forEach(w => {
+        h += `<div class="hunt-col"><h4><span class="c-${w.key === "bow" ? "accent" : "violet"}">${w.label}</span><span class="eu" id="hEU_${w.key}"></span></h4>`;
+        st[w.key].forEach((o, k) => {
+          h += `<div class="oname">${o.n}</div><div class="sliders" style="margin:2px 0">` +
+            `<label>확률 P</label><input type="range" min="0" max="1" step="0.01" data-w="${w.key}" data-k="${k}" data-f="p"><output id="hP_${w.key}${k}"></output>` +
+            `<label>효용 D</label><input type="range" min="0" max="1" step="0.01" data-w="${w.key}" data-k="${k}" data-f="d"><output id="hD_${w.key}${k}"></output></div>`;
+        });
+        h += `<div class="psum" id="hS_${w.key}"></div></div>`;
+      });
+      ctl.innerHTML = h;
+      syncCtl();
+    }
+    function syncCtl() {
+      WEAP.forEach(w => {
+        st[w.key].forEach((o, k) => {
+          ctl.querySelector(`[data-w="${w.key}"][data-k="${k}"][data-f="p"]`).value = o.p;
+          ctl.querySelector(`[data-w="${w.key}"][data-k="${k}"][data-f="d"]`).value = o.d;
+          $(`hP_${w.key}${k}`).textContent = f2(o.p);
+          $(`hD_${w.key}${k}`).textContent = f2(o.d);
+        });
+        const s = psum(st[w.key]);
+        const el = $("hS_" + w.key);
+        el.textContent = `확률 합 = ${s.toFixed(2)}` + (Math.abs(s - 1) > 0.005 ? "  ← 1이 아니다!" : "");
+        el.className = "psum" + (Math.abs(s - 1) > 0.005 ? " bad" : "");
+        $("hEU_" + w.key).textContent = "EU = " + eu(st[w.key]).toFixed(3);
+      });
+    }
+    ctl.addEventListener("input", e => {
+      const t = e.target; if (!t.dataset.f) return;
+      const outs = st[t.dataset.w], k = +t.dataset.k;
+      if (t.dataset.f === "p") setP(outs, k, +t.value, auto.checked);
+      else outs[k].d = +t.value;
+      syncCtl(); drawTree(); resetMC();
+    });
+    auto.addEventListener("change", () => {
+      if (auto.checked) WEAP.forEach(w => { const s = psum(st[w.key]); if (s > 0) st[w.key].forEach(o => (o.p /= s)); });
+      syncCtl(); drawTree(); resetMC();
+    });
+    $("huntMode").addEventListener("click", e => {
+      const b = e.target.closest("[data-mode]"); if (!b) return;
+      mode = b.dataset.mode; st = clone(PRESET[mode]);
+      presetOn($("huntMode"), b);
+      buildCtl(); drawTree(); resetMC();
+    });
+
+    // ── 분기 트리 SVG ──
+    const tree = $("huntTree");
+    function drawTree() {
+      const nB = st.bow.length, nS = st.spear.length, rowH = 48, gap = 26, top = 16;
+      const H = top * 2 + (nB + nS) * rowH + gap, W = 680;
+      tree.setAttribute("viewBox", `0 0 ${W} ${H}`);
+      const leafY = (wi, k) => top + (wi === 0 ? 0 : nB * rowH + gap) + k * rowH + rowH / 2;
+      const eus = WEAP.map(w => eu(st[w.key]));
+      const best = eus[0] === eus[1] ? -1 : eus[0] > eus[1] ? 0 : 1;
+      const rootY = H / 2;
+      let h = "";
+      h += `<rect x="8" y="${rootY - 30}" width="132" height="60" rx="10" class="box" style="fill:var(--surface-2);stroke:var(--border)"/>`;
+      h += `<text x="74" y="${rootY - 6}" text-anchor="middle" class="b" style="fill:var(--text)">찬: 늑대 출현</text>`;
+      h += `<text x="74" y="${rootY + 14}" text-anchor="middle" class="small">무엇으로 상대할까?</text>`;
+      WEAP.forEach((w, wi) => {
+        const outs = st[w.key];
+        const wy = (leafY(wi, 0) + leafY(wi, outs.length - 1)) / 2;
+        const win = wi === best;
+        const edge = win ? "var(--ok)" : "var(--muted)";
+        h += `<path d="M140,${rootY} C180,${rootY} 180,${wy} 216,${wy}" style="fill:none;stroke:${edge};stroke-width:${win ? 3 : 1.5}"/>`;
+        h += `<rect x="216" y="${wy - 28}" width="140" height="56" rx="10" style="fill:var(${win ? "--ok-soft" : "--surface"});stroke:var(${win ? "--ok" : w.color});stroke-width:${win ? 2.5 : 1.5}"/>`;
+        h += `<text x="286" y="${wy - 6}" text-anchor="middle" class="b" style="fill:var(${w.color})">${w.label}${win ? "  ✓ 선택" : ""}</text>`;
+        h += `<text x="286" y="${wy + 15}" text-anchor="middle" class="mono" style="fill:var(--text)">EU = ${eus[wi].toFixed(3)}</text>`;
+        outs.forEach((o, k) => {
+          const ly = leafY(wi, k), sw = 1 + 10 * Math.min(1, o.p);
+          h += `<path d="M356,${wy} C385,${wy} 385,${ly} 412,${ly}" style="fill:none;stroke:${win ? "var(--ok)" : "var(--muted)"};stroke-width:${sw.toFixed(1)};stroke-opacity:.75"/>`;
+          h += `<rect x="412" y="${ly - 20}" width="262" height="40" rx="7" style="fill:var(--surface);stroke:var(--border)"/>`;
+          h += `<text x="422" y="${ly - 3}" class="b" style="fill:var(--text)">${o.n}</text>`;
+          h += `<text x="422" y="${ly + 13}" class="small mono">P ${f2(o.p)} × D ${f2(o.d)} = ${(o.p * o.d).toFixed(3)}</text>`;
+          h += `<rect x="590" y="${ly - 6}" width="76" height="12" rx="3" style="fill:var(--surface-2)"/>`;
+          h += `<rect x="590" y="${ly - 6}" width="${(76 * Math.min(1, o.p * o.d)).toFixed(1)}" height="12" rx="3" style="fill:var(${w.color})"/>`;
+        });
+      });
+      tree.innerHTML = h;
+      // 메시지
+      const sums = WEAP.map(w => psum(st[w.key]));
+      const bad = sums.some(s => Math.abs(s - 1) > 0.005);
+      const m = $("huntMsg");
+      if (bad) {
+        m.className = "callout danger";
+        m.innerHTML = `확률 합이 1이 아니다 (활 ${sums[0].toFixed(2)}, 창 ${sums[1].toFixed(2)}). 공식 EU(활 ${eus[0].toFixed(3)}, 창 ${eus[1].toFixed(3)})는 왜곡되어 있다. 시뮬레이션은 실제처럼 결과 하나만 일어나므로 확률을 합으로 나눈 분포로 굴러가며, 평균은 활 ${euNorm(st.bow).toFixed(3)}, 창 ${euNorm(st.spear).toFixed(3)} 쪽으로 간다.`;
+      } else {
+        const bw = best < 0 ? null : WEAP[best].label;
+        m.className = "callout";
+        m.innerHTML = bw
+          ? `최대 기대효용 원칙에 따르면 찬은 <b>${bw}</b>을(를) 든다 (EU ${Math.max(...eus).toFixed(3)} vs ${Math.min(...eus).toFixed(3)}, 차이 ${Math.abs(eus[0] - eus[1]).toFixed(3)}).` +
+            (mode === "two" ? " 결과 모델을 3결과로 바꾸면 판단이 뒤집히는지 확인해 보자." : " 2결과 모델에서는 창이 이겼다. 결과를 나누는 해상도가 결정을 바꿨다.")
+          : "두 무기의 EU가 같다. 최대 기대효용 원칙만으로는 고를 수 없다(동점 처리 규칙은 05장).";
+      }
+    }
+
+    // ── 몬테카를로 ──
+    const mc = $("mcChart");
+    let anim = null;
+    function sample(outs, cum, r) {
+      for (let i = 0; i < cum.length; i++) if (r < cum[i]) return outs[i].d;
+      return outs[outs.length - 1].d;
+    }
+    function cumOf(outs) {
+      const s = psum(outs) || 1; let a = 0;
+      return outs.map(o => (a += o.p / s));
+    }
+    // 순수 계산부: node에서도 검증 가능하도록 분리
+    function simulate(bow, spear, N, seed) {
+      const rng = UAI.rng(seed);
+      const outs = [bow, spear], cums = outs.map(cumOf);
+      const euN = outs.map(euNorm);
+      const better = euN[0] === euN[1] ? -1 : euN[0] > euN[1] ? 0 : 1;
+      const sums = [0, 0], means = [[], []];
+      let worse = 0;
+      for (let t = 0; t < N; t++) {
+        const u = [0, 1].map(w => sample(outs[w], cums[w], rng.next()));
+        u.forEach((x, w) => { sums[w] += x; means[w].push(sums[w] / (t + 1)); });
+        if (better >= 0 && u[better] < u[1 - better]) worse++;
+      }
+      return { means, worse, better, euN };
+    }
+    const N = 1000;
+    const L = 44, R = 70, T = 12, B = 34, W = 640, Hc = 250, pw = W - L - R, ph = Hc - T - B;
+    const X = n => L + (Math.log10(n) / 3) * pw, Y = y => T + (1 - y) * ph;
+    function frame(res, upto) {
+      let h = "";
+      for (let i = 0; i <= 4; i++) {
+        const y = i / 4;
+        h += `<line class="grid" x1="${L}" y1="${Y(y)}" x2="${L + pw}" y2="${Y(y)}"/><text x="${L - 6}" y="${Y(y) + 4}" text-anchor="end">${y.toFixed(2)}</text>`;
+      }
+      [1, 10, 100, 1000].forEach(n => {
+        h += `<line class="grid" x1="${X(n)}" y1="${T}" x2="${X(n)}" y2="${T + ph}"/><text x="${X(n)}" y="${T + ph + 15}" text-anchor="middle">${n}</text>`;
+      });
+      h += `<line class="axis" x1="${L}" y1="${T + ph}" x2="${L + pw}" y2="${T + ph}"/><line class="axis" x1="${L}" y1="${T}" x2="${L}" y2="${T + ph}"/>`;
+      h += `<text x="${L + pw / 2}" y="${Hc - 3}" text-anchor="middle">실행 횟수 (로그 눈금)</text>`;
+      const euN = [euNorm(st.bow), euNorm(st.spear)];
+      WEAP.forEach((w, wi) => {
+        h += `<line x1="${L}" y1="${Y(euN[wi])}" x2="${L + pw}" y2="${Y(euN[wi])}" style="stroke:var(${w.color});stroke-dasharray:6 4;stroke-width:1.3;opacity:.8"/>`;
+        h += `<text x="${L + pw + 4}" y="${Y(euN[wi]) + (euN[wi] >= euN[1 - wi] ? -2 : 11)}" style="fill:var(${w.color});font-weight:700">${w.label} EU ${euN[wi].toFixed(2)}</text>`;
+        if (res && upto > 0) {
+          let d = "";
+          for (let t = 0; t < upto; t++) d += (t ? "L" : "M") + X(t + 1).toFixed(1) + "," + Y(res.means[wi][t]).toFixed(1);
+          h += `<path d="${d}" style="fill:none;stroke:var(${w.color});stroke-width:2"/>`;
+          h += `<circle cx="${X(upto)}" cy="${Y(res.means[wi][upto - 1])}" r="3.5" style="fill:var(${w.color})"/>`;
+        }
+      });
+      mc.innerHTML = h;
+      $("mcN").textContent = upto;
+      $("mcBow").textContent = res && upto ? `${res.means[0][upto - 1].toFixed(3)} / ${euN[0].toFixed(3)}` : "-";
+      $("mcSpear").textContent = res && upto ? `${res.means[1][upto - 1].toFixed(3)} / ${euN[1].toFixed(3)}` : "-";
+    }
+    function resetMC() {
+      if (anim) cancelAnimationFrame(anim), (anim = null);
+      $("mcRun").textContent = "▶ 1000회 시뮬레이션";
+      frame(null, 0);
+      $("mcWorse").textContent = "-";
+    }
+    function runMC() {
+      if (anim) { resetMC(); return; }
+      const seed = Math.max(1, Math.floor(+$("mcSeed").value) || 1);
+      const res = simulate(st.bow, st.spear, N, seed);
+      const showWorse = () => {
+        $("mcWorse").textContent = res.better < 0 ? "동점" : `${WEAP[res.better].label} ${MM.pct(res.worse / N)}`;
+      };
+      if (reduceMotion) { frame(res, N); showWorse(); return; }
+      let upto = 0;
+      $("mcRun").textContent = "⏹ 정지";
+      const step = () => {
+        // 앞부분은 천천히(로그 축에서 넓게 보이므로), 뒤로 갈수록 빠르게
+        upto = Math.min(N, upto + Math.max(1, Math.ceil(upto * 0.035)));
+        frame(res, upto);
+        if (upto < N) anim = requestAnimationFrame(step);
+        else { anim = null; $("mcRun").textContent = "▶ 1000회 시뮬레이션"; showWorse(); }
+      };
+      anim = requestAnimationFrame(step);
+    }
+    $("mcRun").addEventListener("click", runMC);
+    $("mcSeed").addEventListener("change", resetMC);
+    $("mcSeedNext").addEventListener("click", () => { $("mcSeed").value = (+$("mcSeed").value || 1) + 1; resetMC(); runMC(); });
+
+    buildCtl(); drawTree(); resetMC();
+    return { PRESET, eu, euNorm, setP, simulate };
+  })();
+
+  // ═══════════════════ 위젯 4: 개미 군락 ═══════════════════
+  (function antWidget() {
+    const S = { pop: $("antPop"), max: $("antMax"), food: $("antFood"), nur: $("antNur") };
+    const PRE = {
+      graham: { pop: 4500, max: 5000, food: 92, nur: 15 },
+      famine: { pop: 4500, max: 5000, food: 20, nur: 15 },
+      fresh: { pop: 1500, max: 5000, food: 70, nur: 80 },
+      full: { pop: 2000, max: 5000, food: 92, nur: 0 },
+    };
+    const svg = $("antSvg");
+    function compute() {
+      const pop = +S.pop.value, max = +S.max.value, food = +S.food.value, nur = +S.nur.value;
+      const C = UAI.normalize(pop, 0, max), Hh = UAI.normalize(food, 0, 100), Nn = UAI.normalize(nur, 0, 100);
+      const method = $("antMethod").value, inv = $("antInv").checked;
+      const expand = UAI.combine([C, Hh], method);
+      const breedIn = inv ? [Hh, Nn, 1 - C] : [Hh, Nn];
+      const breed = UAI.combine(breedIn, method);
+      return { pop, max, food, nur, C, H: Hh, N: Nn, expand, breed, method, inv };
+    }
+    function box(x, y, w, h, fillVar, strokeVar, sw) {
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" style="fill:var(${fillVar});stroke:var(${strokeVar});stroke-width:${sw || 1.2}"/>`;
+    }
+    function bar(x, y, w, v, colorVar) {
+      return `<rect x="${x}" y="${y}" width="${w}" height="7" rx="3" style="fill:var(--surface-2);stroke:var(--border)"/>` +
+        `<rect x="${x}" y="${y}" width="${(w * Math.max(0, Math.min(1, v))).toFixed(1)}" height="7" rx="3" style="fill:var(${colorVar})"/>`;
+    }
+    function draw() {
+      const r = compute();
+      $("antPopO").textContent = r.pop; $("antMaxO").textContent = r.max;
+      $("antFoodO").textContent = r.food; $("antNurO").textContent = r.nur;
+      const win = Math.abs(r.expand - r.breed) < 1e-9 ? "tie" : r.expand > r.breed ? "expand" : "breed";
+      let h = "";
+      // 통계 열
+      const stats = [
+        { y: 28, t1: `인구 ${r.pop}`, t2: `최대 인구 ${r.max}` },
+        { y: 122, t1: `식량 ${r.food}`, t2: "/ 100" },
+        { y: 216, t1: `보육실 여유 ${r.nur}`, t2: "/ 100" },
+      ];
+      stats.forEach(s => {
+        h += box(8, s.y, 170, 52, "--surface-2", "--border");
+        h += `<text x="93" y="${s.y + 22}" text-anchor="middle" style="fill:var(--text)">${s.t1}</text>`;
+        h += `<text x="93" y="${s.y + 40}" text-anchor="middle" class="small">${s.t2}</text>`;
+      });
+      // factor 열
+      const facs = [
+        { y: 28, name: "붐빔 Crowdedness", v: r.C, f: "인구 / 최대" },
+        { y: 122, name: "건강 Health", v: r.H, f: "식량 / 100" },
+        { y: 216, name: "보육실 Nursery", v: r.N, f: "여유 / 100" },
+      ];
+      stats.forEach((s, i) => {
+        h += `<line x1="178" y1="${s.y + 26}" x2="238" y2="${facs[i].y + 26}" style="stroke:var(--muted);stroke-width:1.3"/>`;
+        h += `<text x="208" y="${s.y + 20}" text-anchor="middle" class="small">${facs[i].f}</text>`;
+      });
+      facs.forEach(fc => {
+        h += box(238, fc.y, 164, 52, "--teal-soft", "--teal");
+        h += `<text x="248" y="${fc.y + 20}" style="fill:var(--text)" class="small">${fc.name}</text>`;
+        h += `<text x="392" y="${fc.y + 20}" text-anchor="end" class="mono" style="fill:var(--text);font-weight:700">${fc.v.toFixed(2)}</text>`;
+        h += bar(248, fc.y + 32, 144, fc.v, "--teal");
+      });
+      // 행동 열
+      const ex = { y: 62, v: r.expand, name: "확장 Expand", f: `${r.method}(붐빔, 건강)`, key: "expand" };
+      const br = { y: 186, v: r.breed, name: "번식 Breed", f: r.inv ? `${r.method}(건강, 보육실, 1−붐빔)` : `${r.method}(건강, 보육실)`, key: "breed" };
+      const link = (fy, ay, dash, label) => {
+        h += `<path d="M402,${fy} C440,${fy} 440,${ay} 472,${ay}" style="fill:none;stroke:var(${dash ? "--bad" : "--muted"});stroke-width:1.5${dash ? ";stroke-dasharray:5 4" : ""}"/>`;
+        if (label) h += `<text x="440" y="${(fy + ay) / 2 - 4}" text-anchor="middle" style="fill:var(--bad);font-weight:700" class="small">${label}</text>`;
+      };
+      link(54, ex.y + 30); link(148, ex.y + 30);
+      link(148, br.y + 30); link(242, br.y + 30);
+      if (r.inv) link(62, br.y + 22, true, "1 − x");
+      [ex, br].forEach(a => {
+        const on = win === a.key;
+        h += box(472, a.y, 200, 60, on ? "--ok-soft" : "--surface", on ? "--ok" : "--border", on ? 2.5 : 1.2);
+        h += `<text x="482" y="${a.y + 20}" style="fill:var(--text);font-weight:700">${a.name}${on ? "  ✓" : ""}</text>`;
+        h += `<text x="662" y="${a.y + 20}" text-anchor="end" class="mono" style="fill:var(--text);font-weight:700">${a.v.toFixed(3)}</text>`;
+        h += `<text x="482" y="${a.y + 36}" class="small mono">${a.f}</text>`;
+        h += bar(482, a.y + 44, 180, a.v, on ? "--ok" : "--muted");
+      });
+      svg.innerHTML = h;
+      const m = $("antMsg");
+      if (r.N === 0 && r.method === "mean" && r.breed > 0) {
+        m.className = "callout danger";
+        m.innerHTML = `보육실 여유가 <b>0</b>인데도 평균 결합에서 번식 점수가 <b>${r.breed.toFixed(3)}</b>이다. 평균은 0인 factor를 다른 factor가 메워 준다. 결합을 <b>product</b>나 <b>min</b>으로 바꿔 보자 (→ 04장).`;
+      } else {
+        m.className = "callout";
+        m.innerHTML = `확장 ${r.expand.toFixed(3)} vs 번식 ${r.breed.toFixed(3)} → <b>${win === "tie" ? "동점" : win === "expand" ? "확장" : "번식"}</b>. ` +
+          (r.method === "mean" ? "평균은 factor 하나가 낮아도 나머지가 끌어올린다." :
+            r.method === "product" ? "곱은 factor 하나만 낮아도 점수가 크게 깎이고, factor가 많을수록 전체가 작아진다 (04장의 보정 문제)." :
+            r.method === "min" ? "min은 가장 약한 factor가 점수를 정한다. 나머지 factor가 아무리 좋아도 소용없다." :
+            "max는 가장 강한 factor 하나로 점수가 정해진다. '하나라도 충족되면 된다'는 OR에 가깝다.");
+      }
+    }
+    Object.values(S).forEach(s => s.addEventListener("input", () => { presetOn($("antPresets"), null); draw(); }));
+    $("antInv").addEventListener("change", draw);
+    $("antMethod").addEventListener("change", draw);
+    $("antPresets").addEventListener("click", e => {
+      const b = e.target.closest("[data-p]"); if (!b) return;
+      const p = PRE[b.dataset.p];
+      S.pop.value = p.pop; S.max.value = p.max; S.food.value = p.food; S.nur.value = p.nur;
+      presetOn($("antPresets"), b); draw();
+    });
+    draw();
+  })();
+
+  // ═══════════════════ 위젯 5: 빵 n번째의 효용 ═══════════════════
+  (function breadWidget() {
+    const hS = $("breadH"), gS = $("breadG");
+    const urg = UAI.curve(UAI.NEED_CURVE.hunger);
+    const plot = MM.plotCurve($("breadCurve"), urg, { color: "--warn", marker: 0.15, xLabel: "포만도 / 100", yLabel: "긴급도" });
+    const COUNT = 6;
+    let shown = COUNT, timer = null;
+    function rows() {
+      const g = +gS.value;
+      let h = +hS.value;
+      const out = [];
+      for (let i = 0; i < COUNT; i++) {
+        const agent = { needs: { hunger: h }, traits: { hunger: 1 } };
+        const u = UAI.adValue(agent, { ads: { hunger: g } });
+        const next = Math.min(100, h + g);
+        out.push({ before: h, after: next, urgency: urg(h / 100), u });
+        h = next;
+      }
+      return out;
+    }
+    function draw() {
+      const g = +gS.value;
+      $("breadHo").textContent = hS.value; $("breadGo").textContent = "+" + g;
+      plot.update(null, +hS.value / 100);
+      const rs = rows(), maxU = g / 100;
+      let h = "";
+      rs.forEach((r, i) => {
+        const cls = i < shown ? "" : " hidden";
+        h += `<span class="${cls}"><b>${i + 1}번째</b></span><span class="tag${cls}">${Math.round(r.before)}→${Math.round(r.after)}</span>` +
+          `<div class="bar warn${cls}"><i style="width:${i < shown ? (r.u / maxU) * 100 : 0}%"></i></div><span class="mono${cls}">${r.u.toFixed(3)}</span>`;
+      });
+      $("breadRows").innerHTML = h;
+      $("breadFirst").textContent = rs[0].u.toFixed(3);
+      $("breadRatio").textContent = rs[0].u > 0 ? MM.pct(rs[2].u / rs[0].u) : "-";
+      $("breadTotal").textContent = rs.reduce((a, r) => a + r.u, 0).toFixed(3);
+    }
+    function stop() { clearInterval(timer); timer = null; $("breadPlay").textContent = "▶ 하나씩 먹이기"; }
+    $("breadPlay").addEventListener("click", () => {
+      if (timer) { stop(); shown = COUNT; draw(); return; }
+      if (reduceMotion) { shown = COUNT; draw(); return; }
+      shown = 0; draw();
+      $("breadPlay").textContent = "⏹ 정지";
+      timer = setInterval(() => { shown++; draw(); if (shown >= COUNT) stop(); }, 550);
+    });
+    [hS, gS].forEach(s => s.addEventListener("input", () => { stop(); shown = COUNT; presetOn($("breadPresets"), null); draw(); }));
+    $("breadPresets").addEventListener("click", e => {
+      const b = e.target.closest("[data-h]"); if (!b) return;
+      stop(); shown = COUNT; hS.value = b.dataset.h; presetOn($("breadPresets"), b); draw();
+    });
+    draw();
+  })();
+
+  window.CH02 = { HUNT };
+})();
+</script>
+</body>
+</html>

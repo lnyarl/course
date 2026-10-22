@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03. IP 계층: 주소 · 서브넷 · 라우팅 기초 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.binrow{display:flex;gap:6px;flex-wrap:wrap;font-family:var(--mono);font-size:.82rem;margin:6px 0}
+.binrow .oct{display:flex;gap:1px;padding:3px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border)}
+.binrow .b{width:17px;height:24px;display:grid;place-items:center;border-radius:3px;background:var(--surface);font-weight:600}
+.binrow .b.net{background:var(--l-net);color:#fff}
+.binrow .b.host{background:var(--accent-soft);color:var(--accent)}
+.binrow .b.host.one{background:var(--accent);color:#fff}
+.binrow .lbl{width:90px;font-size:.78rem;color:var(--muted);display:flex;align-items:center;font-family:var(--font)}
+.calc-out{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-top:10px}
+.calc-out div{background:var(--surface-2);border-radius:8px;padding:8px 12px}
+.calc-out b{display:block;font-size:.74rem;color:var(--muted)}
+.calc-out span{font-family:var(--mono);font-size:.92rem}
+.rt{font-family:var(--mono);font-size:.84rem}
+.rt tr.match td{background:var(--green-soft)}
+.rt tr.best td{background:var(--green);color:#fff;font-weight:700}
+.rt tr.nomatch td{opacity:.45}
+.frag{display:flex;gap:4px;align-items:center;margin:8px 0;min-height:60px}
+.frag .blk{height:48px;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:.72rem;color:#fff;transition:all .5s;font-family:var(--mono);white-space:nowrap;overflow:hidden}
+.frag .blk.h{background:var(--l-net);min-width:40px}
+.frag .blk.d{background:var(--l-tr)}
+.frag .blk.hidden{opacity:0;width:0!important;min-width:0;padding:0}
+.ex-q{font-family:var(--mono);font-size:1rem;background:var(--surface-2);padding:10px 14px;border-radius:8px;display:inline-block}
+.ex-row{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;margin:6px 0;font-size:.9rem}
+.ex-row input{font-family:var(--mono)}
+.ex-row .ok{color:var(--green);font-weight:700}.ex-row .ng{color:var(--red);font-weight:700}
+</style>
+</head>
+<body data-chapter="03">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 1 · 개론 — CHAPTER 03</div>
+  <h1>IP 계층: 주소 · 서브넷 · 라우팅 기초</h1>
+  <p class="lead">IP는 인터넷의 허리입니다. 32비트 숫자 하나에 "어느 네트워크의 어느 호스트인가"를 담고, 라우터는 그 앞부분만 보고 수십억 대의 호스트 중 길을 찾습니다. 이 장에서는 IPv4 헤더, CIDR 계산, 최장 프리픽스 매칭, 단편화를 직접 계산하고 조작해 봅니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 90분</span><span class="chip l-net">인터넷</span><span class="chip">RFC 791 · 1918 · 4632 · 1191</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>IPv4 헤더의 모든 필드를 이름·길이·역할과 함께 그릴 수 있다.</li>
+    <li>임의의 IP/프리픽스에서 네트워크 주소, 브로드캐스트, 호스트 범위를 암산할 수 있다.</li>
+    <li>라우팅 테이블에서 최장 프리픽스 매칭(LPM)으로 경로를 고를 수 있다.</li>
+    <li>IP 단편화의 Offset/MF 계산을 할 수 있고, 단편화를 피해야 하는 이유(PMTUD)를 설명할 수 있다.</li>
+    <li>TTL, 헤더 체크섬, DF 비트가 각각 어떤 문제를 해결하는지 안다.</li>
+  </ul>
+</div>
+
+<h2 id="service"><span class="num">3.1</span>IP가 제공하는 것과 제공하지 않는 것</h2>
+<div class="vs">
+  <div class="side"><h4 style="color:var(--green)">제공한다</h4><ul><li><b>전역 주소 지정</b>: 모든 호스트를 32비트(IPv6: 128비트) 주소로 식별</li><li><b>라우팅</b>: 네트워크를 넘어 목적지까지 홉 단위 전달</li><li><b>단편화/재조립</b>: 링크 MTU보다 큰 데이터그램 처리</li><li><b>상위 프로토콜 다중화</b>: Protocol 필드(6=TCP, 17=UDP, 1=ICMP)</li><li><b>루프 방지</b>: TTL</li></ul></div>
+  <div class="mid">vs</div>
+  <div class="side"><h4 style="color:var(--red)">제공하지 않는다</h4><ul><li>전달 보장 (손실될 수 있음)</li><li>순서 보장 (경로가 달라 뒤바뀔 수 있음)</li><li>중복 방지</li><li>흐름/혼잡 제어</li><li>데이터 무결성 (헤더 체크섬만 있고 페이로드 검사는 없음)</li></ul></div>
+</div>
+<p>이 "비연결(connectionless)·최선형(best-effort)" 설계 덕분에 라우터는 연결 상태를 기억할 필요가 없고, 패킷 하나하나를 독립적으로 처리합니다(datagram 모델). 신뢰성은 5·7장에서 다루는 TCP가 종단에서 책임집니다.</p>
+
+<h2 id="header"><span class="num">3.2</span>IPv4 헤더 <small>(필드를 클릭하세요)</small></h2>
+<p>기본 20바이트, 옵션이 있으면 최대 60바이트. 각 행이 32비트(4바이트)입니다. RFC 791(1981)의 형식이 지금까지 거의 그대로 쓰이며, ToS 바이트만 DSCP/ECN으로 재정의되었습니다(RFC 2474, 3168).</p>
+<div id="ip-hdr"></div>
+<div class="callout"><div class="t">📌 전문가가 외우는 숫자</div><p>헤더 20바이트 · IHL 단위 4바이트(최소 5) · Total Length 최대 65535 · TTL 기본값: Linux 64, Windows 128, 네트워크 장비 255 · Protocol 1=ICMP, 6=TCP, 17=UDP, 41=IPv6-in-IPv4, 47=GRE, 50=ESP, 89=OSPF.</p></div>
+
+<h2 id="addr"><span class="num">3.3</span>IP 주소와 서브넷 마스크</h2>
+<p>IP 주소 32비트는 <b>네트워크 부분</b>(앞)과 <b>호스트 부분</b>(뒤)으로 나뉩니다. 어디서 나뉘는지를 알려주는 것이 <b>서브넷 마스크</b>(또는 프리픽스 길이 <code>/n</code>)입니다. 마스크는 앞에서부터 n개의 1과 나머지 0으로 구성되며, <code>주소 AND 마스크 = 네트워크 주소</code>입니다.</p>
+<h3 id="calc">서브넷 계산기 <small>(인터랙티브)</small></h3>
+<div class="card">
+  <div class="row"><label>IP 주소 <input type="text" id="c-ip" value="192.168.37.142" size="16" class="mono"></label>
+    <label>프리픽스 /<input type="number" id="c-pre" value="26" min="0" max="32" style="width:64px" class="mono"></label>
+    <input type="range" id="c-range" min="0" max="32" value="26" style="flex:1;min-width:160px">
+    <button class="btn sm" data-ex="10.0.0.0/8">10/8</button><button class="btn sm" data-ex="172.16.5.9/12">172.16/12</button><button class="btn sm" data-ex="203.0.113.77/30">/30</button><button class="btn sm" data-ex="198.51.100.1/32">/32</button></div>
+  <div id="c-bin"></div>
+  <div class="calc-out" id="c-out"></div>
+  <p class="small" id="c-note"></p>
+</div>
+<div class="callout tip"><div class="t">💡 암산 요령</div><p>마스크가 옥텟 경계에 있지 않을 때(예: /26), "관심 옥텟"의 <b>블록 크기 = 256 − 마스크 옥텟값</b>입니다. /26 → 마스크 255.255.255.<b>192</b> → 블록 64 → 네트워크는 .0, .64, .128, .192 중 하나. 142는 128~191 블록이므로 네트워크 .128, 브로드캐스트 .191. 2의 거듭제곱(128, 64, 32, 16, 8, 4, 2, 1 ↔ /25~/32)을 외워 두세요.</p></div>
+
+<h3 id="classes">클래스풀에서 CIDR로</h3>
+<p>1993년 이전에는 주소의 첫 비트들로 네트워크 크기가 <b>고정</b>되었습니다(클래스풀). 이 방식은 주소 낭비(256개 필요한 회사가 B클래스 65,536개를 받음)와 라우팅 테이블 폭증을 낳았고, <b>CIDR(Classless Inter-Domain Routing, RFC 1519 → 4632)</b>이 "프리픽스 길이는 어디든 가능"으로 바꾸었습니다.</p>
+<table>
+  <thead><tr><th>클래스</th><th>첫 비트</th><th>범위</th><th>기본 마스크</th><th>CIDR 관점</th></tr></thead>
+  <tbody>
+    <tr><td>A</td><td>0</td><td>0.0.0.0 – 127.255.255.255</td><td>/8</td><td rowspan="3">지금은 단지 역사. <b>프리픽스 길이가 전부</b>다. 라우터는 /0부터 /32까지 어떤 길이든 받아들이고, 인접 프리픽스를 묶어(aggregation, supernetting) 테이블을 줄인다.</td></tr>
+    <tr><td>B</td><td>10</td><td>128.0.0.0 – 191.255.255.255</td><td>/16</td></tr>
+    <tr><td>C</td><td>110</td><td>192.0.0.0 – 223.255.255.255</td><td>/24</td></tr>
+    <tr><td>D</td><td>1110</td><td>224.0.0.0 – 239.255.255.255</td><td>—</td><td>멀티캐스트 (아직 유효)</td></tr>
+    <tr><td>E</td><td>1111</td><td>240.0.0.0 – 255.255.255.255</td><td>—</td><td>예약 (실험용, 대부분의 OS가 거부)</td></tr>
+  </tbody>
+</table>
+<h3 id="special">사설 주소와 특수 주소</h3>
+<table>
+  <thead><tr><th>범위</th><th>용도</th><th>근거</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">10.0.0.0/8 · 172.16.0.0/12 · 192.168.0.0/16</td><td><b>사설 주소</b>. 인터넷에 라우팅되지 않음. NAT 뒤에서 사용</td><td>RFC 1918</td></tr>
+    <tr><td class="mono">100.64.0.0/10</td><td>CGNAT(통신사 공용 NAT) 공유 주소 공간</td><td>RFC 6598</td></tr>
+    <tr><td class="mono">127.0.0.0/8</td><td>루프백. 자기 자신 (보통 127.0.0.1)</td><td>RFC 1122</td></tr>
+    <tr><td class="mono">169.254.0.0/16</td><td>링크 로컬(APIPA). DHCP 실패 시 자동 설정</td><td>RFC 3927</td></tr>
+    <tr><td class="mono">0.0.0.0/8</td><td>"이 네트워크"/미지정. 소켓에서 "모든 인터페이스", DHCP Discover의 출발지</td><td>RFC 1122</td></tr>
+    <tr><td class="mono">255.255.255.255</td><td>제한 브로드캐스트. 라우터가 절대 전달하지 않음</td><td>RFC 919</td></tr>
+    <tr><td class="mono">192.0.2.0/24 · 198.51.100.0/24 · 203.0.113.0/24</td><td>문서·예제용 (TEST-NET). 이 과정에서도 사용</td><td>RFC 5737</td></tr>
+    <tr><td class="mono">224.0.0.0/4</td><td>멀티캐스트 (224.0.0.0/24는 링크 로컬: OSPF 224.0.0.5 등)</td><td>RFC 5771</td></tr>
+  </tbody>
+</table>
+
+<h3 id="exercise">서브네팅 연습 <small>(무작위 문제)</small></h3>
+<div class="card">
+  <div class="row"><span class="ex-q" id="ex-q">—</span><button class="btn sm primary" id="ex-new">새 문제</button><button class="btn sm" id="ex-check">정답 확인</button><button class="btn sm" id="ex-show">정답 보기</button></div>
+  <div style="margin-top:10px">
+    <div class="ex-row"><span>네트워크 주소</span><input type="text" id="ex-net" placeholder="예: 10.1.2.0"><span id="ex-net-r"></span></div>
+    <div class="ex-row"><span>브로드캐스트 주소</span><input type="text" id="ex-bc" placeholder="예: 10.1.2.255"><span id="ex-bc-r"></span></div>
+    <div class="ex-row"><span>서브넷 마스크</span><input type="text" id="ex-mask" placeholder="예: 255.255.255.0"><span id="ex-mask-r"></span></div>
+    <div class="ex-row"><span>사용 가능한 호스트 수</span><input type="text" id="ex-hosts" placeholder="예: 254"><span id="ex-hosts-r"></span></div>
+  </div>
+  <div class="small" id="ex-msg" style="margin-top:8px"></div>
+</div>
+
+<h2 id="routing"><span class="num">3.4</span>라우팅 테이블과 최장 프리픽스 매칭 <small>(인터랙티브)</small></h2>
+<p>라우터(그리고 모든 호스트)는 목적지 IP를 라우팅 테이블의 각 항목과 비교합니다. 규칙은 하나: <b>목적지 AND 마스크 == 네트워크</b>인 항목 중 <b>프리픽스가 가장 긴 것</b>을 고른다(Longest Prefix Match). 기본 경로 <code>0.0.0.0/0</code>은 모든 주소와 매칭되지만 길이가 0이라 "다른 게 없을 때"만 선택됩니다.</p>
+<div class="card">
+  <div class="row"><label>목적지 IP <input type="text" id="rt-ip" value="10.1.5.77" size="16" class="mono"></label>
+    <button class="btn sm" data-rt="10.1.5.77">10.1.5.77</button><button class="btn sm" data-rt="10.1.9.3">10.1.9.3</button><button class="btn sm" data-rt="10.200.0.1">10.200.0.1</button><button class="btn sm" data-rt="192.168.1.20">192.168.1.20</button><button class="btn sm" data-rt="8.8.8.8">8.8.8.8</button></div>
+  <table class="rt" id="rt-table">
+    <thead><tr><th>#</th><th>목적지 네트워크</th><th>다음 홉 (게이트웨이)</th><th>인터페이스</th><th>매칭</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="rt-result" class="callout" style="margin-top:8px"></div>
+</div>
+<p>라우팅 테이블 항목은 세 가지 출처에서 옵니다: ① <b>직접 연결</b>(인터페이스에 IP를 설정하면 자동), ② <b>정적</b>(관리자가 입력), ③ <b>동적</b>(OSPF·BGP 등 라우팅 프로토콜이 교환, 11장). 다음 홉이 "직접 연결"이면 ARP로 목적지 호스트의 MAC을, 게이트웨이가 있으면 게이트웨이의 MAC을 찾습니다.</p>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 하드웨어 LPM과 테이블 크기</div><p>인터넷 코어 라우터의 전체 라우팅 테이블(DFZ)은 IPv4 약 95만 개 프리픽스(2024년 기준)입니다. 패킷마다 95만 개를 순회할 수는 없으므로 trie(Patricia/LC-trie, Linux의 <code>fib_trie</code>) 또는 TCAM(Ternary CAM) 하드웨어로 한 번에 찾습니다. TCAM은 비싸고 전력을 많이 쓰므로 수용 가능한 프리픽스 수에 한계가 있고, 2014년 "512K 사태"(테이블이 512K를 넘자 구형 장비가 멈춤)가 실제로 일어났습니다. CIDR 집계가 단순히 "깔끔함"이 아니라 인터넷 생존 조건인 이유입니다.</p></div>
+
+<h2 id="frag"><span class="num">3.5</span>IP 단편화 <small>(애니메이션)</small></h2>
+<p>4000바이트 IP 데이터그램이 MTU 1500인 링크를 만나면 라우터(IPv4)는 이를 조각냅니다. 각 조각은 <b>완전한 IP 패킷</b>이며(헤더 복사), 세 필드로 재조립 정보를 담습니다.</p>
+<ul>
+  <li><b>Identification</b>: 같은 원본에서 나온 조각은 같은 ID.</li>
+  <li><b>MF(More Fragments)</b>: 뒤에 조각이 더 있으면 1, 마지막 조각은 0.</li>
+  <li><b>Fragment Offset</b>: 이 조각의 데이터가 원본 데이터의 어디서 시작하는지, <b>8바이트 단위</b>(13비트로 65535를 표현하기 위해). 따라서 마지막을 제외한 조각의 데이터 길이는 8의 배수여야 한다.</li>
+</ul>
+<div class="anim" id="frag-anim">
+  <div class="stage">
+    <div class="small"><b>원본 데이터그램</b> — Total Length 4000 = 헤더 20 + 데이터 3980, ID=0x1a2b, DF=0</div>
+    <div class="frag" id="frag-orig"><div class="blk h" style="width:40px">IP<br>20</div><div class="blk d" style="flex:1">데이터 3980 바이트</div></div>
+    <div class="small" style="margin-top:10px"><b>MTU 1500 링크 통과 후</b> — 각 조각 최대 1500 = 헤더 20 + 데이터 ≤1480 (1480 = 8 × 185 ✓)</div>
+    <div id="frag-out"></div>
+    <div class="small" style="margin-top:8px" id="frag-note"></div>
+  </div>
+</div>
+<p>재조립은 <b>최종 목적지 호스트에서만</b> 합니다. 중간 라우터는 조각을 더 쪼갤 수는 있어도 합치지 않습니다(경로가 다를 수 있고 상태를 유지해야 하므로). 수신 호스트는 모든 조각이 도착할 때까지 버퍼에 보관하고, 타이머(보통 30초) 안에 다 오지 않으면 전부 버립니다.</p>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 단편화는 왜 해로운가 → DF 비트와 PMTUD</div><p>① 조각 하나만 잃어도 <b>원본 전체</b>를 재전송해야 한다(TCP는 조각을 모른다). ② 첫 조각에만 TCP/UDP 헤더가 있어 방화벽·NAT·로드밸런서가 나머지 조각을 분류할 수 없다. ③ 재조립 버퍼는 DoS 표적이 된다(Teardrop, 겹치는 조각). ④ 라우터 CPU 부담.<br>그래서 현대 TCP는 <b>DF(Don't Fragment)=1</b>로 보내고, MTU가 작은 링크의 라우터가 ICMP "Fragmentation Needed"(Type 3 Code 4)로 그 링크의 MTU를 알려주면 송신 측이 패킷 크기를 줄입니다 — <b>Path MTU Discovery(RFC 1191)</b>. IPv6는 아예 라우터 단편화를 금지하고 PMTUD를 필수로 합니다. 이 ICMP가 방화벽에 막히면 "작은 패킷은 되는데 큰 패킷은 안 되는" PMTUD 블랙홀이 생깁니다(4장). 대안으로 ICMP에 의존하지 않는 PLPMTUD(RFC 4821)와, TCP MSS 클램핑이 널리 쓰입니다.</p></div>
+
+<h2 id="ttl"><span class="num">3.6</span>TTL과 헤더 체크섬</h2>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">TTL (Time To Live)</h4><p>원래 "초" 단위였지만 실제로는 <b>홉 수</b>입니다. 라우터는 전달 전에 1을 빼고, 0이 되면 패킷을 버리고 ICMP Time Exceeded(Type 11)를 출발지로 보냅니다. 목적은 라우팅 루프(설정 오류나 수렴 중에 생김)에 빠진 패킷이 영원히 돌지 않게 하는 것. traceroute(4장)는 이 동작을 역이용합니다. OS 기본값(64/128/255)으로 상대 OS를 짐작하는 수동 핑거프린팅도 가능합니다.</p></div>
+  <div class="card"><h4 style="margin-top:0">헤더 체크섬</h4><p>헤더(만)를 16비트 단위로 더한 1의 보수 합의 1의 보수. 라우터는 TTL을 바꾸므로 홉마다 재계산(실제로는 RFC 1624의 증분 갱신)합니다. 페이로드는 검사하지 않으며, TCP/UDP가 자기 체크섬으로 보호합니다. IPv6는 링크 계층 CRC와 전송 계층 체크섬이 충분하다고 보고 헤더 체크섬을 <b>없앴습니다</b>.</p></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 1의 보수 체크섬 직접 계산</div>
+<p>헤더 <code>4500 003c 1c46 4000 4006 <b>0000</b> ac10 0a63 ac10 0a0c</code>에서 체크섬 자리를 0으로 두고 16비트 단어 9개를 더합니다. 합 = 0x4500+0x003c+0x1c46+0x4000+0x4006+0xac10+0x0a63+0xac10+0x0a0c = 0x2 <b>B2D7</b>. 32비트 합의 상위 캐리(0x2)를 하위에 더해 접습니다(end-around carry): 0xB2D7 + 0x2 = 0xB2D9. 1의 보수 → <b>0x4D26</b>. 수신 측은 체크섬 포함 전부를 더해 0xFFFF가 나오면 정상. 1의 보수 덧셈은 바이트 순서·정렬에 무관하고 증분 갱신이 쉬워 1980년대 하드웨어에 적합했습니다. 단, 16비트 단어 교환이나 상쇄되는 오류는 못 잡습니다 — CRC보다 약합니다.</p>
+<div class="row"><label>헤더 16진수 <input type="text" id="ck-in" class="mono" size="60" value="4500 003c 1c46 4000 4006 0000 ac10 0a63 ac10 0a0c"></label><button class="btn sm" id="ck-btn">계산</button></div>
+<div class="mono small" id="ck-out" style="margin-top:6px"></div></div>
+
+<h2 id="practice"><span class="num">3.7</span>실습: 라우팅 테이블과 PMTU 확인</h2>
+<div class="tabs">
+  <div class="tab-bar"><button>라우팅 테이블</button><button>DF 비트로 MTU 탐색</button><button>단편화 관찰</button></div>
+  <div class="tab-panel"><pre><code># Linux
+ip -4 addr show            # 인터페이스별 주소/프리픽스
+ip route show              # 테이블. "default via 10.0.0.1 dev eth0" 가 /0
+ip route get 8.8.8.8       # 이 목적지에 LPM 적용 결과 (nexthop, src 주소까지)
+# 8.8.8.8 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 1000
+
+# macOS
+netstat -rn -f inet
+route -n get 8.8.8.8</code></pre></div>
+  <div class="tab-panel"><pre><code># -M do : DF 비트 설정(단편화 금지), -s : ICMP 데이터 크기
+# 1472 + 8(ICMP) + 20(IP) = 1500 → 성공, 1473은 실패해야 정상
+ping -M do -s 1472 -c 2 1.1.1.1
+ping -M do -s 1473 -c 2 1.1.1.1
+# ping: local error: message too long, mtu=1500
+#   (또는 중간 라우터의 "Frag needed and DF set (mtu = 1400)")
+
+# macOS: -D 가 DF
+ping -D -s 1472 -c 2 1.1.1.1
+
+# 커널이 학습한 경로 MTU 캐시
+ip route get 1.1.1.1 | grep -o 'mtu [0-9]*'
+ip route show cache   # 구형 커널</code></pre></div>
+  <div class="tab-panel"><pre><code># DF 없이 큰 패킷을 보내 단편화 유도
+ping -s 4000 -c 1 10.0.0.1
+# 다른 터미널에서 조각 관찰 (ip[6:2] & 0x1fff != 0 → offset이 0이 아닌 조각)
+sudo tcpdump -n -i eth0 'ip[6:2] & 0x3fff != 0'
+# IP (flags [+], id 0x1a2b, offset 0,    length 1500) 10.0.0.5 > 10.0.0.1: ICMP echo request
+# IP (flags [+], id 0x1a2b, offset 1480, length 1500) 10.0.0.5 > 10.0.0.1: ip-proto-1
+# IP (flags [none], id 0x1a2b, offset 2960, length 1068) 10.0.0.5 > 10.0.0.1: ip-proto-1</code></pre>
+  <p class="small">두 번째 조각부터 "ip-proto-1"로만 보이는 이유: ICMP 헤더는 첫 조각에만 있기 때문. 방화벽이 조각을 다루기 어려운 이유가 바로 이것.</p></div>
+</div>
+
+<h2 id="quiz"><span class="num">3.8</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>IP는 전역 주소·라우팅·단편화·상위 프로토콜 다중화를 제공하고, 신뢰성·순서·흐름 제어는 제공하지 않는다.</li>
+    <li>IPv4 헤더 20바이트: Version/IHL/DSCP·ECN/Total Length/ID/Flags/Offset/TTL/Protocol/Checksum/Src/Dst.</li>
+    <li>주소 AND 마스크 = 네트워크. 호스트 비트 전부 0 = 네트워크 주소, 전부 1 = 브로드캐스트, 사용 가능 호스트 = 2ⁿ−2.</li>
+    <li>CIDR: 프리픽스 길이가 전부. 라우터는 최장 프리픽스 매칭으로 경로를 고르고, 집계로 테이블을 줄인다.</li>
+    <li>단편화는 ID/MF/Offset(8바이트 단위)으로 재조립하지만 해로우므로, DF=1 + PMTUD로 피한다.</li>
+    <li>TTL은 홉 카운터(루프 방지), 헤더 체크섬은 1의 보수 합(홉마다 갱신).</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz, HeaderDiagram, IP} = TCPIP;
+
+  /* ---------- 3.2 IPv4 헤더 ---------- */
+  HeaderDiagram('#ip-hdr',{bitsPerRow:32, selected:8, fields:[
+    {name:'Version',bits:4,cls:'c2',desc:'IP 버전. IPv4=4, IPv6=6. 수신 측은 첫 니블만 보고 어느 파서를 쓸지 결정한다.'},
+    {name:'IHL',bits:4,cls:'c2',desc:'Internet Header Length. 헤더 길이를 4바이트 단위로. 최소 5(=20바이트), 최대 15(=60바이트). 옵션이 없으면 항상 5 → 헤더 첫 바이트가 0x45인 이유.'},
+    {name:'DSCP',bits:6,cls:'c4',desc:'Differentiated Services Code Point (RFC 2474). QoS 클래스. EF(46)=음성, AF 클래스, CS0(0)=기본. 원래 ToS 필드를 재정의한 것.'},
+    {name:'ECN',bits:2,cls:'c4',desc:'Explicit Congestion Notification (RFC 3168). 00=미지원, 01/10=ECN 가능(ECT), 11=혼잡 발생(CE). 라우터가 패킷을 버리는 대신 CE를 표시해 TCP에 혼잡을 알린다. 8장 참고.'},
+    {name:'Total Length',bits:16,cls:'c2',desc:'헤더+데이터 전체 길이(바이트). 최대 65535. 실제로는 링크 MTU(보통 1500)에 맞춘다. Ethernet 패딩이 있을 때 실제 데이터 끝을 알려주는 역할도 한다.'},
+    {name:'Identification',bits:16,cls:'c5',desc:'단편화 시 같은 원본 데이터그램의 조각을 묶는 ID. 송신 호스트가 데이터그램마다 증가시킨다. DF=1인 패킷에서는 의미가 없어 0으로 보내기도 한다(RFC 6864).'},
+    {name:'Flags',bits:3,cls:'c5',desc:'bit0: 예약(0). bit1: DF(Don\'t Fragment) — 1이면 단편화 금지, 필요 시 폐기하고 ICMP Frag Needed 반환(PMTUD의 기반). bit2: MF(More Fragments) — 1이면 뒤에 조각이 더 있음.'},
+    {name:'Fragment Offset',bits:13,cls:'c5',desc:'이 조각의 데이터가 원본 데이터의 어느 위치에서 시작하는지, 8바이트 단위. 13비트 × 8 = 65536 → Total Length 범위를 모두 표현. 첫 조각은 0.'},
+    {name:'TTL',bits:8,cls:'c2',desc:'Time To Live. 라우터를 지날 때마다 1 감소, 0이면 폐기 + ICMP Time Exceeded. 기본값 Linux/macOS 64, Windows 128, 라우터 255. 루프 방지와 traceroute의 원리.'},
+    {name:'Protocol',bits:8,cls:'c1',desc:'페이로드의 상위 프로토콜. 1=ICMP, 2=IGMP, 6=TCP, 17=UDP, 41=IPv6(6in4), 47=GRE, 50=ESP, 51=AH, 89=OSPF, 132=SCTP. 역캡슐화 시 핸들러 선택.'},
+    {name:'Header Checksum',bits:16,cls:'c2',desc:'헤더만 보호하는 16비트 1의 보수 체크섬. TTL 변경 때문에 홉마다 재계산. 페이로드는 TCP/UDP 체크섬이 담당. IPv6에서는 제거됨.'},
+    {name:'Source Address',bits:32,cls:'c2',desc:'송신 호스트 IP. NAT를 지나면 바뀔 수 있다(12장). 출발지 검증(uRPF, BCP 38)이 없으면 위조 가능 → 스푸핑 공격의 기반.'},
+    {name:'Destination Address',bits:32,cls:'c2',desc:'목적지 IP. 라우터는 이 값으로만 LPM을 수행한다.'},
+    {name:'Options (+Padding)',bits:0,variable:true,cls:'c2',desc:'Record Route, Timestamp, Source Routing 등. 보안상 대부분 라우터가 폐기하거나 느린 경로(slow path)로 처리하므로 실제로는 거의 쓰이지 않는다. 32비트 경계로 패딩.'},
+  ]});
+
+  /* ---------- 3.3 서브넷 계산기 ---------- */
+  function renderBin(container, ip, pre, extra){
+    const c = typeof container==='string'?$(container):container; c.innerHTML='';
+    const rows = [['주소',ip,true],['마스크',IP.mask(pre),false]];
+    if(extra) rows.push(...extra);
+    rows.forEach(([lbl,val,colorHost])=>{
+      const r=el('div','binrow'); r.appendChild(el('div','lbl',lbl));
+      const bits=IP.bin(val);
+      for(let o=0;o<4;o++){ const oct=el('div','oct'); for(let k=0;k<8;k++){ const i=o*8+k; const b=el('div','b',bits[i]); if(i<pre) b.classList.add('net'); else { b.classList.add('host'); if(bits[i]==='1'&&colorHost) b.classList.add('one'); } oct.appendChild(b); } r.appendChild(oct); }
+      r.appendChild(el('div','lbl mono',IP.str(val)));
+      c.appendChild(r);
+    });
+  }
+  function calc(){
+    const ipn = IP.parse($('#c-ip').value); const pre = Math.max(0,Math.min(32,+$('#c-pre').value||0));
+    $('#c-range').value=pre; $('#c-pre').value=pre;
+    if(ipn==null){ $('#c-out').innerHTML='<div style="color:var(--red)">IP 형식 오류</div>'; $('#c-bin').innerHTML=''; return; }
+    const mask=IP.mask(pre), net=(ipn&mask)>>>0, bc=(net|(~mask>>>0))>>>0;
+    const hostBits=32-pre; const total=2**hostBits; const usable = pre===32?1:pre===31?2:Math.max(total-2,0);
+    const first = pre>=31?net:net+1, last = pre>=31?bc:bc-1;
+    renderBin('#c-bin', ipn, pre, [['네트워크',net,false],['브로드캐스트',bc,true]]);
+    $('#c-out').innerHTML = `<div><b>네트워크 주소</b><span>${IP.str(net)}/${pre}</span></div><div><b>서브넷 마스크</b><span>${IP.str(mask)}</span></div><div><b>와일드카드</b><span>${IP.str(~mask>>>0)}</span></div><div><b>브로드캐스트</b><span>${IP.str(bc)}</span></div><div><b>첫 호스트</b><span>${IP.str(first)}</span></div><div><b>마지막 호스트</b><span>${IP.str(last)}</span></div><div><b>전체 주소 수</b><span>2^${hostBits} = ${total.toLocaleString()}</span></div><div><b>사용 가능 호스트</b><span>${usable.toLocaleString()}</span></div>`;
+    $('#c-note').innerHTML = pre===32?'/32는 호스트 하나(host route). 루프백, 라우터 ID, BGP 피어 주소에 흔히 쓴다.':pre===31?'/31은 RFC 3021에 따라 점대점 링크에서 2개 주소를 모두 호스트로 쓴다(브로드캐스트 없음).':pre===30?'/30: 전통적인 점대점 링크. 4개 중 2개만 사용 가능(50% 낭비 → /31 등장 배경).':`호스트 비트 ${hostBits}개 → 전부 0이면 네트워크 주소, 전부 1이면 브로드캐스트. 네트워크 비트는 <span style="color:var(--l-net)">초록</span>, 호스트 비트는 <span style="color:var(--accent)">주황</span>.`;
+  }
+  ['#c-ip','#c-pre'].forEach(s=>$(s).addEventListener('input',calc));
+  $('#c-range').addEventListener('input',()=>{ $('#c-pre').value=$('#c-range').value; calc(); });
+  $$('button[data-ex]').forEach(b=>b.onclick=()=>{ const [ip,p]=b.dataset.ex.split('/'); $('#c-ip').value=ip; $('#c-pre').value=p; calc(); });
+  calc();
+
+  /* ---------- 서브네팅 연습 ---------- */
+  let ex=null;
+  function newEx(){
+    const bases=[[10,0,0,0],[172,16,0,0],[192,168,0,0],[203,0,113,0],[198,51,100,0]];
+    const b=bases[Math.floor(Math.random()*bases.length)];
+    const pre = 18+Math.floor(Math.random()*12); // 18..29
+    const ipn = ((b[0]<<24)|(b[1]<<16)|(Math.floor(Math.random()*256)<<8)|Math.floor(Math.random()*256))>>>0;
+    const mask=IP.mask(pre), net=(ipn&mask)>>>0, bc=(net|(~mask>>>0))>>>0;
+    ex={ip:IP.str(ipn),pre,net:IP.str(net),bc:IP.str(bc),mask:IP.str(mask),hosts:String(2**(32-pre)-2)};
+    $('#ex-q').textContent=`${ex.ip}/${ex.pre}`;
+    ['net','bc','mask','hosts'].forEach(k=>{ $('#ex-'+k).value=''; $('#ex-'+k+'-r').textContent=''; }); $('#ex-msg').textContent='';
+  }
+  $('#ex-new').onclick=newEx;
+  $('#ex-check').onclick=()=>{ let ok=0; ['net','bc','mask','hosts'].forEach(k=>{ const v=$('#ex-'+k).value.trim().replace(/,/g,''); const r=$('#ex-'+k+'-r'); if(v===ex[k]){ r.textContent='✓'; r.className='ok'; ok++; } else { r.textContent='✗'; r.className='ng'; } }); $('#ex-msg').textContent = ok===4?'모두 정답! 새 문제로 넘어가세요.':`${ok}/4 정답. 블록 크기(256 − 마스크 옥텟)를 떠올려 보세요.`; };
+  $('#ex-show').onclick=()=>{ ['net','bc','mask','hosts'].forEach(k=>{ $('#ex-'+k).value=ex[k]; $('#ex-'+k+'-r').textContent=''; }); $('#ex-msg').textContent='정답을 채웠습니다.'; };
+  newEx();
+
+  /* ---------- 3.4 LPM ---------- */
+  const RT=[
+    {net:'0.0.0.0',pre:0,gw:'10.0.0.1',dev:'eth0',note:'기본 경로(default)'},
+    {net:'10.0.0.0',pre:8,gw:'10.0.0.254',dev:'eth0',note:'사내망 전체'},
+    {net:'10.1.0.0',pre:16,gw:'10.0.0.253',dev:'eth0',note:'서울 지사'},
+    {net:'10.1.5.0',pre:24,gw:'10.0.0.252',dev:'eth0',note:'서울 지사 서버팜'},
+    {net:'10.1.5.64',pre:26,gw:'10.0.0.251',dev:'eth0',note:'서버팜 DB 세그먼트'},
+    {net:'10.0.0.0',pre:24,gw:'—',dev:'eth0',note:'직접 연결'},
+    {net:'192.168.1.0',pre:24,gw:'—',dev:'wg0',note:'VPN (직접 연결)'},
+  ];
+  function lpm(){
+    const d=IP.parse($('#rt-ip').value); const tb=$('#rt-table tbody'); tb.innerHTML='';
+    if(d==null){ $('#rt-result').innerHTML='IP 형식 오류'; return; }
+    let best=-1;
+    RT.forEach((r,i)=>{ const n=IP.parse(r.net); const m=IP.mask(r.pre); r.match = ((d&m)>>>0)===((n&m)>>>0); if(r.match && (best<0 || r.pre>RT[best].pre)) best=i; });
+    RT.forEach((r,i)=>{ const tr=el('tr', i===best?'best':r.match?'match':'nomatch', `<td>${i+1}</td><td>${r.net}/${r.pre} <span class="small" style="font-family:var(--font)">${r.note}</span></td><td>${r.gw}</td><td>${r.dev}</td><td>${r.match?(i===best?'★ 최장':'매칭'):'—'}</td>`); tb.appendChild(tr); });
+    const b=RT[best]; const cnt=RT.filter(r=>r.match).length;
+    $('#rt-result').innerHTML=`<b>${IP.str(d)}</b> → ${cnt}개 항목 매칭, 그중 프리픽스가 가장 긴 <b>${b.net}/${b.pre}</b> 선택 → ${b.gw==='—'?`직접 연결: 목적지 ${IP.str(d)}의 MAC을 ARP로 조회`:`다음 홉 <b>${b.gw}</b>의 MAC을 ARP로 조회`}, 인터페이스 <b>${b.dev}</b>로 송신.`;
+  }
+  $('#rt-ip').addEventListener('input',lpm);
+  $$('button[data-rt]').forEach(b=>b.onclick=()=>{ $('#rt-ip').value=b.dataset.rt; lpm(); });
+  lpm();
+
+  /* ---------- 3.5 단편화 ---------- */
+  const FR=[{off:0,len:1480,mf:1},{off:1480,len:1480,mf:1},{off:2960,len:1020,mf:0}];
+  const fo=$('#frag-out');
+  function buildFrags(){
+    fo.innerHTML='';
+    FR.forEach((f,i)=>{ const row=el('div','frag'); row.id='frag-'+i;
+      row.appendChild(el('div','blk h hidden',`IP<br>20`)); const d=el('div','blk d hidden',`데이터 ${f.len}`); d.style.width=(f.len/3980*100)+'%'; row.appendChild(d);
+      const info=el('div','small mono hidden',''); info.id='frag-info-'+i; info.style.transition='opacity .5s'; row.appendChild(info); fo.appendChild(row); });
+  }
+  buildFrags();
+  function showFrag(i){ const row=$('#frag-'+i); $$('.blk',row).forEach(b=>b.classList.remove('hidden')); const f=FR[i]; const inf=$('#frag-info-'+i); inf.classList.remove('hidden'); inf.innerHTML=`Total Len=<b>${f.len+20}</b> · ID=0x1a2b · MF=<b>${f.mf}</b> · Offset=<b>${f.off/8}</b> (×8 = ${f.off} B)`; }
+  const fragSteps=[
+    {title:'라우터: 4000 > MTU 1500, DF=0 → 단편화 결정',text:'DF 비트가 0이므로 라우터는 조각낼 수 있다(DF=1이었다면 폐기 후 ICMP Type 3 Code 4 반환). 조각당 데이터는 (1500−20)=1480 이하이면서 8의 배수여야 한다 → 1480.',run(){ $('#frag-note').textContent='1480 ÷ 8 = 185 → Offset은 185 단위로 증가.'; }},
+    {title:'조각 1: Offset 0, MF=1',text:'원본 헤더를 복사(Total Length와 Flags/Offset, 체크섬은 새로 계산)하고 데이터 0~1479바이트를 싣는다. TCP/UDP 헤더는 이 조각에만 들어 있다.',run(){ showFrag(0); }},
+    {title:'조각 2: Offset 185(=1480 B), MF=1',text:'데이터 1480~2959. 상위 계층 헤더가 없어 방화벽은 이 조각이 어느 포트로 가는지 알 수 없다.',run(){ showFrag(1); }},
+    {title:'조각 3: Offset 370(=2960 B), MF=0',text:'남은 1020바이트. 마지막이므로 MF=0, 길이는 8의 배수가 아니어도 된다. 수신 측은 MF=0 조각의 Offset×8 + 데이터 길이로 원본 전체 크기를 안다.',run(){ showFrag(2); $('#frag-note').innerHTML='합계 데이터 1480+1480+1020 = 3980 ✓. 헤더는 20×3 = 60바이트로 원본보다 40바이트 늘었다.'; }},
+    {title:'목적지 호스트: ID 0x1a2b 조각 재조립',text:'세 조각이 (순서가 바뀌어도) 다 도착하면 Offset 순으로 붙여 원본 3980바이트를 복원해 TCP/UDP에 올린다. 하나라도 30초 안에 안 오면 전부 폐기 + ICMP Time Exceeded(Code 1, reassembly timeout).',run(){ $$('.frag .blk.d').forEach(b=>b.classList.add('blink')); setTimeout(()=>$$('.frag .blk.d').forEach(b=>b.classList.remove('blink')),2200); }},
+  ];
+  Stepper('#frag-anim',{steps:fragSteps,autoplayMs:2500,intro:'4000바이트 데이터그램이 MTU 1500 링크를 통과하는 과정입니다.',reset(){ buildFrags(); $('#frag-note').textContent=''; }});
+
+  /* ---------- 3.6 체크섬 계산기 ---------- */
+  function cksum(){
+    const words=$('#ck-in').value.trim().split(/\s+/).map(w=>parseInt(w,16));
+    if(words.some(isNaN)){ $('#ck-out').textContent='16진수 형식 오류'; return; }
+    let sum=words.reduce((a,b)=>a+b,0); const raw=sum;
+    while(sum>>16) sum=(sum&0xffff)+(sum>>16);
+    const ck=(~sum)&0xffff;
+    $('#ck-out').innerHTML=`합 = 0x${raw.toString(16).toUpperCase()} → 캐리 접기 → 0x${sum.toString(16).toUpperCase().padStart(4,'0')} → 1의 보수 = <b>0x${ck.toString(16).toUpperCase().padStart(4,'0')}</b>${ck===0?' (체크섬 포함 합이 0xFFFF → 검증 통과)':''}`;
+  }
+  $('#ck-btn').onclick=cksum; cksum();
+
+  /* ---------- 3.8 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'IPv4 헤더의 첫 바이트가 0x45일 때 의미는?',options:['버전 4, TTL 5','버전 4, 헤더 길이 5×4=20바이트','버전 4, 옵션 5개','버전 5, 헤더 길이 4'],answer:1,explain:'상위 니블 Version=4, 하위 니블 IHL=5 (4바이트 단위) → 옵션 없는 20바이트 헤더. 캡처에서 가장 흔히 보는 바이트다.'},
+    {q:'192.168.37.142/26의 네트워크 주소와 브로드캐스트 주소는?',options:['192.168.37.0 / 192.168.37.255','192.168.37.128 / 192.168.37.191','192.168.37.128 / 192.168.37.255','192.168.37.64 / 192.168.37.127'],answer:1,explain:'/26 → 마스크 .192 → 블록 64. 142는 128~191 블록. 네트워크 .128, 브로드캐스트 .191, 호스트 62개.'},
+    {q:'/29 서브넷에서 사용 가능한 호스트 수는?',options:['8','6','4','2'],answer:1,explain:'호스트 비트 3개 → 2³=8개 주소에서 네트워크·브로드캐스트를 빼면 6.'},
+    {q:'라우팅 테이블에 0.0.0.0/0, 10.0.0.0/8, 10.1.0.0/16이 있을 때 목적지 10.1.9.3은 어느 항목으로 가는가?',options:['0.0.0.0/0','10.0.0.0/8','10.1.0.0/16','세 항목에 복사되어 전송'],answer:2,explain:'세 항목 모두 매칭되지만 최장 프리픽스 매칭으로 /16이 선택된다. 더 구체적인 경로가 이긴다.'},
+    {q:'IP 단편화에서 Fragment Offset의 단위는?',options:['1바이트','4바이트','8바이트','16바이트'],answer:2,explain:'13비트로 65535바이트까지 표현하기 위해 8바이트 단위. 그래서 마지막 외 조각의 데이터 길이는 8의 배수.'},
+    {q:'DF=1인 1500바이트 패킷이 MTU 1400 링크에 도착하면 라우터는?',options:['1400과 100으로 조각낸다','폐기하고 ICMP Fragmentation Needed(MTU=1400)를 출발지에 보낸다','TTL을 줄이고 그대로 전달한다','ARP로 재질의한다'],answer:1,explain:'DF=1이면 단편화 금지. ICMP Type 3 Code 4에 다음 홉 MTU를 담아 보내며, 이것이 PMTUD의 핵심 신호다.'},
+    {q:'중간 라우터가 조각을 재조립하지 않는 이유로 옳지 않은 것은?',options:['조각들이 서로 다른 경로로 갈 수 있다','재조립 상태를 유지하면 라우터가 복잡해진다','조각을 재조립하면 TTL이 0이 된다','뒤 링크의 MTU가 더 작으면 다시 쪼개야 한다'],answer:2,explain:'TTL과는 무관하다. 나머지는 모두 종단 재조립 설계의 실제 이유.'},
+    {q:'IPv4 헤더 체크섬에 대한 설명으로 옳은 것은?',options:['페이로드까지 보호한다','홉마다 재계산된다','CRC-32 방식이다','IPv6에서도 그대로 유지된다'],answer:1,explain:'헤더만 보호하는 1의 보수 합. TTL이 바뀌므로 홉마다 갱신. IPv6는 이 필드를 없앴다.'},
+    {q:'다음 중 RFC 1918 사설 주소가 아닌 것은?',options:['10.200.1.1','172.31.255.1','192.168.100.7','172.32.0.1'],answer:3,explain:'172.16.0.0/12는 172.16.0.0 ~ 172.31.255.255. 172.32는 공인 주소다.'},
+    {q:'TTL 필드의 주된 목적은?',options:['패킷 우선순위 지정','라우팅 루프에 빠진 패킷 제거','단편화 조각 식별','QoS 분류'],answer:1,explain:'홉마다 1 감소, 0이면 폐기. 설정 오류나 수렴 중 생긴 루프에서 패킷이 영원히 도는 것을 막는다. traceroute가 이를 이용한다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

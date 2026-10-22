@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메모리 관리 마스터 코스</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .hero { padding: 24px 0 8px; }
+  .hero h1 { font-size: clamp(30px, 6vw, 46px); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin: 16px 0 8px; }
+  .card { display: block; text-decoration: none; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); transition: border-color .15s, transform .15s; position: relative; }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .no { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; }
+  .card.adv .no { color: var(--violet); }
+  .card.prac .no { color: var(--teal); }
+  .card h3 { margin: 2px 0 6px; font-size: 17px; line-height: 1.4; }
+  .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.6; }
+  .card .seen { position: absolute; top: 12px; right: 14px; font-size: 12px; color: var(--ok); display: none; }
+  .card.visited .seen { display: inline; }
+  .part-title { display: flex; align-items: baseline; gap: 10px; }
+  .part-title small { color: var(--muted); font-weight: 400; font-size: 14px; }
+  #roadmap .node rect { fill: var(--surface-2); stroke: var(--border); rx: 8; transition: fill .2s, stroke .2s; cursor: pointer; }
+  #roadmap .node.adv rect { stroke: var(--violet); }
+  #roadmap .node.basic rect { stroke: var(--accent); }
+  #roadmap .node.prac rect { stroke: var(--teal); }
+  #roadmap .node:hover rect, #roadmap .node.on rect { fill: var(--accent-soft); }
+  #roadmap .edge { stroke: var(--border); stroke-width: 1.5; fill: none; transition: stroke .2s; }
+  #roadmap .edge.on { stroke: var(--accent); stroke-width: 2.5; }
+  #roadmap text { font-size: 12px; pointer-events: none; }
+  .howto li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="chapter-head" style="margin:0"><span class="label">운영체제 · 메모리 관리</span></div>
+    <h1>현대 운영체제 메모리 관리<br>개론부터 커널 내부까지</h1>
+    <p class="lead">주소 변환의 원리에서 출발해 Linux 커널의 할당자, 회수, NUMA, 가상화, 보안까지. 도식·애니메이션·시뮬레이터로 직접 만져 보며 전문가 수준의 감각을 기르는 16개 챕터 코스입니다.</p>
+  </section>
+
+  <div class="callout tip">
+    <span class="title">이 코스를 공부하는 방법</span>
+    <ul class="howto">
+      <li>각 챕터의 <b>▶ 위젯</b>은 설명을 읽기 전에 먼저 만져 봐도 좋습니다. 예측해 보고 → 실행하고 → 왜 그런지 본문에서 확인하세요.</li>
+      <li><b>보라색 심화 박스</b>는 처음엔 건너뛰고, 두 번째 읽을 때 펼치세요.</li>
+      <li>챕터 끝 확인 문제를 다 맞히지 못하면 다음 챕터로 넘어가지 마세요. 16장에 종합 문제 20개가 있습니다.</li>
+      <li>Linux 머신이 있다면 본문에 나오는 <code>/proc</code> 명령을 직접 실행해 보는 것이 가장 빠른 길입니다.</li>
+    </ul>
+  </div>
+
+  <h2>학습 로드맵</h2>
+  <p>노드에 마우스를 올리면 선수 관계가 강조됩니다. 클릭하면 해당 챕터로 이동합니다.</p>
+  <div class="widget">
+    <div class="stage"><svg id="roadmap" class="diagram" viewBox="0 0 880 420" style="min-width:640px"></svg></div>
+  </div>
+
+  <h2 class="part-title">Part I. 개론 <small>주소 변환과 가상 메모리의 원리</small></h2>
+  <div class="grid" id="g-basic"></div>
+
+  <h2 class="part-title">Part II. 심화 <small>커널 내부, 하드웨어, 실제 시스템</small></h2>
+  <div class="grid" id="g-adv"></div>
+
+  <h2 class="part-title">Part III. 실전 <small>진단과 종합 평가</small></h2>
+  <div class="grid" id="g-prac"></div>
+
+  <h2>참고 문헌</h2>
+  <ul>
+    <li>Remzi & Andrea Arpaci-Dusseau, <i>Operating Systems: Three Easy Pieces</i> (Virtualization 파트)</li>
+    <li>Silberschatz, Galvin, Gagne, <i>Operating System Concepts</i> 9~10장</li>
+    <li>Mel Gorman, <i>Understanding the Linux Virtual Memory Manager</i></li>
+    <li>Intel® 64 and IA-32 Architectures SDM, Vol. 3A — Paging 장</li>
+    <li>kernel.org 문서: <code>Documentation/admin-guide/mm/</code>, <code>Documentation/mm/</code></li>
+    <li>LWN.net 메모리 관리 기사 모음</li>
+  </ul>
+</main>
+<script>
+const DESC = {
+  "01": "레지스터부터 SSD까지의 지연 스케일, 지역성, 프로세스 주소 공간 지도.",
+  "02": "base/limit 보호, first/best/worst fit 시뮬레이터, 단편화와 세그멘테이션.",
+  "03": "VPN|offset 분할, PTE 비트 구조, 주소 변환기, 페이지 크기 트레이드오프.",
+  "04": "TLB 시뮬레이터, EAT 계산, ASID/PCID, 멀티코어 TLB shootdown.",
+  "05": "x86-64 4/5단계 page walk 애니메이션, 희소 주소 공간, ARM64 비교.",
+  "06": "페이지 폴트 전 과정, minor/major, 지연 할당과 오버커밋.",
+  "07": "FIFO·OPT·LRU·Clock 시뮬레이터, Belady 이상 현상, aging.",
+  "08": "스래싱 붕괴 곡선, 워킹셋 윈도우, PFF, PSI로 압박 읽기.",
+  "09": "Buddy 분할·병합 애니메이션, zone과 워터마크, SLUB 구조.",
+  "10": "ptmalloc 청크와 bin, tcache, brk vs mmap, jemalloc·tcmalloc 비교.",
+  "11": "fork CoW 실습, mmap 4가지 조합, 페이지 캐시와 writeback.",
+  "12": "kswapd·direct reclaim, LRU 리스트, swap/zswap, OOM 점수, cgroup v2.",
+  "13": "캐시 set 매핑, MESI 상태 전이, false sharing, NUMA, THP.",
+  "14": "ASLR·NX·카나리·CET, Meltdown/KPTI 개념, MTE 태그 검사.",
+  "15": "GVA→GPA→HPA, 2D page walk 24회, ballooning, KSM.",
+  "16": "smaps로 RSS/PSS/USS, 진단 트리, 장애 사례, 종합 문제 20개."
+};
+// 로드맵 노드 좌표와 선수 관계
+const POS = {
+  "01": [70, 60], "02": [70, 160], "03": [230, 110], "04": [390, 50], "05": [390, 170],
+  "06": [550, 110], "07": [710, 60], "08": [710, 170],
+  "09": [230, 290], "10": [390, 290], "11": [550, 290], "12": [710, 290],
+  "13": [390, 380], "14": [550, 380], "15": [230, 380], "16": [810, 380]
+};
+const PRE = {
+  "02": ["01"], "03": ["01", "02"], "04": ["03"], "05": ["03"], "06": ["04", "05"],
+  "07": ["06"], "08": ["07"], "09": ["03"], "10": ["09", "06"], "11": ["06"],
+  "12": ["08", "11", "09"], "13": ["04", "05"], "14": ["05", "06"], "15": ["05", "11"],
+  "16": ["12", "13", "10"]
+};
+let visited = {};
+try { visited = JSON.parse(localStorage.getItem("mm-visited") || "{}"); } catch (e) {}
+
+const groups = { "개론": "g-basic", "심화": "g-adv", "실전": "g-prac" };
+const cls = { "개론": "basic", "심화": "adv", "실전": "prac" };
+MM.CHAPTERS.forEach(c => {
+  const a = MM.el("a", { class: "card " + cls[c.part] + (visited[c.id] ? " visited" : ""), href: c.file },
+    `<span class="seen">✓ 열람</span><div class="no">CH ${c.id}</div><h3>${c.title}</h3><p>${DESC[c.id]}</p>`);
+  document.getElementById(groups[c.part]).append(a);
+});
+
+// 로드맵 SVG
+const svg = document.getElementById("roadmap");
+const NS = "http://www.w3.org/2000/svg";
+const W = 128, H = 40;
+const edges = [];
+for (const to in PRE) for (const from of PRE[to]) {
+  const [x1, y1] = POS[from], [x2, y2] = POS[to];
+  const p = document.createElementNS(NS, "path");
+  const mx = (x1 + x2) / 2;
+  p.setAttribute("d", `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`);
+  p.setAttribute("class", "edge");
+  p.dataset.from = from; p.dataset.to = to;
+  svg.append(p); edges.push(p);
+}
+MM.CHAPTERS.forEach(c => {
+  const [x, y] = POS[c.id];
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "node " + cls[c.part]);
+  g.innerHTML = `<rect x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="8"></rect>
+    <text x="${x}" y="${y - 3}" text-anchor="middle" style="font-weight:700">${c.id}</text>
+    <text x="${x}" y="${y + 12}" text-anchor="middle" class="muted" style="font-size:10.5px">${c.title.split(/[:,]/)[0].slice(0, 15)}</text>`;
+  g.onmouseenter = () => {
+    // 이 챕터에 이르는 모든 선수 경로 강조
+    const need = new Set([c.id]), stack = [c.id];
+    while (stack.length) for (const p of PRE[stack.pop()] || []) if (!need.has(p)) { need.add(p); stack.push(p); }
+    edges.forEach(e => e.classList.toggle("on", need.has(e.dataset.to) && need.has(e.dataset.from)));
+    svg.querySelectorAll(".node").forEach((n, i) => n.classList.toggle("on", need.has(MM.CHAPTERS[i].id)));
+  };
+  g.onmouseleave = () => { edges.forEach(e => e.classList.remove("on")); svg.querySelectorAll(".node").forEach(n => n.classList.remove("on")); };
+  g.onclick = () => location.href = c.file;
+  svg.append(g);
+});
+[["Part I 개론", 20, 18, "--accent"], ["Part II 심화", 20, 248, "--violet"], ["Part III", 760, 340, "--teal"]].forEach(([t, x, y, col]) => {
+  const tx = document.createElementNS(NS, "text");
+  tx.setAttribute("x", x); tx.setAttribute("y", y);
+  tx.setAttribute("style", `font-weight:700;fill:var(${col})`);
+  tx.textContent = t; svg.append(tx);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>관측성</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .lp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .lp-grid { grid-template-columns: 1fr; } }
+  .lp-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface-2); }
+  .lp-card h4 { margin: 0 0 6px; font-size: 14px; }
+  .bar-h { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); margin: 6px 0; font-size: 11px; font-family: var(--mono); }
+  .bar-h > div { display: flex; align-items: center; justify-content: center; white-space: nowrap; overflow: hidden; transition: width .3s; }
+  .hist { display: flex; align-items: flex-end; gap: 3px; height: 150px; padding: 6px; background: var(--surface-2); border-radius: 8px; overflow-x: auto; }
+  .hist .hb { flex: 1; min-width: 26px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; font-size: 10px; font-family: var(--mono); color: var(--muted); }
+  .hist .hb > div { width: 100%; background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 3px 3px 0 0; transition: height .3s; }
+  .hist .hb.inf > div { background: var(--bad-soft); border-color: var(--bad); }
+  .qtab td { font-family: var(--mono); font-size: 13px; }
+  .wf { font-size: 12.5px; }
+  .wf-row { display: grid; grid-template-columns: 210px 1fr; align-items: center; gap: 8px; margin: 3px 0; cursor: pointer; border-radius: 6px; padding: 2px 4px; }
+  .wf-row:hover { background: var(--surface-2); }
+  .wf-row.sel { background: var(--accent-soft); }
+  .wf-row .nm { font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-row .tr { position: relative; height: 18px; background: var(--surface-2); border-radius: 4px; }
+  .wf-row .tr > div { position: absolute; top: 2px; height: 14px; border-radius: 3px; font-size: 10px; font-family: var(--mono); line-height: 14px; padding-left: 4px; white-space: nowrap; overflow: hidden; }
+  .wf-attrs { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border-radius: 8px; padding: 10px 12px; min-height: 120px; white-space: pre-wrap; margin-top: 10px; }
+  .kv b { color: var(--accent); }
+</style>
+</head>
+<body data-chapter="15">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">운영 · Chapter 15</span>
+    <h1>관측성: 로그·메트릭·트레이스</h1>
+    <p class="lead">장애는 "에러 로그가 없는데 느리다", "메트릭은 정상인데 사용자는 실패한다"처럼 신호 사이의 틈에서 옵니다. 이 장은 Node.js 프로세스에서 세 가지 신호를 비용 없이 뽑아내고, 서로 연결하고, 그 위에 알람을 세우는 방법을 다룹니다. 특히 <b>로깅이 이벤트 루프를 막는 조건</b>, <b>히스토그램 버킷이 p99를 왜곡하는 방식</b>, <b>트레이스 컨텍스트가 async 경계를 넘는 메커니즘</b>처럼 Node 특유의 함정에 집중합니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>stdout의 동기/비동기 규칙을 알고, 루프를 막지 않으면서 유실도 없는 로그 파이프라인(pino + transport)을 구성할 수 있다.</li>
+      <li>RED/USE 메트릭을 prom-client로 노출하고, 히스토그램 버킷과 레이블 카디널리티를 설계할 수 있다.</li>
+      <li>OpenTelemetry로 분산 트레이싱을 켜고, AsyncLocalStorage 기반 컨텍스트 전파와 W3C traceparent를 설명할 수 있다.</li>
+      <li>진단 리포트와 인스펙터를 프로덕션에서 안전하게 쓰고, Node 서비스용 대시보드·알람 세트를 설계할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">세 기둥과 상관관계</a></li>
+    <li><a href="#s2">구조화 로깅과 stdout의 진실</a></li>
+    <li><a href="#s3">로그 샘플링과 비용</a></li>
+    <li><a href="#s4">메트릭: prom-client, RED/USE, 히스토그램</a></li>
+    <li><a href="#s5">분산 트레이싱: OpenTelemetry</a></li>
+    <li><a href="#s6">진단 리포트와 인스펙터</a></li>
+    <li><a href="#s7">대시보드와 알람 설계</a></li>
+    <li><a href="#s8">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 세 기둥과 상관관계</h2>
+    <p>로그는 <em>무슨 일이 있었는지</em>(이산 이벤트), 메트릭은 <em>얼마나</em>(집계된 수치), 트레이스는 <em>어디서 시간이 갔는지</em>(요청 하나의 인과 관계)를 답합니다. 셋 중 하나만으로는 "p99가 튀었다(메트릭) → 어떤 요청이?(트레이스) → 그 요청에서 무슨 에러가?(로그)"라는 질문 체인을 끝까지 따라갈 수 없습니다. 연결 고리는 <b>trace_id</b>입니다. 모든 로그 라인에 현재 트레이스 ID를 찍고, 메트릭에는 exemplar(샘플 trace_id)를 붙입니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="세 신호의 연결">
+        <defs><marker id="a15" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="30" y="40" width="240" height="120" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="150" y="68" text-anchor="middle" font-weight="700">메트릭 (Prometheus)</text>
+        <text x="150" y="92" text-anchor="middle" font-size="12">http_request_duration_seconds</text>
+        <text x="150" y="110" text-anchor="middle" font-size="12">p99 = 2.4s ⚠</text>
+        <text x="150" y="140" text-anchor="middle" font-size="11" class="muted">exemplar: trace_id=4bf9…</text>
+        <rect x="320" y="40" width="240" height="120" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="440" y="68" text-anchor="middle" font-weight="700">트레이스 (OTel)</text>
+        <text x="440" y="92" text-anchor="middle" font-size="12">GET /orders 2.4s</text>
+        <text x="440" y="110" text-anchor="middle" font-size="12">└ pg.query 2.3s ⚠</text>
+        <text x="440" y="140" text-anchor="middle" font-size="11" class="muted">trace_id=4bf9… span_id=00f0…</text>
+        <rect x="610" y="40" width="240" height="120" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="730" y="68" text-anchor="middle" font-weight="700">로그 (pino JSON)</text>
+        <text x="730" y="92" text-anchor="middle" font-size="12">{"level":40,"msg":"slow query",</text>
+        <text x="730" y="110" text-anchor="middle" font-size="12">"rows":1.2e6,"trace_id":"4bf9…"}</text>
+        <text x="730" y="140" text-anchor="middle" font-size="11" class="muted">원인: 인덱스 누락</text>
+        <path d="M270 100 H320" class="line flow" marker-end="url(#a15)"/>
+        <path d="M560 100 H610" class="line flow" marker-end="url(#a15)"/>
+        <text x="295" y="90" text-anchor="middle" font-size="11" style="fill:var(--accent)">어떤 요청?</text>
+        <text x="585" y="90" text-anchor="middle" font-size="11" style="fill:var(--violet)">왜?</text>
+        <rect x="30" y="200" width="820" height="70" rx="10" class="box"/>
+        <text x="440" y="225" text-anchor="middle" font-weight="700">공통 키: trace_id (W3C traceparent에서 옴)</text>
+        <text x="440" y="250" text-anchor="middle" font-size="12" class="muted">AsyncLocalStorage에 들어 있는 현재 span 컨텍스트를 로거 mixin과 메트릭 exemplar가 함께 읽는다 (7장)</text>
+      </svg>
+      <figcaption>신호는 세 개지만 질문은 하나의 체인입니다. 체인을 잇는 것은 공통 식별자입니다.</figcaption>
+    </figure>
+  </section>
+
+  <section id="s2">
+    <h2>2. 구조화 로깅과 stdout의 진실</h2>
+    <h3>2.1 console.log는 언제 블로킹하는가</h3>
+    <p><code>process.stdout</code>이 무엇에 연결되어 있느냐에 따라 쓰기가 동기인지 비동기인지가 달라집니다(Node 공식 문서 "A note on process I/O").</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>stdout 대상</th><th>POSIX(Linux/macOS)</th><th>Windows</th><th>운영 의미</th></tr>
+      <tr><td>파일 (<code>node app.js &gt; out.log</code>)</td><td><b>동기</b></td><td>동기</td><td>디스크가 느리면 루프가 그만큼 멈춤. 유실 없음</td></tr>
+      <tr><td>TTY (터미널)</td><td><b>동기</b></td><td>비동기</td><td>로컬 개발에서 대량 로그는 체감 느림</td></tr>
+      <tr><td>파이프/소켓 (<b>컨테이너 stdout</b>, <code>| tee</code>)</td><td><b>비동기</b></td><td>동기</td><td>루프를 안 막지만, 소비자가 느리면 <b>메모리에 쌓이고</b> <code>process.exit()</code> 시 <b>유실</b></td></tr>
+    </table></div>
+    <p>컨테이너 환경의 stdout은 거의 항상 파이프입니다. 직접 확인해 볼 수 있습니다. 아래 첫 명령은 파이프 버퍼(Linux 기본 64KiB)만큼만 나오고 나머지는 <code>process.exit()</code>에 의해 버려집니다.</p>
+<pre><code>$ node -e "process.stdout.write('x'.repeat(5e6)); process.exit(0)" | wc -c
+   65536
+$ node -e "process.stdout.write('x'.repeat(5e6)); process.exit(0)" &gt; out.txt; wc -c &lt; out.txt
+ 5000000</code></pre>
+    <p>즉 <b><code>console.log</code>는 컨테이너에서 "안전한 비동기"가 아닙니다.</b> 백프레셔(6장)를 무시하므로 로그 소비자(Docker 로깅 드라이버, fluent-bit)가 밀리면 쓰기 큐가 힙에 쌓여 OOM까지 갈 수 있고, 크래시 직전의 가장 중요한 로그가 사라집니다. 또 JSON 직렬화와 문자열 포맷은 메인 스레드 CPU를 씁니다.</p>
+
+    <h3>2.2 pino의 설계</h3>
+    <p>pino가 빠른 이유는 세 가지입니다. ① 로그 라인을 미리 컴파일된 문자열 조립으로 만든다(<code>JSON.stringify</code> 대신 fast-json-stringify 류). ② 기본 목적지(<code>pino.destination()</code>, 내부적으로 sonic-boom)는 <b>동기 쓰기</b>를 쓰되 버퍼링으로 시스템콜 수를 줄인다. 동기라서 유실이 없고, 백프레셔가 자연스럽게 걸린다. ③ 포맷 변환·전송(pretty, 파일 로테이션, Elasticsearch/Loki 전송)은 <b>워커 스레드의 transport</b>로 분리한다. 메인 스레드는 SharedArrayBuffer 링 버퍼에 라인을 쓰기만 하고 실제 I/O는 워커가 한다.</p>
+<pre><code>// logger.js
+const pino = require('pino');
+const { getActiveSpan } = require('./tracing'); // OTel trace.getSpan(context.active())
+
+const logger = pino({
+  level: process.env.LOG_LEVEL ?? 'info',
+  // 매 라인에 현재 trace_id/span_id 를 섞는다 (ALS 기반)
+  mixin() {
+    const span = getActiveSpan();
+    if (!span) return {};
+    const { traceId, spanId } = span.spanContext();
+    return { trace_id: traceId, span_id: spanId };
+  },
+  // 민감 정보 마스킹 (fast-redact 경로 문법)
+  redact: { paths: ['req.headers.authorization', 'req.headers.cookie', '*.password', 'user.ssn'], censor: '[redacted]' },
+  // 타임스탬프/레벨 포맷은 수집기 규약에 맞춤
+  timestamp: pino.stdTimeFunctions.isoTime,
+  formatters: { level: label =&gt; ({ level: label }) },
+  // 프로덕션: stdout 에 동기 쓰기(기본). 전송이 필요하면 transport (워커 스레드)
+  transport: process.env.LOG_TRANSPORT ? {
+    targets: [
+      { target: 'pino/file', options: { destination: 1 } },                 // stdout
+      { target: 'pino-opentelemetry-transport', level: 'warn', options: {} } // 예: OTLP 로 warn 이상
+    ]
+  } : undefined,
+});
+module.exports = logger;
+
+// 요청 범위 child logger: 공통 필드를 한 번만 바인딩
+app.use((req, res, next) =&gt; { req.log = logger.child({ req_id: req.id, route: req.route?.path }); next(); });</code></pre>
+    <div class="callout warn"><span class="title">transport의 두 가지 함정</span>
+      ① 워커 링 버퍼가 가득 차면 pino는 기본적으로 <b>메인 스레드가 동기로 기다립니다</b>(유실 대신 블로킹). 소비자가 지속적으로 느리면 결국 루프가 막힙니다. ② 프로세스가 <code>process.exit()</code>로 즉시 끝나면 워커가 flush할 시간이 없습니다. 14장의 그레이스풀 셧다운에서 <code>logger.flush()</code> 후 자연 종료, 또는 <code>pino.final</code> 패턴(v7 이전)을 쓰세요. 크래시 핸들러에서는 <code>pino.destination({ sync: true })</code>로 만든 별도 로거를 씁니다.
+    </div>
+
+    <div class="widget">
+      <div class="w-title">로그 파이프라인 시뮬레이터</div>
+      <div class="w-desc">초당 로그량과 목적지에 따라 이벤트 루프가 로깅에 쓰는 시간, 메모리 적체, 종료 시 유실을 추정합니다. 숫자는 대표값(현대 SSD, 컨테이너 로깅 드라이버)이며 비율에 주목하세요.</div>
+      <div class="controls">
+        <label>로그 라인/초 <input type="range" id="lp-rate" min="100" max="50000" step="100" value="5000"> <span id="lp-rate-v"></span></label>
+        <label>라인 크기 <input type="range" id="lp-size" min="100" max="4000" step="100" value="600"> <span id="lp-size-v"></span></label>
+        <label>소비자 처리량 <input type="range" id="lp-cons" min="1" max="200" step="1" value="20"> <span id="lp-cons-v"></span></label>
+      </div>
+      <div class="controls">
+        <label>목적지
+          <select id="lp-dest">
+            <option value="file">파일 (동기)</option>
+            <option value="pipe" selected>파이프 = 컨테이너 stdout (console.log, 비동기)</option>
+            <option value="pino">pino 기본 (sonic-boom 동기 + 버퍼)</option>
+            <option value="worker">pino transport (워커 스레드)</option>
+          </select></label>
+        <label>직렬화 <select id="lp-ser"><option value="console">console.log + JSON.stringify</option><option value="pino" selected>pino</option></select></label>
+      </div>
+      <div class="lp-grid">
+        <div class="lp-card"><h4>메인 스레드 1초의 사용</h4><div class="bar-h" id="lp-bar"></div><div class="muted" style="font-size:12px" id="lp-bar-note"></div></div>
+        <div class="lp-card"><h4>적체와 유실</h4>
+          <div class="stat-row" style="margin:0">
+            <div class="stat"><div class="k">초당 로그량</div><div class="v" id="lp-bps">-</div></div>
+            <div class="stat"><div class="k">메모리 적체/분</div><div class="v" id="lp-mem">-</div></div>
+            <div class="stat"><div class="k">exit 시 유실 가능</div><div class="v" id="lp-loss">-</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="callout" id="lp-note" style="margin-bottom:0"></div>
+    </div>
+
+    <h3>2.3 무엇을 어떻게 찍을 것인가</h3>
+    <ul>
+      <li><b>이벤트 하나 = JSON 한 줄.</b> 멀티라인 스택은 <code>err</code> 필드에 직렬화(pino의 <code>err</code> serializer). 수집기는 줄 단위로 파싱합니다.</li>
+      <li><b>레벨 규약</b>: error=사람이 봐야 함, warn=자동 복구됐지만 추세 감시, info=비즈니스 이벤트(주문 생성), debug=개발. 요청마다 info 한 줄(access log)은 큰 서비스에선 비용 때문에 샘플링하거나 메트릭으로 대체.</li>
+      <li><b>필드 이름 고정</b>: <code>trace_id</code>, <code>req_id</code>, <code>user_id</code>, <code>duration_ms</code>처럼 전사 규약. 같은 값이 <code>userId</code>/<code>user_id</code>/<code>uid</code>로 흩어지면 검색이 불가능해집니다.</li>
+      <li><b>민감 정보</b>: 헤더(Authorization, Cookie), 비밀번호, 개인정보는 redact. 요청 바디 전체 로깅 금지.</li>
+      <li><b>로그 레벨 런타임 변경</b>: <code>logger.level = 'debug'</code>를 SIGUSR2 핸들러나 관리 엔드포인트로. 재배포 없이 특정 파드만 상세 로그를 켤 수 있습니다.</li>
+    </ul>
+  </section>
+
+  <section id="s3">
+    <h2>3. 로그 샘플링과 비용</h2>
+    <p>로그 비용은 "생성"이 아니라 "저장·색인"에서 나옵니다. 요청당 600바이트 access log를 초당 5,000건 찍으면 하루 약 260GB. 전형적인 로그 SaaS 가격이면 이것만으로 월 수천 달러입니다. 비용을 줄이는 순서는 다음과 같습니다.</p>
+    <ol>
+      <li><b>메트릭으로 옮길 수 있는 것은 옮긴다.</b> "요청 수, 지연, 상태코드"는 히스토그램 하나가 수백만 로그 라인을 대체합니다.</li>
+      <li><b>성공 요청은 샘플링, 실패·느린 요청은 전부.</b> 예: 2xx이고 지연 &lt; p95면 1%만 기록. 트레이스의 tail sampling과 같은 발상.</li>
+      <li><b>레벨 분리 저장</b>: error/warn은 장기 보관, info는 단기(7일), debug는 수집 안 함.</li>
+      <li><b>반복 로그 억제</b>: 같은 에러가 초당 수백 번 나오면 첫 N개 + "…and 4,310 more"로 집계. 장애 때 로그 폭주가 수집기와 비용을 함께 터뜨립니다.</li>
+    </ol>
+<pre><code>// 성공 요청 1% 샘플링 (결정적: req_id 해시 기반이면 같은 요청은 항상 같은 결정)
+function shouldLogAccess(res, durationMs) {
+  if (res.statusCode &gt;= 400 || durationMs &gt; SLOW_MS) return true;
+  return (hash(req.id) % 100) === 0;
+}</code></pre>
+  </section>
+
+  <section id="s4">
+    <h2>4. 메트릭: prom-client, RED/USE, 히스토그램</h2>
+    <h3>4.1 네 가지 타입과 Node 기본 메트릭</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>타입</th><th>의미</th><th>Node 예</th><th>쿼리 패턴</th></tr>
+      <tr><td>Counter</td><td>단조 증가. 리셋만 됨</td><td><code>http_requests_total{route,method,status}</code></td><td><code>rate(x[5m])</code></td></tr>
+      <tr><td>Gauge</td><td>현재 값</td><td><code>nodejs_active_handles</code>, 힙 사용량, 큐 길이</td><td>그대로, 또는 <code>max_over_time</code></td></tr>
+      <tr><td>Histogram</td><td>고정 버킷의 누적 카운트 + sum + count</td><td><code>http_request_duration_seconds_bucket{le=...}</code></td><td><code>histogram_quantile(0.99, sum by (le) (rate(x_bucket[5m])))</code>. 서버 간 합산 가능</td></tr>
+      <tr><td>Summary</td><td>클라이언트에서 계산한 분위수</td><td>(권장 안 함)</td><td>합산 불가. 파드 10개의 p99를 합칠 수 없음</td></tr>
+    </table></div>
+<pre><code>const client = require('prom-client');
+client.collectDefaultMetrics({ prefix: '', gcDurationBuckets: [0.001, 0.01, 0.1, 1] });
+// 기본으로 나오는 것들(일부):
+//   nodejs_eventloop_lag_seconds, _p50/_p90/_p99/_max  ← monitorEventLoopDelay 기반 (2장)
+//   nodejs_heap_size_used_bytes, nodejs_heap_space_size_used_bytes{space}
+//   nodejs_gc_duration_seconds{kind}                  ← GC 종류별 지속시간 히스토그램 (5장)
+//   nodejs_active_resources{type}, nodejs_active_handles_total
+//   process_cpu_seconds_total, process_resident_memory_bytes, process_open_fds
+
+const httpDuration = new client.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'HTTP 요청 처리 시간',
+  labelNames: ['method', 'route', 'status_class'],   // status_class = 2xx/4xx/5xx: 카디널리티 억제
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+});
+app.use((req, res, next) =&gt; {
+  const end = httpDuration.startTimer();
+  res.on('finish', () =&gt; end({ method: req.method, route: req.route?.path ?? 'unmatched', status_class: `${Math.floor(res.statusCode / 100)}xx` }));
+  next();
+});
+app.get('/metrics', async (req, res) =&gt; { res.set('Content-Type', client.register.contentType); res.end(await client.register.metrics()); });</code></pre>
+    <div class="callout danger"><span class="title">카디널리티 폭발</span>
+      레이블 값의 조합 수만큼 시계열이 생깁니다. <code>route</code>에 <code>/users/123</code>처럼 <b>실제 경로</b>를 넣으면 사용자 수만큼, <code>user_id</code>를 넣으면 무한히 늘어납니다. Prometheus는 시계열당 메모리를 쓰므로 서버가 죽거나 스크레이프가 실패합니다. 규칙: 레이블은 <b>경로 템플릿</b>(<code>req.route.path</code>), 상태 클래스, 메서드처럼 값의 집합이 유한하고 작은 것만. 404 경로는 'unmatched'로 뭉치세요(스캐너가 임의 경로로 카디널리티를 터뜨립니다).
+    </div>
+
+    <h3>4.2 RED와 USE</h3>
+    <p><b>RED</b>(Rate, Errors, Duration)는 요청을 처리하는 서비스의 사용자 관점 지표이고, <b>USE</b>(Utilization, Saturation, Errors)는 자원 관점입니다. Node 프로세스에 대입하면:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>지표</th><th>소스</th></tr>
+      <tr><td>R</td><td>초당 요청 수 (라우트별)</td><td><code>rate(http_requests_total[1m])</code></td></tr>
+      <tr><td>E</td><td>5xx 비율, 미처리 예외 수, 클라이언트 타임아웃</td><td>counter + <code>process.on('uncaughtException')</code> 카운터</td></tr>
+      <tr><td>D</td><td>지연 p50/p95/p99</td><td>히스토그램</td></tr>
+      <tr><td>U (이용률)</td><td>ELU, CPU 사용률 / limit</td><td><code>performance.eventLoopUtilization()</code>, <code>process_cpu_seconds_total</code></td></tr>
+      <tr><td>S (포화)</td><td>루프 지연 p99, 스레드풀 대기, 커넥션 풀 대기 수, 큐 길이</td><td><code>nodejs_eventloop_lag_p99_seconds</code>, 풀 라이브러리 메트릭</td></tr>
+      <tr><td>E (자원 에러)</td><td>OOM, GC 시간 비율, EMFILE, ECONNRESET</td><td><code>nodejs_gc_duration_seconds</code>, 에러 코드 카운터</td></tr>
+    </table></div>
+
+    <h3>4.3 히스토그램 버킷 설계</h3>
+    <p><code>histogram_quantile</code>은 각 버킷 안에서 값이 <b>균등 분포</b>한다고 가정하고 선형 보간합니다. 따라서 p99가 떨어지는 버킷이 넓으면(예: 1s~10s) 추정 오차가 커지고, p99가 마지막 유한 버킷을 넘으면 <b>그 버킷 상한값으로 잘립니다</b>. 버킷은 "관심 있는 SLO 경계 근처가 촘촘하게"가 원칙입니다. SLO가 300ms라면 200·250·300·400·500ms를 넣어야 합니다.</p>
+
+    <div class="widget" id="hb-widget">
+      <div class="w-title">히스토그램 버킷 설계기</div>
+      <div class="w-desc">지연 분포(로그정규)를 만들고 버킷 경계를 입력하면, 실제 분위수와 <code>histogram_quantile</code> 추정값의 차이를 봅니다. 버킷을 바꾸며 오차를 줄여 보세요.</div>
+      <div class="controls">
+        <label>중앙값 <input type="range" id="hb-med" min="10" max="1000" step="10" value="80"> <span id="hb-med-v"></span></label>
+        <label>꼬리 두께(σ) <input type="range" id="hb-sig" min="0.2" max="1.5" step="0.05" value="0.8"> <span id="hb-sig-v"></span></label>
+        <label>버킷 상한(ms, 쉼표) <input type="text" id="hb-buckets" value="5,10,25,50,100,250,500,1000,2500,5000,10000" style="width:300px"></label>
+        <button class="btn" id="hb-slo">SLO 300ms 촘촘하게</button>
+        <button class="btn" id="hb-coarse">성긴 버킷</button>
+      </div>
+      <div class="hist" id="hb-hist"></div>
+      <div class="tbl-wrap"><table class="qtab"><thead><tr><th>분위수</th><th>실제 (샘플)</th><th>histogram_quantile 추정</th><th>오차</th></tr></thead><tbody id="hb-table"></tbody></table></div>
+      <div class="callout" id="hb-note" style="margin-bottom:0"></div>
+    </div>
+  </section>
+
+  <section id="s5">
+    <h2>5. 분산 트레이싱: OpenTelemetry</h2>
+    <h3>5.1 구성</h3>
+    <p>OpenTelemetry(OTel)는 API(코드가 호출), SDK(실제 구현: 샘플러, 프로세서, 익스포터), 자동 계측(http, undici, express, pg, mysql, redis, grpc… 라이브러리를 monkey-patch해 span 생성)으로 나뉩니다. Node에서는 앱 코드보다 <b>먼저</b> SDK가 로드되어야 계측 대상 모듈이 패치됩니다. 그래서 <code>--require</code> 또는 <code>--import</code>로 선로드합니다.</p>
+<pre><code>// tracing.js — 앱보다 먼저 로드: node --require ./tracing.js server.js  (ESM이면 --import)
+const { NodeSDK } = require('@opentelemetry/sdk-node');
+const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-grpc');
+const { ParentBasedSampler, TraceIdRatioBasedSampler } = require('@opentelemetry/sdk-trace-base');
+
+const sdk = new NodeSDK({
+  serviceName: 'orders-api',
+  traceExporter: new OTLPTraceExporter({ url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }),
+  sampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(0.1) }), // 루트 10%, 부모가 샘플이면 따라감
+  instrumentations: [getNodeAutoInstrumentations({
+    '@opentelemetry/instrumentation-fs': { enabled: false },   // fs span 은 노이즈가 큼
+  })],
+});
+sdk.start();
+process.on('SIGTERM', () =&gt; sdk.shutdown());   // 미전송 span flush (14장 셧다운 순서에 포함)
+
+// 또는 코드 없이: node --require @opentelemetry/auto-instrumentations-node/register server.js
+//   + OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_TRACES_SAMPLER=parentbased_traceidratio, OTEL_TRACES_SAMPLER_ARG=0.1</code></pre>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 250" role="img" aria-label="OTel 파이프라인">
+        <defs><marker id="a15b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="30" width="300" height="190" rx="10" class="box"/>
+        <text x="170" y="52" text-anchor="middle" font-weight="700">Node 프로세스</text>
+        <rect x="35" y="65" width="130" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="100" y="87" text-anchor="middle" font-size="12">자동 계측 (patch)</text>
+        <rect x="175" y="65" width="130" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="240" y="87" text-anchor="middle" font-size="12">수동 span (API)</text>
+        <rect x="35" y="115" width="270" height="34" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="170" y="137" text-anchor="middle" font-size="12">Context Manager = AsyncLocalStorage</text>
+        <rect x="35" y="165" width="130" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="100" y="187" text-anchor="middle" font-size="12">Sampler (head)</text>
+        <rect x="175" y="165" width="130" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="240" y="187" text-anchor="middle" font-size="12">BatchSpanProcessor</text>
+        <path d="M320 182 H370" class="line flow" marker-end="url(#a15b)"/>
+        <text x="345" y="172" text-anchor="middle" font-size="10" class="muted">OTLP</text>
+        <rect x="370" y="120" width="200" height="100" rx="10" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <text x="470" y="145" text-anchor="middle" font-weight="700">OTel Collector</text>
+        <text x="470" y="168" text-anchor="middle" font-size="12">tail sampling (에러/느린 것 100%)</text>
+        <text x="470" y="186" text-anchor="middle" font-size="12">속성 정리, 배치, 재시도</text>
+        <text x="470" y="204" text-anchor="middle" font-size="12">여러 백엔드로 팬아웃</text>
+        <path d="M570 170 H620" class="line flow" marker-end="url(#a15b)"/>
+        <rect x="620" y="120" width="240" height="100" rx="10" class="box"/>
+        <text x="740" y="145" text-anchor="middle" font-weight="700">백엔드</text>
+        <text x="740" y="168" text-anchor="middle" font-size="12">Jaeger / Tempo / Datadog / Honeycomb</text>
+        <text x="740" y="186" text-anchor="middle" font-size="12">트레이스 → 서비스 맵, RED 메트릭 파생</text>
+        <text x="740" y="204" text-anchor="middle" font-size="12">로그와 trace_id 조인</text>
+      </svg>
+      <figcaption>head 샘플링은 프로세스에서 비용을 줄이고, tail 샘플링은 Collector에서 "흥미로운" 트레이스를 골라 저장합니다.</figcaption>
+    </figure>
+
+    <h3>5.2 컨텍스트 전파: 두 개의 경계</h3>
+    <p><b>프로세스 안</b>에서는 7장의 <code>AsyncLocalStorage</code>가 현재 span을 비동기 체인을 따라 실어 나릅니다. <code>await</code>, 콜백, 타이머, 이벤트 에미터(일부 예외)까지 자동으로 따라가지만, 직접 만든 큐나 커넥션 풀처럼 "등록 시점과 실행 시점의 비동기 컨텍스트가 다른" 구조에서는 끊깁니다. 이때는 <code>context.with(ctx, fn)</code>이나 <code>context.bind</code>로 명시적으로 이어야 합니다.</p>
+    <p><b>프로세스 사이</b>에서는 W3C Trace Context 헤더가 전파됩니다. 자동 계측이 outgoing http/undici 요청에 헤더를 붙이고 incoming 요청에서 읽습니다.</p>
+<pre><code>traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             │  │                                │                │
+             │  trace-id (16바이트, 전체 요청 공통)  parent span-id    flags: 01 = sampled
+             version
+tracestate: vendor=... (벤더별 부가 상태, 선택)</code></pre>
+    <p>메시지 큐(Kafka, SQS, BullMQ)는 HTTP 헤더가 없으므로 메시지 속성에 <code>traceparent</code>를 직접 넣고 꺼내야 합니다(일부 계측 라이브러리가 지원). 끊긴 트레이스의 대부분은 큐 경계와 커스텀 풀에서 생깁니다.</p>
+
+    <div class="widget" id="wf-widget">
+      <div class="w-title">트레이스 워터폴 뷰어</div>
+      <div class="w-desc">주문 조회 요청 하나의 span 트리입니다. 행을 클릭하면 속성과 그 span 구간에 찍힌 로그(trace_id로 조인)를 보여 줍니다. 어디서 시간이 갔는지, 어떤 호출이 직렬로 묶여 있는지 찾아보세요.</div>
+      <div class="wf" id="wf"></div>
+      <div class="wf-attrs" id="wf-attrs">span을 클릭하세요.</div>
+    </div>
+    <p>위 트레이스에서 읽어야 할 것: ① <code>redis.get</code>과 <code>pg.query</code>가 직렬인데 서로 의존하지 않는다면 <code>Promise.all</code>로 병렬화할 수 있다. ② <code>http GET inventory</code>가 전체의 절반을 차지한다. 그 서비스의 자식 span이 짧다면 <b>네트워크/커넥션 수립 비용</b>(12장 keep-alive 미사용)이다. ③ 루트 span의 시작과 첫 자식 사이의 공백은 미들웨어나 이벤트 루프 지연이다.</p>
+  </section>
+
+  <section id="s6">
+    <h2>6. 진단 리포트와 인스펙터</h2>
+    <h3>6.1 진단 리포트 (Diagnostic Report)</h3>
+    <p>프로세스의 "현재 상태 전체"를 JSON 한 파일로 떨어뜨리는 내장 기능입니다. 크래시 직후 사후 분석, 또는 "지금 행(hang) 걸린 프로세스가 뭘 하고 있나"를 볼 때 씁니다.</p>
+<pre><code># 플래그 (NODE_OPTIONS 로 주입 가능)
+--report-on-fatalerror        # V8 치명적 에러(힙 부족 등) 시 자동 생성
+--report-uncaught-exception   # 미처리 예외 시
+--report-on-signal            # 시그널로 수동 트리거 (기본 SIGUSR2, --report-signal 로 변경)
+--report-directory=/var/log/node --report-filename=report.json --report-compact
+--report-exclude-network      # 네트워크 인터페이스 정보 제외 (빠름)
+--report-exclude-env          # 환경변수 제외 (시크릿 유출 방지, 14장)
+
+# 코드에서
+process.report.writeReport('/tmp/hang.json');   // 또는 process.report.getReport() 객체</code></pre>
+    <div class="tbl-wrap"><table>
+      <tr><th>섹션</th><th>볼 것</th></tr>
+      <tr><td><code>header</code></td><td>트리거(<code>event</code>, <code>trigger</code>), Node/V8 버전, 커맨드라인, 가동 시간</td></tr>
+      <tr><td><code>javascriptStack</code></td><td>리포트 생성 시점의 JS 스택. 행 상태라면 <b>여기가 범인</b>(동기 루프, 정규식)</td></tr>
+      <tr><td><code>javascriptHeap</code></td><td><code>memoryLimit</code>, <code>usedMemory</code>, <code>externalMemory</code>, 공간별(<code>heapSpaces</code>) 사용량. OOM 사후 분석의 시작점</td></tr>
+      <tr><td><code>nativeStack</code></td><td>C++ 스택. 네이티브 애드온 크래시 추적</td></tr>
+      <tr><td><code>resourceUsage</code></td><td>CPU 사용자/시스템 시간, 페이지 폴트, 컨텍스트 스위치, 최대 RSS</td></tr>
+      <tr><td><code>libuv</code></td><td>활성 핸들 목록(타입, 주소, ref 여부, 소켓 로컬/원격 주소). "왜 안 죽나", "커넥션 몇 개 열려있나"</td></tr>
+      <tr><td><code>workers</code></td><td>워커 스레드별 같은 정보</td></tr>
+      <tr><td><code>userLimits</code>, <code>sharedObjects</code></td><td>ulimit(열린 파일 수 제한), 로드된 공유 라이브러리</td></tr>
+    </table></div>
+
+    <h3>6.2 프로덕션에서 인스펙터</h3>
+    <p>실행 중인 프로세스에 <code>SIGUSR1</code>을 보내면 인스펙터가 <code>127.0.0.1:9229</code>에서 열립니다(<code>--inspect-port</code>로 변경). 여기에 Chrome DevTools를 붙여 CPU 프로파일(10장), 힙 스냅샷(11장)을 라이브로 뜰 수 있습니다. 규칙:</p>
+    <ul>
+      <li>인스펙터는 <b>임의 코드 실행 권한</b>입니다. 절대 <code>0.0.0.0</code>에 바인딩하지 말고, 컨테이너 포트로 노출하지 마세요. 접근은 <code>kubectl port-forward pod 9229:9229</code>로 로컬 루프백만.</li>
+      <li>힙 스냅샷은 힙 크기의 몇 배 메모리와 수 초~수십 초의 <b>완전 정지</b>를 유발합니다. 트래픽에서 뺀(readiness 503) 파드에서만.</li>
+      <li>CPU 프로파일링은 오버헤드가 작아(수 %) 트래픽 중에도 짧게 가능합니다.</li>
+      <li>끝나면 <code>inspector.close()</code>나 프로세스 교체로 닫으세요. 열어 둔 채 잊는 것이 흔한 실수입니다.</li>
+    </ul>
+  </section>
+
+  <section id="s7">
+    <h2>7. 대시보드와 알람 설계</h2>
+    <p>Node 서비스 대시보드의 상단 한 줄은 RED(요청률·에러율·p99)이고, 그 아래가 "왜"를 설명하는 Node 내부 지표입니다. 알람은 <b>증상</b>(사용자가 느끼는 것)에만 페이지를 울리고, <b>원인</b> 지표는 티켓이나 대시보드로 보냅니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>지표</th><th>PromQL 예</th><th>경계(출발점)</th><th>의미</th></tr>
+      <tr><td>5xx 비율</td><td><code>sum(rate(http_requests_total{status_class="5xx"}[5m])) / sum(rate(http_requests_total[5m]))</code></td><td>&gt; 1% 5분 (페이지)</td><td>증상</td></tr>
+      <tr><td>p99 지연</td><td><code>histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))</code></td><td>&gt; SLO (페이지)</td><td>증상</td></tr>
+      <tr><td>루프 지연 p99</td><td><code>nodejs_eventloop_lag_p99_seconds</code></td><td>&gt; 0.1s 지속 (티켓)</td><td>동기 블로킹, GC, CFS 스로틀</td></tr>
+      <tr><td>ELU</td><td>직접 노출한 gauge</td><td>&gt; 0.8 (스케일아웃 신호)</td><td>포화</td></tr>
+      <tr><td>힙 사용률</td><td><code>nodejs_heap_size_used_bytes / nodejs_heap_size_limit_bytes</code>(직접 노출)</td><td>&gt; 85% 추세 상승 (티켓)</td><td>누수 (11장)</td></tr>
+      <tr><td>GC 시간 비율</td><td><code>rate(nodejs_gc_duration_seconds_sum[5m])</code></td><td>&gt; 10% (티켓)</td><td>힙 압력</td></tr>
+      <tr><td>재시작 수</td><td><code>increase(kube_pod_container_status_restarts_total[1h])</code></td><td>&gt; 0 (티켓), 급증(페이지)</td><td>OOM, 크래시</td></tr>
+      <tr><td>활성 핸들/커넥션</td><td><code>nodejs_active_resources{type="TCPSocketWrap"}</code></td><td>추세</td><td>커넥션 누수, keep-alive 설정</td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">알람 피로를 막는 규칙</span>
+      ① 모든 알람에 런북 링크. ② 증상 알람은 SLO 소진율(burn rate)로: 1시간에 월 예산의 2%를 태우면 페이지. ③ 원인 알람은 "증상 알람이 울렸을 때 보는 대시보드"로 격하. ④ 파드 하나의 지표로 울리지 말고 서비스 합계로. 파드 하나의 GC 스파이크는 정상입니다.
+    </div>
+  </section>
+
+  <section id="s8">
+    <h2>8. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: 로그 수집기 장애가 API 장애로</span>
+      <p>fluent-bit가 백엔드 연결을 잃고 파이프 소비를 멈췄습니다. 앱은 <code>console.log</code>로 요청당 2줄을 찍었고, 파이프 쓰기가 비동기라 Node 쓰기 큐가 힙에 쌓이기 시작. 20분 뒤 힙 1.5GB로 OOMKilled. 재시작 후에도 반복. 로그를 pino 동기 목적지로 바꾸자 수집기 장애 시 루프가 느려지긴 했지만(백프레셔) 죽지는 않았고, 궁극적으로 수집기 버퍼 설정과 access log 샘플링으로 해결.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: p99가 "정확히 1초"</span>
+      <p>대시보드의 p99가 몇 주째 정확히 1.0s. 버킷이 <code>[0.1, 0.5, 1, 5]</code>였고 실제 p99는 1.2~1.8s 사이를 오갔는데 1~5s 버킷에서 보간되어 1s 근처로 뭉개졌습니다. 더 나쁜 것은 SLO 알람(p99 &gt; 1.5s)이 한 번도 울리지 않았다는 점. 버킷을 0.75·1·1.5·2·3·5로 바꾸자 실제 값이 드러났습니다. 위 설계기에서 "성긴 버킷"을 눌러 보세요.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 트레이스가 큐에서 끊김</span>
+      <p>주문 API → BullMQ 큐 → 워커의 결제 호출 체인에서 결제 지연을 추적하려는데 트레이스가 큐 앞에서 끝났습니다. 큐 잡 데이터에 <code>traceparent</code>를 넣고 워커에서 <code>propagation.extract</code>로 복원해 자식 span을 만들자 체인이 이어졌고, 지연 원인이 워커의 동시성 1 설정임이 바로 보였습니다.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 4: 메트릭 엔드포인트가 OOM의 원인</span>
+      <p>라우트 레이블에 <code>req.path</code>(실제 경로)를 썼고, 봇 스캐너가 수십만 개의 랜덤 경로를 두드려 prom-client 레지스트리가 수십만 시계열을 들고 있게 됐습니다. <code>/metrics</code> 응답이 50MB, 직렬화에 2초(루프 블로킹), 프로세스 힙 증가. <code>req.route.path</code>와 'unmatched'로 교체.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>컨테이너의 stdout은 파이프이고 POSIX에서 <b>비동기</b>: <code>console.log</code>는 소비자가 느리면 메모리에 쌓이고 <code>process.exit()</code> 시 유실된다. pino 기본 목적지(동기+버퍼) 또는 transport(워커)로.</li>
+    <li>로그는 JSON 한 줄, 필드명 규약, redaction, trace_id mixin. 비용은 샘플링(성공 요청)과 메트릭 대체로 줄인다.</li>
+    <li>메트릭은 RED + Node 내부(루프 지연 p99, ELU, 힙, GC). 레이블은 유한 집합만. 히스토그램 버킷은 SLO 경계 근처를 촘촘히, p99가 마지막 유한 버킷을 넘지 않게.</li>
+    <li>OTel은 앱보다 먼저 로드(<code>--require</code>). 프로세스 안 전파는 ALS, 밖은 W3C traceparent. 큐 경계는 수동 전파.</li>
+    <li>진단 리포트는 행/OOM 사후 분석의 1차 도구. 인스펙터는 루프백 + 포트포워딩으로만, 힙 스냅샷은 트래픽에서 뺀 파드에서만.</li>
+    <li>페이지는 증상(에러율, p99 SLO 소진율)에만. 원인 지표는 대시보드와 티켓으로.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Linux 컨테이너에서 <code>console.log</code>로 대량 로깅하는 서비스가, 로그 수집기가 멈춘 뒤 20분 만에 OOMKilled 되었다. 가장 직접적인 메커니즘은?</div>
+    <button class="opt">console.log가 동기 쓰기라 루프가 막혀 요청이 쌓였다</button>
+    <button class="opt">JSON.stringify가 메모리 누수를 일으킨다</button>
+    <button class="opt">stdout이 파이프이고 POSIX에서 비동기라, 소비되지 않은 쓰기 버퍼가 힙에 누적되었다</button>
+    <button class="opt">수집기가 SIGKILL을 보냈다</button>
+    <div class="explain">파이프 stdout은 POSIX에서 비동기이며 console.log는 백프레셔를 무시합니다. 소비자가 멈추면 쓰기 요청이 메모리에 계속 쌓입니다. 동기 목적지였다면 루프가 느려졌겠지만 메모리는 안전했을 것입니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">버킷 <code>[0.1, 0.5, 1, 5]</code>인 히스토그램으로 p99를 구했더니 항상 1.0 근처다. 실제 p99가 1.7s일 때 무엇이 잘못됐나?</div>
+    <button class="opt">rate() 윈도가 너무 짧다</button>
+    <button class="opt">p99가 속한 1~5s 버킷이 너무 넓어 선형 보간이 실제 분포를 반영하지 못한다</button>
+    <button class="opt">Summary 타입을 써야 한다</button>
+    <button class="opt">prom-client 기본 버킷이 초 단위가 아니다</button>
+    <div class="explain">histogram_quantile은 버킷 내부 균등 분포를 가정합니다. 1~5s 버킷에 소수의 샘플이 들어가면 그 안에서 보간된 값은 실제와 크게 다를 수 있습니다. SLO 경계 근처 버킷을 추가해야 합니다. Summary는 서버 간 합산이 불가능해 대안이 아닙니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">OpenTelemetry 자동 계측이 http span을 전혀 만들지 않는다. 가장 흔한 원인은?</div>
+    <button class="opt">샘플링 비율이 0.1이라서</button>
+    <button class="opt">Collector가 꺼져 있어서</button>
+    <button class="opt">AsyncLocalStorage가 비활성화되어서</button>
+    <button class="opt">SDK가 http 모듈이 require된 뒤에 로드되어 패치할 기회를 놓쳐서</button>
+    <div class="explain">자동 계측은 모듈 로드를 가로채 패치합니다. 앱 코드(또는 프레임워크)가 먼저 http를 require하면 패치되지 않은 원본을 쥐고 있게 됩니다. <code>--require ./tracing.js</code>로 선로드하세요. 샘플링 0.1이나 Collector 다운은 span이 "만들어지지만 전송/저장되지 않는" 상황입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">메트릭 레이블로 적절하지 <b>않은</b> 것은?</div>
+    <button class="opt">user_id</button>
+    <button class="opt">HTTP 메서드</button>
+    <button class="opt">라우트 템플릿 (/users/:id)</button>
+    <button class="opt">상태 코드 클래스 (2xx/4xx/5xx)</button>
+    <div class="explain">user_id는 값의 집합이 무한에 가까워 시계열 수를 폭발시킵니다. 사용자 단위 분석은 로그나 트레이스의 역할입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">프로덕션 파드가 요청에 응답하지 않고 CPU 100%다. 재시작 전에 원인을 남기려면?</div>
+    <button class="opt">kubectl delete pod 후 로그 확인</button>
+    <button class="opt">힙 스냅샷을 뜬다</button>
+    <button class="opt">SIGUSR2(--report-on-signal)로 진단 리포트를 생성해 javascriptStack을 본다</button>
+    <button class="opt">readiness를 끈다</button>
+    <div class="explain">행/CPU 100% 상황에서 가장 싸고 빠른 증거는 진단 리포트의 JS 스택입니다. 리포트는 시그널 핸들러에서 생성되므로 루프가 막혀 있어도 동작합니다. 힙 스냅샷은 메모리 문제용이고 비용이 큽니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>stdout 유실 재현.</b> 2.1절의 두 명령을 실행해 파이프에서 64KiB만 남는 것을 확인하고, <code>process.exit(0)</code>를 <code>process.exitCode = 0</code>으로 바꿔 전체가 출력되는지 확인하세요. 이어서 pino 기본 로거로 같은 양을 찍고 <code>process.exit()</code> 해도 유실이 없는지(동기 목적지) 확인합니다.</li>
+    <li><b>버킷 설계 검증.</b> prom-client로 두 히스토그램(버킷 A: 기본, 버킷 B: SLO 300ms 근처 촘촘)에 같은 지연 샘플(로그정규, 예: <code>Math.exp(Math.log(0.08) + 0.8 * gaussian())</code>)을 10만 개 넣고, <code>/metrics</code>를 Prometheus에 스크레이프시켜 <code>histogram_quantile(0.99, ...)</code>를 비교하세요. 샘플 배열에서 직접 구한 p99와의 오차를 기록합니다.</li>
+    <li><b>트레이스 연결.</b> 두 개의 Express 서비스(A가 B를 undici로 호출)에 <code>--require @opentelemetry/auto-instrumentations-node/register</code>와 OTLP → Jaeger(docker)를 붙이고, A의 pino 로그에 mixin으로 trace_id를 찍어 Jaeger UI의 트레이스와 로그의 trace_id가 일치하는지 확인하세요. 그다음 B 호출을 <code>setTimeout</code> 안에서 만든 커스텀 큐로 옮겨 트레이스가 끊기는지, <code>context.with</code>로 복구되는지 확인합니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+
+  // ===== 위젯 1: 로그 파이프라인 =====
+  (function () {
+    const ids = ["lp-rate", "lp-size", "lp-cons"];
+    const fmtv = { "lp-rate": v => (+v).toLocaleString() + " /s", "lp-size": v => v + " B", "lp-cons": v => v + " MB/s" };
+    function sim() {
+      ids.forEach(id => $(id + "-v").textContent = fmtv[id]($(id).value));
+      const rate = +$("lp-rate").value, size = +$("lp-size").value, cons = +$("lp-cons").value * 1e6, dest = $("lp-dest").value, ser = $("lp-ser").value;
+      const bps = rate * size;
+      // 직렬화 비용(µs/라인): console+JSON.stringify ≈ 8µs, pino ≈ 2µs  (대표값)
+      const serUs = ser === "console" ? 8 : 2;
+      const serMs = rate * serUs / 1000;
+      let ioMs = 0, memPerMin = 0, loss = 0, note = "";
+      if (dest === "file" || dest === "pino") {
+        // 동기 쓰기: 쓰기 시간 = bytes / 소비자 처리량. 버퍼링은 syscall 수를 줄여 약간 유리
+        const eff = dest === "pino" ? 1.3 : 1;
+        ioMs = Math.min(1000, bps / (cons * eff) * 1000);
+        note = dest === "pino" ? "sonic-boom 동기 쓰기: 유실 없음, 소비자가 느리면 루프가 그만큼 느려진다(백프레셔). 그래도 메모리는 안전." : "파일 동기 쓰기: 디스크 속도가 곧 루프 블로킹 시간.";
+        loss = 0;
+      } else if (dest === "pipe") {
+        // 비동기 파이프: 루프엔 write() 호출 비용만(≈1µs/라인). 소비자보다 빠르면 적체
+        ioMs = rate * 1 / 1000;
+        const deficit = Math.max(0, bps - cons);
+        memPerMin = deficit * 60;
+        loss = Math.min(bps, 65536 + deficit * 5); // 파이프 버퍼 + 수 초 적체분
+        note = deficit > 0 ? `소비자(${(cons / 1e6).toFixed(0)}MB/s)보다 생성이 빨라 초당 ${MM.bytes(deficit)}가 힙의 쓰기 큐에 적체된다. 백프레셔가 없으므로 OOM으로 간다.` : "소비자가 따라잡고 있다. 그래도 process.exit() 시 파이프 버퍼(64KiB)와 미전송 큐는 유실된다.";
+      } else {
+        // 워커 transport: 메인은 링 버퍼에 복사만(≈0.5µs/라인). 링 버퍼(기본 수 MB) 차면 메인이 동기 대기
+        ioMs = rate * 0.5 / 1000;
+        const deficit = Math.max(0, bps - cons);
+        if (deficit > 0) { ioMs = Math.min(1000, ioMs + deficit / cons * 1000); note = "워커 링 버퍼가 가득 차면 메인 스레드가 동기로 기다린다(유실 대신 블로킹). 지속되면 루프가 막힌다."; }
+        else note = "메인 스레드는 링 버퍼 복사만. 실제 I/O와 포맷은 워커가 담당. 종료 시 flush를 기다리지 않으면 워커 버퍼분 유실.";
+        loss = 4 * 1024 * 1024 * 0.25; // 링 버퍼 일부
+      }
+      const total = Math.min(1000, serMs + ioMs);
+      const free = 1000 - total;
+      $("lp-bar").innerHTML = `<div style="width:${serMs / 10}%;background:var(--warn-soft)">직렬화 ${serMs.toFixed(0)}ms</div><div style="width:${ioMs / 10}%;background:var(--bad-soft)">I/O ${ioMs.toFixed(0)}ms</div><div style="width:${free / 10}%;background:var(--ok-soft)">요청 처리 가능 ${free.toFixed(0)}ms</div>`;
+      $("lp-bar-note").textContent = total >= 1000 ? "루프가 로깅만으로 포화: 요청을 처리할 시간이 없다." : `로깅이 루프 시간의 ${(total / 10).toFixed(0)}%를 쓴다.`;
+      $("lp-bps").textContent = MM.bytes(bps) + "/s";
+      $("lp-mem").textContent = memPerMin ? MM.bytes(memPerMin) : "0";
+      $("lp-mem").style.color = memPerMin ? "var(--bad)" : "var(--ok)";
+      $("lp-loss").textContent = loss ? "~" + MM.bytes(loss) : "없음";
+      $("lp-loss").style.color = loss ? "var(--warn)" : "var(--ok)";
+      $("lp-note").innerHTML = "<span class='title'>해석</span>" + note + (ser === "console" ? " console.log + JSON.stringify 직렬화 비용도 pino의 수 배다." : "");
+    }
+    ids.forEach(id => $(id).oninput = sim); $("lp-dest").onchange = sim; $("lp-ser").onchange = sim;
+    sim();
+  })();
+
+  // ===== 위젯 2: 히스토그램 버킷 =====
+  (function () {
+    const N = 20000;
+    let seed = 42;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const gauss = () => { let u = 0, v = 0; while (u === 0) u = rnd(); while (v === 0) v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+    function samples(med, sig) { seed = 42; const a = new Float64Array(N); for (let i = 0; i < N; i++) a[i] = Math.exp(Math.log(med) + sig * gauss()); return a.sort(); }
+    const q = (sorted, p) => sorted[Math.min(N - 1, Math.floor(p * N))];
+    // Prometheus histogram_quantile: 누적 버킷에서 선형 보간
+    function histQ(bounds, counts, p) {
+      const total = counts.reduce((a, b) => a + b, 0);
+      const rank = p * total;
+      let cum = 0;
+      for (let i = 0; i < bounds.length; i++) {
+        const prev = cum; cum += counts[i];
+        if (cum >= rank) {
+          if (bounds[i] === Infinity) return bounds[i - 1] ?? NaN; // +Inf 버킷: 마지막 유한 상한으로 잘림
+          const lo = i === 0 ? 0 : bounds[i - 1], hi = bounds[i];
+          return lo + (hi - lo) * (rank - prev) / (counts[i] || 1);
+        }
+      }
+      return NaN;
+    }
+    function run() {
+      const med = +$("hb-med").value, sig = +$("hb-sig").value;
+      $("hb-med-v").textContent = med + "ms"; $("hb-sig-v").textContent = sig;
+      let bounds = $("hb-buckets").value.split(",").map(s => parseFloat(s)).filter(x => !isNaN(x) && x > 0).sort((a, b) => a - b);
+      bounds = [...new Set(bounds)]; bounds.push(Infinity);
+      const s = samples(med, sig);
+      const counts = bounds.map(() => 0);
+      for (const v of s) { for (let i = 0; i < bounds.length; i++) if (v <= bounds[i]) { counts[i]++; break; } }
+      const maxc = Math.max(...counts);
+      $("hb-hist").innerHTML = bounds.map((b, i) => `<div class="hb ${b === Infinity ? "inf" : ""}"><div style="height:${counts[i] / maxc * 100}%"></div><span>${b === Infinity ? "+Inf" : b}</span></div>`).join("");
+      let rows = "", worst = 0;
+      [[0.5, "p50"], [0.9, "p90"], [0.95, "p95"], [0.99, "p99"], [0.999, "p99.9"]].forEach(([p, name]) => {
+        const real = q(s, p), est = histQ(bounds, counts, p);
+        const err = isNaN(est) ? NaN : (est - real) / real * 100;
+        worst = Math.max(worst, Math.abs(err) || 0);
+        rows += `<tr><td>${name}</td><td>${real.toFixed(1)} ms</td><td>${isNaN(est) ? "-" : est.toFixed(1) + " ms"}</td><td style="color:${Math.abs(err) > 20 ? "var(--bad)" : Math.abs(err) > 8 ? "var(--warn)" : "var(--ok)"}">${isNaN(err) ? "-" : (err > 0 ? "+" : "") + err.toFixed(1) + "%"}</td></tr>`;
+      });
+      $("hb-table").innerHTML = rows;
+      const infShare = counts[counts.length - 1] / N * 100;
+      let note = "";
+      if (infShare > 1) note += `샘플의 ${infShare.toFixed(1)}%가 +Inf 버킷에 있다. 그 구간의 분위수는 <b>마지막 유한 상한(${bounds[bounds.length - 2]}ms)으로 잘려</b> 실제보다 낮게 보고된다. 상한 버킷을 추가하라. `;
+      note += worst > 20 ? `최대 오차 ${worst.toFixed(0)}%: 분위수가 떨어지는 버킷이 너무 넓다. 그 근처를 쪼개라.` : worst > 8 ? `최대 오차 ${worst.toFixed(0)}%: 쓸 만하지만 SLO 경계 근처는 더 촘촘히.` : `최대 오차 ${worst.toFixed(0)}%: 좋은 버킷이다. 버킷 수(${bounds.length})만큼 시계열이 늘어난다는 점만 기억할 것.`;
+      $("hb-note").innerHTML = "<span class='title'>해석</span>" + note;
+    }
+    ["hb-med", "hb-sig"].forEach(id => $(id).oninput = run); $("hb-buckets").oninput = run;
+    $("hb-slo").onclick = () => { $("hb-buckets").value = "10,25,50,100,150,200,250,300,400,500,750,1000,2000,5000"; run(); };
+    $("hb-coarse").onclick = () => { $("hb-buckets").value = "100,500,1000,5000"; run(); };
+    run();
+  })();
+
+  // ===== 위젯 3: 트레이스 워터폴 =====
+  (function () {
+    const T = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const spans = [
+      { id: "00f067aa0ba902b7", parent: null, name: "GET /orders/:id", svc: "orders-api", start: 0, dur: 412, color: "var(--accent-soft)", attrs: { "http.method": "GET", "http.route": "/orders/:id", "http.status_code": 200, "net.peer.ip": "10.0.3.14", "user.id": "u_8812" }, logs: ['{"level":"info","msg":"request start","trace_id":"4bf9…","req_id":"r-71"}', '{"level":"info","msg":"request end","duration_ms":412,"trace_id":"4bf9…"}'] },
+      { id: "a1", parent: "00f067aa0ba902b7", name: "middleware auth", svc: "orders-api", start: 3, dur: 24, color: "var(--surface-2)", attrs: { "auth.scheme": "bearer" }, logs: [] },
+      { id: "a2", parent: "a1", name: "redis.get session:u_8812", svc: "orders-api → redis", start: 5, dur: 19, color: "var(--teal-soft)", attrs: { "db.system": "redis", "db.statement": "GET session:u_8812", "net.peer.name": "redis.default.svc" }, logs: [] },
+      { id: "b1", parent: "00f067aa0ba902b7", name: "pg.query SELECT * FROM orders", svc: "orders-api → postgres", start: 30, dur: 86, color: "var(--violet-soft)", attrs: { "db.system": "postgresql", "db.statement": "SELECT * FROM orders WHERE id = $1", "db.rows": 1, "pool.wait_ms": 41 }, logs: ['{"level":"warn","msg":"pool wait 41ms","trace_id":"4bf9…"}'] },
+      { id: "c1", parent: "00f067aa0ba902b7", name: "GET inventory /stock?sku=…", svc: "orders-api → inventory", start: 120, dur: 231, color: "var(--warn-soft)", attrs: { "http.method": "GET", "http.url": "http://inventory:8080/stock?sku=X1", "http.status_code": 200, "net.transport": "ip_tcp" }, logs: [] },
+      { id: "c2", parent: "c1", name: "GET /stock (server)", svc: "inventory", start: 290, dur: 55, color: "var(--ok-soft)", attrs: { "http.route": "/stock", "http.status_code": 200 }, logs: ['{"level":"info","msg":"stock lookup","sku":"X1","trace_id":"4bf9…","service":"inventory"}'] },
+      { id: "c3", parent: "c2", name: "pg.query SELECT qty", svc: "inventory → postgres", start: 295, dur: 44, color: "var(--violet-soft)", attrs: { "db.system": "postgresql", "db.statement": "SELECT qty FROM stock WHERE sku=$1" }, logs: [] },
+      { id: "d1", parent: "00f067aa0ba902b7", name: "render json", svc: "orders-api", start: 356, dur: 48, color: "var(--surface-2)", attrs: { "payload.bytes": 184_000 }, logs: ['{"level":"debug","msg":"serialize 184KB","trace_id":"4bf9…"}'] },
+    ];
+    const total = 412;
+    const depth = s => s.parent ? 1 + depth(spans.find(x => x.id === s.parent)) : 0;
+    const host = $("wf");
+    spans.forEach(s => {
+      const row = MM.el("div", { class: "wf-row" }, `<div class="nm" style="padding-left:${depth(s) * 14}px">${MM.esc(s.name)}</div><div class="tr"><div style="left:${s.start / total * 100}%;width:${s.dur / total * 100}%;background:${s.color};border:1px solid var(--border)">${s.dur}ms</div></div>`);
+      row.onclick = () => {
+        host.querySelectorAll(".wf-row").forEach(r => r.classList.remove("sel")); row.classList.add("sel");
+        const attrs = Object.entries(s.attrs).map(([k, v]) => `  <b>${k}</b>: ${MM.esc(JSON.stringify(v))}`).join("\n");
+        $("wf-attrs").innerHTML = `<div class="kv"><b>service</b>: ${s.svc}\n<b>trace_id</b>: ${T}\n<b>span_id</b>: ${s.id.padEnd(16, "0")}   <b>parent</b>: ${s.parent ? s.parent.padEnd(16, "0") : "(root)"}\n<b>start</b>: +${s.start}ms   <b>duration</b>: ${s.dur}ms (${(s.dur / total * 100).toFixed(0)}% of trace)\n<b>attributes</b>:\n${attrs}\n<b>logs with this trace_id in span window</b>:\n${s.logs.length ? s.logs.map(l => "  " + MM.esc(l)).join("\n") : "  (없음)"}</div>`;
+      };
+      host.append(row);
+    });
+    const axis = MM.el("div", { class: "wf-row", style: "cursor:default" }, `<div></div><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);font-family:var(--mono)"><span>0</span><span>${total / 2}ms</span><span>${total}ms</span></div>`);
+    host.append(axis);
+    host.querySelector(".wf-row").click();
+  })();
+})();
+</script>
+</body>
+</html>

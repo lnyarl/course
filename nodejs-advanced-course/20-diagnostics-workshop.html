@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>실전 진단 워크숍</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .war { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .case-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .case-tabs .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sym { background: var(--bad-soft); border-left: 4px solid var(--bad); border-radius: 0 10px 10px 0; padding: 12px 16px; }
+  .sym .t { font-weight: 700; margin-bottom: 4px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .chart { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--surface); }
+  .chart .n { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .acts { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
+  .acts .btn { text-align: left; font-family: var(--mono); font-size: 12.5px; }
+  .acts .btn.used { opacity: .6; border-style: dashed; }
+  .term { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; min-height: 80px; max-height: 320px; overflow: auto; }
+  .term .cmd { color: var(--accent); }
+  .hyp { display: grid; gap: 6px; }
+  .hyp .btn { text-align: left; }
+  .hyp .btn.right { background: var(--ok-soft); border-color: var(--ok); }
+  .hyp .btn.wrong { background: var(--bad-soft); border-color: var(--bad); }
+  .verdict { border-radius: 10px; padding: 12px 16px; background: var(--surface-2); font-size: 14.5px; }
+  .score { display: flex; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+  .score span { background: var(--surface-2); border-radius: 999px; padding: 2px 10px; }
+  .dt-q { background: var(--surface-2); border-radius: 10px; padding: 14px 16px; }
+  .dt-q .qt { font-weight: 700; margin-bottom: 8px; }
+  .dt-path { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dt-path span { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 1px 8px; margin-right: 4px; }
+  .dt-res { border: 2px solid var(--ok); border-radius: 10px; padding: 12px 16px; background: var(--ok-soft); }
+  .rq { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin: 8px 0; background: var(--surface); }
+  .rq .q { font-weight: 700; margin-bottom: 6px; }
+  .rq .q small { font-weight: 400; color: var(--muted); }
+  .rq label { display: block; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 14.5px; }
+  .rq label:hover { background: var(--surface-2); }
+  .rq.graded label.ok { background: var(--ok-soft); }
+  .rq.graded label.bad { background: var(--bad-soft); }
+  .rq .ex { display: none; font-size: 13.5px; margin-top: 6px; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+  .rq.graded .ex { display: block; }
+  .weak { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .weak a { display: block; text-decoration: none; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13.5px; background: var(--surface); }
+  .weak a.bad { border-color: var(--bad); background: var(--bad-soft); }
+  .method { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+  .method > div { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--surface); font-size: 13.5px; text-align: center; }
+  .method > div b { display: block; color: var(--accent); margin-bottom: 4px; }
+</style>
+</head>
+<body data-chapter="20">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">확장과 실전 · Chapter 20</span>
+    <h1>실전 진단 워크숍</h1>
+    <p class="lead">앞의 19개 장은 각각 하나의 메커니즘을 설명했습니다. 실제 장애는 메커니즘 이름표를 달고 오지 않습니다. "응답이 없다", "메모리가 는다", "가끔 502가 난다"로 옵니다. 이 장은 그 증상에서 출발해 가설을 세우고, 올바른 도구로 측정하고, 원인을 격리하는 훈련입니다. 여섯 개의 가상 장애 상황실에서 직접 진단해 보세요.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>증상 → 가설 → 측정 → 격리 → 수정 → 검증의 진단 루프를 체계적으로 돌릴 수 있다.</li>
+      <li>CPU·메모리·지연·에러율·커넥션 각각에 대해 "가장 먼저 볼 도구"를 즉시 고를 수 있다.</li>
+      <li>여섯 가지 전형적 Node.js 프로덕션 장애를 가상 출력만 보고 원인까지 좁힐 수 있다.</li>
+      <li>배포 전·장애 중·사후 체크리스트를 팀의 운영 절차로 가져갈 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">진단 방법론</a></li>
+    <li><a href="#s2">먼저 무엇을 볼 것인가</a></li>
+    <li><a href="#s3">장애 상황실: 여섯 사례</a></li>
+    <li><a href="#s4">진단 결정 트리 탐색기</a></li>
+    <li><a href="#s5">운영 체크리스트</a></li>
+    <li><a href="#s6">다음 학습 경로</a></li>
+    <li><a href="#s7">코스 복습 퀴즈</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 진단 방법론</h2>
+    <p>장애 대응에서 가장 흔한 실수는 <b>측정 전에 고치는 것</b>입니다. "아마 메모리겠지"로 재시작하면 증상은 사라지고 원인은 남습니다. 두 번째 실수는 <b>가설 없이 측정하는 것</b>입니다. 대시보드 40개를 멍하니 보는 상태입니다. 루프는 다음 여섯 단계입니다.</p>
+    <div class="method">
+      <div><b>① 증상</b>무엇이, 언제부터, 어디서. 변경 이력(배포·설정·트래픽) 확인</div>
+      <div><b>② 가설</b>증상을 설명하는 메커니즘 2~3개. 가장 싸게 기각할 수 있는 것부터</div>
+      <div><b>③ 측정</b>가설을 기각/확인할 도구 하나. 프로파일, 스냅샷, 리포트</div>
+      <div><b>④ 격리</b>원인을 한 컴포넌트·한 코드 경로로 좁힘. 재현 가능하면 최고</div>
+      <div><b>⑤ 수정</b>완화(롤백·재시작·셰딩)와 근본 수정을 구분. 완화 먼저</div>
+      <div><b>⑥ 검증</b>같은 지표가 정상으로 돌아왔는지. 사후 분석과 재발 방지</div>
+    </div>
+    <h3>USE와 RED</h3>
+    <p>자원 관점의 <b>USE</b>(Utilization·Saturation·Errors: CPU, 메모리, 이벤트 루프, 커넥션 풀, 스레드풀 각각에 대해 사용률·포화·에러)와 요청 관점의 <b>RED</b>(Rate·Errors·Duration)를 함께 봅니다. Node.js에서 USE의 자원 목록은 <em>이벤트 루프</em>(ELU, 지연), <em>V8 힙</em>(사용량, GC 시간), <em>libuv 스레드풀</em>(큐 길이), <em>커넥션 풀</em>(대기), <em>소켓</em>(열린 수, TIME_WAIT)입니다. 이 다섯 자원의 포화 신호가 15장의 메트릭으로 항상 수집되고 있어야 아래 워크숍이 "현실"이 됩니다.</p>
+  </section>
+
+  <section id="s2">
+    <h2>2. 먼저 무엇을 볼 것인가</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>증상</th><th>첫 번째 질문</th><th>첫 번째 도구</th><th>관련 장</th></tr>
+      <tr><td>CPU 100%, 응답 없음</td><td>루프가 블로킹됐나, 아니면 바쁜가?</td><td><code>kill -USR2</code> + <code>--report-on-signal</code> → JS 스택. 또는 <code>--cpu-prof</code> 재현</td><td>2, 10, 16</td></tr>
+      <tr><td>메모리 증가 후 OOM</td><td>JS 힙인가, 네이티브/버퍼인가?</td><td><code>process.memoryUsage()</code> 분해 → 힙이면 스냅샷 2장 비교</td><td>5, 11, 14</td></tr>
+      <tr><td>p99만 튄다</td><td>GC인가, 동기 작업인가, 하류인가?</td><td>루프 지연 히스토그램 + <code>--trace-gc</code> + 하류 지연 분리</td><td>2, 5, 10, 15</td></tr>
+      <tr><td>간헐 5xx (502/504)</td><td>우리가 닫았나, LB가 닫았나?</td><td>LB 로그의 에러 분류 + <code>keepAliveTimeout</code> 값 비교</td><td>12, 14</td></tr>
+      <tr><td>ETIMEDOUT / ECONNRESET 급증</td><td>커넥션이 고갈됐나, 하류가 느린가, DNS인가?</td><td><code>ss -tan</code> 상태 분포 + Agent/풀 대기 수 + 하류 지연</td><td>3, 12, 13, 18</td></tr>
+      <tr><td>배포 직후만 느림</td><td>콜드 스타트 요소 중 무엇인가?</td><td>첫 2분의 p99 시계열 + readiness 타이밍</td><td>4, 14, 18</td></tr>
+      <tr><td>프로세스가 안 죽음 / 재시작 느림</td><td>무엇이 루프를 붙잡나?</td><td><code>process.getActiveResourcesInfo()</code>, SIGTERM 핸들러 확인</td><td>2, 14</td></tr>
+    </table></div>
+  </section>
+
+  <section id="s3">
+    <h2>3. 장애 상황실: 여섯 사례</h2>
+    <p>각 사례에서 증상과 메트릭을 보고, 필요한 진단 액션을 골라 가상 출력을 확인한 뒤, 가설을 선택하세요. 액션은 전부 눌러도 되지만, <b>최소한의 액션으로 정답에 도달</b>하는 것이 목표입니다. 점수는 "유효한 액션 수 / 사용한 액션 수"와 가설 정답 여부로 계산합니다.</p>
+    <div class="widget">
+      <div class="w-title">장애 상황실</div>
+      <div class="w-desc">시각은 모두 가상입니다. 출력은 실제 도구의 형식을 따르되 줄였습니다.</div>
+      <div class="case-tabs" id="wr-tabs"></div>
+      <div class="war" id="wr"></div>
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. 진단 결정 트리 탐색기</h2>
+    <p>증상에서 출발해 질문에 답하면 다음에 볼 도구와 관련 장을 안내합니다. 상황실이 "정답이 있는 문제"라면, 이 트리는 "처음 보는 문제"를 위한 것입니다.</p>
+    <div class="widget">
+      <div class="w-title">증상 → 다음 도구</div>
+      <div id="dt"></div>
+    </div>
+  </section>
+
+  <section id="s5">
+    <h2>5. 운영 체크리스트</h2>
+    <h3>배포 전</h3>
+    <ul class="checklist">
+      <li>이벤트 루프 지연 p99, ELU, 힙 사용량, GC 시간, 활성 핸들 수가 메트릭으로 수집된다 (15장)</li>
+      <li><code>--max-old-space-size</code>가 컨테이너 메모리 한계의 60~75%로 설정되어 있다 (5, 14장)</li>
+      <li>SIGTERM 핸들러가 서버 close → 진행 중 요청 완료 → 풀 종료 순으로 동작하고, 타임아웃 뒤 강제 종료한다 (13, 14장)</li>
+      <li><code>server.keepAliveTimeout</code> &gt; LB idle timeout, <code>headersTimeout</code> &gt; <code>keepAliveTimeout</code> (12장)</li>
+      <li>모든 외부 호출에 타임아웃과 AbortSignal이 있고, 재시도는 예산 안에서만 (13, 18장)</li>
+      <li>readiness는 의존성과 워밍업을 반영하고, liveness는 루프 지연만 본다 (14장)</li>
+      <li><code>--report-on-signal</code>(또는 <code>--report-on-fatalerror</code>)과 <code>--heapsnapshot-signal</code>이 켜져 있다 (11, 15장)</li>
+      <li>lockfile 고정, provenance 검증, 권한 모델 적용 여부 결정 (16장)</li>
+      <li>부하 테스트에서 셰딩이 작동하고 503이 올바르게 나간다 (18장)</li>
+    </ul>
+    <h3>장애 중</h3>
+    <ul class="checklist">
+      <li>최근 변경(배포·설정·의존성·트래픽 패턴)부터 확인. 롤백이 가능하면 먼저 완화</li>
+      <li>재시작 전에 증거 수집: 진단 리포트, 힙 스냅샷, CPU 프로파일 중 증상에 맞는 것 하나</li>
+      <li>한 인스턴스를 트래픽에서 빼서(readiness 실패) 살아있는 채로 조사</li>
+      <li>가설 하나당 측정 하나. 측정 결과를 채널에 기록하며 진행</li>
+      <li>완화 후에도 지표가 정상인지 10분 이상 관찰</li>
+    </ul>
+    <h3>사후</h3>
+    <ul class="checklist">
+      <li>타임라인(감지 → 대응 → 완화 → 복구)과 각 구간의 시간. 감지가 늦었다면 경보 보강</li>
+      <li>근본 원인과 기여 요인 분리. "사람 실수"는 원인이 아니라 증상</li>
+      <li>같은 종류의 장애를 미리 잡을 테스트·경보·가드레일 하나 이상 추가 (17장)</li>
+      <li>런북 갱신: 이 증상에 대한 "첫 번째 도구"를 2절 표에 추가</li>
+    </ul>
+  </section>
+
+  <section id="s6">
+    <h2>6. 다음 학습 경로</h2>
+    <ul>
+      <li><b>Node.js 소스 읽기</b>: <code>lib/internal/timers.js</code>, <code>lib/internal/process/task_queues.js</code>, <code>lib/internal/streams/</code>, <code>lib/_http_server.js</code>. 이 코스가 설명한 동작의 "진짜 코드"를 한 번 읽으면 문서가 다르게 읽힙니다. <code>src/node.cc</code>와 <code>src/api/</code>는 부트스트랩(1장).</li>
+      <li><b>libuv</b>: <code>src/unix/core.c</code>의 <code>uv_run</code>, <code>src/unix/linux.c</code>의 epoll 처리, <code>src/threadpool.c</code>. 500줄 안쪽으로 핵심이 끝납니다.</li>
+      <li><b>V8 블로그</b>(v8.dev/blog): Orinoco, Maglev, Sparkplug, pointer compression, "Fast properties" 글. 4~5장의 1차 자료.</li>
+      <li><b>Node.js 진단 워킹 그룹</b>(nodejs/diagnostics)의 문서와 <code>nodejs.org/en/learn/diagnostics</code>. 공식 "flame graph", "memory", "live debugging" 가이드.</li>
+      <li><b>undici</b> 소스: HTTP 클라이언트 풀링과 파이프라이닝의 현대적 구현(12장).</li>
+      <li><b>Brendan Gregg, Systems Performance</b>: USE 방법론과 OS 수준 도구(perf, bpftrace). Node 바깥을 볼 때.</li>
+      <li>실제 프로덕션에서 이 코스의 지표를 하나씩 켜 보고, 평시 값을 기록해 두세요. 장애 때 비교할 "정상"이 있어야 진단이 됩니다.</li>
+    </ul>
+  </section>
+
+  <section id="s7">
+    <h2>7. 코스 복습 퀴즈</h2>
+    <p>10문제. 제출하면 점수와 함께 틀린 문제의 장으로 가는 링크를 보여 줍니다.</p>
+    <div class="widget">
+      <div class="w-title">종합 복습</div>
+      <div id="rq"></div>
+      <div class="controls"><button class="btn primary" id="rq-submit">채점</button><button class="btn" id="rq-reset">다시</button></div>
+      <div id="rq-result"></div>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>측정 전에 고치지 말고, 가설 없이 측정하지 말 것. 증상→가설→측정→격리→수정→검증.</li>
+    <li>Node의 USE 자원은 이벤트 루프, V8 힙, 스레드풀, 커넥션 풀, 소켓. 이 다섯의 포화 신호를 평시에 수집한다.</li>
+    <li>CPU 100%는 스택(리포트), 메모리는 분해 후 스냅샷 비교, p99는 루프 지연+GC, 502는 keep-alive 타임아웃, ETIMEDOUT은 풀 고갈, 배포 직후 느림은 콜드 스타트 요소 분해.</li>
+    <li>완화와 근본 수정을 구분하고, 재시작 전에 증거를 남긴다. 사후에는 가드레일 하나를 반드시 추가한다.</li>
+  </ul></div>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = MM.esc;
+
+  // ========== 미니 차트 ==========
+  function spark(series, opts) {
+    const W = 220, H = 70, p = 4;
+    const max = opts.max ?? Math.max(...series), min = opts.min ?? 0;
+    const X = i => p + i / (series.length - 1) * (W - 2 * p), Y = v => H - p - (v - min) / ((max - min) || 1) * (H - 2 * p);
+    const d = series.map((v, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1)).join("");
+    const color = opts.color || "var(--accent)";
+    let extra = "";
+    if (opts.mark != null) extra += `<line x1="${X(opts.mark)}" y1="${p}" x2="${X(opts.mark)}" y2="${H - p}" style="stroke:var(--warn);stroke-dasharray:3 3"/>`;
+    if (opts.limit != null) extra += `<line x1="${p}" y1="${Y(opts.limit)}" x2="${W - p}" y2="${Y(opts.limit)}" style="stroke:var(--bad);stroke-dasharray:3 3"/>`;
+    return `<div class="chart"><div class="n"><span>${opts.name}</span><span>${opts.last}</span></div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:70px;display:block"><path d="${d}" fill="none" style="stroke:${color};stroke-width:2"/>${extra}</svg></div>`;
+  }
+  const ramp = (n, f) => Array.from({ length: n }, (_, i) => f(i / (n - 1), i));
+  const noise = (seed) => { let s = seed; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296 - 0.5; }; };
+
+  // ========== 사례 데이터 ==========
+  const CASES = [
+    {
+      title: "① CPU 100%, 응답 없음",
+      symptom: "14:02부터 인스턴스 3개 중 1개가 헬스체크 실패. 해당 인스턴스 CPU 100%, 메모리 정상, 로그가 멈춤. 나머지 인스턴스는 정상. 14:00에 '사용자 프로필 URL 검증 강화' 배포가 있었다.",
+      charts: (r) => [spark(ramp(40, (t, i) => i < 24 ? 25 + r() * 10 : 100), { name: "CPU %", last: "100", max: 100, mark: 24, color: "var(--bad)" }), spark(ramp(40, (t, i) => i < 24 ? 120 + r() * 20 : 118), { name: "힙 MB", last: "118", max: 400 }), spark(ramp(40, (t, i) => i < 24 ? 3 + r() * 2 : 0), { name: "요청/s (이 인스턴스)", last: "0", max: 10, mark: 24 }), spark(ramp(40, (t, i) => i < 24 ? 2 + r() : 0), { name: "루프 지연 p99 ms", last: "(샘플 없음)", max: 10, mark: 24 })],
+      actions: [
+        { label: "top -H -p <pid>", useful: true, out: `<span class="cmd">$ top -H -p 41822 -n 1</span>
+  PID USER  %CPU  %MEM   TIME+  COMMAND
+41822 node  99.7   1.8  6:12.03 node         ← 메인 스레드(JS) 하나가 100%
+41830 node   0.0   1.8  0:00.41 node         (libuv 스레드풀 워커들은 idle)
+41831 node   0.0   1.8  0:00.39 node
+→ 스레드풀·GC 헬퍼가 아니라 JS 스레드가 바쁘다. 루프가 블로킹 중.` },
+        { label: "kill -USR2 <pid>  (--report-on-signal)", useful: true, out: `<span class="cmd">$ kill -USR2 41822 &amp;&amp; cat report.20261021.140512.41822.0.001.json | jq .javascriptStack</span>
+{
+  "message": "No stack.",       ← 신호 처리 시점의 JS 스택이 비어 있으면
+  ...                            시그널 핸들러가 JS로 들어오지 못한 것. 다시 시도:
+}
+<span class="cmd">$ kill -USR2 41822; sleep 1; jq '.javascriptStack.stack[0:6]' report.*.002.json</span>
+[
+  "at RegExp.exec (&lt;anonymous&gt;)",
+  "at validateProfileUrl (file:///app/src/users/validate.js:14:31)",
+  "at updateProfile (file:///app/src/users/service.js:88:9)",
+  "at Layer.handle (file:///app/node_modules/router/lib/layer.js:...)",
+  ...
+]
+→ RegExp.exec 안에 멈춰 있다. validate.js:14.` },
+        { label: "sed -n 10,16p src/users/validate.js", useful: true, out: `<span class="cmd">$ sed -n 10,16p src/users/validate.js</span>
+10  // 14:00 배포에서 추가
+11  const URL_RE = /^(https?:\\/\\/)?([a-z0-9-]+\\.)+[a-z]{2,}(\\/[^\\s]*)*$/i;
+12
+13  export function validateProfileUrl(url) {
+14    if (!URL_RE.test(url)) throw new ValidationError('invalid url');
+15    return url;
+16  }
+→ ([a-z0-9-]+\\.)+ 와 (\\/[^\\s]*)* : 중첩 수량자. "aaaa…a!" 같은 입력에 지수 백트래킹(ReDoS, 16장).` },
+        { label: "node --cpu-prof (재현)", useful: false, out: `<span class="cmd">$ node --cpu-prof app.js</span>
+→ 이미 멈춘 프로세스에는 붙일 수 없다. 재현 입력을 알기 전에는 프로파일이 무의미.
+  (멈춘 프로세스에서는 리포트/인스펙터가 먼저. 프로파일은 원인 확인 후 검증용.)` },
+        { label: "heap snapshot (--heapsnapshot-signal)", useful: false, out: `<span class="cmd">$ kill -USR1 41822</span>
+→ 힙 스냅샷은 메모리 문제의 도구. 메모리는 정상(118MB)이고 루프가 블로킹된 상태라
+  스냅샷 트리거 자체가 JS가 멈춰 있으면 실행되지 않을 수 있다. 시간 낭비.` },
+        { label: "ss -tan state established | wc -l", useful: false, out: `<span class="cmd">$ ss -tan state established | wc -l</span>
+312
+→ 연결은 쌓여 있지만(응답을 못 하니 당연) 원인 정보는 없다. 커넥션 문제가 아니라 결과.` },
+        { label: "kubectl logs --since=10m", useful: true, out: `<span class="cmd">$ kubectl logs api-7c9f-x2k1 --since=10m | tail -5</span>
+{"level":30,"time":"14:01:58","msg":"request completed","url":"/users/me","ms":12}
+{"level":30,"time":"14:02:03","msg":"request started","url":"PUT /users/me/profile","reqId":"a81f"}
+(이후 로그 없음)
+→ 마지막으로 시작된 요청이 PUT /users/me/profile. 완료 로그가 없다. 이 요청 처리 중 멈췄다.` },
+      ],
+      hypotheses: [
+        { t: "새 URL 정규식의 중첩 수량자로 인한 ReDoS. 특정 입력에서 RegExp.exec이 지수 시간 → 루프 블로킹", ok: true },
+        { t: "메모리 누수로 GC가 CPU를 독점", ok: false, why: "힙은 118MB로 안정적이고, top에서 GC 헬퍼 스레드가 아니라 메인 스레드가 바쁘다." },
+        { t: "DB 커넥션 풀 고갈로 요청이 대기", ok: false, why: "풀 대기는 CPU를 쓰지 않는다. CPU 100%와 모순." },
+        { t: "libuv 스레드풀 포화", ok: false, why: "top -H에서 스레드풀 워커는 0%. JS 스레드가 100%." },
+      ],
+      fix: "완화: 해당 인스턴스 재시작 + 배포 롤백. 근본: 정규식을 선형 시간으로 재작성(중첩 수량자 제거) 또는 RE2 사용, 입력 길이 제한(URL 2KB), 정규식 린터(eslint-plugin-regexp)를 CI에. 재발 방지: 루프 지연 p99 경보(샘플이 끊기는 것 자체를 경보로), <code>--report-on-signal</code>을 모든 인스턴스에 상시.",
+    },
+    {
+      title: "② 메모리 점진 증가 후 OOMKill",
+      symptom: "모든 인스턴스가 약 6시간 주기로 재시작된다. kubectl describe에 OOMKilled. 재시작 직후 RSS 180MB, 6시간 뒤 1GB(한계). 트래픽은 평탄. 2주 전 'WebSocket 알림' 기능 배포 이후 시작.",
+      charts: (r) => [spark(ramp(40, t => 180 + t * 820 + r() * 10), { name: "RSS MB", last: "1000", max: 1100, limit: 1024, color: "var(--bad)" }), spark(ramp(40, t => 90 + t * 650 + r() * 8), { name: "heapUsed MB", last: "740", max: 1100 }), spark(ramp(40, t => 2 + t * 40 + r() * 3), { name: "GC 시간 %/분", last: "42", max: 60 }), spark(ramp(40, () => 150 + r() * 20), { name: "요청/s", last: "152", max: 300 })],
+      actions: [
+        { label: "process.memoryUsage() 분해 (메트릭)", useful: true, out: `<span class="cmd">// 15장의 메트릭 엔드포인트, 5시간 경과 시점</span>
+{ rss: 912MB, heapTotal: 760MB, heapUsed: 702MB, external: 48MB, arrayBuffers: 31MB }
+→ 증가분의 대부분이 heapUsed. JS 객체가 쌓인다 (네이티브/버퍼 누수 아님). → 힙 스냅샷 비교로.` },
+        { label: "kill -USR1 ×2 (힙 스냅샷 1시간 간격) → 비교", useful: true, out: `<span class="cmd">// Chrome DevTools Memory → Comparison (snap2 vs snap1), Size Delta 정렬</span>
+Constructor              # New   # Deleted   Size Delta
+(closure)                48,211      1,020   +38.2 MB   ← 익명 함수가 쌓인다
+(array)                  12,030        410   +22.9 MB
+Object                   24,100      3,200   +11.4 MB
+Socket                        2          3     -1 KB   ← 소켓 자체는 안 쌓임
+→ (closure) 하나를 열어 Retainers 추적:
+   () =&gt; { ... }  ←  _events.message[48,203]  ←  WebSocket  ←  notificationHub.ws  (전역)
+→ 하나의 WebSocket 객체의 'message' 리스너 배열에 4만 8천 개의 클로저.` },
+        { label: "grep MaxListeners logs", useful: true, out: `<span class="cmd">$ kubectl logs api-… | grep -m1 MaxListeners</span>
+(node:1) MaxListenersExceededWarning: Possible EventEmitter memory leak detected.
+11 message listeners added to [WebSocket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+→ 2주 전부터 매 부팅마다 한 번씩 찍히고 있었다. 아무도 안 봤다.` },
+        { label: "grep -n \"on('message'\" src/notifications/", useful: true, out: `<span class="cmd">$ grep -rn "on('message'" src/notifications/</span>
+src/notifications/hub.js:41:    this.ws.on('message', (raw) =&gt; this.route(userId, raw));
+<span class="cmd">$ sed -n 36,46p src/notifications/hub.js</span>
+36  subscribe(userId, res) {
+37    // 요청마다 호출됨
+38    const onMsg = (raw) =&gt; { if (JSON.parse(raw).userId === userId) res.write(raw); };
+39    this.ws.on('message', onMsg);          // 공유 WebSocket에 요청마다 리스너 추가
+40    res.on('close', () =&gt; { /* TODO: cleanup */ });   // 제거 안 함
+41  }
+→ 요청(SSE 구독)마다 공유 소켓에 리스너를 붙이고 끊을 때 떼지 않는다. 리스너 클로저가 res(응답 객체)를 붙잡아 응답 버퍼까지 함께 산다.` },
+        { label: "--trace-gc 로그", useful: false, out: `<span class="cmd">$ kubectl logs … | grep Mark-Compact | tail -3</span>
+[1:0x5a8e0]  5h02m  Mark-Compact 698.1 (760.2) -&gt; 695.4 (760.2) MB, 412.3 / 0.1 ms  (average mu = 0.61)
+[1:0x5a8e0]  5h04m  Mark-Compact 701.0 (762.0) -&gt; 698.9 (762.0) MB, 428.7 / 0.1 ms
+→ 풀 GC가 거의 회수하지 못한다(698→695). "누수가 있다"는 확인은 되지만 무엇인지는 모른다. 스냅샷이 답.` },
+        { label: "--max-old-space-size 늘리기", useful: false, out: `→ 한계를 2GB로 올리면 12시간 주기로 죽는다. 증상 지연일 뿐. 또한 컨테이너 한계(1GB)보다 크게 잡으면 V8이 GC를 미루다 cgroup OOM으로 먼저 죽는다(14장).` },
+        { label: "ss -tan | wc -l", useful: false, out: `<span class="cmd">$ ss -tan | wc -l</span>
+214
+→ 소켓 수는 정상 범위. 스냅샷에서도 Socket 객체는 안 쌓였다. 소켓 누수 아님.` },
+      ],
+      hypotheses: [
+        { t: "공유 WebSocket에 요청마다 message 리스너를 추가하고 제거하지 않아, 리스너 클로저가 응답 객체를 붙잡은 채 쌓인다", ok: true },
+        { t: "V8 힙 한계가 컨테이너보다 작아서 조기 OOM", ok: false, why: "힙 한계 문제라면 heapUsed가 한계 근처에서 GC로 유지되지 투명하게 선형 증가하지 않는다. GC가 회수하지 못하고 있다." },
+        { t: "WebSocket 소켓 자체가 닫히지 않고 쌓인다", ok: false, why: "스냅샷에서 Socket 객체는 증가하지 않았다. 소켓 하나에 리스너가 쌓인다." },
+        { t: "HTTP 응답 버퍼가 백프레셔 없이 쌓인다", ok: false, why: "부분적으로 맞다(res가 retain됨) 하지만 그것은 결과다. retainer 체인의 뿌리는 리스너 배열." },
+      ],
+      fix: "완화: 재시작 주기 짧게(임시). 근본: <code>res.on('close', () => this.ws.off('message', onMsg))</code>, 또는 리스너 하나가 userId→res 맵을 보고 라우팅하도록 구조 변경(요청당 리스너 추가 자체를 없앰). 재발 방지: <code>MaxListenersExceededWarning</code>을 로그 경보로, 힙 사용량 추세 경보(시간당 증가율), 11장의 누수 테스트(N회 요청 후 힙 비교)를 CI에.",
+    },
+    {
+      title: "③ p99만 튀고 평균은 정상",
+      symptom: "평균 응답 45ms, p50 30ms로 평소와 같다. 그런데 p99가 1.2초, p99.9가 3초. 특정 엔드포인트가 아니라 모든 엔드포인트에서 동시에 튄다. 하루 중 09~10시에 심하다. 그 시간대에 '일일 리포트 내보내기' 요청이 몰린다.",
+      charts: (r) => [spark(ramp(40, (t, i) => 30 + r() * 4), { name: "p50 ms", last: "31", max: 60 }), spark(ramp(40, (t, i) => [8, 15, 20, 27, 33].includes(i) ? 1100 + r() * 300 : 60 + r() * 20), { name: "p99 ms", last: "1200", max: 1500, color: "var(--bad)" }), spark(ramp(40, (t, i) => [8, 15, 20, 27, 33].includes(i) ? 900 + r() * 200 : 3 + r() * 2), { name: "루프 지연 p99 ms", last: "950", max: 1200, color: "var(--warn)" }), spark(ramp(40, (t, i) => 380 + ([8, 15, 20, 27, 33].includes(i) ? 120 : 0) + r() * 20), { name: "heapUsed MB (한계 512)", last: "500", max: 560, limit: 512 })],
+      actions: [
+        { label: "루프 지연 히스토그램 vs p99 상관", useful: true, out: `<span class="cmd">// monitorEventLoopDelay 메트릭과 p99 시계열 겹치기</span>
+09:12:30  loop p99 =   4ms   http p99 =   62ms
+09:12:40  loop p99 = 920ms   http p99 = 1180ms   ← 동시에 튄다
+09:12:50  loop p99 =   5ms   http p99 =   70ms
+→ 요청 지연의 스파이크 = 루프 블로킹. 하류(DB) 문제라면 루프 지연은 조용했을 것. 원인은 이 프로세스 안의 동기 작업 또는 GC.` },
+        { label: "--trace-gc 09:12:40 전후", useful: true, out: `<span class="cmd">$ grep '09:12:4' gc.log</span>
+[1:0x5a8e0] Scavenge 412.3 (480.0) -&gt; 398.1 (480.0) MB, 3.2 / 0.0 ms
+[1:0x5a8e0] Mark-Compact (reduce) 498.7 (512.0) -&gt; 391.2 (512.0) MB, <b>612.4</b> / 0.3 ms (average mu = 0.42) allocation failure; GC in old space requested
+→ 612ms 풀 GC. 힙이 한계(512MB) 근처까지 차서 "allocation failure"로 강제 Mark-Compact. 
+  그런데 스파이크는 920ms. GC 612ms + 나머지 300ms는?` },
+        { label: "--cpu-prof 09~10시 1분 샘플", useful: true, out: `<span class="cmd">// 플레임 그래프 상위 self-time (10장)</span>
+  self     total   function
+ 31.2%    31.2%   (garbage collector)
+ 24.8%    24.8%   JSON.stringify                  ← reports/export.js:57
+  9.1%    40.0%   exportReport
+  3.3%     3.3%   Buffer.toString
+→ 리포트 내보내기가 수십 MB 객체를 JSON.stringify(동기, 수백 ms) + 그 과정에서 대량 할당 → 힙 압력 → 긴 Mark-Compact.
+  두 원인이 한 요청에서 연쇄한다.` },
+        { label: "sed -n 50,60p src/reports/export.js", useful: true, out: `<span class="cmd">$ sed -n 50,60p src/reports/export.js</span>
+50  async function exportReport(req, res) {
+51    const rows = await db.query('SELECT * FROM events WHERE day = $1', [req.query.day]);  // 50~200k 행
+52    const payload = rows.map(toDto);                       // 객체 20만 개 할당
+57    res.setHeader('Content-Type', 'application/json');
+58    res.end(JSON.stringify(payload));                     // 40MB 문자열을 동기로 생성
+→ 전부 메모리에 올리고 한 번에 직렬화. 루프 블로킹 + 힙 스파이크의 교과서적 조합.` },
+        { label: "DB 슬로우 쿼리 로그", useful: false, out: `<span class="cmd">$ grep 'duration:' postgres.log | awk '$NF &gt; 500' | wc -l</span>
+0
+→ 500ms 넘는 쿼리 없음. events 쿼리도 120ms. DB는 범인이 아니다. (루프 지연 상관을 먼저 봤다면 이 단계는 생략 가능했다.)` },
+        { label: "ss / 커넥션 상태", useful: false, out: `<span class="cmd">$ ss -tan | awk '{print $1}' | sort | uniq -c</span>
+    180 ESTAB
+     24 TIME-WAIT
+→ 정상. 네트워크 문제 신호 없음.` },
+        { label: "힙 스냅샷", useful: false, out: `→ 누수가 아니라 스파이크다(GC 후 391MB로 돌아온다). 스냅샷은 "무엇이 영구히 남는가"의 도구. 여기선 "무엇이 순간적으로 많이 할당되는가"가 질문이라 Allocation sampling/CPU 프로파일이 맞다.` },
+      ],
+      hypotheses: [
+        { t: "리포트 내보내기가 대용량 JSON.stringify(동기)로 루프를 막고, 동시에 대량 할당이 힙을 한계까지 밀어 긴 Mark-Compact를 유발. 다른 모든 요청이 그동안 대기", ok: true },
+        { t: "DB가 09~10시에 느리다", ok: false, why: "슬로우 쿼리 없음. 무엇보다 루프 지연이 요청 지연과 함께 튄다 — 하류 대기는 루프를 막지 않는다." },
+        { t: "메모리 누수", ok: false, why: "GC 후 힙이 391MB로 돌아온다. 누수는 돌아오지 않는다." },
+        { t: "libuv 스레드풀 포화 (fs/crypto)", ok: false, why: "스레드풀 포화는 해당 작업의 지연만 늘리고 루프 지연 히스토그램에는 나타나지 않는다." },
+      ],
+      fix: "완화: 리포트 엔드포인트를 별도 인스턴스/워커로 분리하거나 동시 실행 1로 제한. 근본: DB 커서로 스트리밍 + <code>JSON</code> 행 단위 직렬화를 <code>pipeline</code>으로 응답에 흘리기(6장) → 메모리 상수, 루프는 청크마다 양보. 또는 워커 스레드(9장)에서 생성해 파일/오브젝트 스토리지로. 힙 한계를 컨테이너 대비 여유 있게. 재발 방지: 엔드포인트별 루프 블로킹 기여도(요청 처리 중 최대 동기 구간) 로깅, 응답 크기 상한.",
+    },
+    {
+      title: "④ 간헐적 502 (ALB 뒤)",
+      symptom: "전체 요청의 0.3%가 502. 애플리케이션 로그에는 에러가 없다. 특정 시간대나 엔드포인트에 몰리지 않고 균등하게 발생. ALB(idle timeout 60초) 뒤에 Node 서버. 트래픽이 적은 새벽에 비율이 더 높다(1%).",
+      charts: (r) => [spark(ramp(40, (t, i) => 0.25 + r() * 0.15 + (i < 10 ? 0.7 : 0)), { name: "502 비율 %", last: "0.3", max: 1.5, color: "var(--bad)" }), spark(ramp(40, (t, i) => (i < 10 ? 30 : 180) + r() * 20), { name: "요청/s", last: "182", max: 250 }), spark(ramp(40, () => 2 + r()), { name: "루프 지연 p99 ms", last: "2.4", max: 10 }), spark(ramp(40, () => 0), { name: "앱 5xx 로그/분", last: "0", max: 5 })],
+      actions: [
+        { label: "ALB 액세스 로그의 502 행", useful: true, out: `<span class="cmd">$ zcat alb/*.gz | awk '$9==502' | head -3</span>
+https 2026-10-21T03:14:22.118Z app/prod-alb … 10.0.3.14:8080 -1 -1 -1 502 - 318 0 "GET /api/items" … "-" "-"
+→ target_processing_time = -1, 대상 응답 코드 "-" : ALB가 백엔드에 보냈지만 응답을 못 받음.
+  AWS 문서: "The target closed the connection with a TCP RST or FIN while the load balancer had an outstanding request" 패턴.` },
+        { label: "node -p 서버 타임아웃 설정", useful: true, out: `<span class="cmd">$ kubectl exec … -- node -e "const s=require('/app/server').server; console.log({ka:s.keepAliveTimeout, h:s.headersTimeout, rt:s.requestTimeout})"</span>
+{ ka: 5000, h: 60000, rt: 300000 }
+→ keepAliveTimeout = 5초 (Node 기본값). ALB idle timeout = 60초.
+  ALB는 백엔드 연결을 60초까지 재사용한다고 믿는데, Node는 5초 유휴 뒤 소켓을 닫는다.` },
+        { label: "tcpdump 새벽 샘플", useful: true, out: `<span class="cmd">$ tcpdump -nn -r cap.pcap 'port 8080' | grep -A3 '03:14:17'</span>
+03:14:17.002 IP 10.0.1.5.44210 &gt; 10.0.3.14.8080: Flags [P.]  GET /api/items (응답 정상)
+03:14:22.010 IP 10.0.3.14.8080 &gt; 10.0.1.5.44210: Flags [F.]   ← 5.0초 뒤 Node가 FIN (keepAliveTimeout)
+03:14:22.011 IP 10.0.1.5.44210 &gt; 10.0.3.14.8080: Flags [P.]  GET /api/items   ← 동시에 ALB가 같은 소켓에 새 요청
+03:14:22.011 IP 10.0.3.14.8080 &gt; 10.0.1.5.44210: Flags [R.]   ← RST
+→ 경쟁 조건. 서버가 닫는 순간 LB가 요청을 보냈다. 트래픽이 적을수록 유휴 5초에 걸리는 소켓이 많아 비율이 높다.` },
+        { label: "ss -tan state time-wait | wc -l", useful: false, out: `<span class="cmd">$ ss -tan state time-wait | wc -l</span>
+1,842
+→ 서버 측 TIME-WAIT가 많다 = 서버가 먼저 닫는다는 간접 증거. 방향은 맞지만 결정적이지 않다. 설정값 비교가 더 빠르다.` },
+        { label: "앱 에러 로그 grep", useful: false, out: `<span class="cmd">$ kubectl logs … | grep -iE 'error|ECONNRESET' | wc -l</span>
+0
+→ 당연히 없다. Node 입장에서는 정상적으로 유휴 소켓을 닫았을 뿐이다. 이 장애는 애플리케이션 로그에 절대 나타나지 않는다.` },
+        { label: "CPU 프로파일", useful: false, out: `→ CPU·지연 모두 정상. 성능 문제가 아니다.` },
+        { label: "Node 재시작", useful: false, out: `→ 재시작해도 비율은 그대로. 설정 문제는 재시작으로 안 고쳐진다. (재시작 자체도 SIGTERM 처리 중 in-flight 요청을 끊어 502를 잠깐 더 만든다 — 14장)` },
+      ],
+      hypotheses: [
+        { t: "서버 keepAliveTimeout(5초) < ALB idle timeout(60초). 서버가 유휴 소켓을 먼저 닫는 순간 LB가 그 소켓으로 요청을 보내 502", ok: true },
+        { t: "애플리케이션이 간헐적으로 예외를 던진다", ok: false, why: "앱 로그에 에러가 없고, ALB 로그의 대상 응답 코드가 '-'(응답 없음)이다. 500이 아니라 연결이 끊긴 것." },
+        { t: "이벤트 루프 블로킹으로 타임아웃", ok: false, why: "루프 지연 2ms. 타임아웃이면 504이고 target_processing_time이 60초로 찍힌다." },
+        { t: "SIGTERM 그레이스풀 셧다운 누락", ok: false, why: "배포 시점에만 몰리는 패턴이어야 한다. 이 장애는 균등하고 새벽에 더 높다." },
+      ],
+      fix: "<code>server.keepAliveTimeout = 65_000</code> (LB idle 60초보다 길게), <code>server.headersTimeout = 66_000</code> (keepAliveTimeout보다 커야 함, 12장). 배포 후 ALB 502 비율이 0으로 떨어지는지 확인. 재발 방지: 인프라 코드(ALB idle timeout)와 앱 설정을 한 곳에서 파생시키거나, 배포 전 체크리스트 항목으로. LB 쪽 502 비율 경보.",
+    },
+    {
+      title: "⑤ 하류 호출 ETIMEDOUT 급증",
+      symptom: "결제 서비스(payments)로의 호출이 ETIMEDOUT/ECONNRESET으로 실패하기 시작. payments 팀은 '우리는 정상, p99 400ms'라고 한다. 우리 쪽에서 payments로 가는 요청만 실패하고, 다른 하류(inventory)는 정상. 30분 전 payments의 p99가 80ms에서 400ms로 올라간 배포가 있었다.",
+      charts: (r) => [spark(ramp(40, (t, i) => i < 12 ? 0 : Math.min(60, (i - 12) * 3) + r() * 4), { name: "payments 에러율 %", last: "60", max: 70, mark: 12, color: "var(--bad)" }), spark(ramp(40, (t, i) => i < 12 ? 80 : 400 + r() * 30), { name: "payments p99 ms (그쪽 측정)", last: "410", max: 500, mark: 12 }), spark(ramp(40, (t, i) => i < 12 ? 2 : Math.min(500, (i - 12) * 40)), { name: "Agent 대기 요청 수", last: "500", max: 550, mark: 12, color: "var(--warn)" }), spark(ramp(40, () => 2 + r()), { name: "루프 지연 p99 ms", last: "2.1", max: 10 })],
+      actions: [
+        { label: "ss -tan dst payments:443", useful: true, out: `<span class="cmd">$ ss -tan dst 10.0.9.21:443 | awk '{print $1}' | sort | uniq -c</span>
+     50 ESTAB
+      0 SYN-SENT
+→ payments로의 연결이 정확히 50개. 더 늘지 않는다. 어딘가 50이라는 상한이 있다.` },
+        { label: "HTTP Agent / undici 풀 통계", useful: true, out: `<span class="cmd">// 15장: Agent 메트릭 (agent.sockets, agent.requests)</span>
+{ host: "payments:443", sockets: 50, free: 0, <b>pendingRequests: 512</b>, maxSockets: 50 }
+→ 소켓 50개 모두 사용 중, 512개 요청이 소켓을 기다리는 중. 큐에서 기다리다 우리 쪽 타임아웃(3초)에 걸려 ETIMEDOUT.
+  payments는 "요청을 받은 것"만 측정하니 p99 400ms가 맞다. 우리 큐에서 기다린 2.6초는 그쪽에 안 보인다.` },
+        { label: "Little의 법칙 계산", useful: true, out: `<span class="cmd">// 18장</span>
+도착률 λ = 300 req/s (payments 호출), 체류 시간 W = 0.4s (배포 후 p99 기준, 평균 ~0.25s)
+L = λ × W = 300 × 0.25 ≈ 75 (평균),  피크 300 × 0.4 = 120
+maxSockets = 50 &lt; 75   → 배포 전(W=0.08s)에는 L ≈ 24로 50이 충분했다.
+→ 하류가 느려지자 필요한 동시 연결이 풀 상한을 넘어 큐가 쌓였다. 하류의 느림이 우리 쪽에서 "타임아웃"으로 증폭.` },
+        { label: "grep maxSockets src/", useful: true, out: `<span class="cmd">$ grep -rn maxSockets src/</span>
+src/clients/payments.js:9:  agent: new https.Agent({ keepAlive: true, maxSockets: 50 }),
+src/clients/payments.js:14: timeout: 3000,            // 호출 타임아웃
+→ 큐 대기 시간도 3초 타임아웃에 포함된다. 재시도(13장)가 있다면 실패한 요청이 다시 큐에 들어가 상황을 악화시킨다.
+<span class="cmd">$ sed -n 20,24p src/clients/payments.js</span>
+20  retries: 3, backoff: 200   ← 있다. 실패 1건이 호출 4건이 된다.` },
+        { label: "DNS 조회 시간", useful: false, out: `<span class="cmd">$ dig payments.internal +stats | grep 'Query time'</span>
+;; Query time: 1 msec
+→ DNS 정상. (ETIMEDOUT이 SYN 단계였다면 SYN-SENT 상태가 ss에 보였을 것.)` },
+        { label: "payments 쪽 서버 지표 요청", useful: false, out: `→ payments 팀: "커넥션 50개, 모두 정상 응답, 5xx 없음, p99 400ms". 사실이다. 그들의 서버는 정상이고, 우리의 클라이언트 측 큐가 문제. 양쪽이 서로 "우리는 정상"이라고 하는 전형적 상황.` },
+        { label: "CPU 프로파일", useful: false, out: `→ 루프 지연 2ms, CPU 정상. 우리 프로세스는 바쁘지 않다. 기다리고 있을 뿐.` },
+        { label: "인스턴스 스케일 아웃", useful: false, out: `→ 인스턴스를 2배로 늘리면 풀 총량도 100이 되어 일시 완화되지만, payments에 더 많은 동시 요청이 가서 그쪽 p99가 더 오르면 다시 포화. 원인(하류 지연 × 풀 상한 × 재시도 증폭)은 그대로.` },
+      ],
+      hypotheses: [
+        { t: "하류 p99 상승으로 필요한 동시 연결(λW)이 Agent maxSockets(50)를 넘어 클라이언트 큐가 쌓이고, 큐 대기가 호출 타임아웃을 소진. 재시도가 부하를 증폭", ok: true },
+        { t: "payments 서버가 연결을 거부한다", ok: false, why: "ESTAB 50개가 모두 정상 응답 중. SYN-SENT 없음. 거부가 아니라 우리가 더 열지 않는 것." },
+        { t: "DNS 장애", ok: false, why: "조회 1ms. SYN 단계 실패 흔적 없음." },
+        { t: "이벤트 루프 블로킹", ok: false, why: "루프 지연 2ms." },
+      ],
+      fix: "완화: payments 재시도를 끄고(증폭 제거) maxSockets를 λW 기준으로 상향(또는 undici Pool connections). 근본: 타임아웃을 '큐 대기'와 '응답 대기'로 분리(undici의 <code>connectTimeout/headersTimeout/bodyTimeout</code>), 서킷 브레이커(13장)로 하류 지연 시 빠른 실패, 재시도는 예산 안에서 멱등 요청만, 풀 대기 수를 메트릭으로(15장) 경보. 계약: 하류 팀과 '우리 쪽에서 본 지연'을 공유 대시보드로.",
+    },
+    {
+      title: "⑥ 배포 직후 2분만 느림",
+      symptom: "롤링 배포마다 새 파드가 트래픽을 받기 시작한 뒤 약 2분간 p99가 평소 60ms에서 800ms로 뛴다. 2분 뒤 정상. 모든 엔드포인트. readiness 프로브는 /healthz (200 OK 즉시 반환). 코드 변경과 무관하게 매 배포 발생.",
+      charts: (r) => [spark(ramp(40, (t, i) => i < 5 ? 60 : Math.max(60, 800 * Math.exp(-(i - 5) / 6)) + r() * 10), { name: "새 파드 p99 ms", last: "62", max: 900, mark: 5, color: "var(--bad)" }), spark(ramp(40, (t, i) => i < 5 ? 0 : Math.min(100, (i - 5) * 25)), { name: "새 파드 트래픽 %", last: "100", max: 110, mark: 5 }), spark(ramp(40, (t, i) => i < 5 ? 0 : Math.min(10, (i - 5) * 0.6)), { name: "DB 풀 열린 커넥션", last: "10", max: 12, mark: 5 }), spark(ramp(40, (t, i) => i < 5 ? 0 : Math.min(95, 100 * (1 - Math.exp(-(i - 5) / 5)))), { name: "캐시 히트율 %", last: "95", max: 100, mark: 5 })],
+      actions: [
+        { label: "첫 2분 p99 분해 (DB/캐시/CPU)", useful: true, out: `<span class="cmd">// 15장 트레이스에서 첫 120초 요청의 스팬 분해 (평균)</span>
+          0-30s    30-60s   60-120s   정상
+db.connect   180ms     20ms      0ms      0ms   ← 풀이 비어 있어 요청마다 새 TCP+TLS+auth
+db.query      45ms     40ms     35ms     30ms
+cache.get    miss     60%hit   90%hit   95%hit  ← 로컬 L1 캐시가 비어 있음 → DB로
+cpu(self)    210ms     70ms     25ms     12ms   ← 같은 코드가 첫 30초엔 10배 느림: JIT 미최적화 + 모듈 컴파일
+→ 세 가지 콜드 요소가 겹친다. 어느 하나가 아니라 전부.` },
+        { label: "--cpu-prof 첫 30초", useful: true, out: `<span class="cmd">// 10장: 첫 30초 프로파일 상위</span>
+ self    function
+ 18%    (program)                       ← 바이트코드 컴파일·파싱 (V8 내부)
+ 12%    (garbage collector)
+  9%    handleRequest  [Ignition 인터프리터 티어]   ← 아직 Maglev/TurboFan 미도달 (4장)
+  7%    require / compileFunction        ← 지연 로딩되는 모듈 컴파일
+→ 정상 상태 프로파일에서는 (program) 2%, handleRequest는 TurboFan 티어.` },
+        { label: "readiness 프로브 정의", useful: true, out: `<span class="cmd">$ kubectl get deploy api -o yaml | yq '.spec.template.spec.containers[0].readinessProbe'</span>
+httpGet: { path: /healthz, port: 8080 }
+initialDelaySeconds: 2
+periodSeconds: 5
+<span class="cmd">$ grep -A2 "'/healthz'" src/server.js</span>
+  if (req.url === '/healthz') return res.end('ok');     // DB도 캐시도 안 본다
+→ 프로세스가 뜨자마자 "준비됨". 풀도 비어 있고 캐시도 비어 있고 JIT도 차갑다. 트래픽이 그 위로 쏟아진다.` },
+        { label: "node --version / 컴파일 캐시 설정", useful: true, out: `<span class="cmd">$ kubectl exec … -- node -e "console.log(process.version, require('node:module').getCompileCacheDir?.())"</span>
+v22.12.0 undefined
+→ 컴파일 캐시 미사용. Node 22.1+의 module.enableCompileCache() (또는 NODE_COMPILE_CACHE 환경변수)로
+  바이트코드를 디스크에 캐시하면 부팅·첫 요청의 컴파일 비용이 줄어든다. (JIT 최적화 티어는 캐시되지 않는다 — 워밍업은 여전히 필요)` },
+        { label: "DB 슬로우 쿼리", useful: false, out: `<span class="cmd">$ grep duration postgres.log | awk '$NF&gt;200' | wc -l</span>
+0
+→ 쿼리 자체는 정상. 느린 건 '연결 수립'이지 쿼리가 아니다 (분해 표의 db.connect vs db.query).` },
+        { label: "힙 스냅샷", useful: false, out: `→ 메모리 문제가 아니다. 2분 뒤 정상으로 돌아오는 문제에 스냅샷은 무관.` },
+        { label: "파드 재시작", useful: false, out: `→ 재시작하면 다시 2분간 느리다. 문제 자체가 '시작'이다.` },
+      ],
+      hypotheses: [
+        { t: "콜드 스타트 복합: 빈 커넥션 풀(연결마다 TLS+인증), 빈 L1 캐시, JIT 미최적화 티어 + 모듈 컴파일. readiness가 이것들을 반영하지 않아 차가운 상태로 트래픽을 받음", ok: true },
+        { t: "새 파드에 트래픽이 과도하게 쏠린다", ok: false, why: "트래픽은 25%→100%로 점진 증가. 그 비율 동안에도 p99가 높다." },
+        { t: "DB가 새 연결을 느리게 받는다", ok: false, why: "연결당 180ms는 TLS+auth로 정상 범위. 문제는 '요청마다' 새로 연결한다는 것(풀이 비어 있음)." },
+        { t: "코드에 회귀가 있다", ok: false, why: "코드 변경과 무관하게 매 배포 발생하고, 2분 뒤 정상." },
+      ],
+      fix: "(1) 풀 <code>min</code> 설정으로 부팅 시 미리 연결, (2) 부팅 시 핫키 캐시 워밍업(18장) 또는 L2 공유 캐시로 L1 미스 비용 축소, (3) readiness에서 '풀 연결됨 + 워밍업 요청 N회 완료(JIT 티어 승격)' 뒤에만 200 반환 — 자기 자신에게 대표 엔드포인트를 수십~수백 회 호출, (4) <code>module.enableCompileCache()</code>(22.1+)로 컴파일 비용 절감, (5) k8s <code>minReadySeconds</code>와 롤링 <code>maxSurge</code>로 전환 속도 조절. 검증: 배포 후 새 파드의 첫 2분 p99가 정상과 같은지.",
+    },
+  ];
+
+  // ========== 상황실 엔진 ==========
+  (function () {
+    const tabs = $("wr-tabs"), root = $("wr");
+    let cur = 0; const state = CASES.map(() => ({ used: new Set(), hyp: null }));
+    CASES.forEach((c, i) => { const b = MM.el("button", { class: "btn" }, c.title); b.onclick = () => { cur = i; render(); }; tabs.append(b); });
+    function render() {
+      [...tabs.children].forEach((b, i) => b.classList.toggle("on", i === cur));
+      const c = CASES[cur], st = state[cur];
+      const r = noise(cur * 31 + 7);
+      const usefulN = c.actions.filter(a => a.useful).length;
+      root.innerHTML = `
+        <div class="sym"><div class="t">증상</div>${c.symptom}</div>
+        <div class="charts">${c.charts(r).join("")}</div>
+        <div><div style="font-weight:700;font-size:14px;margin-bottom:6px">진단 액션 <span class="muted" style="font-weight:400;font-size:12.5px">(유효한 액션 ${usefulN}개 포함)</span></div><div class="acts">${c.actions.map((a, i) => `<button class="btn ${st.used.has(i) ? "used" : ""}" data-a="${i}">$ ${esc(a.label)}</button>`).join("")}</div></div>
+        <div class="term" id="wr-term">${st.lastOut || "<span class='muted'>액션을 선택하면 출력이 여기에 표시됩니다.</span>"}</div>
+        <div><div style="font-weight:700;font-size:14px;margin-bottom:6px">가설 선택</div><div class="hyp">${c.hypotheses.map((h, i) => `<button class="btn ${st.hyp == null ? "" : i === st.hyp ? (h.ok ? "right" : "wrong") : h.ok && st.hyp != null ? "right" : ""}" data-h="${i}">${esc(h.t)}</button>`).join("")}</div></div>
+        <div class="verdict" id="wr-verdict" style="${st.hyp == null ? "display:none" : ""}"></div>
+        <div class="score" id="wr-score"></div>`;
+      root.querySelector(".acts").onclick = e => {
+        const i = e.target.dataset.a; if (i == null) return;
+        st.used.add(+i); st.lastOut = c.actions[i].out + (c.actions[i].useful ? "" : `\n<span style="color:var(--warn)">[이 액션은 이 사례에서 결정적 정보를 주지 않았다]</span>`);
+        render(); $("wr-term").scrollIntoView({ block: "nearest" });
+      };
+      root.querySelector(".hyp").onclick = e => { const i = e.target.dataset.h; if (i == null) return; st.hyp = +i; render(); };
+      if (st.hyp != null) {
+        const h = c.hypotheses[st.hyp];
+        $("wr-verdict").innerHTML = h.ok ? `<b class="c-ok">정답.</b> <b>수정과 재발 방지:</b> ${c.fix}` : `<b class="c-bad">아닙니다.</b> ${h.why} <br><b>정답:</b> ${esc(c.hypotheses.find(x => x.ok).t)}<br><b>수정:</b> ${c.fix}`;
+      }
+      const usedUseful = [...st.used].filter(i => c.actions[i].useful).length, usedTotal = st.used.size;
+      const eff = usedTotal ? Math.round(usedUseful / usedTotal * 100) : 0;
+      $("wr-score").innerHTML = `<span>사용한 액션 ${usedTotal}</span><span>그중 유효 ${usedUseful} / ${usefulN}</span><span>효율 ${eff}%</span>${st.hyp != null ? `<span>${c.hypotheses[st.hyp].ok ? "가설 ✓" : "가설 ✗"}</span>` : ""}<span style="margin-left:auto"><button class="btn" id="wr-reset" style="font-size:12px;padding:2px 8px">이 사례 초기화</button></span>`;
+      $("wr-reset").onclick = () => { state[cur] = { used: new Set(), hyp: null }; render(); };
+    }
+    render();
+  })();
+
+  // ========== 결정 트리 ==========
+  (function () {
+    const root = $("dt");
+    const N = {
+      q0: { q: "주 증상은?", o: [["CPU가 높다", "cpu"], ["메모리가 는다", "mem"], ["지연이 튄다 / 느리다", "lat"], ["에러율이 올랐다", "err"], ["프로세스가 죽는다", "die"], ["프로세스가 안 끝난다 / 재시작이 느리다", "hang"]] },
+      cpu: { q: "요청에 응답은 하나요?", o: [["아니오, 완전히 멈춤", "r_cpu_block"], ["예, 느리지만 응답함", "cpu2"]] },
+      cpu2: { q: "top -H 에서 바쁜 스레드는?", o: [["메인(JS) 스레드 하나", "r_cpu_js"], ["여러 보조 스레드", "r_cpu_gc"]] },
+      mem: { q: "process.memoryUsage()에서 증가하는 항목은?", o: [["heapUsed", "r_mem_heap"], ["external / arrayBuffers", "r_mem_ext"], ["rss만 (힙·external은 평탄)", "r_mem_rss"]] },
+      lat: { q: "이벤트 루프 지연 p99도 같이 튀나요?", o: [["예", "lat_loop"], ["아니오 (루프는 조용)", "lat_ext"], ["측정하고 있지 않음", "r_lat_measure"]] },
+      lat_loop: { q: "--trace-gc에 긴 Mark-Compact가 있나요?", o: [["예, 수백 ms", "r_lat_gc"], ["아니오", "r_lat_sync"]] },
+      lat_ext: { q: "느린 구간이 어디인가요? (트레이스 스팬)", o: [["하류 호출 (DB/API)", "lat_down"], ["요청 수신 전 (LB→서버)", "r_lat_lb"], ["fs / crypto / dns 호출", "r_lat_tp"]] },
+      lat_down: { q: "하류 서비스 자체의 지연은?", o: [["정상", "r_lat_pool"], ["함께 높음", "r_lat_downstream"]] },
+      err: { q: "에러의 종류는?", o: [["502/504 (LB에서)", "r_err_lb"], ["ETIMEDOUT/ECONNRESET (우리→하류)", "r_err_out"], ["500 (앱 예외)", "r_err_app"], ["503 (우리가 보냄)", "r_err_shed"]] },
+      die: { q: "종료 코드/신호는?", o: [["137 (SIGKILL/OOMKilled)", "r_die_oom"], ["139 / SIGSEGV", "r_die_segv"], ["1 (uncaughtException / unhandledRejection)", "r_die_exc"], ["143 (SIGTERM) 뒤 재시작 반복", "r_die_probe"]] },
+      hang: { q: "SIGTERM 뒤 몇 초 만에 죽나요?", o: [["안 죽음 → SIGKILL까지", "r_hang_handles"], ["죽지만 in-flight 요청이 끊김", "r_hang_graceful"]] },
+      r_cpu_block: { r: "루프 블로킹", tool: "<code>--report-on-signal</code>로 JS 스택(멈춘 지점). 인스펙터 <code>node --inspect</code> 연결 후 Pause. 마지막 로그의 요청 확인.", ch: "2, 10, 16", note: "정규식(ReDoS), 무한 루프, 거대 JSON, 동기 I/O가 상위 원인." },
+      r_cpu_js: { r: "JS 핫패스", tool: "<code>--cpu-prof</code> 1~2분 → 플레임 그래프 self-time 상위. deopt 확인(<code>--trace-deopt</code>).", ch: "4, 10", note: "최적화 전에 '그 코드가 꼭 필요한가'를 먼저." },
+      r_cpu_gc: { r: "GC 압력 또는 스레드풀", tool: "<code>--trace-gc</code>로 GC 빈도·시간. 스레드풀이면 <code>UV_THREADPOOL_SIZE</code>와 crypto/zlib/fs 사용량.", ch: "3, 5", note: "할당률을 줄이는 것이 GC 튜닝보다 효과적." },
+      r_mem_heap: { r: "JS 힙 누수/스파이크", tool: "힙 스냅샷 2장 비교(Comparison, Size Delta) → retainer 체인. 스파이크면 Allocation sampling.", ch: "5, 11", note: "리스너·클로저·무한 캐시·타이머가 4대 패턴." },
+      r_mem_ext: { r: "네이티브/버퍼 누수", tool: "Buffer 할당 추적, 스트림 백프레셔 확인, 애드온 참조(napi_ref) 점검.", ch: "6, 11, 19", note: "<code>Buffer.allocUnsafe</code> 풀과 TypedArray는 external에 잡힌다." },
+      r_mem_rss: { r: "힙 밖 메모리 (단편화, WASM, 네이티브)", tool: "<code>pmap</code>/<code>smem</code>, glibc malloc 단편화면 <code>MALLOC_ARENA_MAX=2</code> 또는 jemalloc 실험.", ch: "5, 14, 19", note: "컨테이너 메모리 한계는 RSS 기준. 힙 한계만 보면 안 된다." },
+      r_lat_measure: { r: "먼저 측정", tool: "<code>monitorEventLoopDelay</code>와 ELU를 메트릭으로 내보내고 다시 오세요.", ch: "2, 15", note: "이 두 지표 없이는 '우리 안'과 '우리 밖'을 구분할 수 없다." },
+      r_lat_gc: { r: "GC 일시정지", tool: "힙 사용량이 한계 근처인가 → 한계 상향(컨테이너 대비 여유) + 할당 줄이기. 누수 여부 확인.", ch: "5, 11, 14", note: "큰 객체 그래프를 한 번에 만드는 코드(대형 응답 직렬화)가 흔한 원인." },
+      r_lat_sync: { r: "동기 작업", tool: "<code>--cpu-prof</code> 스파이크 구간. JSON·정규식·Sync API·대형 루프.", ch: "2, 10", note: "쪼개기(setImmediate)는 지연만, 워커는 처리량까지." },
+      r_lat_pool: { r: "클라이언트 측 풀/큐 대기", tool: "Agent/undici 풀의 pending 수, <code>ss</code>로 연결 수 상한 확인, λW 계산.", ch: "12, 18", note: "하류는 '받은 요청만' 측정한다. 큐 대기는 우리만 본다." },
+      r_lat_downstream: { r: "하류 지연", tool: "하류 팀과 공유 대시보드. 우리 쪽: 타임아웃 예산, 서킷 브레이커, 폴백.", ch: "13, 18", note: "우리가 할 일은 '빨리 실패'와 '디그레이드'." },
+      r_lat_lb: { r: "LB·네트워크·TLS", tool: "LB 로그의 request_processing_time, TLS 핸드셰이크 비율(keep-alive 재사용률).", ch: "12, 14", note: "keep-alive 재사용률이 낮으면 핸드셰이크가 지연의 대부분." },
+      r_lat_tp: { r: "libuv 스레드풀 포화", tool: "fs/crypto/zlib/dns 동시 호출 수. <code>UV_THREADPOOL_SIZE</code> 상향(상한 1024) 또는 작업 분리.", ch: "3", note: "DNS <code>lookup</code>도 스레드풀. 하류 호출 많으면 <code>resolve</code>나 캐시." },
+      r_err_lb: { r: "LB와의 타임아웃/종료 불일치", tool: "LB 로그 에러 분류(백엔드 닫음 vs 타임아웃). <code>keepAliveTimeout</code> > LB idle, <code>headersTimeout</code> > keepAliveTimeout. 배포 시점이면 SIGTERM 처리.", ch: "12, 14", note: "앱 로그에는 절대 안 나타나는 장애." },
+      r_err_out: { r: "아웃바운드 커넥션", tool: "<code>ss</code> 상태 분포(SYN-SENT? ESTAB 상한?), 풀 pending, DNS 시간, 하류 지연.", ch: "3, 12, 13, 18", note: "재시도는 증폭기다. 먼저 끄고 본다." },
+      r_err_app: { r: "애플리케이션 예외", tool: "에러 추적(스택·요청 컨텍스트, ALS), 배포 diff, 입력 패턴.", ch: "7, 13, 15", note: "unhandledRejection은 Node 15+에서 기본 크래시." },
+      r_err_shed: { r: "셰딩 작동 중 (의도된 503)", tool: "ELU·동시성 지표로 실제 포화인지 확인. 포화면 용량, 아니면 셰딩 임계치.", ch: "18", note: "503이 나는 것은 시스템이 자신을 지키는 것. 원인은 용량 또는 하류." },
+      r_die_oom: { r: "메모리 한계 초과", tool: "RSS vs 컨테이너 한계, 힙 한계 설정, 누수 여부(mem 분기로).", ch: "5, 11, 14", note: "힙 한계가 컨테이너 한계보다 크면 V8이 GC하기 전에 cgroup이 죽인다." },
+      r_die_segv: { r: "네이티브 크래시", tool: "코어 덤프, <code>--report-on-fatalerror</code>, 최근 애드온/Node 업그레이드. 애드온을 빼고 재현.", ch: "19", note: "JS 코드로는 세그폴트를 낼 수 없다. 범인은 네이티브." },
+      r_die_exc: { r: "처리 안 된 예외/거부", tool: "크래시 로그의 스택. <code>process.on('unhandledRejection')</code> 정책. 재시작은 정상이고, 재시작 '폭풍'이 문제.", ch: "7, 13", note: "잡아서 계속 실행하지 말고, 로그 남기고 그레이스풀하게 죽인 뒤 재시작." },
+      r_die_probe: { r: "프로브 실패로 인한 재시작", tool: "liveness 프로브 타임아웃 vs 루프 지연. liveness가 DB를 보고 있지 않은지.", ch: "14", note: "liveness는 '프로세스가 살아있나'만. 의존성은 readiness." },
+      r_hang_handles: { r: "활성 핸들이 루프를 붙잡음", tool: "<code>process.getActiveResourcesInfo()</code>를 SIGTERM 핸들러에서 출력. 서버 close, 풀 end, 인터벌 clear/unref, 워커 terminate.", ch: "2, 14", note: "TSFN(19장)·인터벌·keep-alive 소켓이 흔한 범인." },
+      r_hang_graceful: { r: "그레이스풀 셧다운 미구현", tool: "SIGTERM → readiness 실패 → <code>server.close()</code> + 유휴 keep-alive 소켓 종료(<code>closeIdleConnections</code>) → in-flight 완료 대기 → 풀 종료 → exit. 타임아웃 뒤 강제.", ch: "13, 14", note: "k8s는 SIGTERM 후 terminationGracePeriodSeconds(기본 30초) 뒤 SIGKILL." },
+    };
+    let path = [];
+    const stack = ["q0"];
+    function render() {
+      const id = stack[stack.length - 1], n = N[id];
+      const crumbs = path.length ? `<div class="dt-path">${path.map(p => `<span>${esc(p)}</span>`).join("")}</div>` : "";
+      if (n.r) {
+        root.innerHTML = crumbs + `<div class="dt-res"><div style="font-weight:700;margin-bottom:6px">가장 유력: ${n.r}</div><div style="font-size:14px"><b>다음 도구</b> ${n.tool}</div><div style="font-size:14px;margin-top:4px"><b>메모</b> ${n.note}</div><div style="font-size:13px;margin-top:6px;color:var(--muted)">관련 장: ${n.ch}</div></div><div class="controls"><button class="btn" data-x="back">← 뒤로</button><button class="btn" data-x="reset">처음부터</button></div>`;
+      } else {
+        root.innerHTML = crumbs + `<div class="dt-q"><div class="qt">${n.q}</div><div class="controls">${n.o.map((o, i) => `<button class="btn" data-i="${i}">${esc(o[0])}</button>`).join("")}${stack.length > 1 ? '<button class="btn" data-x="back">← 뒤로</button>' : ""}</div></div>`;
+      }
+      root.onclick = e => {
+        const i = e.target.dataset.i, x = e.target.dataset.x;
+        if (x === "back") { if (stack.length > 1) { stack.pop(); path.pop(); } render(); return; }
+        if (x === "reset") { stack.length = 1; path = []; render(); return; }
+        if (i == null) return;
+        path.push(n.o[i][0]); stack.push(n.o[i][1]); render();
+      };
+    }
+    render();
+  })();
+
+  // ========== 복습 퀴즈 ==========
+  (function () {
+    const Q = [
+      { ch: "02", f: "02-event-loop.html", t: "이벤트 루프", q: "I/O 콜백 안에서 setTimeout(fn, 0)과 setImmediate(fn)를 등록했다. 순서는?", o: ["항상 setImmediate 먼저", "항상 setTimeout 먼저", "비결정적"], a: 0, ex: "poll 다음이 check 페이즈. 타이머는 다음 회차." },
+      { ch: "03", f: "03-libuv-threadpool-io.html", t: "libuv 스레드풀", q: "다음 중 libuv 스레드풀을 쓰지 않는 것은?", o: ["fs.readFile", "dns.lookup", "TCP 소켓 읽기", "crypto.pbkdf2"], a: 2, ex: "네트워크 소켓은 epoll/kqueue로 비동기. fs·dns.lookup·crypto는 스레드풀." },
+      { ch: "04", f: "04-v8-jit-optimization.html", t: "V8 JIT", q: "같은 함수에 서로 다른 형태(shape)의 객체를 번갈아 넘기면 생기는 일은?", o: ["아무 영향 없음", "인라인 캐시가 다형/메가모픽이 되어 느려지고 deopt 가능", "GC가 자주 일어남"], a: 1, ex: "히든 클래스가 다르면 IC가 단형성을 잃는다." },
+      { ch: "05", f: "05-v8-memory-gc.html", t: "V8 GC", q: "짧게 살고 죽는 객체를 대량 생성할 때 주로 일어나는 GC는?", o: ["Mark-Compact (old space)", "Scavenge (young generation)", "Incremental marking만"], a: 1, ex: "세대 가설. 젊은 세대의 Scavenge가 싸게 처리한다." },
+      { ch: "06", f: "06-streams-backpressure.html", t: "스트림", q: "writable.write()가 false를 반환했다. 의미는?", o: ["쓰기 실패", "내부 버퍼가 highWaterMark를 넘었으니 'drain'까지 멈추라는 신호", "스트림이 닫힘"], a: 1, ex: "무시하면 메모리가 무한히 쌓인다. pipeline이 자동 처리." },
+      { ch: "07", f: "07-async-internals.html", t: "비동기 내부", q: "요청 ID를 모든 로그에 자동으로 붙이려면 어떤 API가 적합한가?", o: ["전역 변수", "AsyncLocalStorage", "process.nextTick"], a: 1, ex: "비동기 경계를 넘어 컨텍스트가 전파된다." },
+      { ch: "09", f: "09-multicore-workers-cluster.html", t: "멀티코어", q: "CPU 집약 작업을 메인 루프에서 떼어내되 메모리를 공유하고 싶다면?", o: ["cluster", "child_process.fork", "worker_threads + SharedArrayBuffer"], a: 2, ex: "cluster/child_process는 별도 프로세스라 메모리 공유 불가." },
+      { ch: "11", f: "11-memory-leak-diagnosis.html", t: "메모리 누수", q: "힙 스냅샷 비교에서 가장 먼저 볼 열은?", o: ["Shallow Size", "Size Delta / # New − # Deleted", "Distance"], a: 1, ex: "두 스냅샷 사이에 순증한 생성자가 누수 후보. 그다음 retainer." },
+      { ch: "12", f: "12-networking-http.html", t: "네트워킹", q: "server.headersTimeout은 server.keepAliveTimeout보다?", o: ["작아야 한다", "커야 한다", "같아야 한다"], a: 1, ex: "작으면 keep-alive 유휴 소켓이 헤더 타임아웃으로 먼저 끊겨 408/502 유발. Node 문서 권고." },
+      { ch: "13", f: "13-errors-resilience.html", t: "복원력", q: "uncaughtException 핸들러에서 권장되는 행동은?", o: ["로그 남기고 계속 실행", "로그·플러시 후 프로세스 종료(재시작에 맡김)", "예외를 무시"], a: 1, ex: "상태가 오염됐을 수 있다. 계속 실행은 더 큰 장애를 만든다." },
+    ];
+    const root = $("rq");
+    function build() {
+      root.innerHTML = Q.map((q, i) => `<div class="rq" data-i="${i}"><div class="q">${i + 1}. ${esc(q.q)} <small>(${q.ch}장 ${esc(q.t)})</small></div>${q.o.map((o, j) => `<label><input type="radio" name="rq${i}" value="${j}"> ${esc(o)}</label>`).join("")}<div class="ex">${esc(q.ex)}</div></div>`).join("");
+      $("rq-result").innerHTML = "";
+    }
+    $("rq-submit").onclick = () => {
+      let score = 0; const weak = [];
+      Q.forEach((q, i) => {
+        const box = root.querySelector(`.rq[data-i="${i}"]`); box.classList.add("graded");
+        const sel = box.querySelector("input:checked");
+        const v = sel ? +sel.value : -1;
+        box.querySelectorAll("label").forEach((l, j) => { l.classList.remove("ok", "bad"); if (j === q.a) l.classList.add("ok"); else if (j === v) l.classList.add("bad"); });
+        if (v === q.a) score++; else weak.push(q);
+      });
+      const uniq = [...new Map(weak.map(q => [q.ch, q])).values()];
+      $("rq-result").innerHTML = `<div class="stat-row"><div class="stat"><div class="k">점수</div><div class="v">${score} / ${Q.length}</div></div><div class="stat"><div class="k">평가</div><div class="v" style="font-size:16px">${score >= 9 ? "전문가 수준" : score >= 7 ? "탄탄함. 약한 장만 복습" : score >= 5 ? "핵심은 잡았음. 아래 장 다시" : "Part 1부터 다시"}</div></div></div>
+        ${uniq.length ? `<div style="font-weight:700;font-size:14px;margin:8px 0 6px">복습 권장 장</div><div class="weak">${uniq.map(q => `<a class="bad" href="${q.f}">Chapter ${q.ch} · ${esc(q.t)}</a>`).join("")}</div>` : "<div class='c-ok' style='font-weight:700'>모든 장을 통과했습니다.</div>"}`;
+      $("rq-result").scrollIntoView({ block: "nearest" });
+    };
+    $("rq-reset").onclick = build;
+    build();
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>튜닝, 디버깅, 밸런싱</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 11장 전용 */
+.mono { font-family: var(--mono); }
+.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { display: inline-block; width: 18px; height: 0; border-top: 3px solid; }
+.legend i.dash { border-top-style: dashed; }
+.legend i.box { height: 10px; border: none; border-radius: 2px; width: 12px; }
+.sim-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 720px) { .sim-grid { grid-template-columns: 1fr; } }
+svg.map { width: 100%; height: auto; display: block; border-radius: 8px; border: 1px solid var(--border); }
+svg.map text { font-family: var(--sans); }
+svg.map .agent { cursor: pointer; }
+.needs { display: grid; grid-template-columns: 52px 1fr 40px; gap: 4px 8px; align-items: center; font-size: 13px; }
+.needs .bar { height: 9px; }
+.why { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; font-size: 14px; margin: 8px 0; }
+.why b { color: var(--accent); }
+table.insp { font-size: 13px; }
+table.insp td, table.insp th { padding: 5px 7px; }
+table.insp tr.chosen td { background: var(--ok-soft); }
+table.insp tr.zero td { color: var(--muted); }
+table.insp tr.cur td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
+.parts { display: grid; grid-template-columns: auto auto; gap: 1px 8px; font-size: 12px; }
+.parts .pn { color: var(--muted); white-space: nowrap; }
+.parts .pv { font-family: var(--mono); white-space: nowrap; }
+.parts .pv.veto { color: var(--bad); font-weight: 700; }
+.parts .pv.skip { color: var(--muted); font-style: italic; }
+.mini { display: inline-block; width: 36px; height: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px; vertical-align: middle; margin-left: 4px; overflow: hidden; }
+.mini > i { display: block; height: 100%; background: var(--accent); }
+.tag { display: inline-block; font-size: 11.5px; padding: 0 7px; border-radius: 999px; white-space: nowrap; }
+.tag.ok { background: var(--ok-soft); color: var(--ok); }
+.tag.bad { background: var(--bad-soft); color: var(--bad); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.tag.mut { background: var(--surface-2); color: var(--muted); }
+.tag.acc { background: var(--accent-soft); color: var(--accent); }
+svg.chart { width: 100%; height: auto; display: block; }
+svg.chart text { font-size: 11px; fill: var(--muted); font-family: var(--mono); }
+svg.chart .grid { stroke: var(--border); stroke-width: 1; }
+svg.chart .axis { stroke: var(--muted); stroke-width: 1.2; }
+.sens-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 640px) { .sens-grid { grid-template-columns: 1fr; } }
+.sens-grid .panel { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.sens-grid .panel h5 { margin: 0 0 2px; font-size: 13px; }
+.sens-grid .panel p { margin: 0; font-size: 12px; color: var(--muted); }
+.progress { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin: 6px 0; }
+.progress > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+table.tests td.res { white-space: nowrap; font-weight: 700; }
+table.tests td.res.pass { color: var(--ok); }
+table.tests td.res.fail { color: var(--bad); }
+table.tests td.det { font-size: 12.5px; color: var(--muted); }
+table.matrix td, table.matrix th { text-align: center; font-size: 13px; padding: 5px 6px; }
+table.matrix td:first-child, table.matrix th:first-child { text-align: left; }
+table.pit td { font-size: 14px; }
+table.pit td:first-child { font-weight: 700; white-space: nowrap; }
+.step-tbl { font-size: 12.5px; margin-top: 8px; }
+.step-tbl td, .step-tbl th { padding: 4px 7px; }
+.step-tbl tr.hl td { background: var(--warn-soft); }
+.step-tbl tr.ok td { background: var(--ok-soft); }
+</style>
+</head>
+<body data-chapter="11">
+<main>
+  <header class="chapter-head">
+    <span class="label prac">실전 · Chapter 11</span>
+    <h1>튜닝, 디버깅, 밸런싱</h1>
+    <p class="lead">효용 AI를 만드는 일은 엔진을 짜는 데서 끝나지 않는다. 행동 수십 개, consideration 수백 개, 커브 파라미터 수천 개가 서로 얽힌 시스템에서 "왜 저 주민이 배고픈데 선술집에 갔지?"라는 질문에 답하고, 숫자 하나를 바꿨을 때 마을 전체가 어떻게 달라지는지 예측해야 한다. 이 장은 그 작업을 감이 아니라 관찰과 실험과 테스트로 하는 방법을 다룬다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>효용 AI 튜닝이 "과학보다 예술"이라 불리는 이유를 설명하고, 그 예술을 실험 가능한 작업으로 바꾸는 도구 체계를 설계한다.</li>
+      <li>디버깅 1원칙("왜 이걸 했나에 답할 수 있어야 한다")에 따라 평가 결과를 어떤 단위로 기록할지 결정한다 — <code>lastEval</code>, <code>trace</code>, <code>log</code>.</li>
+      <li>결정 인스펙터와 점수 타임라인으로 veto, 진동(ping-pong), 몰림 같은 증상의 원인을 찾아낸다.</li>
+      <li>시드를 고정한 민감도 분석으로 파라미터가 지표에 주는 영향을 측정하고, 효과 없는 "죽은 파라미터"를 찾는다.</li>
+      <li>흔한 함정을 증상 → 원인 → 처방으로 진단한다.</li>
+      <li>골든 로그 회귀 테스트, 불변식 테스트, 시나리오 테스트로 튜닝 결과를 지킨다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>agent.lastEval</code> <code>agent.trace</code> <code>world.log</code> <code>Reasoner.evaluate()</code> <code>UAI.rng(seed)</code> — 결정 하나하나를 "다시 볼 수 있게" 남기는 기록 장치와, 같은 시드면 같은 하루를 재생하는 결정성</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 튜닝은 "예술"이라 불리는가</a></li>
+    <li><a href="#s2">디버깅 1원칙: "왜 이걸 했나"에 답하라</a></li>
+    <li><a href="#s3">결정 인스펙터: 한 번의 평가를 해부하기</a></li>
+    <li><a href="#s4">점수 타임라인과 진동</a></li>
+    <li><a href="#s5">민감도 분석: 튜닝은 감이 아니라 실험</a></li>
+    <li><a href="#s6">흔한 함정 카탈로그</a></li>
+    <li><a href="#s7">디자이너 툴링</a></li>
+    <li><a href="#s8">테스트 전략: 튜닝 결과를 지키는 법</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. 왜 튜닝은 "예술"이라 불리는가</h2>
+    <p>Game AI Pro 1권의 행동 선택 알고리즘 개관(Dawe 외)은 효용 시스템의 단점을 이렇게 정리한다. 핵심 아키텍처는 비교적 간단하고 새 행동도 쉽게 추가되지만, <b>튜닝이 어렵다</b>. 효용 시스템에서 행동은 혼자 존재하지 않는다. 다른 모든 후보 행동의 더미에 던져 넣고, 각자의 수학 모델이 적절한 행동을 "위로 떠오르게(bubble to the top)" 만들기를 기대하는 구조다. 그래서 모든 모델을 동시에 저글링해야 하고, 저자들은 이를 "과학보다는 예술에 가깝다"고 썼다. 같은 문단은 덧붙인다. 예술이 그렇듯, 그렇게 만든 결과는 단순한 과학만으로 만든 것보다 훨씬 매력적인 경우가 많다고.</p>
+    <p>Graham도 9장에서 같은 표현을 쓴다. 입력을 효용으로 바꾸는 알맞은 함수를 찾는 일은 "과학보다 예술"이고, 대개 개발 시간의 대부분이 거기에 들어간다. 그가 직접 겪은 일화가 있다(<a class="xref" href="#s6">6절 함정 카탈로그</a>에서 다시 다룬다). 텍스트 RPG 결투 데모에서 회복(Heal) 결정은 <i>Health Desire × Threat</i>로 점수를 매기는데, Threat 커브에 처음에는 플레이어의 <b>평균 피해</b>를 넣었다. 기대 효용의 정신에는 그쪽이 더 맞았다. 그런데 결과가 충분히 엄격하지 않아 <b>최대 피해</b>로 바꿨다. 이론상 더 "옳은" 입력이 실제로는 더 나쁜 행동을 낳은 것이다.</p>
+
+    <h3>왜 직관이 잘 안 통하나</h3>
+    <ul>
+      <li><b>상대 평가다.</b> 빵집 점수를 0.1 올리면 빵집만 바뀌는 게 아니라 선술집·밭·산책이 이길 확률이 함께 바뀐다. 한 숫자의 효과가 다른 모든 행동의 점수 분포에 달려 있다.</li>
+      <li><b>피드백 루프가 있다.</b> 결정은 욕구를 바꾸고, 바뀐 욕구는 다음 결정을 바꾼다. 배고픔 감소율을 조금 올리면 빵집이 붐비고, 붐빔 감점 때문에 밭으로 가는 주민이 생기고, 밭은 재미를 깎는다(<a class="xref" href="07-needs-smart-objects.html">07장 욕구 모델</a>).</li>
+      <li><b>비선형이다.</b> 곱셈 결합에서 consideration 하나가 0이면 나머지가 아무리 좋아도 0점이다(<a class="xref" href="04-considerations.html">04장 결합</a>). 작은 변화가 어느 순간 행동 전체를 꺼 버린다.</li>
+      <li><b>관찰이 어렵다.</b> 화면에 보이는 것은 "주민이 선술집으로 걸어간다"뿐이다. 그 뒤의 15개 후보와 45개 consideration 값은 기록하지 않으면 사라진다.</li>
+    </ul>
+    <p>이 장의 입장은 이렇다. 커브의 모양을 고르는 감각은 여전히 예술이다. 하지만 그 감각을 <b>검증하는 과정</b>은 공학으로 만들 수 있다. 관찰하는 도구(인스펙터, 타임라인), 실험하는 도구(민감도 분석), 지키는 도구(회귀·불변식 테스트)를 갖추면 "느낌상 좀 이상한데"가 "거리 커브의 bookend가 맵 크기보다 작아서 빵집이 veto된다"로 바뀐다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 190" role="img" aria-label="튜닝 루프: 데이터 편집, 핫 리로드, 관찰, 실험, 테스트, 승인">
+        <defs><marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="box" x="10" y="30" width="110" height="54" rx="8"/>
+        <text x="65" y="53" text-anchor="middle" style="font-weight:700">데이터 편집</text>
+        <text x="65" y="71" text-anchor="middle" class="muted" style="font-size:11.5px">커브·가중치·bookend</text>
+        <rect class="box" x="150" y="30" width="110" height="54" rx="8"/>
+        <text x="205" y="53" text-anchor="middle" style="font-weight:700">핫 리로드</text>
+        <text x="205" y="71" text-anchor="middle" class="muted" style="font-size:11.5px">재시작 없이 반영</text>
+        <rect x="290" y="30" width="130" height="54" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="355" y="53" text-anchor="middle" style="font-weight:700">관찰</text>
+        <text x="355" y="71" text-anchor="middle" class="muted" style="font-size:11.5px">인스펙터·타임라인</text>
+        <rect x="450" y="30" width="120" height="54" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="510" y="53" text-anchor="middle" style="font-weight:700">실험</text>
+        <text x="510" y="71" text-anchor="middle" class="muted" style="font-size:11.5px">시드 고정 스윕</text>
+        <rect x="600" y="30" width="110" height="54" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="655" y="53" text-anchor="middle" style="font-weight:700">테스트</text>
+        <text x="655" y="71" text-anchor="middle" class="muted" style="font-size:11.5px">골든·불변식</text>
+        <line class="line" x1="120" y1="57" x2="148" y2="57" marker-end="url(#ar1)"/>
+        <line class="line" x1="260" y1="57" x2="288" y2="57" marker-end="url(#ar1)"/>
+        <line class="line" x1="420" y1="57" x2="448" y2="57" marker-end="url(#ar1)"/>
+        <line class="line" x1="570" y1="57" x2="598" y2="57" marker-end="url(#ar1)"/>
+        <path class="line" d="M655,84 L655,140 L65,140 L65,86" marker-end="url(#ar1)" style="stroke-dasharray:5 4"/>
+        <text x="360" y="133" text-anchor="middle" class="muted">FAIL 또는 지표 악화 → 다시 편집</text>
+        <text x="655" y="166" text-anchor="middle" style="fill:var(--ok);font-weight:700">PASS → 골든 갱신·승인</text>
+        <text x="355" y="18" text-anchor="middle" class="muted" style="font-size:11.5px">§3·§4</text>
+        <text x="510" y="18" text-anchor="middle" class="muted" style="font-size:11.5px">§5</text>
+        <text x="655" y="18" text-anchor="middle" class="muted" style="font-size:11.5px">§8</text>
+        <text x="135" y="18" text-anchor="middle" class="muted" style="font-size:11.5px">§7 툴링</text>
+      </svg>
+      <figcaption>그림 11-1. 이 장이 만드는 튜닝 루프. 반복 한 바퀴를 몇 분 안에 끝낼 수 있어야 "예술"을 실제로 연습할 수 있다.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. 디버깅 1원칙: "왜 이걸 했나"에 답하라</h2>
+    <p>FSM이나 행동 트리라면 "왜 공격 상태지?"는 전이 조건 하나를 보면 답이 나온다. 효용 AI에서 같은 질문의 답은 <b>모든 후보의 점수표</b>다. 선택된 행동이 이긴 이유는 그 행동의 점수만이 아니라 진 행동들의 점수에도 들어 있기 때문이다. 그래서 1원칙은 이렇게 정리된다.</p>
+    <div class="callout"><span class="title">디버깅 1원칙</span>어떤 에이전트의 어떤 결정이든, 나중에 "그때 후보가 무엇이었고, 각 consideration이 원시값 → 정규화값 → 커브 출력으로 얼마였고, 그래서 왜 이게 이겼는가"를 재구성할 수 있어야 한다. 재구성이 안 되는 결정은 튜닝할 수 없다.</div>
+    <p>Dragon Age: Inquisition의 Behavior Decision System(Hanlon &amp; Watts)이 좋은 선례다. 이 시스템은 평가 단계에서 등록된 behavior snippet마다 평가 트리를 돌려 <code>SnippetEvaluation{snippet, result, score, target}</code>을 만들고, 점수 내림차순으로 정렬해 첫 번째를 실행한다. 실행 단계에 필요한 것은 최고 우선순위 snippet과 선택된 대상의 참조뿐이다. 그런데도 저자들은 "평가 결과를 디버그로 볼 수 있는 표로 보관하는 것이 AI 행동을 디버깅하고 반복 개선할 때 큰 통찰을 준다"고 적었다. 실행에는 필요 없는 데이터를 일부러 남긴 것이다. 같은 장은 모듈식 설계의 이점으로도 "특정 행동의 평가 로직을 따로 떼어 보거나, 평가 결과를 보고 캐릭터의 상대적 우선순위를 비교할 수 있다"를 든다.</p>
+
+    <h3>uai.js의 세 가지 기록</h3>
+    <p>코스 엔진은 이 원칙을 세 층위로 구현한다. 모두 <code>World.think()</code> 안에서 만들어진다.</p>
+<pre class="engine"><code>    think(a, interruptOnly) {
+      const res = this.reasoner.decide(a, this, this.rng);
+      a.lastEval = res;
+      const c = res.chosen;
+      if (!c) return;
+      // … (같은 행동이면 유지, 인터럽트 모드면 rank 비교) …
+      a.trace.push({ t: this.time, action: c.action.id, target: c.target &amp;&amp; (c.target.id || c.target.name), score: c.score });
+      if (a.trace.length &gt; 60) a.trace.shift();
+      this.log.push(`[${UAI.clock(this.time)}] ${a.name} → ${c.action.label}${c.target ? " @" + (c.target.label || c.target.name) : ""} (${c.score.toFixed(2)})`);
+      if (this.log.length &gt; 200) this.log.shift();
+    }</code></pre>
+    <p><code>lastEval</code>의 <code>rows</code>는 <code>Reasoner.evaluate()</code>가 만든 원소 그대로다. 각 행에는 consideration마다 원시값·정규화값·커브 출력이 들어 있고, early-out으로 계산을 건너뛴 consideration은 <code>skipped: true</code>로 남는다.</p>
+<pre class="engine"><code>            parts.push({ name: c.name, raw, x, y });
+            if (y &lt;= 0) alive = false;
+          // …
+          rows.push({ action: a, target, parts, score, rank: a.rank, isCurrent, cooldown: Math.max(0, cdLeft) });</code></pre>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="평가 결과가 lastEval, trace, log 세 가지 기록으로 흘러가는 구조">
+        <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="box" x="10" y="40" width="150" height="60" rx="8"/>
+        <text x="85" y="64" text-anchor="middle" style="font-weight:700">evaluate()</text>
+        <text x="85" y="84" text-anchor="middle" class="muted" style="font-size:11.5px">행동 × 대상 전부 채점</text>
+        <rect class="box" x="200" y="40" width="150" height="60" rx="8"/>
+        <text x="275" y="64" text-anchor="middle" style="font-weight:700">rows[ ]</text>
+        <text x="275" y="84" text-anchor="middle" class="muted" style="font-size:11.5px">parts: raw → x → y</text>
+        <rect class="box" x="390" y="40" width="150" height="60" rx="8"/>
+        <text x="465" y="64" text-anchor="middle" style="font-weight:700">select()</text>
+        <text x="465" y="84" text-anchor="middle" class="muted" style="font-size:11.5px">dual: rank → 15% 컷 → 가중</text>
+        <rect class="box" x="580" y="40" width="130" height="60" rx="8"/>
+        <text x="645" y="64" text-anchor="middle" style="font-weight:700">chosen</text>
+        <text x="645" y="84" text-anchor="middle" class="muted" style="font-size:11.5px">+ pool(확률)</text>
+        <line class="line" x1="160" y1="70" x2="198" y2="70" marker-end="url(#ar2)"/>
+        <line class="line" x1="350" y1="70" x2="388" y2="70" marker-end="url(#ar2)"/>
+        <line class="line" x1="540" y1="70" x2="578" y2="70" marker-end="url(#ar2)"/>
+        <path class="line" d="M275,100 L275,150 L140,150 L140,176" marker-end="url(#ar2)"/>
+        <path class="line" d="M645,100 L645,150 L375,150 L375,176" marker-end="url(#ar2)"/>
+        <path class="line" d="M645,150 L600,150 L600,176" marker-end="url(#ar2)"/>
+        <rect x="40" y="178" width="200" height="104" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="140" y="200" text-anchor="middle" style="font-weight:700">agent.lastEval</text>
+        <text x="140" y="220" text-anchor="middle" style="font-size:12px">마지막 평가 전체 스냅샷</text>
+        <text x="140" y="242" text-anchor="middle" class="muted" style="font-size:11.5px">"그 순간 왜 이게 이겼나?"</text>
+        <text x="140" y="262" text-anchor="middle" class="muted" style="font-size:11.5px">무겁다 · 1개만 유지</text>
+        <rect x="270" y="178" width="200" height="104" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="370" y="200" text-anchor="middle" style="font-weight:700">agent.trace</text>
+        <text x="370" y="220" text-anchor="middle" style="font-size:12px">행동이 바뀔 때만 {t, action, target, score}</text>
+        <text x="370" y="242" text-anchor="middle" class="muted" style="font-size:11.5px">"최근에 뭘 했고 얼마나 자주 바꿨나?"</text>
+        <text x="370" y="262" text-anchor="middle" class="muted" style="font-size:11.5px">가볍다 · 최근 60개</text>
+        <rect x="500" y="178" width="200" height="104" rx="8" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <text x="600" y="200" text-anchor="middle" style="font-weight:700">world.log</text>
+        <text x="600" y="220" text-anchor="middle" style="font-size:12px">사람이 읽는 문자열 한 줄</text>
+        <text x="600" y="242" text-anchor="middle" class="muted" style="font-size:11.5px">"마을 전체에 무슨 일이 있었나?"</text>
+        <text x="600" y="262" text-anchor="middle" class="muted" style="font-size:11.5px">최근 200줄 · 골든 로그의 재료</text>
+        <text x="360" y="22" text-anchor="middle" class="muted">World.think() 한 번</text>
+      </svg>
+      <figcaption>그림 11-2. 같은 결정이 세 가지 해상도로 기록된다. 스냅샷은 "왜", 이력은 "얼마나 자주", 로그는 "무슨 일이"에 답한다.</figcaption>
+    </figure>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>기록</th><th>답하는 질문</th><th>비용</th><th>실전 게임에서의 대응물</th></tr>
+      <tr><td><code>lastEval</code></td><td>그 순간 후보 전부와 consideration 값. veto를 낸 consideration은?</td><td>결정당 행 수 × consideration 수</td><td>DA:I의 디버그 표, 인게임 오버레이</td></tr>
+      <tr><td><code>trace</code></td><td>행동이 얼마나 자주 바뀌나(진동)? 점수 추이는?</td><td>전환당 1개</td><td>캐릭터별 결정 이력 링 버퍼</td></tr>
+      <tr><td><code>log</code></td><td>마을 전체 사건 순서. 두 빌드의 행동이 갈라지는 지점은?</td><td>전환당 문자열 1줄</td><td>리플레이 로그, 회귀 테스트의 골든 파일</td></tr>
+    </table></div>
+
+    <div class="callout warn"><span class="title">기록에도 함정이 있다</span>
+      <ul style="margin:4px 0 0">
+        <li><b>타임스탬프 없는 스냅샷.</b> 엔진의 <code>lastEval</code>에는 평가 시각이 없다. 바쁜 주민은 <code>thinkEvery</code>(5) tick마다만 인터럽트 검사를 하므로 스냅샷이 몇 분 묵었을 수 있다. 이 장의 위젯은 <code>think</code>를 감싸 시각(<code>t</code>)과 "인터럽트 검사였는지"를 덧붙인다.</li>
+        <li><b>"선택"과 "적용"은 다르다.</b> 인터럽트 검사에서 1위가 바뀌어도 rank가 더 높지 않으면 현재 행동을 유지한다(<a class="xref" href="06-time-inertia.html">06장</a>). 스냅샷의 <code>chosen</code>만 보면 "왜 안 바꿨지?"를 오해한다.</li>
+        <li><b>링 버퍼 길이.</b> <code>trace</code> 60개, <code>log</code> 200줄은 짧다. 하루 단위 회귀 테스트는 별도 기록이 필요하다(<a href="#s8">8절</a>).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. 결정 인스펙터: 한 번의 평가를 해부하기</h2>
+    <p>아래는 Hamlet 마을을 엔진 그대로(<code>UAI.makeHamlet({seed: 7})</code>) 돌리면서 선택한 주민의 <code>lastEval.rows</code>를 점수순 표로 펼친 것이다. 일시정지한 뒤 한 tick씩 진행하며 보는 것을 권한다. 지도에서 주민을 클릭해도 선택된다.</p>
+    <div class="widget" id="insp">
+      <div class="w-title">결정 인스펙터 — lastEval 전체 행</div>
+      <div class="w-desc">초록 행이 <code>chosen</code>, 왼쪽 파란 선이 평가 당시 현재 행동(<code>isCurrent</code>)이다. 빨간 y=0은 veto, 기울임 "생략"은 early-out으로 계산하지 않은 consideration이다. "늑대 등장"으로 dual utility의 rank 버킷이 작동하는 모습을 볼 수 있다.</div>
+      <div class="controls">
+        <button class="btn primary" data-a="play">▶ 재생</button>
+        <button class="btn" data-a="step">한 tick</button>
+        <button class="btn" data-a="step10">10 tick</button>
+        <button class="btn" data-a="wolf">늑대 등장</button>
+        <button class="btn" data-a="reset">처음부터</button>
+        <label>주민 <select data-a="agent"></select></label>
+        <label>속도 <select data-a="speed"><option value="250">느리게</option><option value="80" selected>보통</option><option value="20">빠르게</option></select></label>
+      </div>
+      <div class="sim-grid">
+        <div>
+          <svg class="map" viewBox="0 0 480 320" aria-label="Hamlet 마을 지도"></svg>
+          <div class="stat-row" style="margin-top:8px">
+            <div class="stat"><div class="k">게임 시각</div><div class="v" data-o="clock">06:00</div></div>
+            <div class="stat"><div class="k">tick</div><div class="v" data-o="tick">0</div></div>
+            <div class="stat"><div class="k">평가 시각</div><div class="v" data-o="evalt">—</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="needs" data-o="needs"></div>
+          <div class="why" data-o="why"></div>
+          <div style="font-size:12.5px;color:var(--muted);margin-bottom:2px">agent.trace (최근 전환)</div>
+          <div class="log" data-o="trace" style="max-height:120px"></div>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table class="insp" data-o="table"></table></div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:2px">world.log (이 주민 관련, 최근)</div>
+      <div class="log" data-o="log" style="max-height:120px"></div>
+    </div>
+
+    <h3>표를 읽는 순서</h3>
+    <ol>
+      <li><b>상태 열부터 본다.</b> 0점 행은 "veto"(어떤 consideration이 0을 냈다), "rank 탈락"(dual utility에서 더 높은 rank의 유효 후보가 있다), "15% 컷"(최고점의 85% 미만), "후보"(가중 랜덤 풀)로 나뉜다. 기대한 행동이 왜 졌는지는 이 열이 1차 답이다.</li>
+      <li><b>veto 행은 빨간 y=0을 찾는다.</b> 그 consideration 뒤의 값은 "생략"이다. 엔진이 0을 만나는 순간 나머지를 계산하지 않기 때문이다(Lewis가 강조한 early-out. 싼 consideration을 앞에 두는 이유다). 따라서 "생략"된 값은 원인이 아니다.</li>
+      <li><b>raw → x를 의심한다.</b> 커브보다 bookend가 범인인 경우가 많다. raw가 <code>hi</code>를 넘으면 x는 1에 고정되고, 감소 커브라면 그때 y=0이 된다.</li>
+      <li><b>1·2위 격차를 본다.</b> 격차가 inertia(0.1)나 15% 컷보다 작다면 그 둘은 언제든 뒤집힐 수 있다. 다음 절의 타임라인이 그 위험을 시간축으로 보여 준다.</li>
+    </ol>
+
+    <h3>사례로 따라가는 디버깅</h3>
+    <p>"보람이 배고픔 12인데 빵집에 안 가요"라는 버그 리포트를 받았다고 하자. 아래 스텝은 실제 엔진으로 계산한 값이다.</p>
+    <div class="widget" id="case">
+      <div class="w-title">버그 리포트에서 수정까지</div>
+      <div class="w-desc">보람을 지도 오른쪽 아래 구석(23, 15)에 두고 배고픔 12, 나머지 욕구 70대로 고정한 뒤 <code>reasoner.evaluate()</code>를 호출했다.</div>
+      <div data-o="stepper"></div>
+    </div>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 점수 타임라인과 진동</h2>
+    <p>인스펙터는 한 순간을 보여 준다. 그런데 효용 AI의 대표적인 증상인 <b>진동(oscillation, ping-pong)</b>은 시간에 걸쳐 나타난다. Graham은 매 프레임 결정하는 에이전트가 공격과 도주 점수가 둘 다 0.5 근처일 때 "몇 번 쏘고, 도망치다가, 다시 쏘는" 식으로 정신없어 보이는 문제를 들었다. Côté(GAP1 11장)도 FSM 사례에서 위협 인지를 시야에 직결하면 장애물 때문에 시야가 깜빡일 때 Chase↔Patrol이 진동해 애니메이션이 튄다고 지적했다. 원인은 같다. <b>두 점수가 교차하는 지점 근처에서 입력이 조금만 흔들려도 승자가 바뀐다.</b></p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="두 행동 점수가 교차할 때 관성 보너스가 있으면 전환 횟수가 줄어드는 모습">
+        <rect x="40" y="20" width="640" height="170" style="fill:var(--surface);stroke:var(--border)"/>
+        <path d="M40,120 C120,110 180,100 240,104 C300,108 330,96 380,100 C430,104 470,92 520,90 C580,86 630,80 680,76" style="fill:none;stroke:var(--warn);stroke-width:2.5"/>
+        <path d="M40,60 C120,80 200,98 240,102 C280,106 320,98 360,103 C400,108 440,98 480,104 C540,112 600,130 680,140" style="fill:none;stroke:var(--teal);stroke-width:2.5"/>
+        <path d="M40,50 C120,70 200,88 240,92 C280,96 320,88 360,93 C400,98 440,88 480,94 C540,102 600,120 680,130" style="fill:none;stroke:var(--teal);stroke-width:1.2;stroke-dasharray:4 3"/>
+        <g style="fill:var(--bad)">
+          <polygon points="236,24 244,24 240,32"/><polygon points="286,24 294,24 290,32"/><polygon points="336,24 344,24 340,32"/><polygon points="372,24 380,24 376,32"/><polygon points="420,24 428,24 424,32"/><polygon points="468,24 476,24 472,32"/>
+        </g>
+        <polygon points="496,24 504,24 500,32" style="fill:var(--ok)"/>
+        <text x="350" y="46" text-anchor="middle" style="fill:var(--bad);font-size:12px">관성 0: 교차할 때마다 전환 (6회)</text>
+        <text x="500" y="46" text-anchor="start" style="fill:var(--ok);font-size:12px">관성 있음: 1회</text>
+        <text x="60" y="52" style="fill:var(--teal);font-size:12px">빵집 (현재 행동)</text>
+        <text x="60" y="136" style="fill:var(--warn);font-size:12px">선술집</text>
+        <text x="610" y="124" style="fill:var(--teal);font-size:11px">+inertia</text>
+        <rect x="40" y="200" width="200" height="12" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <rect x="240" y="200" width="50" height="12" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <rect x="290" y="200" width="50" height="12" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <rect x="340" y="200" width="36" height="12" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <rect x="376" y="200" width="48" height="12" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <rect x="424" y="200" width="48" height="12" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <rect x="472" y="200" width="208" height="12" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <rect x="40" y="220" width="460" height="12" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <rect x="500" y="220" width="180" height="12" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="34" y="210" text-anchor="end" style="font-size:11px" class="muted">관성 0</text>
+        <text x="34" y="230" text-anchor="end" style="font-size:11px" class="muted">관성 有</text>
+      </svg>
+      <figcaption>그림 11-3. 실선 두 개가 얽히는 구간에서 관성이 없으면 띠가 잘게 쪼개진다. 현재 행동에 보너스(점선)를 주면 선술집 점수가 빵집+보너스를 넘을 때만 전환한다. 히스테리시스와 같은 원리다.</figcaption>
+    </figure>
+
+    <p>Lewis(GAP3 13장)는 진동 대책으로 세 가지를 든다. ① 마지막으로 선택된 결정에 작은 <b>commitment bonus</b>를 준다(엔진의 <code>inertia</code>). ② 결정마다 가중치를 두어 총점이 1이 아니라 3이나 4까지 나올 수 있게 한다. ③ runtime·cooldown consideration을 쓴다. 그리고 바로 경고한다. <b>세 방법 모두 진동을 없애지 않고 진동이 일어나는 점수의 위치를 옮길 뿐</b>이라고. 그 위치가 문제 구간에서 충분히 멀면 괜찮지만, 점수들이 점점 알아보기 어려운 방식으로 계속 경쟁할 수도 있다. 그가 꼽은 가장 단순한 해법은 직관과 반대로 <b>한쪽 결정에 consideration을 하나 더 넣는 것</b>이다. 점수에 변화 요인이 더해져 한쪽이 일관되게 이기거나 지게 된다. 그래도 안 되면 커브를 조정해 진동 구간을 최소화하라고 한다.</p>
+
+    <div class="widget" id="tl">
+      <div class="w-title">점수 타임라인 — 행동별 최고 점수와 실제 선택</div>
+      <div class="w-desc">매 tick마다 선택한 주민에 대해 <code>reasoner.evaluate()</code>를 한 번 더 호출해(부작용 없는 관찰용 평가) 행동·오브젝트 종류별 최고 점수를 그린다. 아래 띠는 실제로 실행 중인 행동이다. ▼는 1위가 바뀐 교차 지점이고, 30분 안에 교차가 3번 이상이면 빨간색(진동 위험)이 된다. "결정 정책"을 <i>교육용 변형</i>으로 바꾸고 관성을 0으로 내려 보라.</div>
+      <div class="controls">
+        <button class="btn primary" data-a="play">▶ 재생</button>
+        <button class="btn" data-a="step10">10 tick</button>
+        <button class="btn" data-a="wolf">늑대 등장</button>
+        <button class="btn" data-a="reset">처음부터</button>
+        <label>주민 <select data-a="agent"></select></label>
+      </div>
+      <div class="controls">
+        <label>결정 정책 <select data-a="mode"><option value="base">엔진 기본: 유휴 시 숙고 + rank 인터럽트</option><option value="full">교육용 변형: 5 tick마다 전면 재평가</option></select></label>
+        <label>관성 inertia <input type="range" data-a="inertia" min="0" max="0.5" step="0.01" value="0.1"><output class="mono" data-o="inertia">0.10</output></label>
+      </div>
+      <svg class="chart" data-o="chart" viewBox="0 0 640 268" aria-label="점수 타임라인"></svg>
+      <div class="legend" data-o="legend"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">교차(1위 변경)</div><div class="v" data-o="cross">0</div></div>
+        <div class="stat"><div class="k">진동 위험 지점</div><div class="v c-bad" data-o="risk">0</div></div>
+        <div class="stat"><div class="k">실제 중도 전환</div><div class="v" data-o="switch">0</div></div>
+        <div class="stat"><div class="k">현재 1·2위 격차</div><div class="v" data-o="gap">—</div></div>
+      </div>
+    </div>
+
+    <p>두 정책을 비교하면 이 엔진의 설계 의도가 드러난다. <b>엔진 기본</b>에서는 교차가 자주 생겨도 띠는 거의 쪼개지지 않는다. 주민은 하던 일이 끝날 때만 숙고하고, 바쁠 때는 rank가 더 높은 후보(늑대)만 끼어들 수 있기 때문이다. Graham이 소개한 The Sims Medieval의 방식(interaction queue가 비었을 때만 결정)과 같은 구조로, 진동을 원천적으로 막는다. 대가는 반응성이다. 빵을 먹으러 가는 도중에 바로 옆 벤치에 친구가 와도 신경 쓰지 않는다.</p>
+    <p><b>교육용 변형</b>은 5 tick마다 rank와 무관하게 전면 재평가한다(엔진 코드는 그대로이고, 챕터 안에서 <code>think(a, false)</code>로 감쌌다). 관성 0에서는 교차가 곧 전환이 되어 띠가 잘게 쪼개지고, 빵집으로 가다가 선술집으로, 다시 빵집으로 가는 행동이 그대로 보인다. 관성을 0.1~0.2로 올리면 대부분 사라진다. 다음 절에서 이 차이를 숫자로 측정한다.</p>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 민감도 분석: 튜닝은 감이 아니라 실험</h2>
+    <p>Lewis는 진동 구간을 줄이는 커브 조정에 대해, 대부분 해석적 해가 있지만 종이로 방정식을 푸는 것은 대개 그만한 가치가 없고 <b>슬라이더로 입력을 조작해 보는 도구를 만드는 편이 훨씬 효과적</b>이라고 했다. 민감도 분석은 그 생각을 한 단계 더 밀어붙인 것이다. 파라미터 하나를 범위 안에서 스윕하며 같은 시드로 하루를 여러 번 돌리고, 결과 지표를 그래프로 본다.</p>
+    <div class="formula">지표(p) = 평균<sub>seed∈{1,2,3}</sub> [ simulateDay(p, seed) ]</div>
+    <p>시드를 고정하는 이유는 비교의 공정성 때문이다. 시드가 다르면 주민의 초기 욕구(<code>40 + rng.int(50)</code>)와 산책 목적지가 달라져, 파라미터 효과인지 운인지 구분할 수 없다. 반대로 시드 하나만 쓰면 그 시드에만 맞춘 튜닝이 된다. 그래서 <b>고정된 시드 여러 개</b>를 쓴다. 아래 실험에서는 하루(1,440 tick)에 늑대가 3번(시드별로 정해진 위치·시각) 나타난다.</p>
+
+    <div class="widget" id="sens">
+      <div class="w-title">민감도 분석 — 파라미터 스윕</div>
+      <div class="w-desc">파라미터를 고르고 실행하면 값마다 시드 1·2·3으로 하루씩 돌린다. 점선 세로줄이 엔진 기본값이다. 지표: 평균 욕구(4개 욕구·전 주민·전 시간 평균), 주민당 하루 행동 시작 수와 같은 rank끼리의 중도 전환 수(진동), 배고픔 &lt; 10인 시간 비율(굶주림), 오브젝트 이용 시간 분포.</div>
+      <div class="controls">
+        <label>파라미터 <select data-a="param">
+          <option value="hunger">배고픔 감소율 (NEED_DECAY.hunger, 분당)</option>
+          <option value="inBase">관성 inertia — 엔진 기본 정책</option>
+          <option value="inFull">관성 inertia — 교육용 전면 재평가</option>
+          <option value="hi">거리 커브 bookend hi (이용하기)</option>
+        </select></label>
+        <button class="btn primary" data-a="run">실험 실행</button>
+        <span class="mono" data-o="status" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+      <div class="progress"><i data-o="prog"></i></div>
+      <div class="sens-grid">
+        <div class="panel"><h5>평균 욕구</h5><p>높을수록 주민이 잘 지냄</p><svg class="chart" data-o="c1" viewBox="0 0 300 170"></svg></div>
+        <div class="panel"><h5>주민당 하루 전환 수</h5><p><span class="c-accent">━ 행동 시작</span> · <span class="c-bad">━ 중도 전환(진동)</span></p><svg class="chart" data-o="c2" viewBox="0 0 300 170"></svg></div>
+        <div class="panel"><h5>굶주림 시간 비율</h5><p>배고픔 &lt; 10인 주민-분의 비율</p><svg class="chart" data-o="c3" viewBox="0 0 300 170"></svg></div>
+        <div class="panel"><h5>오브젝트 이용 분포</h5><p>이용 중인 주민-분의 오브젝트별 비율</p><svg class="chart" data-o="c4" viewBox="0 0 300 170"></svg></div>
+      </div>
+      <div class="legend" data-o="useLegend"></div>
+      <div class="why" data-o="verdict" style="margin-top:10px">실험을 실행하면 해석이 여기에 나온다.</div>
+    </div>
+
+    <h3>실험이 알려 주는 것</h3>
+    <ul>
+      <li><b>배고픔 감소율</b>을 올리면 빵집 이용이 늘고, 빵집이 붐비면 밭으로 넘어가는 주민이 생긴다. 굶주림 비율은 어느 지점까지 거의 0이다가 갑자기 올라간다. 이런 비선형 경계는 감으로 찾기 어렵다. 실험으로 "여기까지는 안전"을 숫자로 확인할 수 있다.</li>
+      <li><b>관성(엔진 기본)</b>은 그래프가 완전히 평평하다. 버그가 아니다. 기본 정책에서는 유휴 주민이 숙고할 때 현재 행동이 없으니 <code>isCurrent</code> 행이 없고, 바쁠 때는 rank 비교로만 전환하니 관성 보너스가 결과를 바꿀 기회가 없다. 민감도가 0인 <b>죽은 파라미터</b>다. 디자이너가 이 슬라이더를 아무리 만져도 아무 일도 일어나지 않는다는 사실은 실험으로만 알 수 있다.</li>
+      <li><b>관성(전면 재평가)</b>은 0 근처에서 결과가 무너진다. 진동하는 주민은 오브젝트에 도착하기도 전에 목적지를 바꾸므로 욕구를 채우지 못하고, 평균 욕구가 크게 떨어지고 굶주림이 급증한다. 관성을 조금만 줘도 회복된다. 진동은 미관 문제만이 아니라 <b>밸런스 문제</b>다.</li>
+      <li><b>거리 hi</b>를 너무 작게 잡으면 먼 오브젝트가 veto되어 가까운 것만 쓰게 되고 평균 욕구가 떨어진다. 너무 크게 잡으면 거리 차이가 점수에 거의 반영되지 않는다. 그 사이 어디가 좋은지는 지표가 알려 준다.</li>
+    </ul>
+    <div class="callout tip"><span class="title">실험 설계 요령</span>한 번에 파라미터 하나만 바꾼다. 지표는 "주민이 잘 지내나(평균 욕구)", "자연스러운가(전환 수)", "망가지는 경우가 있나(굶주림)", "세계가 골고루 쓰이나(분포)"처럼 서로 다른 축에서 고른다. 하나만 보면 다른 축을 희생한 튜닝이 된다. 실제 프로젝트라면 같은 스윕을 빌드 서버에서 밤새 돌려 표로 남긴다.</div>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 흔한 함정 카탈로그</h2>
+    <p>아래 표는 증상(플레이어나 QA가 보는 것) → 원인(인스펙터·타임라인에서 확인할 것) → 처방 순서로 정리했다. 문헌 사례는 출처를 함께 적었다.</p>
+    <div class="tbl-wrap"><table class="pit">
+      <tr><th>함정</th><th>증상</th><th>원인 (어디서 확인하나)</th><th>처방</th></tr>
+      <tr><td>진동</td><td>두 행동 사이를 왔다 갔다. 목적지에 도착하기 전에 방향을 튼다. 애니메이션이 튄다.</td><td>두 행동 점수가 교차 구간에서 비슷함(타임라인 ▼ 밀집). 매 tick 재평가인데 관성 없음.</td><td>현재 행동 보너스(<code>inertia</code>), 행동 종료까지 결정 보류, cooldown. 다만 Lewis 경고대로 진동 위치만 옮길 수 있으니 한쪽 결정에 consideration을 추가하는 것도 시도.</td></tr>
+      <tr><td>몰림</td><td>배고픈 주민 다섯이 동시에 빵집으로 가서 셋이 돌아 나온다.</td><td>모두 같은 입력으로 같은 결론. 엔진의 "혼잡"은 <i>이용 중</i>인 수(<code>users</code>)만 세고 <i>가는 중</i>인 주민은 세지 않음(인스펙터에서 혼잡 raw가 0인데 도착하면 만석).</td><td>예약(가는 중인 주민도 집계), 대상 주변 아군 수 consideration. Lewis의 Charge Attack DSE는 영향 맵으로 대상 근처 아군 수를 보아, 이미 둘과 싸우는 플레이어에게 셋째가 달려들지 않게 했다.</td></tr>
+      <tr><td>항상 같은 행동</td><td>어떤 상황에서도 선술집. 다른 오브젝트는 놀고 있다.</td><td>점수 포화. 여러 욕구 광고를 더한 값이 자주 1에 고정(<code>adValue</code>의 clamp)되거나, 가중치·보너스로 한 행동만 상한을 넘김. 분포 그래프에서 한 막대가 압도적.</td><td>합 대신 곱/보정 결합(<a class="xref" href="04-considerations.html">04장</a>), clamp 전 원시 분포 확인, 가중치를 범주(rank)로 분리.</td></tr>
+      <tr><td>절대 안 하는 행동</td><td>빵집이 맵 반대편에 있으면 굶어도 안 간다.</td><td>veto 커브. 감소 커브의 끝점이 0이고 bookend <code>hi</code>가 실제 입력 범위보다 작음(인스펙터에서 raw &gt; hi, x=1, y=0).</td><td>Lewis 체크리스트: 끝점이 0이어야 하는지, 단지 우선순위만 낮춰야 하는지 결정한다. 완벽한 입력이면 1, 최악이라도 "무효화"가 아니면 0보다 큰 끝점. bookend는 실제 입력 범위로.</td></tr>
+      <tr><td>스케일 불일치</td><td>새로 추가한 행동이 모든 걸 이기거나 한 번도 안 뽑힌다.</td><td>consideration이나 행동 점수가 서로 다른 단위(미터, 체력, 0~100). 행동 간 비교가 무의미.</td><td>Graham: 시스템 전체를 같은 스케일(0~1)로 정규화. 정규화를 하지 않는다면 DA:I처럼 점수 관례를 명문화(Basic 10, Offensive 20–40, Support 25–45, Reaction 50–70).</td></tr>
+      <tr><td>consideration 과다</td><td>consideration이 많은 행동이 체계적으로 진다.</td><td>곱셈 결합에서 0.9 × 0.9 × … 가 개수만큼 깎임. consideration 수만 다른 두 행동 비교.</td><td>IAUS 보정 <code>UAI.compensate</code>(엔진 기본 <code>combine: "compensated"</code>), 불필요한 consideration 정리. "왜 이 행동을 하나/안 하나"에 직접 답하지 않는 입력은 빼거나 프록시로 묶는다.</td></tr>
+      <tr><td>바보 같은 랜덤</td><td>가끔 늑대 앞에서 산책한다. 0.9점짜리를 두고 0.1점짜리를 고른다.</td><td>순수 가중 랜덤(상대 효용). Dill: 점수 비례 확률은 변화를 주지만 가끔 바보 같은 선택을 한다.</td><td>dual utility(rank 버킷) + 최고점 대비 일정 비율 컷, 또는 최고점 선택. Lewis는 최고점 선택을 "강력 추천"했다.</td></tr>
+      <tr><td>하드코딩 스위치</td><td>얼어붙은 캐릭터가 걸으려 한다. 또는 예외 하나 때문에 우회 코드가 덕지덕지 붙는다.</td><td>필수 스위치(다른 행동 실행 중 아님, 묶이지 않음)를 빠뜨렸거나, 반대로 엔진에 박아 넣어 뺄 수 없음.</td><td>Lewis: 새 DSE를 만들 때 자주 쓰는 스위치를 미리 채워 넣는다(하드코딩하지 않는다). Side/Rear Attack DSE는 이동이 없으므로 immobile 스위치를 <i>생략</i>해 묶인 상태에서도 쓴다. 하드코딩했다면 그 규칙을 우회하는 로직을 또 하드코딩해야 했다.</td></tr>
+      <tr><td>이론적으로 옳은 입력</td><td>체력이 위험한데 회복을 늦게 한다.</td><td>Graham의 결투 데모: Threat에 평균 피해를 넣었더니 충분히 엄격하지 않았음.</td><td>최대 피해로 변경. 입력은 "기대값"보다 "디자이너가 원하는 행동"을 기준으로 고른다. 그리고 바꾼 뒤에는 실험으로 확인한다.</td></tr>
+      <tr><td>죽은 파라미터</td><td>슬라이더를 움직여도 아무 변화가 없다.</td><td>결정 정책이 그 값을 쓸 기회를 주지 않음(5절의 엔진 기본 inertia).</td><td>민감도 분석으로 찾아 제거하거나 문서화. 디자이너 툴에 노출하지 않는다.</td></tr>
+    </table></div>
+    <details class="deep"><summary>심화: 진동 대책끼리도 상호작용한다</summary><div>
+      <p>Lewis는 runtime(행동이 오래 지속될수록 점수를 낮춤, 예: <code>y = 1 − x⁶</code>)과 cooldown(끝난 직후 점수를 낮게 눌렀다가 끝 무렵 급히 회복, 예: <code>y = x⁵</code>)을 표준화된 커브로 쓴다(엔진 <code>UAI.PRESETS</code>의 "runtime: 1−x⁶", "cooldown: x⁵"). runtime은 Evade Dangerous Areas 같은 회피 결정이 끝없이 이어지는 것을 막고, cooldown은 두 결정 사이의 strobing을 막는다. 그런데 runtime이 끝나는 시점과 상대 결정의 cooldown이 끝나는 시점이 맞물리면 새로운 주기적 진동이 생긴다. "진동 위치만 옮긴다"는 경고가 바로 이것이다. 반대로 같은 원리를 의도적으로 쓰면 시퀀스를 만들 수 있다. 각 결정에 cooldown을 걸고 다음 결정의 가중치를 조금씩 낮추면, 선택된 결정이 cooldown에 들어갈 때마다 다음으로 좋은 결정, 즉 시퀀스의 다음 단계가 선택된다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 디자이너 툴링</h2>
+    <p>튜닝은 대개 프로그래머가 아니라 디자이너가 한다. 그래서 루프 한 바퀴가 "코드 수정 → 빌드 → 재시작 → 그 상황 재현"이면 아무도 실험하지 않는다. 문헌이 공통으로 권하는 도구는 네 가지다.</p>
+    <h3>① 프리셋 팔레트 + advanced mode (Lewis)</h3>
+    <p>Guild Wars 2: Heart of Thorns에서 쓴 응답 커브의 대다수는 <b>작은 프리셋 팔레트</b>에서 골랐다. 임의 커브를 허용하는 것은 엄청나게 강력하지만, 위압적이고 직관적이지 않을 수 있다는 큰 단점이 있다. 그래서 Lewis는 임의 커브를 "advanced mode" 뒤에 숨기고 대부분의 경우 프리셋을 쓰라고 권한다. 같은 이유로 consideration 묶음도 템플릿화했다. 사전 정의된 행동 패턴이 100개가 넘어서 새 생물의 행동을 몇 분 만에 조합할 수 있었다고 한다. 이 코스 엔진의 <code>UAI.PRESETS</code>(<a class="xref" href="03-response-curves.html">03장</a>)가 그 팔레트다. 프리셋에는 튜닝 측면의 이점도 있다. 같은 커브를 쓰는 행동끼리는 비교가 쉽고, 프리셋 하나를 고치면 그것을 쓰는 모든 곳이 일관되게 바뀐다.</p>
+    <h3>② 슬라이더 툴 (Lewis)</h3>
+    <p>앞 절에서 인용했듯이, consideration의 입력을 슬라이더로 조작하며 결과를 눈으로 보는 도구는 "효용 AI 시스템의 접근성과 발견 가능성을 근본적으로 개선한다". 핵심은 한 결정만이 아니라 <b>경쟁하는 여러 결정</b>을 함께 보여 주는 것이다. 이 장의 타임라인이 그 축소판이다.</p>
+    <h3>③ 드래그 앤 드롭 결합 툴 (Graham)</h3>
+    <p>Graham은 decision factor와 게임 상태 데이터를 직접 조작하는 툴을 이 기법의 가장 강력한 활용으로 꼽았다. 디자이너가 상자를 끌어다 놓고 화살표로 연결하며, 화살표마다 결합 방식을 정한다. 어떤 factor는 평균하고, 어떤 것은 곱하고, 또 어떤 묶음은 max나 min을 고르고, 일부에는 가중치를 준다. <code>UAI.combine</code>의 <code>product / compensated / mean / min / max / geomean</code>이 그 화살표의 종류다.</p>
+    <h3>④ 데이터 핫 리로드 (Merrill)</h3>
+    <p>Merrill은 BT에 효용을 얹는 장에서 커브를 다시 불러올 수 있는 데이터로 두라고 권한다. 엔진이 행동 정의를 데이터로 받고(<code>new UAI.Reasoner(actions, opt)</code>), 월드가 시드로 결정적이면 핫 리로드는 "같은 시드·같은 시각으로 되돌려 새 데이터로 재생"이 된다. 구조는 <a class="xref" href="09-engine-architecture.html">09장 엔진 아키텍처</a>에서 다뤘다. 이 장의 위젯도 같은 방식이다. 민감도 분석은 값마다 <code>UAI.hamletActions()</code>를 새로 만들어 bookend 하나만 바꾼 뒤 <code>Reasoner</code>를 다시 생성한다.</p>
+<pre><code>// 이 장의 실험 하네스 (챕터 코드): 데이터만 바꿔 같은 시드로 재생
+const acts = UAI.hamletActions();
+acts[0].considerations[1].hi = 40;                 // 이용하기 · 거리 bookend
+const w = UAI.makeHamlet({ seed: 7, reasoner: new UAI.Reasoner(acts,
+  { combine: "compensated", strategy: "dual", pct: 0.15, inertia: 0.1 }) });</code></pre>
+    <div class="callout deep"><span class="title">툴이 보여 줘야 할 최소한</span>인게임 오버레이 기준으로 ① 선택된 에이전트의 후보 상위 N개와 점수 ② 0점 행의 veto consideration 이름 ③ 1·2위 격차 ④ 최근 전환 이력 ⑤ "이 순간으로 되돌리기"(시드 + tick). ⑤가 없으면 ①~④는 버그를 본 사람만 볼 수 있다.</div>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 테스트 전략: 튜닝 결과를 지키는 법</h2>
+    <p>오늘 고친 빵집 문제가 다음 주 다른 커브를 고친 뒤 다시 나타나는 일을 막으려면 테스트가 필요하다. 효용 AI는 "정답 출력"이 하나로 정해지지 않으므로 세 종류를 섞는다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>종류</th><th>무엇을 검사하나</th><th>예 (Hamlet)</th><th>FAIL의 의미</th></tr>
+      <tr><td><b>회귀 (골든 로그)</b></td><td>같은 시드·같은 데이터면 같은 행동 순서가 나오는가</td><td>시드 7, 하루 동안의 행동 시작 기록을 저장된 골든과 줄 단위 비교</td><td>행동이 <i>바뀌었다</i>. 좋아졌을 수도 있다. 사람이 diff를 보고 승인하거나 고친다.</td></tr>
+      <tr><td><b>불변식</b></td><td>어떤 튜닝에서도 절대 깨지면 안 되는 성질</td><td>욕구는 0~100, 오브젝트 사용자 수 장부와 실제 일치, 정원 초과 없음</td><td>엔진·행동 코드의 <i>버그</i>.</td></tr>
+      <tr><td><b>시나리오·밸런스</b></td><td>특정 상황에서 기대 행동이 일정 시간 안에 나오는가, 지표가 허용 범위인가</td><td>늑대 반경 10칸 안의 주민은 6분 안에 도망. 배고픔 &lt; 10이 30분 넘게 이어지지 않음. 진동 ≤ 10회/일</td><td>튜닝이 <i>디자인 의도</i>를 벗어났다.</td></tr>
+    </table></div>
+    <p>회귀 테스트의 전제는 결정성이다. <code>UAI.rng</code>(mulberry32)는 같은 시드에서 같은 수열을 내고, 엔진은 선택(<code>UAI.select</code>)과 산책 목적지에 이 RNG만 쓴다. 그래서 "같은 시드를 두 번 돌리면 로그가 같다"는 것 자체가 첫 번째 테스트다. 누군가 <code>Math.random()</code>이나 실제 시각에 의존하는 코드를 넣으면 이 테스트가 먼저 깨진다.</p>
+
+    <div class="widget" id="tests">
+      <div class="w-title">작은 테스트 러너 — 실제 엔진으로 실행</div>
+      <div class="w-desc">설정을 고르고 실행하면 시드 7로 하루(1,440 tick)를 돌리며 아래 7개 테스트를 검사한다. 시나리오용 늑대는 tick 120·500·900에 주민 위치에 나타난다. 골든 로그는 페이지를 열 때 "엔진 기본" 설정으로 녹화했다. 실제 프로젝트라면 저장소에 파일로 커밋해 둔다. 일부 설정은 일부러 버그나 실수를 넣은 것이다.</div>
+      <div class="controls">
+        <label>설정 <select data-a="cfg"></select></label>
+        <button class="btn primary" data-a="run">테스트 실행</button>
+        <button class="btn" data-a="all">전체 설정 매트릭스</button>
+        <button class="btn" data-a="approve">현재 결과를 새 골든으로 승인</button>
+      </div>
+      <div class="w-desc" data-o="cfgdesc" style="margin:4px 0 0"></div>
+      <div class="tbl-wrap"><table class="tests" data-o="out"></table></div>
+      <div class="tbl-wrap"><table class="matrix" data-o="matrix"></table></div>
+      <div class="log" data-o="golden" style="max-height:140px"></div>
+    </div>
+    <p>매트릭스를 돌려 보면 각 테스트가 무엇을 잡는지 분명해진다.</p>
+    <ul>
+      <li><b>반납 누락 버그</b>는 불변식(장부 일치)이 잡는다. 증상은 "점점 아무도 빵집에 안 간다"처럼 밸런스 문제로 보이지만, 원인은 정원 장부가 줄지 않아 오브젝트가 만석으로 남는 코드 버그다. 불변식이 없으면 이 버그를 커브 조정으로 "튜닝"하려 들게 된다.</li>
+      <li><b>도망 rank 0</b>(dual utility 버킷 설정 실수)은 시나리오 테스트가 잡는다. 도망이 욕구 행동과 같은 범주가 되면 바쁜 주민의 인터럽트 검사를 통과하지 못하고, 유휴 주민도 가중 랜덤에서 질 수 있다. Dill이 Zoo Tycoon 2에서 rank를 범주로 쓴 이유가 여기 있다.</li>
+      <li><b>거리 hi 30 → 40</b>(3절 사례의 수정)은 골든 로그만 FAIL이다. 행동이 바뀌었지만 불변식·시나리오·밸런스는 모두 통과한다. 이럴 때 회귀 테스트는 "이 변화가 의도된 것인가?"를 묻는다. 지표(5절)로 좋아졌는지 확인하고 승인 버튼을 누르는 것이 정상 워크플로다.</li>
+      <li><b>거리 hi 30 → 6</b>은 같은 종류의 변경을 너무 멀리 밀어붙인 경우다. 골든 로그에 더해 굶주림 밸런스 테스트가 FAIL이다. 6칸 밖의 빵집·밭이 모두 veto되어, 멀리 있는 주민이 배고파도 먹으러 가지 못한다.</li>
+      <li><b>전면 재평가 + 관성 0</b>은 밸런스 테스트(굶주림·진동)가 잡는다. 코드는 멀쩡하고 행동만 망가진 경우다.</li>
+    </ul>
+    <div class="callout warn"><span class="title">골든 로그는 깨지기 쉽다</span>커브 하나만 바꿔도 첫 분기점 이후 로그 전체가 달라진다. 결정 하나가 바뀌면 RNG 소비 순서와 이후 욕구가 모두 달라지기 때문이다. 그래서 골든 로그는 "어디서 처음 갈라졌나"를 보는 도구로 쓰고, 합격 기준은 불변식과 시나리오·밸런스 테스트에 둔다. diff의 첫 줄이 버그 위치를 가장 잘 가리킨다.</div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>효용 AI 튜닝이 "과학보다 예술"인 이유는 상대 평가·피드백 루프·비선형·관찰 불가 때문이다. 감각은 예술로 남더라도 검증은 관찰·실험·테스트로 공학화할 수 있다.</li>
+    <li>디버깅 1원칙: 모든 결정에 "왜"를 재구성할 수 있어야 한다. 엔진은 <code>lastEval</code>(전체 스냅샷), <code>trace</code>(전환 이력), <code>log</code>(사건 문자열) 세 해상도로 기록한다. DA:I도 실행에는 필요 없는 평가 표를 디버깅용으로 보관했다.</li>
+    <li>인스펙터는 상태 → veto consideration → raw/x(bookend) → 1·2위 격차 순으로 읽는다. "생략"된 값은 원인이 아니다.</li>
+    <li>진동은 점수 교차 지점에서 생긴다. 관성·가중치·runtime/cooldown은 진동 위치만 옮길 수 있고(Lewis), consideration 추가나 결정 보류가 더 근본적이다.</li>
+    <li>민감도 분석은 시드를 고정한 여러 번의 하루 시뮬레이션으로 파라미터 효과를 측정한다. 효과 없는 "죽은 파라미터"(엔진 기본 정책의 inertia)도 찾아낸다.</li>
+    <li>테스트는 회귀(골든 로그: 행동이 바뀌었나), 불변식(버그인가), 시나리오·밸런스(의도대로인가)로 나누어 맡긴다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">엔진 기본 Hamlet에서 inertia를 0에서 0.5까지 바꿔도 모든 지표가 똑같았다. 가장 정확한 설명은?</div>
+    <button class="opt">시드를 고정했기 때문에 결과가 바뀔 수 없다.</button>
+    <button class="opt">주민은 할 일이 끝났을 때만 숙고하고, 바쁠 때는 rank가 더 높은 후보만 끼어들 수 있어서 관성 보너스가 결과를 바꿀 기회가 없다.</button>
+    <button class="opt">compensated 결합이 관성 보너스를 0으로 만든다.</button>
+    <button class="opt">관성은 가중 랜덤에서만 쓰이고 dual 전략에서는 무시된다.</button>
+    <div class="explain">유휴 상태의 숙고에서는 현재 행동이 없으니 <code>isCurrent</code> 행이 없고, 인터럽트 검사(<code>interruptOnly</code>)는 rank만 비교한다. 시드 고정은 같은 설정끼리 같은 결과를 보장할 뿐이고, 설정이 다르면 결과도 다를 수 있다. 실제로 거리 hi를 바꾸면 지표가 달라진다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">결정 인스펙터에서 빵집 행이 0점이고 "광고 가치 y=0.56, 거리 raw 31 → x 1.00 → y 0.00, 혼잡: 생략"으로 표시된다. 올바른 해석은?</div>
+    <button class="opt">혼잡 consideration이 계산되지 않아 0점이 되었으므로 혼잡 입력을 고쳐야 한다.</button>
+    <button class="opt">광고 가치가 1보다 작아서 곱셈 결합이 0이 되었다.</button>
+    <button class="opt">거리 raw가 bookend hi(30)를 넘어 x가 1에 고정되고, 끝점이 0인 감소 커브가 veto를 냈다. 혼잡은 early-out으로 생략되었을 뿐 원인이 아니다.</button>
+    <button class="opt">rank가 낮아서 dual utility 버킷에서 탈락했다.</button>
+    <div class="explain">엔진은 y ≤ 0을 만나는 순간 나머지 consideration을 계산하지 않는다. 처방은 bookend를 실제 입력 범위(맵의 최대 맨해튼 거리 38)에 맞추거나, 먼 거리에서도 0이 아닌 끝점을 갖는 커브를 쓰는 것이다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Lewis가 지적한 commitment bonus, 결정별 가중치, runtime/cooldown의 공통 한계는?</div>
+    <button class="opt">진동 가능성을 없애지 않고 진동이 일어나는 점수의 위치를 옮길 뿐이다.</button>
+    <button class="opt">계산 비용이 커서 think cycle마다 쓸 수 없다.</button>
+    <button class="opt">최고점 선택과 함께 쓸 수 없다.</button>
+    <button class="opt">디자이너가 이해하기 어려운 임의 커브가 필요하다.</button>
+    <div class="explain">그래서 그는 가장 단순한 해법으로, 직관과 반대로 한쪽 결정에 consideration을 하나 더 추가하라고 권했다. 그래도 안 되면 슬라이더 툴로 커브를 조정해 진동 구간을 최소화한다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">Graham의 결투 데모에서 Heal 결정은 Health Desire × Threat로 점수를 매긴다. Threat 입력을 평균 피해에서 최대 피해로 바꾼 이유는?</div>
+    <button class="opt">평균 피해는 계산 비용이 커서</button>
+    <button class="opt">기대 효용 이론에 따르면 최대 피해가 더 정확해서</button>
+    <button class="opt">최대 피해를 쓰면 0~1 정규화가 필요 없어서</button>
+    <button class="opt">평균 피해는 기대 효용의 정신에 더 맞았지만 결과가 충분히 엄격하지 않아서</button>
+    <div class="explain">이론적으로 그럴듯한 입력이 원하는 행동을 내지 않을 수 있다. Graham은 이 일화를 "튜닝은 과학보다 예술"의 예로 들었다. 이 장의 관점에서는 바꾼 뒤 실험과 테스트로 확인하는 것까지가 튜닝이다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">거리 bookend를 30에서 40으로 바꾼 뒤 테스트 러너에서 골든 로그 회귀 테스트만 FAIL이고 나머지는 PASS다. 가장 적절한 대응은?</div>
+    <button class="opt">회귀 테스트가 실패했으므로 변경을 무조건 되돌린다.</button>
+    <button class="opt">diff와 지표로 변화가 의도된 것인지 확인하고, 그렇다면 새 골든으로 승인한다.</button>
+    <button class="opt">골든 로그 테스트를 삭제한다. 효용 AI에는 맞지 않는다.</button>
+    <button class="opt">시드를 바꿔 PASS가 나올 때까지 돌린다.</button>
+    <div class="explain">골든 로그 FAIL은 "행동이 바뀌었다"는 뜻이지 "나빠졌다"는 뜻이 아니다. 불변식과 시나리오·밸런스 테스트가 통과하고 지표가 의도대로라면 승인하면 된다. 시드를 바꾸는 것은 결정성 테스트의 의미를 없앤다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Dragon Age: Inquisition의 BDS에서 실행 단계에 필요한 것은 최고점 snippet과 대상뿐인데도 평가 결과 전체를 보관한 이유는?</div>
+    <button class="opt">다음 프레임의 평가를 캐싱해 비용을 줄이려고</button>
+    <button class="opt">가중 랜덤 선택에 모든 점수가 필요해서</button>
+    <button class="opt">디버그로 볼 수 있는 표로 남기면 AI 행동을 디버깅하고 반복 개선할 때 큰 통찰을 주기 때문에</button>
+    <button class="opt">플레이어에게 AI의 생각을 UI로 보여 주려고</button>
+    <div class="explain">Hanlon &amp; Watts가 직접 밝힌 이유다. DA:I는 점수 내림차순 정렬 후 첫 번째를 고르는 탐욕적 선택이라 다른 행의 점수가 실행에는 필요 없다. 이 장의 디버깅 1원칙과 같은 이야기다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b>이제 엔진의 모든 부품(커브, 결합, 선택, 관성, 욕구와 스마트 오브젝트, 대상 평가, 시뮬레이션 루프)과 그것을 관찰·실험·테스트하는 도구가 갖춰졌다. 12장 캡스톤에서는 이것을 하나로 합쳐 Hamlet 마을 시뮬레이터를 완성하고, 이 장의 인스펙터와 테스트 러너로 직접 밸런싱해 본다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>Dawe, M., Gargolinski, S., Dicken, L., Humphreys, T., Mark, D. "Behavior Selection Algorithms: An Overview." <i>Game AI Pro</i>, Ch. 4, 2013. — 효용 시스템의 튜닝 난점("more art than science").</li>
+    <li>Graham, D. "An Introduction to Utility Theory." <i>Game AI Pro</i>, Ch. 9, 2013. — 결합 툴 구상, 관성, 결투 데모의 Threat 튜닝 일화.</li>
+    <li>Merrill, B. "Building Utility Decisions into Your Existing Behavior Tree." <i>Game AI Pro</i>, Ch. 10, 2013. — 리로드 가능한 커브 데이터.</li>
+    <li>Côté, C. "Reactivity and Deliberation in Decision-Making Systems." <i>Game AI Pro</i>, Ch. 11, 2013. — 시야 깜빡임에 의한 상태 진동.</li>
+    <li>Dill, K. "Dual-Utility Reasoning." <i>Game AI Pro 2</i>, Ch. 3, 2015. — 상대 효용의 바보 같은 선택, rank 범주.</li>
+    <li>Lewis, M. "Choosing Effective Utility-Based Considerations." <i>Game AI Pro 3</i>, Ch. 13, 2017. — 프리셋 팔레트와 advanced mode, 슬라이더 툴, 진동 대책, 하드코딩 스위치.</li>
+    <li>Hanlon, S., Watts, C. "Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture." <i>Game AI Pro 3</i>, Ch. 31, 2017. — 디버그 테이블, 점수 관례.</li>
+    <li>DeepBlue, "효용기반 의사결정 (Utility based Decision Making)", 2015. blog.naver.com/devdeepblue/220289807509 — 관성과 진동(공격/도망 0.5).</li>
+  </ul></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (root, sel) => root.querySelector(sel);
+  const fmt = (v, d) => (v == null ? "—" : MM.fmt(v, d == null ? 2 : d));
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+  // ───────── 공용: 행동 키와 색 ─────────
+  const KEYS = [
+    { k: "use:bakery", label: "빵집", c: "--warn" },
+    { k: "use:farm", label: "밭", c: "--warn", dash: true },
+    { k: "use:house", label: "집", c: "--violet" },
+    { k: "use:bench", label: "벤치", c: "--violet", dash: true },
+    { k: "use:tavern", label: "선술집", c: "--teal" },
+    { k: "use:well", label: "우물", c: "--teal", dash: true },
+    { k: "use:stage", label: "광장 무대", c: "--ok" },
+    { k: "chat", label: "수다", c: "--accent" },
+    { k: "wander", label: "산책", c: "--muted", dash: true },
+    { k: "flee", label: "도망", c: "--bad" },
+  ];
+  const KEYMAP = Object.fromEntries(KEYS.map(x => [x.k, x]));
+  const keyOf = (actionId, target) => (actionId === "use" && target ? "use:" + target.type : actionId);
+  const tname = t => (t ? t.label || t.name : "—");
+
+  // ───────── 공용: 실험 하네스 (엔진은 그대로, 데이터·래퍼만 바꾼다) ─────────
+  // cfg: { full, inertia, hungerDecay, distHi, fleeRank, bugRelease }
+  const BASE_RO = { combine: "compensated", strategy: "dual", pct: 0.15, inertia: 0.1 };
+  function build(cfg, seed) {
+    cfg = cfg || {};
+    const acts = UAI.hamletActions();
+    if (cfg.distHi != null) acts[0].considerations[1].hi = cfg.distHi;
+    if (cfg.fleeRank != null) acts[3].rank = cfg.fleeRank;
+    const ro = Object.assign({}, BASE_RO, cfg.inertia != null ? { inertia: cfg.inertia } : {});
+    const w = UAI.makeHamlet({ seed: seed || 7, reasoner: new UAI.Reasoner(acts, ro) });
+    w.cfg = cfg;
+    w.rec = []; w.stats = { starts: 0, osc: 0 };
+    const orig = w.think.bind(w);
+    // think를 감싸 평가 시각·적용 여부를 기록하고, 행동 시작/중도 전환을 센다
+    w.think = (a, io) => {
+      const before = a.current;
+      const mode = w.cfg.full ? false : io;
+      orig(a, mode);
+      if (a.lastEval) {
+        const ch = a.lastEval.chosen;
+        a.lastEval.t = w.time; a.lastEval.io = !!mode;
+        a.lastEval.applied = !!(ch && a.current && a.current.action === ch.action.id && a.current.target === ch.target);
+      }
+      const c = a.current;
+      if (c && c !== before) {
+        w.stats.starts++;
+        w.rec.push(`${UAI.clock(w.time)} ${a.name} ${c.action}@${c.target ? c.target.id || c.target.name : "-"}`);
+        if (before && c.action !== "flee" && before.action !== "flee") { w.stats.osc++; a.osc = (a.osc || 0) + 1; }
+      }
+    };
+    if (cfg.bugRelease) {
+      // 일부러 넣은 버그: 사용 플래그만 내리고 정원 장부(users)를 줄이지 않는다
+      w.release = a => { if (a.current) a.current.using = false; };
+    }
+    return w;
+  }
+  // 배고픔 감소율은 전역 테이블이므로, 동기 실행 구간 안에서만 바꾸고 즉시 되돌린다
+  function withDecay(cfg, fn) {
+    const saved = UAI.NEED_DECAY.hunger;
+    if (cfg && cfg.hungerDecay != null) UAI.NEED_DECAY.hunger = cfg.hungerDecay;
+    try { return fn(); } finally { UAI.NEED_DECAY.hunger = saved; }
+  }
+  function spawnWolf(w, x, y, dur) { w.threat = { x, y, until: w.time + (dur || 30) }; }
+
+  // ───────── 공용: 마을 지도 SVG ─────────
+  const CELL = 20;
+  function drawMap(svg, w, selId) {
+    let h = `<rect x="0" y="0" width="${w.w * CELL}" height="${w.h * CELL}" style="fill:var(--surface-2)"/>`;
+    for (let x = 0; x <= w.w; x += 4) h += `<line x1="${x * CELL}" y1="0" x2="${x * CELL}" y2="${w.h * CELL}" style="stroke:var(--border);stroke-width:.6"/>`;
+    for (let y = 0; y <= w.h; y += 4) h += `<line x1="0" y1="${y * CELL}" x2="${w.w * CELL}" y2="${y * CELL}" style="stroke:var(--border);stroke-width:.6"/>`;
+    if (w.threat) {
+      const cx = w.threat.x * CELL + 10, cy = w.threat.y * CELL + 10, r = 14 * CELL;
+      h += `<polygon points="${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}" style="fill:var(--bad-soft);fill-opacity:.45;stroke:var(--bad);stroke-dasharray:5 4"/>`;
+    }
+    for (const o of w.objects) {
+      const full = o.users >= o.capacity;
+      h += `<rect x="${o.x * CELL - 6}" y="${o.y * CELL - 6}" width="${CELL + 12}" height="${CELL + 12}" rx="6" style="fill:var(--surface);stroke:var(${full ? "--bad" : "--border"})"/>`;
+      h += `<text x="${o.x * CELL + 10}" y="${o.y * CELL + 15}" text-anchor="middle" style="font-size:15px">${o.icon}</text>`;
+      h += `<text x="${o.x * CELL + 10}" y="${o.y * CELL + 37}" text-anchor="middle" style="font-size:9.5px;fill:var(--muted)">${o.label} ${o.users}/${o.capacity}</text>`;
+    }
+    if (w.threat) h += `<text x="${w.threat.x * CELL + 10}" y="${w.threat.y * CELL + 16}" text-anchor="middle" style="font-size:17px">🐺</text>`;
+    const sel = w.agents.find(a => a.id === selId);
+    if (sel && sel.current && sel.current.target && sel.current.target.x != null) {
+      const t = sel.current.target;
+      h += `<line x1="${sel.x * CELL + 10}" y1="${sel.y * CELL + 10}" x2="${t.x * CELL + 10}" y2="${t.y * CELL + 10}" style="stroke:var(--warn);stroke-width:1.6;stroke-dasharray:4 3"/>`;
+    }
+    const occ = {};
+    for (const a of w.agents) {
+      const key = a.x + "," + a.y, k = occ[key] = (occ[key] || 0) + 1;
+      const ox = ((k - 1) % 3) * 5 - 5, oy = Math.floor((k - 1) / 3) * 5;
+      const cx = a.x * CELL + 10 + ox, cy = a.y * CELL + 10 + oy, isSel = a.id === selId;
+      const fill = a.current && a.current.action === "flee" ? "--bad" : isSel ? "--warn" : "--accent";
+      h += `<g class="agent" data-id="${a.id}"><circle cx="${cx}" cy="${cy}" r="${isSel ? 9 : 7.5}" style="fill:var(${fill});stroke:var(--surface);stroke-width:2"/>`;
+      h += `<text x="${cx}" y="${cy + 4}" text-anchor="middle" style="font-size:10px;font-weight:700;fill:var(--surface)">${a.name[0]}</text></g>`;
+    }
+    svg.innerHTML = h;
+  }
+  function fillAgentSelect(sel, w) {
+    sel.innerHTML = w.agents.map(a => `<option value="${a.id}">${a.name}</option>`).join("");
+  }
+
+  // ───────── 위젯 1: 결정 인스펙터 ─────────
+  (function inspector() {
+    const root = document.getElementById("insp");
+    const svg = $(root, "svg.map");
+    const out = n => $(root, `[data-o="${n}"]`);
+    const agentSel = $(root, '[data-a="agent"]');
+    let w, selId = "a1", timer = null;
+    function reset() { w = build({}, 7); w.tick(); fillAgentSelect(agentSel, w); agentSel.value = selId; render(); }
+    function statusOf(r, ev, topRank, poolMap) {
+      if (r === ev.chosen) return `<span class="tag ok">✔ 선택</span>`;
+      if (r.cooldown > 0) return `<span class="tag mut">쿨다운</span>`;
+      if (r.score <= 0) {
+        const v = r.parts.find(p => !p.skipped && p.y <= 0);
+        return `<span class="tag bad">veto${v ? ": " + esc(v.name) : ""}</span>`;
+      }
+      if ((r.rank || 0) < topRank) return `<span class="tag warn">rank 탈락</span>`;
+      if (poolMap.has(r)) return `<span class="tag acc">후보 ${MM.pct(poolMap.get(r))}</span>`;
+      return `<span class="tag mut">15% 컷</span>`;
+    }
+    function partsHtml(r) {
+      return `<div class="parts">` + r.parts.map(p => {
+        if (p.skipped) return `<span class="pn">${esc(p.name)}</span><span class="pv skip">생략</span>`;
+        const raw = Number.isInteger(p.raw) ? p.raw : fmt(p.raw);
+        return `<span class="pn">${esc(p.name)}</span><span class="pv${p.y <= 0 ? " veto" : ""}">${raw} → ${fmt(p.x)} → ${fmt(p.y)}<span class="mini"><i style="width:${Math.round(p.y * 100)}%"></i></span></span>`;
+      }).join("") + `</div>`;
+    }
+    function render() {
+      drawMap(svg, w, selId);
+      const a = w.agents.find(x => x.id === selId);
+      out("clock").textContent = UAI.clock(w.time);
+      out("tick").textContent = w.tickCount;
+      out("needs").innerHTML = UAI.NEEDS.map(n => {
+        const v = a.needs[n], cls = v < 20 ? "bad" : v < 45 ? "warn" : "ok";
+        return `<span>${UAI.NEED_LABEL[n]}</span><div class="bar ${cls}"><i style="width:${v}%"></i></div><span class="num">${Math.round(v)}</span>`;
+      }).join("");
+      out("trace").textContent = a.trace.slice(-8).reverse().map(t => `${UAI.clock(t.t)} ${t.action}${t.target ? "@" + t.target : ""} (${t.score.toFixed(2)})`).join("\n") || "(아직 없음)";
+      out("log").textContent = w.log.filter(s => s.includes("] " + a.name + " ")).slice(-8).reverse().join("\n") || "(아직 없음)";
+      const ev = a.lastEval;
+      if (!ev) { out("table").innerHTML = ""; out("why").textContent = "아직 평가 기록이 없다."; out("evalt").textContent = "—"; return; }
+      out("evalt").textContent = UAI.clock(ev.t);
+      const rows = ev.rows.slice().sort((x, y) => y.score - x.score || (y.rank || 0) - (x.rank || 0));
+      const pos = rows.filter(r => r.score > 0);
+      const topRank = pos.length ? Math.max(...pos.map(r => r.rank || 0)) : 0;
+      const poolMap = new Map(ev.pool.map(p => [p.cand, p.p]));
+      let h = `<tr><th>#</th><th>행동</th><th>대상</th><th>consideration: raw → x → y</th><th>점수</th><th>rank</th><th>상태</th></tr>`;
+      rows.forEach((r, i) => {
+        const cls = [r === ev.chosen ? "chosen" : "", r.score <= 0 ? "zero" : "", r.isCurrent ? "cur" : ""].join(" ");
+        h += `<tr class="${cls}"><td class="num">${i + 1}</td><td>${esc(r.action.label)}${r.isCurrent ? ' <span class="tag acc">현재</span>' : ""}</td><td>${esc(tname(r.target))}</td><td>${partsHtml(r)}</td><td class="num"><b>${fmt(r.score, 3)}</b></td><td class="num">${r.rank || 0}</td><td>${statusOf(r, ev, topRank, poolMap)}</td></tr>`;
+      });
+      out("table").innerHTML = h;
+      // "왜 이걸 했나" 한 문단
+      const ch = ev.chosen, second = rows.find(r => r !== ch && r.score > 0);
+      let why = `<b>${UAI.clock(ev.t)} 평가</b> (${ev.io ? "바쁠 때의 인터럽트 검사" : "할 일이 없어서 한 숙고"}) · 후보 ${ev.rows.length}개 중 유효 ${pos.length}개, 최고 rank ${topRank}. `;
+      if (ch) {
+        const top = ch.parts.filter(p => !p.skipped).slice().sort((x, y) => x.y - y.y)[0];
+        why += `선택: <b>${esc(ch.action.label)} @${esc(tname(ch.target))}</b> (${fmt(ch.score, 3)}). `;
+        if (top && ch.parts.length > 1) why += `가장 점수를 깎은 요인은 "${esc(top.name)}" (y=${fmt(top.y)}). `;
+        if (second) why += `2위(${esc(second.action.label)} @${esc(tname(second.target))}) 대비 격차 ${fmt(ch.score - second.score, 3)}${ch.score - second.score < 0.1 ? " — 격차가 작아 다음 평가에서 뒤집히기 쉽다" : ""}. `;
+        if (ev.io && !ev.applied) why += `<br>단, 인터럽트 검사였고 1위의 rank가 현재 행동보다 높지 않아 <b>현재 행동(${esc(a.current ? a.current.label : "—")})을 유지</b>했다.`;
+      }
+      out("why").innerHTML = why;
+    }
+    function stop() { clearInterval(timer); timer = null; $(root, '[data-a="play"]').textContent = "▶ 재생"; }
+    function play() {
+      $(root, '[data-a="play"]').textContent = "⏸ 정지";
+      timer = setInterval(() => { w.tick(); render(); }, +$(root, '[data-a="speed"]').value);
+    }
+    root.addEventListener("click", e => {
+      const g = e.target.closest(".agent");
+      if (g) { selId = g.dataset.id; agentSel.value = selId; render(); return; }
+      const act = e.target.dataset && e.target.dataset.a;
+      if (act === "play") return timer ? stop() : play();
+      if (act === "step") { stop(); w.tick(); render(); }
+      if (act === "step10") { stop(); for (let i = 0; i < 10; i++) w.tick(); render(); }
+      if (act === "wolf") { const a = w.agents.find(x => x.id === selId); spawnWolf(w, Math.min(w.w - 1, a.x + 2), a.y, 30); render(); }
+      if (act === "reset") { stop(); reset(); }
+    });
+    agentSel.onchange = () => { selId = agentSel.value; render(); };
+    $(root, '[data-a="speed"]').onchange = () => { if (timer) { stop(); play(); } };
+    reset();
+  })();
+
+  // ───────── 위젯 1-b: 버그 리포트 스텝 ─────────
+  (function caseStudy() {
+    const root = document.getElementById("case");
+    const dw = UAI.makeHamlet({ seed: 7 });
+    const bo = dw.agents[1];
+    bo.x = 23; bo.y = 15; bo.needs = { hunger: 12, energy: 75, fun: 70, social: 72 };
+    const sortR = rs => rs.slice().sort((x, y) => y.score - x.score);
+    const rows = sortR(dw.reasoner.evaluate(bo, dw));
+    const bak = rows.find(r => r.target && r.target.type === "bakery");
+    const acts = UAI.hamletActions(); acts[0].considerations[1].hi = 40;
+    const rows40 = sortR(new UAI.Reasoner(acts, dw.reasoner.opt).evaluate(bo, dw));
+    const bak40 = rows40.find(r => r.target && r.target.type === "bakery");
+    const distP = bak.parts[1], adP = bak.parts[0];
+    const maxD = (dw.w - 1) + (dw.h - 1);
+    function tbl(rs, hl, okRow) {
+      const list = rs.slice(0, 4); if (!list.includes(hl)) list.push(hl);
+      return `<div class="tbl-wrap"><table class="step-tbl"><tr><th>행동 @대상</th><th>consideration y</th><th>점수</th></tr>` + list.map(r =>
+        `<tr class="${r === hl ? "hl" : r === okRow ? "ok" : ""}"><td>${esc(r.action.label)} @${esc(tname(r.target))}</td><td class="mono">${r.parts.map(p => p.skipped ? "생략" : fmt(p.y)).join(" · ")}</td><td class="num">${fmt(r.score, 3)}</td></tr>`).join("") + `</table></div>`;
+    }
+    const top = rows[0];
+    const steps = [
+      () => `<b>① 신고.</b> 보람의 배고픔은 12로 매우 급하다. 그런데 1위는 <b>${esc(top.action.label)} @${esc(tname(top.target))}</b> (${fmt(top.score, 3)})다. 선술집도 배고픔을 10 채워 주긴 하지만, 빵집(60)이 있는데 왜?`,
+      () => `<b>② 재현.</b> 시드 7, 위치 (23, 15), 욕구 고정. 같은 입력이면 같은 결과가 나온다(결정성). 재현이 안 되는 버그는 고칠 수 없으니 이 단계를 건너뛰지 않는다.`,
+      () => `<b>③ lastEval 열기.</b> 빵집 행을 찾는다. 점수 <b>${fmt(bak.score, 3)}</b>. 순위표 어디에도 없다.` + tbl(rows, bak),
+      () => `<b>④ veto 찾기.</b> 광고 가치 y=${fmt(adP.y)}로 충분히 높다. 범인은 거리: raw <b>${distP.raw}</b> → x <b>${fmt(distP.x)}</b> → y <b class="c-bad">${fmt(distP.y)}</b>. 혼잡은 "생략"이므로 원인이 아니다.`,
+      () => `<b>⑤ 원인.</b> 거리 consideration의 bookend는 <code>hi: 30</code>이고 커브는 <code>1 − x²</code>(끝점 0)다. 맵(24×16)의 최대 맨해튼 거리는 ${maxD}이므로, 30칸 넘게 떨어진 주민에게 빵집은 <i>존재하지 않는</i> 것과 같다. 커브 모양이 아니라 입력 범위 설정의 문제다.`,
+      () => `<b>⑥ 처방 비교.</b> bookend를 맵 크기에 맞춰 <code>hi: 40</code>으로 바꾸면 빵집 점수는 ${fmt(bak40.score, 3)}, 1위가 <b>${esc(rows40[0].action.label)} @${esc(tname(rows40[0].target))}</b>로 바뀐다. 다른 방법은 끝점을 0이 아닌 값으로 둔 커브다. "멀면 무효"인지 "멀면 덜 좋음"인지는 디자인 결정이다(Lewis).` + tbl(rows40, bak40, rows40[0]),
+      () => `<b>⑦ 지키기.</b> 수정 후 테스트 러너(8절)를 돌린다. 불변식과 시나리오가 PASS이고 골든 로그 diff가 "보람이 빵집에 간다"처럼 의도한 변화라면 새 골든으로 승인한다. 그리고 "주민은 맵 어디서든 배고프면 빵집 점수가 0보다 크다"를 불변식으로 추가한다.`,
+    ];
+    MM.stepper($(root, '[data-o="stepper"]'), { steps: steps.length, interval: 3200, render: i => steps[i]() });
+  })();
+
+  // ───────── 위젯 2: 점수 타임라인 ─────────
+  (function timeline() {
+    const root = document.getElementById("tl");
+    const out = n => $(root, `[data-o="${n}"]`);
+    const svg = out("chart");
+    const agentSel = $(root, '[data-a="agent"]');
+    const modeSel = $(root, '[data-a="mode"]');
+    const inSl = $(root, '[data-a="inertia"]');
+    const WIN = 240, YMAX = 1.2;
+    let w, samples, selId = "a0", timer = null;
+    function reset() {
+      w = build({ full: modeSel.value === "full", inertia: +inSl.value }, 7);
+      samples = [];
+      fillAgentSelect(agentSel, w); agentSel.value = selId;
+      for (let i = 0; i < 60; i++) sample();
+      draw();
+    }
+    function sample() {
+      w.tick();
+      const a = w.agents.find(x => x.id === selId);
+      const best = {};
+      for (const r of w.reasoner.evaluate(a, w)) {
+        const k = keyOf(r.action.id, r.target);
+        if (best[k] == null || r.score > best[k]) best[k] = r.score;
+      }
+      let leader = null, lv = 0, second = 0;
+      for (const k in best) { if (best[k] > lv) { second = lv; lv = best[k]; leader = k; } else if (best[k] > second) second = best[k]; }
+      const c = a.current;
+      samples.push({ t: w.time, best, leader, gap: lv - second, cur: c ? keyOf(c.action, c.target) : null, curObj: c });
+      if (samples.length > WIN) samples.shift();
+    }
+    function draw() {
+      const L = 34, T = 10, W = 596, H = 190, BY = 216, BH = 16;
+      const X = i => L + (i / (WIN - 1)) * W, Y = v => T + (1 - Math.min(YMAX, Math.max(0, v)) / YMAX) * H;
+      let h = "";
+      for (let v = 0; v <= 1.2001; v += 0.2) h += `<line class="grid" x1="${L}" y1="${Y(v)}" x2="${L + W}" y2="${Y(v)}"/><text x="${L - 4}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`;
+      h += `<line class="axis" x1="${L}" y1="${T + H}" x2="${L + W}" y2="${T + H}"/>`;
+      // 교차·진동 위험
+      const cross = [];
+      for (let i = 1; i < samples.length; i++) if (samples[i].leader !== samples[i - 1].leader && samples[i].leader && samples[i - 1].leader) cross.push(i);
+      let risk = 0;
+      const riskIdx = new Set();
+      cross.forEach((ci, j) => {
+        let n = 0; for (let m = j; m >= 0 && ci - cross[m] < 30; m--) n++;
+        if (n >= 3) { riskIdx.add(ci); risk++; }
+      });
+      for (const ci of cross) {
+        const x = X(ci), bad = riskIdx.has(ci);
+        if (bad) h += `<rect x="${x - 3}" y="${T}" width="6" height="${H}" style="fill:var(--bad-soft);opacity:.7"/>`;
+        h += `<polygon points="${x - 4},${T} ${x + 4},${T} ${x},${T + 7}" style="fill:var(${bad ? "--bad" : "--muted"})"/>`;
+      }
+      // 라인
+      const present = new Set();
+      for (const s of samples) for (const k in s.best) if (s.best[k] > 0.01) present.add(k);
+      for (const key of KEYS) {
+        if (!present.has(key.k)) continue;
+        let d = "", on = false;
+        samples.forEach((s, i) => {
+          const v = s.best[key.k];
+          if (v == null) { on = false; return; }
+          d += (on ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1); on = true;
+        });
+        h += `<path d="${d}" style="fill:none;stroke:var(${key.c});stroke-width:${key.k === "flee" ? 2.4 : 1.8}${key.dash ? ";stroke-dasharray:5 3" : ""}"/>`;
+      }
+      // 실제 행동 띠
+      let switches = 0;
+      let segStart = 0;
+      for (let i = 1; i <= samples.length; i++) {
+        if (i === samples.length || samples[i].curObj !== samples[segStart].curObj) {
+          const s = samples[segStart], key = s.cur && KEYMAP[s.cur];
+          const x0 = X(segStart) - (W / WIN) / 2, x1 = X(i - 1) + (W / WIN) / 2;
+          h += `<rect x="${Math.max(L, x0).toFixed(1)}" y="${BY}" width="${Math.max(0.8, Math.min(L + W, x1) - Math.max(L, x0)).toFixed(1)}" height="${BH}" style="fill:var(${key ? key.c : "--surface-2"});opacity:${key ? 0.85 : 1};stroke:var(--surface);stroke-width:.5"/>`;
+          if (i < samples.length && samples[i].curObj && samples[segStart].curObj) switches++;
+          segStart = i;
+        }
+      }
+      h += `<text x="${L - 4}" y="${BY + 12}" text-anchor="end">실행</text>`;
+      for (let i = 0; i < samples.length; i += 60) {
+        const s = samples[i];
+        h += `<text x="${X(i)}" y="${BY + BH + 16}" text-anchor="middle">${UAI.clock(s.t)}</text>`;
+      }
+      if (samples.length) h += `<text x="${L + W}" y="${BY + BH + 16}" text-anchor="end">${UAI.clock(samples[samples.length - 1].t)}</text>`;
+      svg.innerHTML = h;
+      out("legend").innerHTML = KEYS.filter(k => present.has(k.k)).map(k => `<span><i class="${k.dash ? "dash" : ""}" style="border-color:var(${k.c})"></i>${k.label}</span>`).join("") + `<span><i class="box" style="background:var(--bad-soft);border:1px solid var(--bad)"></i>진동 위험</span>`;
+      out("cross").textContent = cross.length;
+      out("risk").textContent = risk;
+      out("switch").textContent = switches;
+      const last = samples[samples.length - 1];
+      out("gap").textContent = last ? fmt(last.gap, 3) : "—";
+    }
+    function stop() { clearInterval(timer); timer = null; $(root, '[data-a="play"]').textContent = "▶ 재생"; }
+    function play() { $(root, '[data-a="play"]').textContent = "⏸ 정지"; timer = setInterval(() => { sample(); sample(); draw(); }, 60); }
+    root.addEventListener("click", e => {
+      const act = e.target.dataset && e.target.dataset.a;
+      if (act === "play") return timer ? stop() : play();
+      if (act === "step10") { for (let i = 0; i < 10; i++) sample(); draw(); }
+      if (act === "wolf") { const a = w.agents.find(x => x.id === selId); spawnWolf(w, Math.max(0, a.x - 3), a.y, 30); }
+      if (act === "reset") { stop(); reset(); }
+    });
+    agentSel.onchange = () => { selId = agentSel.value; samples = []; for (let i = 0; i < 30; i++) sample(); draw(); };
+    modeSel.onchange = () => { const was = !!timer; stop(); reset(); if (was) play(); };
+    inSl.oninput = () => { out("inertia").textContent = (+inSl.value).toFixed(2); if (w) w.reasoner.opt.inertia = +inSl.value; };
+    document.addEventListener("themechange", () => draw());
+    reset();
+  })();
+
+  // ───────── 위젯 3: 민감도 분석 ─────────
+  const USE_TYPES = ["bakery", "farm", "house", "bench", "tavern", "well", "stage"];
+  function simDay(cfg, seed) {
+    return withDecay(cfg, () => {
+      const w = build(cfg, seed);
+      const wr = UAI.rng(seed * 31 + 1);
+      let needSum = 0, starve = 0, samples = 0, useTotal = 0;
+      const use = {}; USE_TYPES.forEach(t => (use[t] = 0));
+      for (let t = 0; t < 1440; t++) {
+        if (t % 360 === 200) spawnWolf(w, wr.int(w.w), wr.int(w.h), 30);
+        w.tick();
+        for (const a of w.agents) {
+          samples++;
+          needSum += (a.needs.hunger + a.needs.energy + a.needs.fun + a.needs.social) / 4;
+          if (a.needs.hunger < 10) starve++;
+          const c = a.current;
+          if (c && c.using) { use[c.target.type]++; useTotal++; }
+        }
+      }
+      const n = w.agents.length;
+      const share = {}; USE_TYPES.forEach(t => (share[t] = useTotal ? use[t] / useTotal : 0));
+      return { avgNeed: needSum / samples, starts: w.stats.starts / n, osc: w.stats.osc / n, starve: starve / samples, share };
+    });
+  }
+  const PARAMS = {
+    hunger: { label: "배고픔 감소율", values: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], def: 0.2, cfg: v => ({ hungerDecay: v }), d: 1 },
+    inBase: { label: "inertia (엔진 기본)", values: [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5], def: 0.1, cfg: v => ({ inertia: v }), d: 2 },
+    inFull: { label: "inertia (전면 재평가)", values: [0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5], def: 0.1, cfg: v => ({ inertia: v, full: true }), d: 2 },
+    hi: { label: "거리 hi", values: [4, 6, 8, 12, 16, 20, 30, 40, 60], def: 30, cfg: v => ({ distHi: v }), d: 0 },
+  };
+  const SEEDS = [1, 2, 3];
+  // 눈금 4칸이 깔끔한 수가 되도록 최대값을 올림 (1·2·2.5·5 × 10^k 단위)
+  function niceMax(v) {
+    const raw = v / 4, p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * p).find(x => x >= raw);
+    return step * 4;
+  }
+  function lineChart(svg, xs, series, opt) {
+    const L = 36, T = 10, W = 252, H = 128;
+    const n = xs.length, X = i => L + (n > 1 ? (i / (n - 1)) * W : W / 2);
+    let yMax = opt.yMax != null ? opt.yMax : niceMax(Math.max(1e-9, ...series.flatMap(s => s.vals)) * 1.05);
+    const yMin = opt.yMin || 0;
+    if (yMax <= yMin) yMax = yMin + 1;
+    const Y = v => T + (1 - (v - yMin) / (yMax - yMin)) * H;
+    let h = "";
+    for (let i = 0; i <= 4; i++) {
+      const v = yMin + ((yMax - yMin) * i) / 4;
+      h += `<line class="grid" x1="${L}" y1="${Y(v)}" x2="${L + W}" y2="${Y(v)}"/><text x="${L - 4}" y="${Y(v) + 4}" text-anchor="end">${opt.yfmt(v)}</text>`;
+    }
+    h += `<line class="axis" x1="${L}" y1="${T + H}" x2="${L + W}" y2="${T + H}"/>`;
+    xs.forEach((x, i) => { h += `<text x="${X(i)}" y="${T + H + 14}" text-anchor="middle">${opt.xfmt(x)}</text>`; });
+    const di = xs.indexOf(opt.def);
+    if (di >= 0) h += `<line x1="${X(di)}" y1="${T}" x2="${X(di)}" y2="${T + H}" style="stroke:var(--muted);stroke-dasharray:3 3"/><text x="${X(di) + 3}" y="${T + 9}" style="font-size:9.5px">기본</text>`;
+    for (const s of series) {
+      h += `<path d="${s.vals.map((v, i) => (i ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1)).join("")}" style="fill:none;stroke:var(${s.c});stroke-width:2.2"/>`;
+      s.vals.forEach((v, i) => { h += `<circle cx="${X(i)}" cy="${Y(v)}" r="3" style="fill:var(${s.c});stroke:var(--surface);stroke-width:1.5"><title>${opt.xfmt(xs[i])}: ${opt.yfmt(v)}</title></circle>`; });
+    }
+    h += `<text x="${L + W}" y="${T + H + 28}" text-anchor="end">${opt.xlabel}</text>`;
+    svg.innerHTML = h;
+  }
+  function stackChart(svg, xs, shares, opt) {
+    const L = 36, T = 10, W = 252, H = 128, n = xs.length, bw = W / n;
+    let h = "";
+    for (let i = 0; i <= 4; i++) { const y = T + (1 - i / 4) * H; h += `<line class="grid" x1="${L}" y1="${y}" x2="${L + W}" y2="${y}"/><text x="${L - 4}" y="${y + 4}" text-anchor="end">${i * 25}%</text>`; }
+    xs.forEach((x, i) => {
+      let acc = 0;
+      for (const t of USE_TYPES) {
+        const v = shares[i][t]; if (v <= 0) continue;
+        const key = KEYMAP["use:" + t];
+        const y0 = T + (1 - acc - v) * H;
+        h += `<rect x="${L + i * bw + 2}" y="${y0.toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${(v * H).toFixed(1)}" style="fill:var(${key.c});opacity:${key.dash ? 0.5 : 0.9}"><title>${opt.xfmt(x)} · ${key.label} ${MM.pct(v)}</title></rect>`;
+        acc += v;
+      }
+      h += `<text x="${L + i * bw + bw / 2}" y="${T + H + 14}" text-anchor="middle">${opt.xfmt(x)}</text>`;
+    });
+    h += `<text x="${L + W}" y="${T + H + 28}" text-anchor="end">${opt.xlabel}</text>`;
+    svg.innerHTML = h;
+  }
+  (function sensitivity() {
+    const root = document.getElementById("sens");
+    const out = n => $(root, `[data-o="${n}"]`);
+    const paramSel = $(root, '[data-a="param"]');
+    const runBtn = $(root, '[data-a="run"]');
+    let last = null;
+    out("useLegend").innerHTML = USE_TYPES.map(t => { const k = KEYMAP["use:" + t]; return `<span><i class="box" style="background:var(${k.c});opacity:${k.dash ? 0.5 : 0.9}"></i>${k.label}</span>`; }).join("");
+    function draw() {
+      if (!last) return;
+      const { pk, res } = last, P = PARAMS[pk], xs = res.map(r => r.v);
+      const xfmt = v => (+v).toFixed(P.d), base = { xfmt, def: P.def, xlabel: P.label };
+      lineChart(out("c1"), xs, [{ vals: res.map(r => r.avgNeed), c: "--ok" }], Object.assign({ yMin: 0, yMax: 100, yfmt: v => v.toFixed(0) }, base));
+      lineChart(out("c2"), xs, [{ vals: res.map(r => r.starts), c: "--accent" }, { vals: res.map(r => r.osc), c: "--bad" }], Object.assign({ yfmt: v => v.toFixed(0) }, base));
+      lineChart(out("c3"), xs, [{ vals: res.map(r => r.starve * 100), c: "--bad" }], Object.assign({ yMax: niceMax(Math.max(4, ...res.map(r => r.starve * 105))), yfmt: v => v.toFixed(v < 10 ? 1 : 0) + "%" }, base));
+      stackChart(out("c4"), xs, res.map(r => r.share), base);
+      // 해석
+      const an = res.map(r => r.avgNeed), spread = Math.max(...an) - Math.min(...an);
+      const st = res.map(r => r.starve), os = res.map(r => r.osc);
+      let msg = `<b>${P.label}</b> ${xs.length}개 값 × 시드 ${SEEDS.length}개 = 하루 ${xs.length * SEEDS.length}회 시뮬레이션. 평균 욕구 범위 ${Math.min(...an).toFixed(1)} ~ ${Math.max(...an).toFixed(1)}. `;
+      if (spread < 0.05 && Math.max(...os) - Math.min(...os) < 0.01) msg += `<span class="c-bad">모든 값에서 지표가 같다 — 이 정책에서는 <b>죽은 파라미터</b>다.</span>`;
+      else {
+        const bad = res.filter(r => r.starve > 0.01);
+        if (bad.length) msg += `굶주림 비율이 1%를 넘는 값: <b class="c-bad">${bad.map(r => xfmt(r.v)).join(", ")}</b>. `;
+        else msg += `이 범위에서는 굶주림 비율이 1%를 넘지 않는다. `;
+        const bestR = res.reduce((a, b) => (b.avgNeed > a.avgNeed ? b : a));
+        msg += `평균 욕구 최고: ${xfmt(bestR.v)} (${bestR.avgNeed.toFixed(1)}). 진동(중도 전환) 최대 주민당 ${Math.max(...os).toFixed(1)}회/일.`;
+      }
+      out("verdict").innerHTML = msg;
+    }
+    runBtn.onclick = () => {
+      const pk = paramSel.value, P = PARAMS[pk];
+      runBtn.disabled = true; out("status").textContent = "실행 중…"; out("prog").style.width = "0%";
+      const res = []; let i = 0; const t0 = performance.now();
+      (function next() {
+        if (i >= P.values.length) {
+          last = { pk, res }; draw();
+          runBtn.disabled = false; out("status").textContent = `완료 (${Math.round(performance.now() - t0)} ms)`;
+          return;
+        }
+        const v = P.values[i];
+        const acc = sweep1(P, v); acc.v = v; res.push(acc); i++;
+        out("prog").style.width = (i / P.values.length) * 100 + "%";
+        setTimeout(next, 0);
+      })();
+    };
+    function sweep1(P, v) {
+      const acc = { avgNeed: 0, starts: 0, osc: 0, starve: 0, share: {} };
+      USE_TYPES.forEach(t => (acc.share[t] = 0));
+      for (const s of SEEDS) {
+        const r = simDay(P.cfg(v), s);
+        acc.avgNeed += r.avgNeed / SEEDS.length; acc.starts += r.starts / SEEDS.length;
+        acc.osc += r.osc / SEEDS.length; acc.starve += r.starve / SEEDS.length;
+        USE_TYPES.forEach(t => (acc.share[t] += r.share[t] / SEEDS.length));
+      }
+      return acc;
+    }
+    document.addEventListener("themechange", draw);
+  })();
+
+  // ───────── 위젯 4: 테스트 러너 ─────────
+  const CONFIGS = {
+    base: { label: "엔진 기본", cfg: {}, desc: "uai.js 그대로. 모든 테스트가 통과해야 한다." },
+    hi40: { label: "거리 hi 30 → 40", cfg: { distHi: 40 }, desc: "3절 사례의 수정. 의도된 튜닝 변경이므로 행동이 바뀌고 골든 로그는 달라진다." },
+    hi6: { label: "거리 hi 30 → 6", cfg: { distHi: 6 }, desc: "과도한 튜닝: 6칸 넘게 떨어진 오브젝트는 모두 veto된다." },
+    hunger3: { label: "배고픔 감소 ×4 (0.8)", cfg: { hungerDecay: 0.8 }, desc: "밸런스 실수: 배고픔이 너무 빨리 준다." },
+    full0: { label: "전면 재평가 + 관성 0", cfg: { full: true, inertia: 0 }, desc: "교육용 변형 정책에서 관성을 없앤 설정. 코드 버그는 없지만 진동한다." },
+    flee0: { label: "도망 rank 10 → 0", cfg: { fleeRank: 0 }, desc: "dual utility 범주 설정 실수: 위협 회피가 욕구 행동과 같은 버킷에 들어간다." },
+    bug: { label: "버그 주입: 반납 누락", cfg: { bugRelease: true }, desc: "release()가 users를 줄이지 않는 코드 버그." },
+  };
+  const WOLF_TICKS = [120, 500, 900];
+  function runScenario(cfg, seed, check) {
+    return withDecay(cfg, () => {
+      const w = build(cfg, seed);
+      const st = { rangeBad: null, ledgerBad: null, wolfFail: [], wolfChecks: 0, starveRun: 0, starveWho: null };
+      const low = {}, lowFrom = {}, pending = [];
+      for (let i = 0; i < 1440; i++) {
+        if (WOLF_TICKS.includes(i)) {
+          const tgt = w.agents[WOLF_TICKS.indexOf(i) * 2 % w.agents.length];
+          spawnWolf(w, tgt.x, tgt.y, 40);
+          if (check) for (const ag of w.agents) if (w.dist(ag, w.threat) < 10) pending.push({ ag, by: i + 6, ok: false, at: w.time + w.dt });
+        }
+        w.tick();
+        if (!check) continue;
+        for (const ag of w.agents) {
+          for (const n of UAI.NEEDS) if (!(ag.needs[n] >= 0 && ag.needs[n] <= 100) && !st.rangeBad) st.rangeBad = `${UAI.clock(w.time)} ${ag.name}.${n} = ${ag.needs[n]}`;
+          if (ag.needs.hunger < 10) {
+            if (!low[ag.id]) lowFrom[ag.id] = w.time;
+            low[ag.id] = (low[ag.id] || 0) + 1;
+            if (low[ag.id] > st.starveRun) { st.starveRun = low[ag.id]; st.starveWho = `${ag.name}, ${UAI.clock(lowFrom[ag.id])}부터`; }
+          }
+          else low[ag.id] = 0;
+        }
+        if (!st.ledgerBad) for (const o of w.objects) {
+          const n = w.agents.filter(ag => ag.current && ag.current.using && ag.current.target === o).length;
+          if (n !== o.users || o.users < 0 || o.users > o.capacity) { st.ledgerBad = `${UAI.clock(w.time)} ${o.label}: 장부 users=${o.users}, 실제 이용자=${n}, 정원 ${o.capacity}`; break; }
+        }
+        for (const p of pending) if (!p.ok && p.ag.current && p.ag.current.action === "flee") p.ok = true;
+        for (let j = pending.length - 1; j >= 0; j--) {
+          const p = pending[j];
+          if (i + 1 >= p.by) { st.wolfChecks++; if (!p.ok) st.wolfFail.push(`${UAI.clock(p.at)} ${p.ag.name}`); pending.splice(j, 1); }
+        }
+      }
+      return { w, st, rec: w.rec, finalNeeds: JSON.stringify(w.agents.map(a => a.needs)) };
+    });
+  }
+  let GOLDEN = runScenario({}, 7, false).rec;
+  function diffFirst(a, b) { const n = Math.max(a.length, b.length); for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i; return -1; }
+  function runTests(key) {
+    const cfg = CONFIGS[key].cfg;
+    const r1 = runScenario(cfg, 7, true), r2 = runScenario(cfg, 7, false);
+    const st = r1.st, w = r1.w, tests = [];
+    const same = r1.rec.join("\n") === r2.rec.join("\n") && r1.finalNeeds === r2.finalNeeds;
+    tests.push({ kind: "회귀", name: "결정성: 같은 시드 2회 → 같은 로그", pass: same, det: same ? `${r1.rec.length}줄 일치` : "두 실행의 로그가 다르다 (비결정적 코드)" });
+    const d = diffFirst(GOLDEN, r1.rec);
+    tests.push({ kind: "회귀", name: "골든 로그와 일치", pass: d < 0, det: d < 0 ? `${GOLDEN.length}줄 일치` : `${d + 1}번째 줄에서 처음 갈라짐 — 골든: "${GOLDEN[d] || "(끝)"}" / 현재: "${r1.rec[d] || "(끝)"}"` });
+    tests.push({ kind: "불변식", name: "욕구는 항상 0~100", pass: !st.rangeBad, det: st.rangeBad || "1,440 tick × 6명 × 4욕구 검사" });
+    tests.push({ kind: "불변식", name: "오브젝트 장부 = 실제 이용자, 정원 이내", pass: !st.ledgerBad, det: st.ledgerBad || "매 tick 8개 오브젝트 검사" });
+    tests.push({ kind: "시나리오", name: "늑대 반경 10칸 안의 주민은 6분 안에 도망", pass: st.wolfFail.length === 0 && st.wolfChecks > 0, det: st.wolfFail.length ? `실패 ${st.wolfFail.length}/${st.wolfChecks}: ${st.wolfFail.slice(0, 4).join(", ")}` : `${st.wolfChecks}건 모두 도망` });
+    tests.push({ kind: "밸런스", name: "배고픔 < 10이 30분 넘게 이어지지 않음", pass: st.starveRun <= 30, det: st.starveRun ? `최장 ${st.starveRun}분 (${st.starveWho})` : "한 번도 10 미만으로 떨어지지 않음" });
+    const oscMax = Math.max(0, ...w.agents.map(a => a.osc || 0));
+    tests.push({ kind: "밸런스", name: "같은 rank끼리 중도 전환(진동) ≤ 10회/일/주민", pass: oscMax <= 10, det: `최다 ${oscMax}회${oscMax ? " (" + w.agents.reduce((a, b) => ((b.osc || 0) > (a.osc || 0) ? b : a)).name + ")" : ""}` });
+    return { tests, rec: r1.rec };
+  }
+  (function testRunner() {
+    const root = document.getElementById("tests");
+    const out = n => $(root, `[data-o="${n}"]`);
+    const cfgSel = $(root, '[data-a="cfg"]');
+    cfgSel.innerHTML = Object.entries(CONFIGS).map(([k, c]) => `<option value="${k}">${c.label}</option>`).join("");
+    let lastRec = null;
+    function showGolden() { out("golden").textContent = `골든 로그 (${GOLDEN.length}줄) — 처음 12줄:\n` + GOLDEN.slice(0, 12).join("\n") + "\n…"; }
+    function showDesc() { out("cfgdesc").innerHTML = "설정 설명: " + CONFIGS[cfgSel.value].desc; }
+    function run() {
+      const t0 = performance.now();
+      const { tests, rec } = runTests(cfgSel.value);
+      lastRec = rec;
+      const passN = tests.filter(t => t.pass).length;
+      out("out").innerHTML = `<tr><th>종류</th><th>테스트</th><th>결과</th><th>상세</th></tr>` + tests.map(t =>
+        `<tr><td><span class="tag ${t.kind === "불변식" ? "bad" : t.kind === "회귀" ? "acc" : t.kind === "시나리오" ? "warn" : "ok"}">${t.kind}</span></td><td>${esc(t.name)}</td><td class="res ${t.pass ? "pass" : "fail"}">${t.pass ? "PASS" : "FAIL"}</td><td class="det">${esc(t.det)}</td></tr>`).join("") +
+        `<tr><td colspan="4" class="det">${CONFIGS[cfgSel.value].label}: ${passN}/${tests.length} 통과 · ${Math.round(performance.now() - t0)} ms</td></tr>`;
+    }
+    $(root, '[data-a="run"]').onclick = run;
+    $(root, '[data-a="approve"]').onclick = () => {
+      if (!lastRec) run();
+      GOLDEN = lastRec.slice(); showGolden();
+      out("golden").textContent = `새 골든 승인됨 (${CONFIGS[cfgSel.value].label}).\n` + out("golden").textContent;
+      run();
+    };
+    $(root, '[data-a="all"]').onclick = () => {
+      const keys = Object.keys(CONFIGS), btn = $(root, '[data-a="all"]');
+      btn.disabled = true;
+      const rows = []; let i = 0;
+      (function next() {
+        if (i >= keys.length) {
+          const names = ["결정성", "골든", "욕구 범위", "장부", "늑대", "굶주림", "진동"];
+          out("matrix").innerHTML = `<tr><th>설정</th>${names.map(n => `<th>${n}</th>`).join("")}</tr>` + rows.map(r =>
+            `<tr><td>${esc(r.label)}</td>${r.tests.map(t => `<td class="${t.pass ? "c-ok" : "c-bad"}" title="${esc(t.det)}"><b>${t.pass ? "✔" : "✘"}</b></td>`).join("")}</tr>`).join("");
+          btn.disabled = false; return;
+        }
+        rows.push({ label: CONFIGS[keys[i]].label, tests: runTests(keys[i]).tests }); i++;
+        out("matrix").innerHTML = `<tr><td>실행 중… ${i}/${keys.length}</td></tr>`;
+        setTimeout(next, 0);
+      })();
+    };
+    cfgSel.onchange = showDesc;
+    showDesc(); showGolden(); run();
+  })();
+
+  // node 검증용 노출
+  if (typeof window !== "undefined") window.CH11 = { build, simDay, runTests, CONFIGS, PARAMS, withDecay };
+})();
+</script>
+</body></html>

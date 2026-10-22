@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04. ICMP · DNS · DHCP · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.tr-log{font-family:var(--mono);font-size:.78rem;background:#0b0f18;color:#cfe3c8;padding:10px 12px;border-radius:8px;min-height:90px;white-space:pre;line-height:1.6;margin-top:8px}
+.dns-cache{font-family:var(--mono);font-size:.76rem;background:var(--surface-2);padding:8px 10px;border-radius:8px;min-height:46px}
+.msgline{font-family:var(--mono);font-size:.78rem}
+</style>
+</head>
+<body data-chapter="04">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 1 · 개론 — CHAPTER 04</div>
+  <h1>ICMP · DNS · DHCP</h1>
+  <p class="lead">IP만으로는 "왜 안 되는지"를 알 수도, 이름을 주소로 바꿀 수도, 주소를 받을 수도 없습니다. 이 장은 IP를 실제로 쓸 수 있게 만드는 세 조력자 — 진단(ICMP), 이름 해석(DNS), 자동 설정(DHCP) — 를 애니메이션으로 따라갑니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 80분</span><span class="chip l-net">인터넷</span><span class="chip l-app">응용</span><span class="chip">RFC 792 · 1034/1035 · 2131</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>ICMP의 주요 Type/Code와 ping·traceroute의 동작 원리를 패킷 수준에서 설명할 수 있다.</li>
+    <li>DNS 재귀/반복 질의, 캐시 TTL, 레코드 타입, 메시지 포맷을 설명할 수 있다.</li>
+    <li>DHCP DORA 네 단계에서 각 메시지의 출발지/목적지 주소를 말할 수 있다.</li>
+    <li>ICMP 차단, DNS UDP 크기 한계, 캐시 포이즈닝 같은 운영 문제의 원인을 안다.</li>
+  </ul>
+</div>
+
+<h2 id="icmp"><span class="num">4.1</span>ICMP: IP의 오류 보고와 진단</h2>
+<p><b>ICMP(Internet Control Message Protocol, RFC 792)</b>는 IP 위에 실리지만(Protocol=1) IP의 일부로 취급됩니다. 라우터나 호스트가 "패킷을 전달할 수 없었다"거나 "TTL이 만료됐다"를 출발지에 알리고, ping 같은 진단 도구의 바탕이 됩니다. 오류 메시지에는 <b>원인 패킷의 IP 헤더 + 첫 8바이트</b>(=TCP/UDP 포트 포함)가 실려, 수신 측이 어느 소켓의 문제인지 알 수 있습니다.</p>
+<div id="icmp-hdr"></div>
+<table>
+  <thead><tr><th>Type</th><th>Code</th><th>이름</th><th>누가 보내나</th><th>의미 / 활용</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td>0</td><td>Echo Reply</td><td>대상 호스트</td><td>ping 응답</td></tr>
+    <tr><td>8</td><td>0</td><td>Echo Request</td><td>ping</td><td>도달성·RTT 측정</td></tr>
+    <tr><td rowspan="5">3</td><td>0</td><td>Net Unreachable</td><td>라우터</td><td>라우팅 테이블에 경로 없음</td></tr>
+    <tr><td>1</td><td>Host Unreachable</td><td>마지막 라우터</td><td>ARP 실패 등, 호스트 응답 없음</td></tr>
+    <tr><td>3</td><td>Port Unreachable</td><td>대상 호스트</td><td>UDP 포트에 듣는 프로세스 없음. traceroute(UDP 방식) 종료 신호</td></tr>
+    <tr><td>4</td><td><b>Fragmentation Needed, DF set</b></td><td>라우터</td><td>PMTUD의 핵심. 다음 홉 MTU를 포함</td></tr>
+    <tr><td>13</td><td>Admin Prohibited</td><td>방화벽</td><td>정책으로 차단됨 (대개 조용히 버림)</td></tr>
+    <tr><td rowspan="2">11</td><td>0</td><td><b>TTL Exceeded in Transit</b></td><td>라우터</td><td>TTL=0. traceroute의 원리</td></tr>
+    <tr><td>1</td><td>Reassembly Timeout</td><td>호스트</td><td>조각이 다 안 옴</td></tr>
+    <tr><td>5</td><td>0–3</td><td>Redirect</td><td>라우터</td><td>"그 목적지는 다른 게이트웨이가 더 가깝다". 보안상 대부분 무시</td></tr>
+    <tr><td>12</td><td>0</td><td>Parameter Problem</td><td>라우터/호스트</td><td>헤더 필드 오류</td></tr>
+  </tbody>
+</table>
+<div class="callout"><div class="t">📌 ICMP 오류 메시지의 규칙</div><p>ICMP 오류에 대해 ICMP 오류를 보내지 않고(무한 루프 방지), 브로드캐스트/멀티캐스트 목적지나 첫 조각이 아닌 조각에 대해서도 보내지 않습니다. 또한 대부분의 OS는 ICMP 발신을 초당 수십 개로 <b>rate-limit</b>합니다 — traceroute에서 <code>* * *</code>가 간헐적으로 보이는 이유 중 하나입니다.</p></div>
+
+<h3 id="ping">ping <small>(애니메이션)</small></h3>
+<div class="anim" id="ping-anim">
+  <div class="stage">
+    <svg viewBox="0 0 900 200">
+      <line x1="120" y1="100" x2="780" y2="100" class="wire"/>
+      <rect x="40" y="70" width="110" height="60" rx="8" class="node"/><text x="95" y="96" text-anchor="middle" font-weight="700">내 PC</text><text x="95" y="114" text-anchor="middle" font-size="10" class="mono muted">10.0.0.5</text>
+      <rect x="400" y="80" width="90" height="40" rx="8" class="node"/><text x="445" y="104" text-anchor="middle" font-size="11">라우터들…</text>
+      <rect x="750" y="70" width="110" height="60" rx="8" class="node"/><text x="805" y="96" text-anchor="middle" font-weight="700">1.1.1.1</text><text x="805" y="114" text-anchor="middle" font-size="10" class="mono muted">대상 호스트</text>
+      <g id="ping-pkt" class="anim-move" style="opacity:0"><rect x="-44" y="-12" width="88" height="24" rx="6" fill="var(--l-net)"/><text id="ping-lbl" x="0" y="4" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">Echo Request</text></g>
+      <text x="450" y="40" text-anchor="middle" font-size="12" id="ping-timer" class="mono"></text>
+      <text x="450" y="170" text-anchor="middle" font-size="11" class="mono" id="ping-detail"></text>
+    </svg>
+  </div>
+</div>
+<p>ping은 ICMP Echo Request(Type 8)에 <b>식별자(프로세스 구분)와 시퀀스 번호</b>, 그리고 보통 <b>송신 타임스탬프</b>를 데이터에 담아 보냅니다. 대상은 데이터를 그대로 복사해 Echo Reply(Type 0)로 돌려주고, 송신 측은 응답 수신 시각에서 데이터 안의 타임스탬프를 빼 RTT를 구합니다. 그래서 ping은 커널 시계 외에 별도 상태가 거의 필요 없습니다.</p>
+
+<h3 id="traceroute">traceroute <small>(애니메이션)</small></h3>
+<p>traceroute는 ICMP를 <b>진단용으로 "악용"</b>한 도구입니다. TTL을 1부터 하나씩 늘려 보내면, n번째 라우터에서 TTL이 0이 되어 그 라우터가 Time Exceeded를 돌려줍니다. 그 메시지의 <i>출발지 IP</i>가 곧 n번째 홉의 주소입니다. 목적지에 도달하면 다른 종류의 응답이 와서 끝을 알 수 있습니다.</p>
+<div class="anim" id="tr-anim">
+  <div class="stage">
+    <svg viewBox="0 0 900 190" id="tr-svg">
+      <line x1="90" y1="90" x2="820" y2="90" class="wire"/>
+      <g id="tr-nodes"></g>
+      <g id="tr-pkts"></g>
+    </svg>
+    <div class="tr-log" id="tr-log">$ traceroute -n 203.0.113.10</div>
+  </div>
+</div>
+<div class="grid-2">
+  <div class="card tight"><b>구현 차이</b><p class="small">Linux/macOS <code>traceroute</code>: UDP를 33434부터 증가하는 포트로 보냄 → 목적지는 <b>Port Unreachable(3/3)</b>로 응답. Windows <code>tracert</code>와 <code>traceroute -I</code>: ICMP Echo 사용 → 목적지는 <b>Echo Reply</b>. <code>-T</code>(TCP SYN)는 방화벽 통과에 유리.</p></div>
+  <div class="card tight"><b>읽을 때 주의</b><p class="small">① 각 홉은 <b>독립적인</b> 패킷으로 측정되므로 경로가 중간에 바뀔 수 있다(ECMP). ② 라우터가 ICMP 생성을 rate-limit하면 <code>*</code>가 나오지만 그 홉이 트래픽을 버리는 건 아니다. ③ 홉의 RTT가 다음 홉보다 클 수 있다 — 라우터의 제어 평면(CPU)이 느린 것뿐이다. ④ MPLS 구간은 TTL을 전파하지 않으면 홉이 숨는다.</p></div>
+</div>
+
+<h2 id="dns"><span class="num">4.2</span>DNS: 이름을 주소로</h2>
+<p><b>DNS(Domain Name System, RFC 1034/1035)</b>는 <code>www.example.com</code> 같은 이름을 IP 주소(및 다른 정보)로 바꾸는 <b>분산 계층형 데이터베이스</b>입니다. 이름은 오른쪽부터 읽습니다: 루트(<code>.</code>) → TLD(<code>com</code>) → 2단계(<code>example</code>) → 호스트(<code>www</code>). 각 단계는 다른 조직이 관리하며(<b>위임</b>, delegation), 이것이 DNS가 전 세계 규모로 확장되는 비결입니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 200">
+    <g font-size="11">
+      <rect x="370" y="10" width="120" height="36" rx="8" fill="var(--purple-soft)" stroke="var(--purple)"/><text x="430" y="33" text-anchor="middle" font-weight="700">. (루트) — 13 그룹</text>
+      <rect x="120" y="80" width="110" height="36" rx="8" fill="var(--primary-soft)" stroke="var(--primary)"/><text x="175" y="103" text-anchor="middle" font-weight="700">com</text>
+      <rect x="300" y="80" width="110" height="36" rx="8" fill="var(--primary-soft)" stroke="var(--primary)"/><text x="355" y="103" text-anchor="middle" font-weight="700">org</text>
+      <rect x="480" y="80" width="110" height="36" rx="8" fill="var(--primary-soft)" stroke="var(--primary)"/><text x="535" y="103" text-anchor="middle" font-weight="700">kr</text>
+      <rect x="660" y="80" width="110" height="36" rx="8" fill="var(--primary-soft)" stroke="var(--primary)"/><text x="715" y="103" text-anchor="middle" font-weight="700">net …</text>
+      <rect x="60" y="150" width="110" height="36" rx="8" fill="var(--green-soft)" stroke="var(--green)"/><text x="115" y="173" text-anchor="middle">example.com</text>
+      <rect x="190" y="150" width="110" height="36" rx="8" fill="var(--green-soft)" stroke="var(--green)"/><text x="245" y="173" text-anchor="middle">google.com</text>
+      <rect x="450" y="150" width="110" height="36" rx="8" fill="var(--green-soft)" stroke="var(--green)"/><text x="505" y="173" text-anchor="middle">co.kr → cupix.co.kr</text>
+      <path d="M430 46V62H175V80M430 62H355V80M430 62H535V80M430 62H715V80M175 116V134H115V150M175 134H245V150M535 116V150" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+      <text x="20" y="33" class="muted">관리: IANA/ICANN</text><text x="20" y="103" class="muted">레지스트리(Verisign, KISA…)</text><text x="20" y="173" class="muted">도메인 소유자</text>
+    </g>
+  </svg>
+  <div class="cap">이름 공간의 계층. 각 화살표는 NS 레코드에 의한 "위임"이다. 루트 서버는 13개 이름(a~m.root-servers.net)이지만 애니캐스트로 전 세계 1,900개 이상 인스턴스가 있다.</div>
+</div>
+<h3 id="resolve">이름 해석 과정 <small>(애니메이션)</small></h3>
+<p>클라이언트의 <b>스텁 리졸버</b>(OS 라이브러리)는 재귀 리졸버에게 "답을 끝까지 찾아서 줘"라고 <b>재귀 질의</b>를 보냅니다. <b>재귀 리졸버</b>(ISP, 8.8.8.8, 1.1.1.1, 사내 DNS)는 루트부터 차례로 <b>반복 질의</b>를 하며 답을 찾고, 결과를 TTL 동안 <b>캐시</b>합니다.</p>
+<div class="anim" id="dns-anim">
+  <div class="stage">
+    <svg viewBox="0 0 900 250" id="dns-svg">
+      <g id="dns-nodes"></g>
+      <g id="dns-pkts"></g>
+      <text x="450" y="238" text-anchor="middle" font-size="11" class="mono" id="dns-msg"></text>
+    </svg>
+    <div class="grid-2" style="margin-top:8px"><div><div class="small"><b>재귀 리졸버 캐시</b></div><div class="dns-cache" id="dns-cache">(비어 있음)</div></div><div><div class="small"><b>스텁 리졸버(OS) 캐시</b></div><div class="dns-cache" id="dns-stub">(비어 있음)</div></div></div>
+  </div>
+</div>
+<div class="callout tip"><div class="t">💡 두 번째 질의가 빠른 이유</div><p>같은 리졸버에 <code>mail.example.com</code>을 물으면, 루트와 .com 질의는 건너뛰고(NS 레코드가 캐시에 있음) 권한 서버로 바로 갑니다. <code>www.example.com</code>을 다시 물으면 리졸버 캐시에서 즉시 답합니다. 캐시의 <b>TTL</b>은 권한 서버가 레코드마다 정하며(초 단위), TTL이 짧으면 변경이 빨리 퍼지지만 질의가 늘어납니다. 전환 작업 전에 TTL을 미리 줄여 두는 것이 운영의 기본 수칙입니다.</p></div>
+
+<h3 id="records">레코드 타입</h3>
+<table>
+  <thead><tr><th>타입</th><th>값</th><th>예시 / 설명</th></tr></thead>
+  <tbody>
+    <tr><td><b>A</b></td><td>IPv4 주소</td><td class="mono">www.example.com. 300 IN A 93.184.216.34</td></tr>
+    <tr><td><b>AAAA</b></td><td>IPv6 주소</td><td class="mono">www.example.com. 300 IN AAAA 2606:2800:220:1:248:1893:25c8:1946</td></tr>
+    <tr><td><b>CNAME</b></td><td>별칭 → 정식 이름</td><td>리졸버가 다시 정식 이름을 해석한다. 존 정점(apex)에는 둘 수 없다(다른 레코드와 공존 불가). CDN 연결에 흔함</td></tr>
+    <tr><td><b>NS</b></td><td>권한 네임서버</td><td>위임의 실체. 부모 존과 자식 존 양쪽에 존재(부모 쪽은 glue)</td></tr>
+    <tr><td><b>MX</b></td><td>메일 서버 + 우선순위</td><td class="mono">example.com. IN MX 10 mail.example.com.</td></tr>
+    <tr><td><b>TXT</b></td><td>임의 텍스트</td><td>SPF, DKIM, DMARC, 도메인 소유 검증 등 "만능 칸"</td></tr>
+    <tr><td><b>SOA</b></td><td>존 메타데이터</td><td>주 서버, 관리자 메일, 시리얼, 갱신/재시도/만료, 네거티브 캐시 TTL</td></tr>
+    <tr><td><b>PTR</b></td><td>역방향 (IP → 이름)</td><td class="mono">34.216.184.93.in-addr.arpa. IN PTR www.example.com.</td></tr>
+    <tr><td><b>SRV</b></td><td>서비스 위치</td><td class="mono">_sip._tcp.example.com. IN SRV 10 60 5060 sip.example.com.</td></tr>
+    <tr><td><b>CAA</b> / <b>HTTPS</b></td><td>인증서 발급 제한 / 서비스 바인딩</td><td>최근 추가된 타입. HTTPS(65)는 ALPN·ECH 정보를 전달</td></tr>
+  </tbody>
+</table>
+<h3 id="dnsmsg">DNS 메시지 포맷</h3>
+<p>질의와 응답은 같은 형식을 씁니다. 12바이트 헤더 뒤에 Question / Answer / Authority / Additional 네 섹션이 옵니다. 보통 UDP 53번 포트를 쓰고, 응답이 크면 TCP로 전환합니다.</p>
+<div id="dns-hdr"></div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: UDP 512바이트 한계, EDNS(0), TCP 폴백</div><p>RFC 1035는 UDP DNS 메시지를 <b>512바이트</b>로 제한했습니다(당시 모든 호스트가 재조립을 보장하는 최소 IP 데이터그램 576바이트에서 유래). 응답이 더 크면 서버가 <b>TC(Truncated) 비트</b>를 세우고, 클라이언트는 <b>TCP 53</b>으로 다시 묻습니다. DNSSEC 서명이나 많은 A 레코드는 512를 쉽게 넘으므로, <b>EDNS(0)(RFC 6891)</b>가 OPT 의사 레코드로 "나는 4096바이트까지 받을 수 있다"를 광고하게 했습니다. 그러나 큰 UDP 응답은 IP 단편화를 유발하고(3장), 조각을 버리는 방화벽 때문에 응답이 사라지는 사고가 잦아, 2020년 "DNS Flag Day"에서 권장 EDNS 버퍼 크기를 <b>1232바이트</b>로 낮췄습니다(IPv6 최소 MTU 1280 − 헤더). "DNS는 UDP만 쓴다"고 하여 방화벽에서 TCP 53을 막는 것은 전형적인 운영 실수입니다.</p></div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 캐시 포이즈닝과 소스 포트 무작위화</div><p>리졸버는 응답을 받으면 "내가 보낸 질의에 대한 답인가"를 <b>16비트 트랜잭션 ID</b>, 출발지/목적지 주소와 <b>포트</b>로 확인합니다. 2008년 Kaminsky 공격은 리졸버가 질의 중인 틈에 위조 응답을 수만 개 쏟아부어 ID를 맞히는 방식으로, 성공하면 리졸버 캐시에 가짜 NS/A가 들어가 그 도메인 전체가 납치됩니다. 대응은 ① <b>소스 포트 무작위화</b>(16비트 ID × 16비트 포트 = 32비트 엔트로피), ② 0x20 대소문자 무작위화, ③ 근본적으로는 응답에 서명하는 <b>DNSSEC</b>. 위 애니메이션에서 질의마다 포트가 달라지는 것을 보세요.</p></div>
+
+<h2 id="dhcp"><span class="num">4.3</span>DHCP: 주소 자동 설정 <small>(애니메이션)</small></h2>
+<p>막 부팅한 호스트는 IP 주소도, 게이트웨이도, DNS 서버도 모릅니다. <b>DHCP(Dynamic Host Configuration Protocol, RFC 2131)</b>는 이 "아무것도 모르는 상태"에서 설정을 받아오는 프로토콜이며, 그래서 <b>브로드캐스트</b>와 <b>0.0.0.0</b> 출발지 주소에 의존합니다. UDP 68(클라이언트) ↔ 67(서버). 네 단계의 머리글자를 따 <b>DORA</b>라 부릅니다.</p>
+<div class="anim" id="dhcp-anim">
+  <div class="stage">
+    <svg viewBox="0 0 900 230" id="dhcp-svg">
+      <line x1="100" y1="110" x2="800" y2="110" class="wire"/>
+      <g id="dhcp-nodes"></g>
+      <g id="dhcp-pkts"></g>
+      <g transform="translate(20,160)">
+        <rect x="0" y="0" width="860" height="62" rx="8" class="node"/>
+        <text x="14" y="20" font-size="11" class="mono"><tspan font-weight="700" fill="var(--l-link)">L2 </tspan><tspan id="dhcp-l2">—</tspan></text>
+        <text x="14" y="38" font-size="11" class="mono"><tspan font-weight="700" fill="var(--l-net)">L3 </tspan><tspan id="dhcp-l3">—</tspan></text>
+        <text x="14" y="56" font-size="11" class="mono"><tspan font-weight="700" fill="var(--l-app)">DHCP </tspan><tspan id="dhcp-app">—</tspan></text>
+      </g>
+    </svg>
+  </div>
+</div>
+<div class="grid-2">
+  <div class="callout"><div class="t">📌 왜 Request도 브로드캐스트인가</div><p>Offer를 여러 서버가 보냈을 수 있습니다. 클라이언트는 하나를 골라 Request에 <b>server identifier</b> 옵션으로 명시하고 브로드캐스트합니다. 선택받지 못한 서버들도 이를 듣고 자기 Offer를 취소합니다. 그리고 아직 IP가 확정되지 않았으므로 유니캐스트를 쓸 수도 없습니다.</p></div>
+  <div class="callout tip"><div class="t">💡 임대(lease)와 갱신</div><p>주소는 영구가 아니라 임대입니다. 임대 시간의 50%(T1)에 클라이언트는 서버에 <b>유니캐스트</b> Request로 갱신하고, 87.5%(T2)까지 실패하면 브로드캐스트로 아무 서버에게나 갱신을 시도하며, 만료되면 주소를 버리고 DORA를 다시 시작합니다. DHCP 옵션(RFC 2132)으로 서브넷 마스크(1), 라우터(3), DNS(6), 도메인(15), 임대 시간(51), PXE 부트 서버 등을 함께 받습니다.</p></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 서브넷을 넘는 DHCP — Relay Agent</div><p>브로드캐스트는 라우터를 못 넘으므로, 원칙적으로 서브넷마다 DHCP 서버가 필요합니다. 실제로는 라우터에 <b>DHCP relay</b>(ip helper-address)를 설정해, 라우터가 Discover를 받아 <b>giaddr</b>(gateway IP address) 필드에 자기 인터페이스 주소를 넣고 중앙 서버로 <b>유니캐스트</b> 전달합니다. 서버는 giaddr로 어느 서브넷의 풀에서 줄지 결정하고 릴레이에게 응답을 돌려줍니다. 이 구조 덕분에 수백 개 VLAN을 서버 한두 대로 처리합니다. 보안 측면에서는 가짜 DHCP 서버(rogue DHCP)가 잘못된 게이트웨이/DNS를 나눠줄 수 있어, 스위치의 <b>DHCP snooping</b>으로 신뢰 포트에서 온 Offer만 통과시킵니다. 이 snooping 테이블이 2장의 Dynamic ARP Inspection의 근거 자료가 됩니다.</p></div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: ICMP를 막으면 생기는 일 — PMTUD 블랙홀</div><p>"보안을 위해 ICMP 전부 차단"은 흔하지만 위험한 설정입니다. 3장에서 본 PMTUD는 ICMP Type 3 Code 4에 의존합니다. 방화벽이 이를 막으면, 송신 측은 DF=1로 1500바이트 세그먼트를 계속 보내고 MTU 1400 구간의 라우터는 계속 버리며, 아무 신호도 돌아오지 않습니다. 증상은 특이합니다: <b>SYN/ACK(작음)은 성공해 연결은 맺히는데, 큰 응답(HTML, 이미지)이 오면 멈춤</b>. "ping은 되는데 사이트가 안 열려요", "작은 파일은 되고 큰 파일은 안 돼요"의 상당수가 이것입니다. 처방은 ICMP 3/4와 11을 허용하거나, 라우터에서 TCP MSS 클램핑(<code>--clamp-mss-to-pmtu</code>), 또는 PLPMTUD(RFC 4821). ICMP를 선별적으로 허용하는 것이 전문가의 방화벽 정책입니다.</p></div>
+
+<h2 id="practice"><span class="num">4.4</span>실습: dig, ping, traceroute</h2>
+<div class="tabs">
+  <div class="tab-bar"><button>dig 기본</button><button>dig +trace (반복 질의 재현)</button><button>ping / traceroute / mtr</button><button>DHCP 관찰</button></div>
+  <div class="tab-panel"><pre><code># 기본 질의 (시스템 리졸버 사용). ANSWER SECTION의 숫자가 남은 TTL
+dig www.example.com A
+# 특정 리졸버에게 직접
+dig @1.1.1.1 www.example.com AAAA
+# 짧게
+dig +short example.com MX
+# 역방향
+dig -x 93.184.216.34
+# 권한 서버에게 직접 물어 캐시 없는 원본 TTL 확인
+dig @a.iana-servers.net www.example.com +norecurse
+# TCP로 강제 (방화벽이 TCP 53을 막는지 확인)
+dig +tcp www.example.com
+# EDNS 버퍼 크기 지정, DNSSEC 레코드 요청
+dig +bufsize=1232 +dnssec example.com</code></pre></div>
+  <div class="tab-panel"><pre><code>dig +trace www.example.com
+# .                       518400  IN  NS  a.root-servers.net.   ← 루트 힌트
+# ;; Received 525 bytes from 1.1.1.1#53
+# com.                    172800  IN  NS  a.gtld-servers.net.   ← 루트가 위임
+# ;; Received 1170 bytes from 198.41.0.4#53(a.root-servers.net)
+# example.com.            172800  IN  NS  a.iana-servers.net.   ← .com이 위임
+# ;; Received 243 bytes from 192.5.6.30#53(a.gtld-servers.net)
+# www.example.com.        300     IN  A   93.184.216.34          ← 권한 서버 응답
+# ;; Received 60 bytes from 199.43.135.53#53(a.iana-servers.net)</code></pre>
+  <p class="small">+trace는 dig 자신이 재귀 리졸버 역할을 흉내 내어 루트부터 반복 질의한다. 애니메이션의 3~5단계를 실제로 보는 것.</p></div>
+  <div class="tab-panel"><pre><code>ping -c 4 1.1.1.1                 # RTT, 손실률
+ping -c 4 -s 1472 -M do 1.1.1.1   # DF 설정 (3장)
+
+traceroute -n 1.1.1.1             # UDP 방식 (-n: 이름 해석 생략)
+traceroute -I 1.1.1.1             # ICMP Echo 방식
+sudo traceroute -T -p 443 1.1.1.1 # TCP SYN 방식 (방화벽 통과)
+
+mtr -n 1.1.1.1                    # traceroute + ping 반복. 홉별 손실/지터 통계
+# 관찰 포인트: 특정 홉의 손실이 "그 이후 홉에도" 이어지면 진짜 손실,
+#              그 홉만 손실이면 라우터의 ICMP rate-limit</code></pre></div>
+  <div class="tab-panel"><pre><code># 터미널 1: DHCP 패킷 캡처 (포트 67/68)
+sudo tcpdump -n -i eth0 -v 'udp port 67 or udp port 68'
+# 터미널 2: 임대 해제 후 재요청
+sudo dhclient -r eth0 && sudo dhclient -v eth0     # Linux
+sudo ipconfig set en0 DHCP                          # macOS
+# 캡처 예:
+# IP 0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from aa:aa:aa:00:00:05
+#     DHCP-Message Option 53: Discover
+# IP 10.0.0.1.67 > 10.0.0.23.68: BOOTP/DHCP, Reply
+#     DHCP-Message Option 53: Offer, Lease-Time 86400, Router 10.0.0.1, DNS 10.0.0.2</code></pre></div>
+</div>
+<div class="callout tip"><div class="t">✅ 확인 질문</div><p>① <code>dig</code>를 같은 이름으로 두 번 실행하면 TTL이 어떻게 변하는가? ② <code>traceroute</code>에서 마지막 홉의 응답 ICMP Type/Code는 무엇인가(UDP 방식 기준)? ③ DHCP Offer의 목적지 IP가 브로드캐스트가 아니라 10.0.0.23처럼 보이는 경우가 있다. 어떤 조건에서 그런가? (힌트: BOOTP 플래그의 Broadcast 비트)</p></div>
+
+<h2 id="quiz"><span class="num">4.5</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>ICMP는 IP의 오류 보고·진단 채널. 핵심 타입: 8/0 Echo, 3/4 Frag Needed(PMTUD), 11/0 TTL Exceeded(traceroute), 3/3 Port Unreachable.</li>
+    <li>traceroute는 TTL을 1씩 늘려 각 홉의 Time Exceeded 출발지를 수집한다. 홉별 측정은 독립적이며 <code>*</code>가 곧 장애는 아니다.</li>
+    <li>DNS: 스텁 → 재귀 리졸버(재귀 질의) → 루트/TLD/권한(반복 질의). 결과는 TTL 동안 캐시. UDP 53 기본, TC 비트면 TCP 폴백, EDNS 버퍼 1232 권장.</li>
+    <li>DHCP DORA: Discover(0.0.0.0→255.255.255.255) / Offer / Request(브로드캐스트, 서버 지정) / Ack. 릴레이로 서브넷을 넘고, 임대는 T1/T2에 갱신.</li>
+    <li>ICMP 전면 차단은 PMTUD 블랙홀을, DNS TCP 차단은 큰 응답 실패를 만든다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz, HeaderDiagram} = TCPIP;
+
+  /* ---------- 4.1 ICMP 헤더 ---------- */
+  HeaderDiagram('#icmp-hdr',{bitsPerRow:32, selected:0, fields:[
+    {name:'Type',bits:8,cls:'c2',desc:'메시지 종류. 0 Echo Reply, 3 Destination Unreachable, 5 Redirect, 8 Echo Request, 11 Time Exceeded, 12 Parameter Problem. (IPv6의 ICMPv6는 번호 체계가 다르다 — 10장)'},
+    {name:'Code',bits:8,cls:'c2',desc:'Type 안의 세부 사유. Type 3에서 0=Net, 1=Host, 3=Port Unreachable, 4=Fragmentation Needed, 13=Administratively Prohibited.'},
+    {name:'Checksum',bits:16,cls:'c2',desc:'ICMP 헤더+데이터 전체의 1의 보수 체크섬(IP 헤더 체크섬과 같은 방식).'},
+    {name:'Rest of Header',bits:32,cls:'c5',desc:'Type에 따라 다르다. Echo: Identifier(16) + Sequence(16). Frag Needed: unused(16) + Next-Hop MTU(16). Redirect: 게이트웨이 주소. 그 외 대부분 0.'},
+    {name:'Data',bits:0,variable:true,cls:'c1',desc:'Echo: 임의 데이터(ping은 타임스탬프 + 패턴). 오류 메시지: 원인 IP 패킷의 헤더 + 첫 8바이트(TCP/UDP 포트가 들어 있어 소켓 식별 가능). RFC 1812는 가능하면 더 많이(최대 576바이트까지) 포함하도록 권장.'},
+  ]});
+
+  /* ---------- ping 애니메이션 ---------- */
+  const pp=$('#ping-pkt'), plbl=$('#ping-lbl'), ptimer=$('#ping-timer'), pdet=$('#ping-detail');
+  let pingT0=0, pingTimerId=null;
+  const pingSteps=[
+    {title:'Echo Request 송신 (Type 8)',text:'ping은 ICMP 데이터에 식별자(PID), 시퀀스 번호 1, 송신 시각(타임스탬프)을 넣어 보낸다. 커널은 송신 시각을 기록할 필요가 없다 — 패킷 안에 들어 있으므로.',run(i,inst){ plbl.textContent='Echo Request'; pp.querySelector('rect').setAttribute('fill','var(--l-net)'); pp.style.transform='translate(95px,100px)'; pp.style.opacity=1; pdet.textContent='IP 10.0.0.5 → 1.1.1.1  proto=1 | ICMP type=8 code=0 id=0x1a2b seq=1 ts=…'; requestAnimationFrame(()=>requestAnimationFrame(()=>{ pp.style.transform='translate(805px,100px)'; })); if(!inst){ pingT0=performance.now(); clearInterval(pingTimerId); pingTimerId=setInterval(()=>{ ptimer.textContent='경과: '+((performance.now()-pingT0)/100).toFixed(1)+' ms (가상)'; },50); } }},
+    {title:'대상 호스트: 데이터를 복사해 Echo Reply (Type 0)',text:'대상은 커널에서 바로 응답한다(사용자 프로세스 없음). Type만 0으로 바꾸고 id/seq/데이터를 그대로 복사, 체크섬을 재계산해 출발지로 돌려보낸다.',run(){ plbl.textContent='Echo Reply'; pp.querySelector('rect').setAttribute('fill','var(--green)'); pdet.textContent='IP 1.1.1.1 → 10.0.0.5  proto=1 | ICMP type=0 code=0 id=0x1a2b seq=1 ts=(복사됨)'; requestAnimationFrame(()=>requestAnimationFrame(()=>{ pp.style.transform='translate(95px,100px)'; })); }},
+    {title:'RTT 계산',text:'수신 시각 − 패킷 안의 송신 타임스탬프 = RTT. id로 자기 프로세스의 응답인지, seq로 몇 번째인지 구분한다. 응답이 1초 안에 안 오면 "Request timeout"으로 다음 seq를 보낸다.',run(i,inst){ clearInterval(pingTimerId); if(!inst){ const rtt=((performance.now()-pingT0)/100).toFixed(1); ptimer.textContent='RTT = '+rtt+' ms (가상)'; pdet.textContent='64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time='+rtt+' ms'; } else { pdet.textContent='64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=14.2 ms'; } setTimeout(()=>pp.style.opacity=0,300); }},
+  ];
+  Stepper('#ping-anim',{steps:pingSteps,autoplayMs:1800,reset(){ clearInterval(pingTimerId); pp.style.opacity=0; pp.style.transform='translate(95px,100px)'; ptimer.textContent=''; pdet.textContent=''; }});
+
+  /* ---------- traceroute 애니메이션 ---------- */
+  const TRN=[{x:90,n:'내 PC',ip:'10.0.0.5'},{x:270,n:'R1',ip:'10.0.0.1'},{x:450,n:'R2',ip:'198.51.100.1'},{x:630,n:'R3',ip:'192.0.2.9'},{x:820,n:'목적지',ip:'203.0.113.10'}];
+  const tng=$('#tr-nodes'), tpg=$('#tr-pkts'), tlog=$('#tr-log');
+  TRN.forEach((n,i)=>{ tng.appendChild(svg('rect',{x:n.x-45,y:60,width:90,height:60,rx:8,class:'node',id:'tr-n'+i})); tng.appendChild(svg('text',{x:n.x,y:85,'text-anchor':'middle','font-weight':'700'},n.n)); tng.appendChild(svg('text',{x:n.x,y:103,'text-anchor':'middle','font-size':9,class:'mono muted'},n.ip)); tng.appendChild(svg('text',{x:n.x,y:140,'text-anchor':'middle','font-size':10,class:'mono',id:'tr-ttl'+i},'')); });
+  function trFly(fromI,toI,color,label,y,cb){ const g=svg('g',{class:'anim-move'}); g.appendChild(svg('rect',{x:-34,y:-11,width:68,height:22,rx:5,fill:color})); g.appendChild(svg('text',{x:0,y:4,'text-anchor':'middle','font-size':9,fill:'#fff','font-weight':'700'},label)); g.style.transform=`translate(${TRN[fromI].x}px,${y}px)`; tpg.appendChild(g); requestAnimationFrame(()=>requestAnimationFrame(()=>{ g.style.transform=`translate(${TRN[toI].x}px,${y}px)`; })); if(cb) setTimeout(cb,750); return g; }
+  function trProbe(ttl, last){
+    tpg.innerHTML=''; TRN.forEach((_,i)=>{ $('#tr-ttl'+i).textContent=''; $('#tr-n'+i).setAttribute('stroke','var(--border)'); });
+    let i=0; const step=()=>{ const next=i+1; trFly(i,next,'var(--l-tr)',`UDP TTL=${ttl-i}`,40,()=>{ i=next; const rem=ttl-i; $('#tr-ttl'+i).textContent = last&&i===4 ? 'port 33434+… 닫힘' : (rem===0?'TTL→0 폐기!':'TTL '+rem); if(last&&i===4){ $('#tr-n'+i).setAttribute('stroke','var(--green)'); trFly(4,0,'var(--green)','ICMP 3/3 Port Unreach',150); } else if(rem===0){ $('#tr-n'+i).setAttribute('stroke','var(--red)'); trFly(i,0,'var(--red)','ICMP 11/0 Time Exc.',150); } else if(i<4) setTimeout(step,100); }); }; step();
+  }
+  const trSteps=[
+    {title:'TTL=1 → R1에서 만료',text:'UDP 패킷(목적지 포트 33434)을 TTL=1로 보낸다. R1이 TTL을 0으로 줄이고 폐기한 뒤 ICMP Time Exceeded를 보낸다. 그 ICMP의 <b>출발지 IP = R1</b>. 실제로는 홉마다 3개를 보내 RTT 3개를 얻는다.',run(i,inst){ if(!inst) trProbe(1); tlog.textContent+='\n 1  10.0.0.1       0.412 ms  0.388 ms  0.401 ms'; }},
+    {title:'TTL=2 → R2에서 만료',text:'R1은 TTL 1로 줄여 전달, R2가 0으로 만들어 폐기 + Time Exceeded. 목적지 포트는 33435로 하나 증가(응답을 프로브와 짝짓기 위해).',run(i,inst){ if(!inst) trProbe(2); tlog.textContent+='\n 2  198.51.100.1   3.871 ms  3.902 ms  3.845 ms'; }},
+    {title:'TTL=3 → R3에서 만료',text:'같은 과정. 이 홉이 ICMP 생성을 rate-limit하면 일부가 <code>*</code>로 나온다.',run(i,inst){ if(!inst) trProbe(3); tlog.textContent+='\n 3  192.0.2.9      12.230 ms  *  12.198 ms'; }},
+    {title:'TTL=4 → 목적지 도착: Port Unreachable',text:'TTL이 남은 채 목적지에 도착. 33437 포트에 듣는 프로세스가 없으므로 <b>ICMP 3/3 Port Unreachable</b>이 돌아온다. Time Exceeded가 아닌 응답이므로 traceroute는 끝을 안다. (ICMP 모드면 Echo Reply, TCP 모드면 SYN/ACK 또는 RST)',run(i,inst){ if(!inst) trProbe(4,true); tlog.textContent+='\n 4  203.0.113.10   14.011 ms  13.987 ms  14.102 ms'; }},
+  ];
+  Stepper('#tr-anim',{steps:trSteps,autoplayMs:3200,reset(){ tpg.innerHTML=''; TRN.forEach((_,i)=>{ $('#tr-ttl'+i).textContent=''; $('#tr-n'+i).setAttribute('stroke','var(--border)'); }); tlog.textContent='$ traceroute -n 203.0.113.10\ntraceroute to 203.0.113.10, 30 hops max, 60 byte packets'; }});
+
+  /* ---------- 4.2 DNS 애니메이션 ---------- */
+  const DN=[{id:'stub',x:80,y:60,n:'내 PC (스텁)',ip:'10.0.0.5'},{id:'rec',x:300,y:60,n:'재귀 리졸버',ip:'1.1.1.1'},{id:'root',x:560,y:30,n:'루트 서버',ip:'198.41.0.4'},{id:'tld',x:560,y:115,n:'.com TLD 서버',ip:'192.5.6.30'},{id:'auth',x:560,y:200,n:'example.com 권한',ip:'199.43.135.53'}];
+  const dng=$('#dns-nodes'), dpg=$('#dns-pkts');
+  DN.forEach(n=>{ dng.appendChild(svg('rect',{x:n.x-60,y:n.y-24,width:120,height:48,rx:8,class:'node',id:'dn-'+n.id})); dng.appendChild(svg('text',{x:n.x,y:n.y-3,'text-anchor':'middle','font-weight':'700','font-size':11},n.n)); dng.appendChild(svg('text',{x:n.x,y:n.y+13,'text-anchor':'middle','font-size':9,class:'mono muted'},n.ip)); });
+  dng.appendChild(svg('text',{x:760,y:30+4,'font-size':10,class:'muted'},'"com은 192.5.6.30에게"'));
+  dng.appendChild(svg('text',{x:760,y:115+4,'font-size':10,class:'muted'},'"example.com은 199.43…에게"'));
+  dng.appendChild(svg('text',{x:760,y:200+4,'font-size':10,class:'muted'},'"www = 93.184.216.34, TTL 300"'));
+  function dnsFly(a,b,color,label,cb){ const A=DN.find(n=>n.id===a),B=DN.find(n=>n.id===b); const g=svg('g',{class:'anim-move'}); g.appendChild(svg('rect',{x:-40,y:-10,width:80,height:20,rx:5,fill:color})); g.appendChild(svg('text',{x:0,y:4,'text-anchor':'middle','font-size':9,fill:'#fff','font-weight':'700'},label)); g.style.transform=`translate(${A.x}px,${A.y}px)`; dpg.appendChild(g); requestAnimationFrame(()=>requestAnimationFrame(()=>{ g.style.transform=`translate(${B.x}px,${B.y}px)`; })); setTimeout(()=>{ g.remove(); cb&&cb(); },750); }
+  const dmsg=t=>$('#dns-msg').textContent=t;
+  const hl=(id,c)=>$('#dn-'+id).setAttribute('stroke',c||'var(--border)');
+  const cache=[]; const renderCache=()=>{ $('#dns-cache').innerHTML=cache.length?cache.join('<br>'):'(비어 있음)'; };
+  const dnsSteps=[
+    {title:'앱 → 스텁 리졸버: getaddrinfo("www.example.com")',text:'브라우저가 OS에 이름 해석을 요청. 스텁은 /etc/hosts와 자기 캐시를 보고 없으면 /etc/resolv.conf의 리졸버(1.1.1.1)에게 <b>재귀 질의</b>(RD=1)를 보낸다.',run(){ hl('stub','var(--accent)'); dnsFly('stub','rec','var(--l-app)','Q: www.example.com A?'); dmsg('UDP 10.0.0.5:52143 → 1.1.1.1:53   ID=0x3f1a  RD=1  Q: www.example.com. IN A'); }},
+    {title:'리졸버: 캐시 미스 → 루트 서버에 반복 질의',text:'리졸버는 캐시에 아무것도 없으므로 루트 힌트 파일의 13개 중 하나에 묻는다. 반복 질의(RD=0): "아는 만큼만 답해". 출발지 포트는 질의마다 무작위.',run(){ hl('rec','var(--accent)'); dnsFly('rec','root','var(--l-tr)','Q: www.example.com?'); dmsg('UDP 1.1.1.1:41922 → 198.41.0.4:53   ID=0x8c02  RD=0'); }},
+    {title:'루트: "나는 모르지만 .com 서버는 여기"',text:'루트는 Authority 섹션에 com의 NS 레코드, Additional 섹션에 그 서버들의 A/AAAA(<b>glue</b>)를 담아 <b>위임 응답</b>(referral)을 준다.',run(){ hl('root','var(--green)'); dnsFly('root','rec','var(--green)','Referral: com NS',()=>{ cache.push('com. NS a.gtld-servers.net. (TTL 172800)'); renderCache(); }); dmsg('응답: AA=0, Answer 0개, Authority: com. NS a.gtld-servers.net. …  Additional: a.gtld-servers.net. A 192.5.6.30'); }},
+    {title:'.com TLD: "example.com은 여기"',text:'리졸버가 .com 서버에 같은 질문 → example.com의 NS와 glue를 받는다. 이 NS 정보도 캐시되어, 다음에 example.com 아래 다른 이름을 물으면 여기서 시작한다.',run(){ dnsFly('rec','tld','var(--l-tr)','Q: www.example.com?',()=>{ hl('tld','var(--green)'); dnsFly('tld','rec','var(--green)','Referral: example.com NS',()=>{ cache.push('example.com. NS a.iana-servers.net. (TTL 172800)'); renderCache(); }); }); dmsg('응답: Authority: example.com. NS a.iana-servers.net.  Additional: a.iana-servers.net. A 199.43.135.53'); }},
+    {title:'권한 서버: 최종 답 (AA=1)',text:'example.com 존을 가진 권한 서버가 <b>AA(Authoritative Answer)</b> 비트를 세우고 A 레코드를 준다. TTL 300초는 존 파일에서 관리자가 정한 값.',run(){ dnsFly('rec','auth','var(--l-tr)','Q: www.example.com?',()=>{ hl('auth','var(--green)'); dnsFly('auth','rec','var(--green)','A 93.184.216.34',()=>{ cache.push('<b>www.example.com. A 93.184.216.34 (TTL 300)</b>'); renderCache(); }); }); dmsg('응답: AA=1, Answer: www.example.com. 300 IN A 93.184.216.34'); }},
+    {title:'리졸버 → 스텁 → 앱',text:'리졸버는 답을 캐시(TTL 300)하고 원래 ID 0x3f1a로 스텁에 응답. 스텁도 캐시한 뒤 앱에 주소를 돌려준다. 이제 앱은 TCP 연결을 시작할 수 있다(5·6장). 다음 300초 동안 같은 질의는 리졸버에서 즉시 답한다 — 전체 과정이 수십 ms에서 1ms 미만으로.',run(){ dnsFly('rec','stub','var(--l-app)','A 93.184.216.34 TTL 300',()=>{ hl('stub','var(--green)'); $('#dns-stub').innerHTML='www.example.com → 93.184.216.34 (TTL 300, 감소 중)'; }); dmsg('UDP 1.1.1.1:53 → 10.0.0.5:52143   ID=0x3f1a  RA=1  Answer: … A 93.184.216.34'); }},
+  ];
+  Stepper('#dns-anim',{steps:dnsSteps,autoplayMs:2600,intro:'브라우저가 www.example.com을 처음 방문할 때의 이름 해석 과정입니다.',reset(){ dpg.innerHTML=''; DN.forEach(n=>hl(n.id)); cache.length=0; renderCache(); $('#dns-stub').textContent='(비어 있음)'; dmsg(''); }});
+
+  HeaderDiagram('#dns-hdr',{bitsPerRow:32, selected:1, fields:[
+    {name:'ID',bits:16,cls:'c4',desc:'트랜잭션 ID. 질의자가 정하고 응답에 그대로 복사된다. 응답 짝짓기와 (소스 포트와 함께) 위조 방지의 핵심. 16비트뿐이라 포트 무작위화가 필수.'},
+    {name:'Flags',bits:16,cls:'c5',desc:'QR(1: 0=질의/1=응답) · Opcode(4: 0=표준) · AA(1: 권한 응답) · TC(1: 잘림 → TCP 재시도) · RD(1: 재귀 요청) · RA(1: 재귀 가능) · Z(1) · AD(1: DNSSEC 검증됨) · CD(1: 검증 생략) · RCODE(4: 0=NOERROR, 2=SERVFAIL, 3=NXDOMAIN, 5=REFUSED).'},
+    {name:'QDCOUNT',bits:16,cls:'c1',desc:'Question 섹션 항목 수. 실질적으로 항상 1.'},
+    {name:'ANCOUNT',bits:16,cls:'c1',desc:'Answer 섹션 RR 수.'},
+    {name:'NSCOUNT',bits:16,cls:'c1',desc:'Authority 섹션 RR 수. 위임 응답에서 NS 레코드가 여기 온다.'},
+    {name:'ARCOUNT',bits:16,cls:'c1',desc:'Additional 섹션 RR 수. glue 레코드, EDNS OPT 레코드가 여기.'},
+    {name:'Question: QNAME (가변) + QTYPE 16 + QCLASS 16',bits:0,variable:true,cls:'c4',desc:'QNAME은 레이블 길이 접두 형식: 3www7example3com0. QTYPE 1=A, 28=AAAA, 5=CNAME, 15=MX, 2=NS, 16=TXT, 12=PTR, 33=SRV, 255=ANY. QCLASS 1=IN.'},
+    {name:'Answer / Authority / Additional RRs: NAME · TYPE · CLASS · TTL(32) · RDLENGTH · RDATA',bits:0,variable:true,cls:'c2',desc:'각 리소스 레코드. NAME은 메시지 앞쪽 이름을 가리키는 <b>압축 포인터</b>(0xC0xx)로 축약 가능. TTL은 초 단위 32비트.'},
+  ]});
+
+  /* ---------- 4.3 DHCP 애니메이션 ---------- */
+  const DH=[{id:'c',x:150,n:'클라이언트',sub:'IP 없음 · MAC aa:…:05'},{id:'s1',x:500,n:'DHCP 서버 1',sub:'10.0.0.1 · 풀 10.0.0.20–99'},{id:'s2',x:780,n:'DHCP 서버 2',sub:'10.0.0.2 · 풀 10.0.0.100–199'}];
+  const dhg=$('#dhcp-nodes'), dhp=$('#dhcp-pkts');
+  DH.forEach(n=>{ dhg.appendChild(svg('line',{x1:n.x,y1:110,x2:n.x,y2:80,class:'wire'})); dhg.appendChild(svg('rect',{x:n.x-70,y:20,width:140,height:60,rx:8,class:'node',id:'dh-'+n.id})); dhg.appendChild(svg('text',{x:n.x,y:44,'text-anchor':'middle','font-weight':'700'},n.n)); dhg.appendChild(svg('text',{x:n.x,y:62,'text-anchor':'middle','font-size':9,class:'mono muted',id:'dh-sub-'+n.id},n.sub)); dhg.appendChild(svg('text',{x:n.x,y:135,'text-anchor':'middle','font-size':10,class:'muted',id:'dh-st-'+n.id},'')); });
+  function dhFly(from,tos,color,label){ dhp.innerHTML=''; const A=DH.find(n=>n.id===from); tos.forEach(t=>{ const B=DH.find(n=>n.id===t); const g=svg('g',{class:'anim-move'}); g.appendChild(svg('rect',{x:-40,y:-11,width:80,height:22,rx:5,fill:color})); g.appendChild(svg('text',{x:0,y:4,'text-anchor':'middle','font-size':10,fill:'#fff','font-weight':'700'},label)); g.style.transform=`translate(${A.x}px,110px)`; dhp.appendChild(g); requestAnimationFrame(()=>requestAnimationFrame(()=>{ g.style.transform=`translate(${B.x}px,110px)`; })); }); }
+  const dset=(l2,l3,app)=>{ $('#dhcp-l2').textContent=l2; $('#dhcp-l3').textContent=l3; $('#dhcp-app').textContent=app; };
+  const dst=(id,t)=>$('#dh-st-'+id).textContent=t;
+  const dhcpSteps=[
+    {title:'D — Discover (브로드캐스트)',text:'클라이언트는 IP가 없으므로 출발지 <b>0.0.0.0</b>, 서버가 어디 있는지 모르므로 목적지 <b>255.255.255.255</b>(L2도 브로드캐스트). 자기 MAC을 chaddr 필드에 넣고, 원하는 옵션 목록(Parameter Request List)을 포함한다.',run(){ dhFly('c',['s1','s2'],'var(--accent)','DISCOVER'); dset('src aa:…:05 → dst ff:ff:ff:ff:ff:ff','src 0.0.0.0 → dst 255.255.255.255   UDP 68 → 67','op=1 xid=0x9f3c chaddr=aa:…:05  opt53=1(Discover)  opt55=[1,3,6,15,51]'); dst('c','요청 중…'); }},
+    {title:'O — Offer (서버마다 하나씩)',text:'두 서버 모두 풀에서 주소를 하나 골라 제안한다(yiaddr). 아직 클라이언트는 IP가 없으므로 보통 브로드캐스트로 보내지만, 클라이언트가 BROADCAST 플래그를 세우지 않았다면 서버는 yiaddr/chaddr로 유니캐스트할 수 있다.',run(){ dhFly('s1',['c'],'var(--l-tr)','OFFER 10.0.0.23'); setTimeout(()=>{ const B=DH[0],A=DH[2]; const g=svg('g',{class:'anim-move'}); g.appendChild(svg('rect',{x:-40,y:-11,width:80,height:22,rx:5,fill:'var(--l-tr)',opacity:.6})); g.appendChild(svg('text',{x:0,y:4,'text-anchor':'middle','font-size':10,fill:'#fff','font-weight':'700'},'OFFER .150')); g.style.transform=`translate(${A.x}px,110px)`; dhp.appendChild(g); requestAnimationFrame(()=>requestAnimationFrame(()=>{ g.style.transform=`translate(${B.x}px,110px)`; })); },200); dset('src (서버 MAC) → dst ff:ff:ff:ff:ff:ff (또는 aa:…:05)','src 10.0.0.1 → dst 255.255.255.255   UDP 67 → 68','op=2 xid=0x9f3c yiaddr=10.0.0.23 opt53=2(Offer) opt54(server id)=10.0.0.1 opt1=255.255.255.0 opt3=10.0.0.1 opt6=10.0.0.2 opt51=86400'); dst('s1','10.0.0.23 제안'); dst('s2','10.0.0.150 제안'); }},
+    {title:'R — Request (브로드캐스트, 서버 1 선택)',text:'클라이언트는 먼저 온 Offer(서버 1)를 고르고, <b>opt54 server identifier=10.0.0.1</b>, <b>opt50 requested IP=10.0.0.23</b>을 넣어 다시 <b>브로드캐스트</b>한다. 서버 2는 이를 듣고 자기 제안을 거둔다. 출발지는 아직 0.0.0.0 — Ack를 받기 전까지 주소를 쓰면 안 된다.',run(){ dhFly('c',['s1','s2'],'var(--accent)','REQUEST'); dset('src aa:…:05 → dst ff:ff:ff:ff:ff:ff','src 0.0.0.0 → dst 255.255.255.255   UDP 68 → 67','op=1 xid=0x9f3c opt53=3(Request) opt54=10.0.0.1 opt50=10.0.0.23'); dst('s2','선택 안 됨 → 제안 철회'); dst('s1','요청 수신'); }},
+    {title:'A — Ack (임대 확정)',text:'서버 1이 임대를 DB에 기록하고 Ack로 모든 옵션을 확정해 준다. 클라이언트는 받은 주소로 <b>Gratuitous ARP</b>(또는 ARP probe)를 보내 충돌이 없음을 확인한 뒤 인터페이스에 설정한다. 충돌이면 Decline을 보내고 처음부터 다시.',run(){ dhFly('s1',['c'],'var(--green)','ACK'); dset('src (서버1 MAC) → dst ff:ff:ff:ff:ff:ff','src 10.0.0.1 → dst 255.255.255.255   UDP 67 → 68','op=2 xid=0x9f3c yiaddr=10.0.0.23 opt53=5(Ack) opt51=86400 opt58(T1)=43200 opt59(T2)=75600'); dst('s1','임대 기록: 10.0.0.23 ↔ aa:…:05'); dst('c','10.0.0.23/24 설정 · GW 10.0.0.1 · DNS 10.0.0.2'); $('#dh-sub-c').textContent='10.0.0.23/24 · MAC aa:…:05'; $('#dh-c').setAttribute('stroke','var(--green)'); }},
+  ];
+  Stepper('#dhcp-anim',{steps:dhcpSteps,autoplayMs:2800,intro:'막 부팅한 호스트가 IP 설정을 받아오는 DORA 과정입니다.',reset(){ dhp.innerHTML=''; DH.forEach(n=>{ dst(n.id,''); $('#dh-'+n.id).setAttribute('stroke','var(--border)'); }); $('#dh-sub-c').textContent='IP 없음 · MAC aa:…:05'; dset('—','—','—'); }});
+
+  /* ---------- 4.5 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'traceroute가 중간 홉의 주소를 알아내는 데 사용하는 ICMP 메시지는?',options:['Echo Reply (0)','Destination Unreachable (3)','Time Exceeded (11)','Redirect (5)'],answer:2,explain:'TTL을 1씩 늘려 보내면 n번째 라우터가 TTL=0으로 폐기하며 Time Exceeded를 보낸다. 그 ICMP의 출발지 IP가 n번째 홉.'},
+    {q:'UDP 방식 traceroute에서 목적지에 도달했음을 알려주는 응답은?',options:['Echo Reply','Port Unreachable (3/3)','Time Exceeded','Host Unreachable (3/1)'],answer:1,explain:'높은 UDP 포트(33434+)에 듣는 프로세스가 없으므로 목적지 호스트가 Port Unreachable을 보낸다.'},
+    {q:'PMTUD가 의존하는 ICMP 메시지는?',options:['Type 3 Code 4 (Fragmentation Needed)','Type 11 Code 0','Type 8','Type 5'],answer:0,explain:'DF=1 패킷이 MTU보다 크면 라우터가 3/4에 다음 홉 MTU를 담아 보낸다. 이를 막으면 PMTUD 블랙홀.'},
+    {q:'스텁 리졸버가 재귀 리졸버에게 보내는 질의와, 재귀 리졸버가 루트 서버에 보내는 질의의 차이는?',options:['전자는 TCP, 후자는 UDP','전자는 재귀 질의(RD=1), 후자는 반복 질의','전자는 A 레코드, 후자는 NS 레코드','차이 없음'],answer:1,explain:'스텁은 "끝까지 찾아달라"(재귀), 리졸버는 각 서버에 "아는 만큼만"(반복) 묻고 위임 응답을 따라간다.'},
+    {q:'DNS 응답에서 TC 비트가 설정되어 있으면 클라이언트는?',options:['캐시를 비운다','다른 리졸버에 묻는다','TCP 53으로 다시 질의한다','NXDOMAIN으로 처리한다'],answer:2,explain:'Truncated: UDP 크기 한계로 응답이 잘렸다는 뜻. TCP로 재시도한다. 그래서 TCP 53을 막으면 큰 응답이 실패한다.'},
+    {q:'루트 서버가 www.example.com 질의에 대해 돌려주는 것은?',options:['www.example.com의 A 레코드','.com TLD 서버의 NS 레코드와 glue A 레코드','NXDOMAIN','example.com의 SOA'],answer:1,explain:'루트는 TLD로 위임만 한다(referral). Authority 섹션에 NS, Additional에 glue.'},
+    {q:'DHCP Discover 메시지의 출발지/목적지 IP는?',options:['클라이언트 IP / 서버 IP','0.0.0.0 / 255.255.255.255','127.0.0.1 / 255.255.255.255','169.254.x.x / 서버 IP'],answer:1,explain:'클라이언트는 IP가 없고 서버 위치도 모르므로 0.0.0.0 → 제한 브로드캐스트. L2도 ff:ff:ff:ff:ff:ff.'},
+    {q:'DHCP Request를 브로드캐스트로 보내는 이유로 가장 적절한 것은?',options:['서버 IP를 모르기 때문','선택되지 않은 다른 서버들도 결과를 알아야 하고, 아직 IP가 확정되지 않았기 때문','라우터가 중계해야 하기 때문','Ack를 빨리 받기 위해'],answer:1,explain:'Request에 server identifier를 넣어 브로드캐스트하면 나머지 서버가 Offer를 철회한다. Offer로 서버 IP는 이미 안다.'},
+    {q:'DNS 캐시 포이즈닝(Kaminsky)에 대한 가장 직접적인 완화책은?',options:['TTL을 늘린다','소스 포트 무작위화로 엔트로피를 늘린다','UDP 대신 항상 TCP를 쓴다','루트 서버를 늘린다'],answer:1,explain:'16비트 ID만으로는 추측이 쉬우므로 16비트 포트를 더해 32비트 엔트로피. 근본 해결은 DNSSEC.'},
+    {q:'방화벽에서 ICMP를 전부 막았을 때 나타나는 전형적 증상은?',options:['DNS 해석 실패','TCP 연결은 되지만 큰 데이터 전송이 멈춤','ARP 실패','DHCP 실패'],answer:1,explain:'PMTUD 블랙홀. 작은 SYN/ACK는 통과하고 큰 세그먼트는 조용히 버려진다. 3/4와 11은 허용해야 한다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

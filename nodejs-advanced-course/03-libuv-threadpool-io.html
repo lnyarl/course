@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libuv 스레드풀과 I/O</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .journey .st { fill: var(--surface-2); stroke: var(--border); transition: fill .25s, stroke .25s; }
+  .journey .st.on { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+  .journey .st.tp { }
+  .journey text { font-size: 12px; }
+  .gantt { display: grid; gap: 4px; font-size: 12px; }
+  .g-row { display: grid; grid-template-columns: 70px 1fr; gap: 8px; align-items: center; }
+  .g-row .lbl { font-family: var(--mono); color: var(--muted); font-size: 11.5px; }
+  .g-row .track { position: relative; height: 22px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+  .g-row .job { position: absolute; top: 2px; height: 18px; border-radius: 3px; font-size: 10px; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; color: var(--text); border: 1px solid transparent; }
+  .job.fs { background: var(--ok-soft); border-color: var(--ok); }
+  .job.dns { background: var(--warn-soft); border-color: var(--warn); }
+  .job.cpu { background: var(--violet-soft); border-color: var(--violet); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; margin: 6px 0; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; border: 1px solid; }
+  .legend .fs::before { background: var(--ok-soft); border-color: var(--ok); }
+  .legend .dns::before { background: var(--warn-soft); border-color: var(--warn); }
+  .legend .cpu::before { background: var(--violet-soft); border-color: var(--violet); }
+  .trip-list { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+  .trip { font-family: var(--mono); font-size: 11.5px; padding: 3px 8px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); }
+  .trip.rd { background: var(--accent-soft); border-color: var(--accent); }
+  .sync-tbl td.s { color: var(--bad); font-weight: 700; } .sync-tbl td.a { color: var(--ok); font-weight: 700; }
+</style>
+</head>
+<body data-chapter="03">
+<main>
+  <header class="chapter-head">
+    <span class="label">런타임 내부 · Chapter 03</span>
+    <h1>libuv 스레드풀과 I/O 모델</h1>
+    <p class="lead">2장에서 이벤트 루프가 <em>완료 통지</em>만 받는다고 했습니다. 그렇다면 실제 일은 누가 하는가. 소켓은 커널이(epoll), 파일과 DNS와 무거운 암호 연산은 libuv의 워커 스레드 4개가 합니다. 이 장은 그 두 경로의 내부 구조, 각 경로가 포화되는 방식, 그리고 "스레드 4개"라는 숫자가 운영에서 만드는 장애를 다룹니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>readiness 모델(epoll/kqueue)과 completion 모델(IOCP, io_uring)의 차이와 libuv가 이를 통일하는 방법을 설명할 수 있다.</li>
+      <li>libuv 스레드풀의 구조(단일 큐, 워커, <code>wq_async</code>)와 slow-I/O 제한 규칙을 알고, 어떤 API가 스레드풀을 쓰는지 즉시 판별할 수 있다.</li>
+      <li><code>dns.lookup</code>이 파일 I/O를 멈추게 하는 메커니즘을 설명하고 대안을 선택할 수 있다.</li>
+      <li><code>UV_THREADPOOL_SIZE</code>를 언제 어떻게 조정해야 하는지, 그리고 조정해도 해결되지 않는 문제가 무엇인지 안다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">두 가지 I/O 모델: 준비 통지 vs 완료 통지</a></li>
+    <li><a href="#s2">epoll 경로: 소켓은 스레드 없이 어떻게 비동기가 되나</a></li>
+    <li><a href="#s3">스레드풀 경로: 구조와 규칙</a></li>
+    <li><a href="#s4">fs.readFile 한 번의 여정</a></li>
+    <li><a href="#s5">스레드풀을 쓰는 API 목록과 왕복 횟수</a></li>
+    <li><a href="#s6">DNS: lookup과 resolve의 결정적 차이</a></li>
+    <li><a href="#s7">시뮬레이터: 스레드풀 포화</a></li>
+    <li><a href="#s8">stdio·파이프·TTY의 특이점</a></li>
+    <li><a href="#s9">io_uring과 스레드풀의 미래</a></li>
+    <li><a href="#s10">측정과 튜닝, 현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 두 가지 I/O 모델: 준비 통지 vs 완료 통지</h2>
+    <p>운영체제가 비동기 I/O를 제공하는 방식은 크게 둘입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>준비 통지 (readiness)</th><th>완료 통지 (completion)</th></tr>
+      <tr><td>대표</td><td>Linux <code>epoll</code>, BSD/macOS <code>kqueue</code>, Solaris event ports</td><td>Windows IOCP, Linux <code>io_uring</code>, POSIX AIO</td></tr>
+      <tr><td>커널이 알려주는 것</td><td>"이 fd는 지금 읽으면(쓰면) 블로킹되지 않는다"</td><td>"네가 요청한 읽기가 끝났고 버퍼에 N바이트 있다"</td></tr>
+      <tr><td>실제 read/write 수행자</td><td><b>애플리케이션 스레드</b>(Node 메인 스레드)</td><td>커널</td></tr>
+      <tr><td>일반 파일(regular file)</td><td><b>항상 '준비됨'으로 보고</b> → 의미 없음. 실제 read는 디스크를 기다리며 블로킹</td><td>정상 동작</td></tr>
+      <tr><td>libuv 구현</td><td><code>src/unix/linux.c</code>, <code>kqueue.c</code></td><td><code>src/win/*</code>, Linux fs는 io_uring(옵션)</td></tr>
+    </table></div>
+    <p>핵심은 셋째 행입니다. Linux에서 "일반 파일은 epoll에 넣을 수 없다"(<code>EPERM</code>)는 사실이 <b>파일 I/O에 스레드풀이 필요한 유일한 이유</b>입니다. 소켓·파이프·TTY·eventfd·signalfd·inotify는 모두 epoll 가능하므로 스레드가 필요 없습니다. libuv는 두 모델 위에 하나의 콜백 API를 올려, Node 코드는 플랫폼을 모르게 합니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 300" role="img" aria-label="epoll 경로와 스레드풀 경로">
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="330" y="20" width="220" height="60" rx="10" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:2"/>
+        <text x="440" y="45" text-anchor="middle" font-weight="700">메인 스레드 (uv_run)</text>
+        <text x="440" y="65" text-anchor="middle" font-size="12" class="muted">JS · 콜백 실행 · epoll_wait</text>
+        <!-- left: epoll -->
+        <rect x="20" y="130" width="300" height="150" rx="10" class="box"/>
+        <text x="170" y="152" text-anchor="middle" font-weight="700">경로 A: epoll (readiness)</text>
+        <rect x="36" y="166" width="120" height="30" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="96" y="186" text-anchor="middle">소켓 fd ×N</text>
+        <rect x="176" y="166" width="128" height="30" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="240" y="186" text-anchor="middle">파이프 · TTY · 시그널</text>
+        <rect x="36" y="212" width="268" height="30" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="170" y="232" text-anchor="middle" font-size="12">커널: 준비되면 epoll_wait 반환 → 메인이 read(2)</text>
+        <text x="170" y="266" text-anchor="middle" font-size="11.5" class="muted">스레드 0개. 연결 수에 무관한 비용.</text>
+        <path d="M170 130 L380 82" class="line flow" marker-end="url(#ar)"/>
+        <!-- right: threadpool -->
+        <rect x="560" y="130" width="300" height="150" rx="10" class="box"/>
+        <text x="710" y="152" text-anchor="middle" font-weight="700">경로 B: 스레드풀 (blocking → async)</text>
+        <g>
+          <rect x="576" y="166" width="60" height="30" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="606" y="186" text-anchor="middle" font-size="11">worker 1</text>
+          <rect x="644" y="166" width="60" height="30" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="674" y="186" text-anchor="middle" font-size="11">worker 2</text>
+          <rect x="712" y="166" width="60" height="30" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="742" y="186" text-anchor="middle" font-size="11">worker 3</text>
+          <rect x="780" y="166" width="60" height="30" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="810" y="186" text-anchor="middle" font-size="11">worker 4</text>
+        </g>
+        <rect x="576" y="212" width="268" height="30" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="710" y="232" text-anchor="middle" font-size="12">fs · getaddrinfo · pbkdf2 · zlib: 블로킹 호출 실행</text>
+        <text x="710" y="266" text-anchor="middle" font-size="11.5" class="muted">완료 → uv_async_send(wq_async) → 메인 루프 깨움</text>
+        <path d="M710 130 L500 82" class="line flow" marker-end="url(#ar)"/>
+        <text x="440" y="115" text-anchor="middle" font-size="12" style="fill:var(--accent)">둘 다 poll 페이즈에서 콜백으로 합류</text>
+      </svg>
+      <figcaption>두 경로는 완전히 다른 자원을 소모합니다. A는 fd와 커널 메모리, B는 스레드 4개의 시간. 포화도 따로 납니다.</figcaption>
+    </figure>
+  </section>
+
+  <section id="s2">
+    <h2>2. epoll 경로: 소켓은 스레드 없이 어떻게 비동기가 되나</h2>
+    <p>libuv는 모든 fd를 <code>uv__io_t</code>라는 워처(watcher)로 감쌉니다. <code>uv_read_start(socket)</code>를 호출하면 libuv는 <code>uv__io_start(loop, &amp;w, POLLIN)</code>으로 워처를 "관심 목록"에 넣고, 다음 poll 페이즈 직전에 <code>epoll_ctl(ADD/MOD)</code>로 커널에 반영합니다. <code>epoll_wait</code>가 "fd 7 읽기 가능"을 돌려주면, libuv는 워처의 콜백(<code>uv__stream_io</code>)을 호출하고, 그 안에서 <b>메인 스레드가 직접 <code>read(2)</code>를 호출</b>합니다. 소켓은 논블로킹 모드(<code>O_NONBLOCK</code>)이므로 데이터가 없으면 <code>EAGAIN</code>이 바로 돌아오고, libuv는 다시 기다립니다.</p>
+<pre><code>// libuv src/unix/stream.c uv__read() 요지
+static void uv__read(uv_stream_t* stream) {
+  int count = 32;                          // 한 번 깨어났을 때 최대 32회 read 시도
+  while (stream-&gt;read_cb &amp;&amp; (stream-&gt;flags &amp; UV_HANDLE_READING) &amp;&amp; count-- &gt; 0) {
+    stream-&gt;alloc_cb((uv_handle_t*)stream, 64 * 1024, &amp;buf);   // Node: 64KiB 버퍼 할당 요청
+    nread = read(uv__stream_fd(stream), buf.base, buf.len);
+    if (nread &lt; 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) { /* 데이터 없음: 다시 epoll 대기 */ ... return; }
+      ... // 에러 → read_cb(UV_E*)
+    } else if (nread == 0) { uv__stream_eof(stream, &amp;buf); return; }   // EOF
+    else stream-&gt;read_cb(stream, nread, &amp;buf);                       // → JS 'data' 이벤트
+    if (nread &lt; buf.len) return;      // 버퍼를 다 못 채웠으면 소켓이 비었다는 뜻
+  }
+}</code></pre>
+    <p>이 코드에서 운영상 중요한 사실 세 가지가 나옵니다.</p>
+    <ul>
+      <li><b>한 소켓이 한 번 깨어났을 때 최대 32 × 64KiB = 2MiB까지 연속으로 읽는다.</b> 대용량 업로드가 폭주하면 한 소켓이 poll 페이즈를 오래 점유할 수 있습니다(공정성 한계).</li>
+      <li><b>읽기 버퍼는 매번 새로 할당된다.</b> Node의 <code>onStreamRead</code>는 64KiB 풀 버퍼에서 슬라이스해 쓰지만, 'data' 핸들러가 청크를 오래 붙들면 그 64KiB 전체가 살아남습니다(11장 메모리 누수 패턴).</li>
+      <li><b>쓰기는 먼저 동기 시도한다.</b> <code>uv_write</code>는 <code>uv__try_write</code>로 즉시 <code>write(2)</code>를 시도하고, 커널 송신 버퍼가 차서 다 못 보낸 바이트만 큐에 넣고 <code>POLLOUT</code>을 기다립니다. <code>socket.write()</code>가 <code>false</code>를 돌려주는 시점(6장 백프레셔)이 바로 이 큐가 <code>highWaterMark</code>를 넘은 때입니다.</li>
+    </ul>
+    <p>서버 소켓의 <code>accept</code>도 같은 구조입니다. listen 소켓이 읽기 가능 = 대기 중인 연결 있음. libuv는 <code>accept4(SOCK_NONBLOCK)</code>를 <code>EAGAIN</code>이 날 때까지 반복합니다. 그래서 연결 폭주 시 accept 루프 자체가 poll 페이즈를 점유할 수 있고, Node는 <code>server.listen()</code>의 backlog 기본값 511로 커널 대기열을 제한합니다.</p>
+    <details class="deep"><summary>level-triggered vs edge-triggered, 그리고 libuv의 선택</summary><div>
+      <p>epoll은 두 모드를 제공합니다. level-triggered(LT)는 "읽을 데이터가 남아 있는 한 매번 알려줌", edge-triggered(ET)는 "상태가 변할 때 한 번만". libuv는 <b>LT</b>를 씁니다. 위 코드의 <code>count = 32</code> 제한이 가능한 이유입니다. 32번 읽고 중단해도 다음 <code>epoll_wait</code>가 다시 알려주기 때문입니다. ET였다면 <code>EAGAIN</code>까지 반드시 다 읽어야 하므로 공정성 제어가 어렵습니다. 대신 LT는 "처리하지 않은 fd가 매번 반환되는" 비용이 있어, 백프레셔로 읽기를 멈출 때는 <code>uv_read_stop</code>으로 관심 목록에서 빼야 합니다(<code>socket.pause()</code>가 하는 일).</p>
+    </div></details>
+  </section>
+
+  <section id="s3">
+    <h2>3. 스레드풀 경로: 구조와 규칙</h2>
+    <p>libuv 스레드풀(<code>src/threadpool.c</code>)은 놀랄 만큼 단순합니다. <b>프로세스 전체에 하나</b>이고, 하나의 FIFO 큐와 조건 변수, 그리고 N개의 워커 스레드로 되어 있습니다. 메인 스레드가 <code>uv__work_submit</code>으로 작업을 큐에 넣고 <code>uv_cond_signal</code>로 워커를 깨웁니다. 워커는 작업의 <code>work()</code>(블로킹 함수)를 실행한 뒤, 루프의 완료 큐에 넣고 <code>uv_async_send(&amp;loop-&gt;wq_async)</code>를 호출합니다. 이 async 핸들은 eventfd로 epoll에 등록되어 있어, 메인 루프가 poll 페이즈에서 깨어나 <code>uv__work_done</code>으로 완료 콜백(<code>done()</code>)을 호출합니다. 즉 <b>완료 콜백은 항상 메인 스레드의 poll 페이즈에서 실행</b>됩니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 260" role="img" aria-label="스레드풀 구조">
+        <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="90" width="150" height="70" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="95" y="118" text-anchor="middle" font-weight="700">메인 스레드</text>
+        <text x="95" y="138" text-anchor="middle" font-size="11.5" class="muted">uv__work_submit</text>
+        <rect x="210" y="70" width="200" height="110" rx="10" class="box"/>
+        <text x="310" y="92" text-anchor="middle" font-weight="700">wq (단일 FIFO 큐)</text>
+        <rect x="222" y="104" width="40" height="24" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="242" y="121" text-anchor="middle" font-size="10">fs</text>
+        <rect x="268" y="104" width="40" height="24" rx="4" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="288" y="121" text-anchor="middle" font-size="10">cpu</text>
+        <rect x="314" y="104" width="40" height="24" rx="4" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="334" y="121" text-anchor="middle" font-size="10">slow*</text>
+        <rect x="360" y="104" width="40" height="24" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="380" y="121" text-anchor="middle" font-size="10">fs</text>
+        <text x="310" y="150" text-anchor="middle" font-size="11" class="muted">* slow I/O는 별도 pending 큐 + 마커</text>
+        <text x="310" y="166" text-anchor="middle" font-size="11" class="muted">mutex + cond (uv_cond_signal)</text>
+        <path d="M170 125 H210" class="line" marker-end="url(#ar2)"/>
+        <g>
+          <rect x="450" y="30" width="110" height="40" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="505" y="55" text-anchor="middle" font-size="12">worker 1</text>
+          <rect x="450" y="80" width="110" height="40" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="505" y="105" text-anchor="middle" font-size="12">worker 2</text>
+          <rect x="450" y="130" width="110" height="40" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="505" y="155" text-anchor="middle" font-size="12">worker 3</text>
+          <rect x="450" y="180" width="110" height="40" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="505" y="205" text-anchor="middle" font-size="12">worker 4</text>
+        </g>
+        <path d="M410 125 L450 50" class="line" marker-end="url(#ar2)"/><path d="M410 125 L450 100" class="line" marker-end="url(#ar2)"/><path d="M410 125 L450 150" class="line" marker-end="url(#ar2)"/><path d="M410 125 L450 200" class="line" marker-end="url(#ar2)"/>
+        <rect x="610" y="70" width="130" height="110" rx="10" class="box"/>
+        <text x="675" y="92" text-anchor="middle" font-weight="700" font-size="13">loop-&gt;wq</text>
+        <text x="675" y="110" text-anchor="middle" font-size="11.5" class="muted">완료 목록</text>
+        <text x="675" y="140" text-anchor="middle" font-size="11.5">uv_async_send</text>
+        <text x="675" y="156" text-anchor="middle" font-size="11.5">(wq_async → eventfd)</text>
+        <path d="M560 125 H610" class="line flow" marker-end="url(#ar2)"/>
+        <rect x="770" y="90" width="100" height="70" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="820" y="118" text-anchor="middle" font-weight="700" font-size="12">poll 페이즈</text>
+        <text x="820" y="138" text-anchor="middle" font-size="11" class="muted">uv__work_done</text>
+        <path d="M740 125 H770" class="line flow" marker-end="url(#ar2)"/>
+        <path d="M820 160 C 820 250, 95 250, 95 160" class="line" stroke-dasharray="4 3" marker-end="url(#ar2)"/>
+        <text x="460" y="248" text-anchor="middle" font-size="11.5" class="muted">done 콜백 → JS oncomplete → nextTick/마이크로태스크 드레인</text>
+      </svg>
+      <figcaption>제출은 메인에서, 실행은 워커에서, 완료 콜백은 다시 메인의 poll 페이즈에서. 큐는 프로세스에 하나뿐입니다.</figcaption>
+    </figure>
+
+    <h3>3.1 크기와 초기화 규칙</h3>
+    <ul>
+      <li>기본 <b>4</b>개. <code>UV_THREADPOOL_SIZE</code> 환경변수로 변경, 최대 <b>1024</b>(libuv <code>MAX_THREADPOOL_SIZE</code>). 0이나 음수면 1.</li>
+      <li>스레드는 <b>첫 작업 제출 시 지연 생성</b>(<code>uv_once(init_threads)</code>)됩니다. 이때 <code>getenv("UV_THREADPOOL_SIZE")</code>를 읽습니다. 따라서 <code>process.env.UV_THREADPOOL_SIZE = 16</code>을 메인 모듈 <em>최상단</em>에서 설정하면 보통 동작하지만, 그 전에 어떤 모듈이든 스레드풀을 건드렸다면(예: <code>require</code> 중 <code>fs.readFile</code>, <code>dns.lookup</code>) 무시됩니다. 안전한 방법은 프로세스 실행 전 환경변수입니다.</li>
+      <li><b>워커 스레드(worker_threads)도 같은 풀을 공유</b>합니다. 워커 8개가 각각 fs를 열심히 써도 스레드풀은 여전히 4개입니다.</li>
+      <li>워커 스택은 libuv 기본(플랫폼 기본, Linux 8MB 가상)이며 실제 상주 메모리는 작습니다. 스레드 수를 64로 늘려도 메모리 비용은 미미하고, 문제는 <b>CPU 코어 수를 초과하는 CPU 작업의 컨텍스트 스위칭</b>입니다.</li>
+    </ul>
+
+    <h3>3.2 slow I/O 제한: dns.lookup은 4개가 아니라 2개</h3>
+    <p>libuv는 작업을 세 종류로 표시합니다: <code>UV__WORK_CPU</code>(<code>uv_queue_work</code>: crypto, zlib, 애드온), <code>UV__WORK_FAST_IO</code>(fs 작업), <code>UV__WORK_SLOW_IO</code>(<code>getaddrinfo</code>, <code>getnameinfo</code>). SLOW_IO는 "얼마나 걸릴지 모르는" 작업으로 취급되어 <b>동시 실행 수가 <code>(nthreads + 1) / 2</code>로 제한</b>됩니다. 기본 4개 풀에서는 <b>2개</b>입니다. 나머지 슬롯은 fs와 CPU 작업을 위해 남겨 두는 것입니다. 이 규칙 덕분에 느린 DNS 서버 하나가 풀 전체를 점유하는 최악은 피하지만, 반대로 <code>dns.lookup</code> 동시성은 풀 크기의 절반을 넘지 못합니다. 호출 수백 개가 밀리면 각각 "앞선 2개가 끝날 때까지" 줄을 섭니다.</p>
+    <div class="callout warn"><span class="title">제출 순서가 곧 완료 순서는 아니다</span>
+      큐는 FIFO지만 slow I/O가 제한에 걸리면 마커가 큐 뒤로 밀리고, 뒤에 들어온 fs 작업이 먼저 실행됩니다. 또 워커 4개가 병렬이므로 같은 종류라도 짧은 작업이 먼저 끝납니다. <code>fs.readFile</code> 두 번을 연달아 호출했을 때 둘째가 먼저 완료될 수 있고, 이것이 "파일 쓰기 순서"에 의존한 코드가 간헐적으로 깨지는 이유입니다. 순서가 중요하면 직렬화(<code>await</code> 체인)하세요.
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. fs.readFile 한 번의 여정</h2>
+    <p><code>fs.readFile(path, cb)</code> 하나가 실제로는 스레드풀 왕복을 여러 번 합니다. 아래 애니메이션으로 따라가 보세요.</p>
+    <div class="widget">
+      <div class="w-title">readFile 여정 스텝 애니메이션</div>
+      <div class="w-desc">4KiB 파일 하나를 읽는 경우. 각 단계가 메인 스레드인지, 워커인지, 커널인지를 색으로 구분합니다.</div>
+      <div class="stage"><svg class="diagram journey" id="jr" viewBox="0 0 880 250"></svg></div>
+      <div id="jr-step"></div>
+    </div>
+    <p>왕복 하나의 비용은 작업 자체(캐시된 4KiB 읽기 ≈ 수 µs)보다 <b>스레드 간 핸드오프</b>(mutex·cond·eventfd·epoll 왕복, 수십 µs)가 큽니다. 그래서 작은 파일을 많이 읽는 워크로드(모듈 로딩, 템플릿)에서는 <code>readFileSync</code>가 오히려 빠르고, Node 자체도 <code>require</code>에 동기 읽기를 씁니다. 반대로 큰 파일은 청크 왕복이 여러 번이지만 각 왕복이 실제 디스크 시간을 숨겨 주므로 비동기가 맞습니다.</p>
+  </section>
+
+  <section id="s5">
+    <h2>5. 스레드풀을 쓰는 API 목록과 왕복 횟수</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>모듈</th><th>스레드풀 사용</th><th>사용 안 함</th></tr>
+      <tr><td><code>fs</code></td><td>거의 모든 비동기 함수(<code>readFile</code>, <code>stat</code>, <code>readdir</code>, <code>open/read/write/close</code>, <code>mkdir</code>, <code>copyFile</code>, <code>fs.promises.*</code>, 스트림의 각 read/write). <b>FAST_IO</b></td><td><code>*Sync</code>(메인 블로킹), <code>fs.watch</code>(inotify/kqueue → epoll), <code>fs.watchFile</code>(stat 폴링 타이머 + 스레드풀 stat)</td></tr>
+      <tr><td><code>dns</code></td><td><code>lookup</code>, <code>lookupService</code>, 그리고 이들을 쓰는 <code>net.connect(host)</code>, <code>http.request</code>, <code>fetch</code>(기본 lookup). <b>SLOW_IO</b></td><td><code>resolve*</code>, <code>reverse</code>, <code>Resolver</code> 클래스(c-ares, epoll)</td></tr>
+      <tr><td><code>crypto</code></td><td><code>pbkdf2</code>, <code>scrypt</code>, <code>hkdf</code>, <code>randomBytes(cb)</code>, <code>randomFill</code>, <code>generateKeyPair</code>, <code>generatePrime</code>, <code>checkPrime</code>, <code>subtle.*</code>(WebCrypto) <b>CPU</b></td><td><code>*Sync</code>, <code>createHash/Hmac/Cipher</code>(모두 메인 동기), <code>randomUUID</code>(엔트로피 캐시, 동기), TLS 핸드셰이크·암복호화(메인 동기!)</td></tr>
+      <tr><td><code>zlib</code></td><td>콜백·Promise 버전, 스트림(<code>createGzip</code> 등) 청크마다 <b>CPU</b></td><td><code>*Sync</code></td></tr>
+      <tr><td><code>net/http/tls</code></td><td>-</td><td>모두 epoll. TLS 연산도 메인 스레드(OpenSSL)에서 동기 수행</td></tr>
+      <tr><td><code>child_process</code></td><td>-</td><td><code>uv_spawn</code> + 파이프 epoll. <code>execSync</code>류는 메인 블로킹</td></tr>
+      <tr><td>네이티브 애드온</td><td><code>napi_create_async_work</code>로 큐잉하면 스레드풀(bcrypt, sharp 등 많은 애드온)</td><td>자체 스레드를 쓰는 애드온(일부 DB 드라이버)</td></tr>
+    </table></div>
+    <div class="callout danger"><span class="title">TLS는 스레드풀을 쓰지 않는다</span>
+      핸드셰이크의 RSA/ECDHE 연산과 레코드 암복호화는 모두 메인 스레드에서 OpenSSL을 동기 호출합니다. HTTPS 서버에서 TLS 종단을 Node가 직접 하면 그 CPU는 전부 이벤트 루프 시간입니다. 연결 폭주(핸드셰이크 폭주) 시 루프 지연이 치솟는 이유이며, 가능하면 L7 프록시/로드밸런서에서 TLS를 종단하는 것이 표준입니다(12장).
+    </div>
+
+    <div class="widget">
+      <div class="w-title">readFile 왕복 횟수 계산기</div>
+      <div class="w-desc">파일 크기와 API에 따라 스레드풀 왕복이 몇 번인지, 왕복당 오버헤드를 가정했을 때 핸드오프 비용이 얼마나 되는지 계산합니다. 청크 상수는 Node 22 <code>lib/internal/fs/</code> 기준입니다.</div>
+      <div class="controls">
+        <label>파일 크기 <input type="range" id="rf-size" min="0" max="24" step="1" value="12"> <span id="rf-size-v"></span></label>
+        <label>API <select id="rf-api">
+          <option value="rf">fs.readFile (크기 아는 일반 파일)</option>
+          <option value="rfu">fs.readFile (크기 모름: 파이프/FIFO)</option>
+          <option value="rs">fs.createReadStream (highWaterMark 64KiB)</option>
+          <option value="rs256">fs.createReadStream (highWaterMark 256KiB)</option>
+          <option value="sync">fs.readFileSync</option>
+        </select></label>
+        <label>왕복 오버헤드 <input type="range" id="rf-ov" min="10" max="100" step="10" value="30"> <span id="rf-ov-v">30µs</span></label>
+      </div>
+      <div class="trip-list" id="rf-trips"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">스레드풀 왕복</div><div class="v" id="rf-n">-</div></div>
+        <div class="stat"><div class="k">핸드오프 비용(추정)</div><div class="v" id="rf-cost">-</div></div>
+        <div class="stat"><div class="k">피크 메모리(버퍼)</div><div class="v" id="rf-mem">-</div></div>
+      </div>
+      <div id="rf-note" style="font-size:13.5px;color:var(--muted)"></div>
+    </div>
+  </section>
+
+  <section id="s6">
+    <h2>6. DNS: lookup과 resolve의 결정적 차이</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th><code>dns.lookup</code></th><th><code>dns.resolve*</code> / <code>dns.Resolver</code></th></tr>
+      <tr><td>구현</td><td>libc <code>getaddrinfo(3)</code></td><td>c-ares (자체 DNS 클라이언트)</td></tr>
+      <tr><td>실행 위치</td><td>스레드풀 (SLOW_IO, 동시 ⌈N/2⌉)</td><td>메인 스레드 + UDP 소켓(epoll)</td></tr>
+      <tr><td><code>/etc/hosts</code>, <code>nsswitch.conf</code>, mDNS, 회사 VPN 리졸버</td><td>모두 존중</td><td>무시. <code>/etc/resolv.conf</code>의 네임서버만</td></tr>
+      <tr><td>OS 캐시(systemd-resolved, macOS mDNSResponder)</td><td>사용</td><td>미사용 (매번 질의)</td></tr>
+      <tr><td>누가 쓰나</td><td><code>net.connect</code>, <code>http(s).request</code>, <code>fetch</code>, 대부분의 DB 드라이버</td><td>직접 호출할 때만</td></tr>
+      <tr><td>결과 순서</td><td>Node 17+ <code>verbatim</code>(리졸버가 준 순서, 보통 IPv6 먼저). <code>dns.setDefaultResultOrder('ipv4first')</code> 또는 <code>--dns-result-order</code></td><td>레코드 타입 지정</td></tr>
+    </table></div>
+    <p><b>장애 메커니즘</b>: 회사 DNS가 느려져 <code>getaddrinfo</code>가 5초씩 걸리면, 아웃바운드 HTTP 요청마다 스레드풀 슬롯(최대 2개)을 5초간 점유 → 세 번째 요청부터 큐 대기 → 그 뒤에 들어온 <code>fs.readFile</code>, <code>pbkdf2</code>, 심지어 <code>zlib</code>까지 줄을 섭니다. 증상은 "DNS와 무관해 보이는 파일 읽기 API가 느려짐"으로 나타나 원인 파악이 어렵습니다. 반대로 <code>fs</code> 폭주가 <code>dns.lookup</code>을 지연시켜 "외부 호출 타임아웃"으로 보이기도 합니다.</p>
+    <p><b>대응</b> (우선순위 순):</p>
+    <ol>
+      <li>아웃바운드 HTTP에 <b>이름 해석 캐시</b>를 둔다. undici/http.Agent의 <code>lookup</code> 옵션에 캐시 구현(예: cacheable-lookup)을 꽂거나, 업스트림을 IP/서비스 메시 사이드카로 고정.</li>
+      <li>keep-alive로 연결을 재사용해 <b>해석 횟수 자체를 줄인다</b>(12장). 연결당 한 번이면 DNS는 거의 문제가 되지 않습니다.</li>
+      <li><code>dns.lookup</code>에 의존하지 않아도 되면 <code>dns.resolve4</code>로 바꾼다. 단, <code>/etc/hosts</code>와 OS 캐시를 잃으므로 컨테이너·k8s 환경에서 서비스 디스커버리 규칙을 확인해야 합니다.</li>
+      <li><code>UV_THREADPOOL_SIZE</code>를 올린다. 임시방편이며 slow I/O 제한(절반)은 여전히 적용됩니다.</li>
+    </ol>
+    <div class="callout tip"><span class="title">Node 20+ Happy Eyeballs</span>
+      <code>net.connect</code>는 기본으로 <code>autoSelectFamily: true</code>(Node 20부터 기본)를 적용해 IPv6/IPv4 주소를 <code>autoSelectFamilyAttemptTimeout</code>(기본 250ms) 간격으로 번갈아 시도합니다. "IPv6가 라우팅되지 않는 환경에서 요청이 정확히 N초 느려진다"는 과거 증상은 이 기능으로 대부분 사라졌지만, 로그에 <code>ECONNREFUSED ::1</code>이 섞여 보이는 것은 정상입니다.
+    </div>
+  </section>
+
+  <section id="s7">
+    <h2>7. 시뮬레이터: 스레드풀 포화</h2>
+    <div class="widget">
+      <div class="w-title">스레드풀 스케줄링 시뮬레이터</div>
+      <div class="w-desc">작업 묶음이 동시에 제출될 때 libuv의 단일 FIFO 큐 + slow I/O 제한 규칙으로 워커에 어떻게 배정되는지 간트 차트로 그립니다. 특히 <b>fs 작업의 대기 시간</b>이 다른 종류의 작업 때문에 어떻게 늘어나는지 보세요.</div>
+      <div class="controls">
+        <label>풀 크기 <input type="number" id="tp-n" min="1" max="64" value="4" style="width:64px"></label>
+        <label>fs 읽기 <input type="number" id="tp-fs" min="0" max="60" value="12" style="width:64px">개 × <input type="number" id="tp-fs-d" min="1" max="100" value="3" style="width:64px">ms</label>
+        <label>dns.lookup <input type="number" id="tp-dns" min="0" max="30" value="6" style="width:64px">개 × <input type="number" id="tp-dns-d" min="1" max="2000" value="120" style="width:72px">ms</label>
+        <label>pbkdf2 <input type="number" id="tp-cpu" min="0" max="30" value="4" style="width:64px">개 × <input type="number" id="tp-cpu-d" min="1" max="500" value="40" style="width:64px">ms</label>
+      </div>
+      <div class="controls">
+        <label>제출 순서 <select id="tp-order"><option value="dns-first">dns → pbkdf2 → fs (최악)</option><option value="fs-first">fs → pbkdf2 → dns</option><option value="mixed">골고루 섞임</option></select></label>
+        <label><input type="checkbox" id="tp-ares"> dns.lookup 대신 dns.resolve 사용 (스레드풀 우회)</label>
+        <label><input type="checkbox" id="tp-slow" checked> slow I/O 제한 적용 ⌈N/2⌉</label>
+      </div>
+      <div class="legend"><span class="fs">fs (FAST_IO)</span><span class="dns">dns.lookup (SLOW_IO)</span><span class="cpu">pbkdf2 (CPU)</span></div>
+      <div class="stage"><div class="gantt" id="tp-gantt"></div></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">fs 평균 대기</div><div class="v" id="tp-fs-avg">-</div></div>
+        <div class="stat"><div class="k">fs 최대 대기</div><div class="v" id="tp-fs-max">-</div></div>
+        <div class="stat"><div class="k">dns 최대 대기</div><div class="v" id="tp-dns-max">-</div></div>
+        <div class="stat"><div class="k">전체 완료</div><div class="v" id="tp-makespan">-</div></div>
+      </div>
+      <div class="callout" style="margin-bottom:0"><span class="title">실험 순서</span> ① 기본값(dns 먼저)에서 fs 최대 대기를 확인 → ② "dns.resolve 사용"을 켜면 fs가 거의 즉시 처리됨 → ③ 다시 끄고 풀 크기를 16으로 → dns 대기는 줄지만 slow I/O 제한(8개)이 여전히 상한 → ④ pbkdf2 수를 코어 수 이상으로 늘리면 풀을 키워도 CPU 경합이 생김(이 시뮬레이터는 CPU 경합을 모델링하지 않으므로 실제는 더 나쁨).</div>
+    </div>
+  </section>
+
+  <section id="s8">
+    <h2>8. stdio·파이프·TTY의 특이점</h2>
+    <p><code>process.stdout</code>과 <code>process.stderr</code>는 fd 1, 2가 무엇에 연결되어 있느냐에 따라 <b>완전히 다른 스트림 클래스</b>로 만들어지고, 쓰기의 동기/비동기 여부도 달라집니다. 공식 문서의 표를 옮기면:</p>
+    <div class="tbl-wrap"><table class="sync-tbl">
+      <tr><th>fd 1의 종류</th><th>클래스</th><th>Linux/macOS</th><th>Windows</th><th>비고</th></tr>
+      <tr><td>파일 (<code>node app.js &gt; out.log</code>)</td><td><code>fs.SyncWriteStream</code></td><td class="s">동기</td><td class="s">동기</td><td>디스크가 느리면 console.log가 루프를 막는다</td></tr>
+      <tr><td>TTY (터미널)</td><td><code>tty.WriteStream</code></td><td class="s">동기</td><td class="a">비동기</td><td>터미널이 느리면(원격 ssh) 블로킹</td></tr>
+      <tr><td>파이프/소켓 (<code>node app.js | …</code>, Docker 로그 드라이버, PM2)</td><td><code>net.Socket</code></td><td class="s">Linux 동기 / <span class="a">macOS 비동기</span></td><td class="s">동기</td><td>Linux 파이프 버퍼 64KiB가 차면 블로킹</td></tr>
+    </table></div>
+    <p>즉 <b>리눅스 프로덕션에서 <code>console.log</code>는 사실상 항상 동기</b>입니다. 로그 수집기가 파이프 반대편을 느리게 읽으면 64KiB 버퍼가 차는 순간 <code>write(2)</code>가 블로킹되고 이벤트 루프가 멈춥니다. "로그를 많이 찍었더니 서비스가 느려졌다"의 정체이고, 15장의 pino 비동기 transport(워커 스레드로 로그를 넘김)가 해법입니다. 반대로 이 동기성 덕에 <code>process.exit()</code> 직전의 로그가 유실되지 않는 장점도 있습니다(macOS 파이프 제외).</p>
+    <p><code>process.stdin</code>도 마찬가지로 TTY면 <code>tty.ReadStream</code>(raw 모드 가능), 파이프면 <code>net.Socket</code>, 파일이면 <code>fs.ReadStream</code>(스레드풀)입니다. stdin이 TTY일 때 <code>process.stdin.on('data')</code>를 붙이는 순간 핸들이 ref되어 프로세스가 종료되지 않는 것도 자주 묻는 현상입니다.</p>
+  </section>
+
+  <section id="s9">
+    <h2>9. io_uring과 스레드풀의 미래</h2>
+    <p>Linux 5.1에서 도입된 io_uring은 파일 I/O에도 완료 모델을 제공합니다. libuv 1.45(2023)가 fs 작업 일부(<code>read/write/fsync/stat/open/close</code> 등)를 io_uring으로 처리하는 지원을 넣었고, Node 20.3이 이를 포함하면서 <b>파일 I/O가 스레드풀을 거치지 않게</b> 되었습니다. 벤치마크에서 파일 읽기 처리량이 눈에 띄게 올랐습니다.</p>
+    <p>그러나 2024년 2월, io_uring 사용 시 <code>process.setuid()</code> 등이 워커에 전파되지 않는 권한 관련 취약점(CVE-2024-22017)이 보고되었고, Node는 <b>io_uring을 기본 비활성</b>으로 되돌렸습니다(Node 20.11.1 / 21.6.2부터). Node 22도 기본 비활성입니다. 명시적으로 켜려면:</p>
+<pre><code>$ UV_USE_IO_URING=1 node app.js      # libuv 1.45+, 커널 5.10 이상 권장. setuid 류를 쓰지 않는 서비스만.</code></pre>
+    <p>켜면 fs 작업이 스레드풀 큐에서 빠지므로, 이 장에서 본 "DNS가 fs를 막는다"류 간섭이 fs 쪽에서는 사라집니다. 단 io_uring은 커널 버전·컨테이너 보안 프로파일(seccomp에서 <code>io_uring_*</code> syscall 차단이 흔함)에 민감하므로, 켠 뒤 실제로 사용되는지(<code>strace -e io_uring_enter</code>)를 확인해야 합니다. 향후 기본값이 바뀔 수 있으니 버전 릴리스 노트를 확인하세요.</p>
+  </section>
+
+  <section id="s10">
+    <h2>10. 측정과 튜닝, 현업 장애 사례</h2>
+    <h3>10.1 스레드풀 대기 시간 측정</h3>
+    <p>libuv는 스레드풀 큐 길이를 직접 노출하지 않습니다. 실용적 방법은 <b>프로브</b>입니다. 아주 작은 스레드풀 작업을 주기적으로 던지고 왕복 시간을 재면, 그 값이 곧 "큐 대기 + 핸드오프"입니다.</p>
+<pre><code>const { randomBytes } = require('node:crypto');
+const { monitorEventLoopDelay } = require('node:perf_hooks');
+const loopDelay = monitorEventLoopDelay({ resolution: 20 }); loopDelay.enable();
+
+setInterval(() =&gt; {
+  const t0 = process.hrtime.bigint();
+  randomBytes(1, () =&gt; {                       // 스레드풀 CPU 작업 1건
+    const tpMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    const loopMs = loopDelay.percentile(99) / 1e6;
+    // tpMs - loopMs 가 크면 루프가 아니라 스레드풀이 밀린 것
+    metrics.observe('threadpool_probe_ms', tpMs);
+  });
+}, 1000).unref();</code></pre>
+    <p>루프 지연(2장)과 함께 보아야 합니다. 프로브가 느린데 루프 지연이 정상이면 스레드풀 포화, 둘 다 느리면 메인 스레드 블로킹입니다. 어떤 작업이 풀을 점유하는지는 <code>async_hooks</code>로 <code>FSREQCALLBACK</code>, <code>GETADDRINFOREQWRAP</code>, <code>PBKDF2REQUEST</code>, <code>ZLIB</code> 리소스의 init→destroy 시간을 집계하면 종류별로 보입니다(7장).</p>
+
+    <h3>10.2 UV_THREADPOOL_SIZE 결정 규칙</h3>
+    <ul>
+      <li><b>I/O 지배 워크로드</b>(fs, dns): 코어 수와 무관하게 늘려도 됩니다. 디스크 큐 깊이·DNS 동시성에 맞춰 8~32. 각 워커가 커널 대기만 하므로 CPU 경합이 없습니다.</li>
+      <li><b>CPU 지배 워크로드</b>(pbkdf2, zlib, sharp): 코어 수 이상은 무의미하며 컨텍스트 스위치로 오히려 느려집니다. 컨테이너라면 <b>cgroup CPU 할당량</b>(예: 2 vCPU)이 상한. 더 필요하면 프로세스를 늘리세요(9장).</li>
+      <li>워커 스레드(worker_threads)를 N개 띄우면 풀을 공유하므로, 워커당 fs 사용량을 합산해 결정합니다.</li>
+      <li>변경 후 반드시 10.1의 프로브로 효과를 확인합니다. 효과가 없으면 병목이 풀이 아닙니다.</li>
+    </ul>
+
+    <div class="callout danger"><span class="title">사례 1: 로그인 폭주와 썸네일</span>
+      <p>로그인 API가 <code>bcrypt.hash</code>(네이티브 애드온, 스레드풀 CPU 작업, 건당 ~80ms)를 씁니다. 마케팅 푸시로 로그인이 초당 50건이 되자, 같은 프로세스의 이미지 썸네일(<code>sharp</code>, 역시 스레드풀) 생성과 정적 파일 <code>fs.readFile</code>이 수 초씩 밀렸습니다. 스레드풀 4개 × 80ms = 초당 50건이 상한인데 그 상한을 로그인이 전부 썼기 때문입니다. 대응: 해시 cost 인자 재검토, 로그인 전용 프로세스 분리, <code>UV_THREADPOOL_SIZE=16</code>(코어 8개 머신). 교훈: 스레드풀은 <b>서로 무관한 기능이 공유하는 단일 큐</b>라는 점을 설계에 반영해야 합니다.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: NFS 위의 readFileSync</span>
+      <p>설정 파일을 요청마다 <code>fs.readFileSync</code>로 읽는 핸들러. 로컬 디스크에서는 50µs라 문제없었지만, 스토리지가 NFS로 바뀌자 네트워크 지연이 끼어 수십 ms씩 메인 스레드가 멈췄습니다. 비동기로 바꿔도 스레드풀이 NFS 지연에 점유됩니다. 올바른 대응은 "요청 경로에서 파일을 읽지 않는 것"(부팅 시 로드 + <code>fs.watch</code>로 갱신)이었습니다.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 테스트에서만 실패하는 순서 의존</span>
+      <p><code>fs.writeFile(a); fs.writeFile(b);</code> 뒤에 b의 존재를 전제로 a를 처리하는 코드. 로컬에서는 항상 a가 먼저 끝났지만 CI(느린 디스크, 다른 테스트의 스레드풀 사용)에서 간헐 실패. 스레드풀은 4개가 병렬이므로 완료 순서는 보장되지 않습니다. <code>await</code> 직렬화로 해결.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>소켓·파이프·TTY는 epoll(readiness)로 메인 스레드가 직접 read/write. 스레드 0개. 일반 파일은 epoll이 불가능해 스레드풀이 필요하다.</li>
+    <li>libuv 스레드풀: 프로세스에 하나, 단일 FIFO 큐, 기본 4개(최대 1024, 첫 사용 전 <code>UV_THREADPOOL_SIZE</code>), 완료는 <code>wq_async</code>로 poll 페이즈에서 콜백. worker_threads도 공유.</li>
+    <li>slow I/O(<code>getaddrinfo</code>)는 동시 ⌈N/2⌉개로 제한. 기본 풀에서 <code>dns.lookup</code> 동시성은 2.</li>
+    <li>풀 사용: fs 비동기, dns.lookup, crypto 비동기(pbkdf2·scrypt·randomBytes·WebCrypto), zlib 비동기, 많은 네이티브 애드온. 비사용: net/http/tls(TLS 연산은 메인 동기!), 모든 Sync, createHash.</li>
+    <li>readFile 하나 = open + fstat + read×청크 + close 왕복. 작은 파일 다수는 Sync가 빠를 수 있고, 큰 파일은 스트림.</li>
+    <li>Linux 프로덕션에서 stdout(파일·TTY·파이프)은 동기. 로그 폭주 = 루프 블로킹.</li>
+    <li>io_uring은 Node 20.3에서 켜졌다가 CVE로 기본 비활성(<code>UV_USE_IO_URING=1</code>로 옵트인).</li>
+    <li>진단: 스레드풀 프로브(randomBytes 왕복) + 루프 지연을 함께 본다. 튜닝: I/O 지배면 풀을 키우고, CPU 지배면 프로세스를 늘린다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Linux에서 일반 파일 읽기가 libuv 스레드풀을 거치는 근본 이유는?</div>
+    <button class="opt">파일 시스템 호출이 스레드 안전하지 않기 때문</button>
+    <button class="opt">V8이 파일 디스크립터를 다룰 수 없기 때문</button>
+    <button class="opt">일반 파일은 epoll에 등록할 수 없고 read(2)가 디스크를 기다리며 블로킹되기 때문</button>
+    <button class="opt">파일 읽기는 항상 CPU 집약적이기 때문</button>
+    <div class="explain">epoll은 readiness 모델이고 일반 파일은 항상 '준비됨'으로 취급되어 등록 자체가 거부됩니다(EPERM). 블로킹을 숨길 유일한 방법이 다른 스레드에서 호출하는 것입니다(io_uring 제외).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">기본 설정(풀 4개)에서 <code>dns.lookup</code> 10건이 동시에 제출되면 동시에 실행되는 최대 건수는?</div>
+    <button class="opt">4건</button>
+    <button class="opt">2건 (slow I/O 제한 ⌈4/2⌉)</button>
+    <button class="opt">10건 (각자 스레드 생성)</button>
+    <button class="opt">1건 (직렬화)</button>
+    <div class="explain">getaddrinfo는 UV__WORK_SLOW_IO로 분류되어 (nthreads+1)/2 = 2개까지만 동시에 실행됩니다. 나머지 슬롯은 fs·CPU 작업용으로 남습니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">HTTPS 서버에서 TLS 핸드셰이크 폭주 시 이벤트 루프 지연이 치솟는 이유는?</div>
+    <button class="opt">핸드셰이크가 스레드풀을 포화시켜서</button>
+    <button class="opt">c-ares가 인증서 검증을 위해 DNS를 질의해서</button>
+    <button class="opt">epoll이 TLS 소켓을 지원하지 않아서</button>
+    <button class="opt">OpenSSL의 키 교환·암복호화 연산이 메인 스레드에서 동기로 실행되어서</button>
+    <div class="explain">TLS는 스레드풀을 쓰지 않습니다. 모든 암호 연산이 루프 시간입니다. 프록시/로드밸런서에서 TLS를 종단하거나 세션 재개(resumption)로 핸드셰이크 비용을 줄입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Linux 컨테이너에서 stdout이 Docker 로그 드라이버 파이프에 연결되어 있다. 로그 수집이 느려지면?</div>
+    <button class="opt">파이프 버퍼(64KiB)가 찬 뒤 write(2)가 블로킹되어 이벤트 루프가 멈춘다</button>
+    <button class="opt">로그가 메모리에 무한히 쌓이고 루프는 영향 없다</button>
+    <button class="opt">스레드풀 워커가 대신 쓰므로 영향 없다</button>
+    <button class="opt">libuv가 자동으로 로그를 버린다</button>
+    <div class="explain">Linux에서 파이프로의 stdout 쓰기는 동기입니다. pino 비동기 transport처럼 워커 스레드로 로그를 넘기는 구조가 해법입니다(15장).</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">메인 모듈 첫 줄에 <code>process.env.UV_THREADPOOL_SIZE = '32'</code>를 썼는데 효과가 없다. 가장 가능성 높은 이유는?</div>
+    <button class="opt">환경변수는 코드에서 바꿀 수 없다</button>
+    <button class="opt">최대값이 16이라 무시되었다</button>
+    <button class="opt">그 줄 이전에(예: --require 프리로드, 또는 require 중) 스레드풀이 이미 초기화되어 값을 읽은 뒤였다</button>
+    <button class="opt">문자열이 아니라 숫자로 지정해야 한다</button>
+    <div class="explain">스레드풀은 첫 작업 제출 시 한 번만 초기화되며 그때 환경변수를 읽습니다. 프리로드 모듈이나 require 체인에서 fs 비동기/dns.lookup 등을 썼다면 이미 늦습니다. 프로세스 실행 전 환경변수로 설정하세요.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>간섭 재현.</b> 아래 스크립트를 <code>UV_THREADPOOL_SIZE</code> 4와 16으로 각각 실행해 <code>readFile</code> 지연을 비교하세요. 기대: 4에서는 readFile이 pbkdf2 완료 후에야 끝나 수백 ms, 16에서는 수 ms.
+<pre><code>const crypto = require('node:crypto'), fs = require('node:fs');
+for (let i = 0; i &lt; 8; i++) crypto.pbkdf2('pw', 'salt', 300_000, 64, 'sha512', () =&gt; {});
+const t = performance.now();
+fs.readFile(__filename, () =&gt; console.log('readFile took', (performance.now() - t).toFixed(1), 'ms'));</code></pre></li>
+    <li><b>slow I/O 제한 관찰.</b> 존재하지 않는 DNS 서버를 가리키도록(<code>/etc/resolv.conf</code>를 건드리지 말고, 네트워크 차단 혹은 느린 리졸버로 흉내) <code>dns.lookup</code> 6건을 동시에 던지고 각 완료 시각을 찍어 보세요. 기대: 완료가 2건씩 묶여서 일어남(타임아웃 길이마다 2건). <code>dns.resolve4</code> 6건은 동시에 완료됨.</li>
+    <li><b>stdout 동기성 확인.</b> <code>node -e "for(let i=0;i&lt;1e5;i++)console.log('x'.repeat(100))" | (sleep 5; cat &gt; /dev/null)</code>을 Linux에서 실행하고 node 프로세스가 5초간 블로킹되는지(<code>time</code>으로) 확인하세요. macOS에서는 비동기라 즉시 종료되지 않을 수 있지만 메모리에 버퍼링됩니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  // ===== 위젯 1: readFile 여정 =====
+  (function () {
+    const svg = document.getElementById("jr");
+    const NS = "http://www.w3.org/2000/svg";
+    const mk = (t, a, txt) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; return e; };
+    // 레인: 0 JS(main), 1 C++(main), 2 threadpool, 3 kernel
+    const lanes = [["JS (메인)", "var(--accent)"], ["C++ 바인딩 (메인)", "var(--violet)"], ["스레드풀 워커", "var(--warn)"], ["커널 / 디스크", "var(--muted)"]];
+    lanes.forEach((l, i) => {
+      svg.append(mk("rect", { x: 0, y: 10 + i * 58, width: 880, height: 52, rx: 6, style: "fill:var(--surface-2);stroke:var(--border)" }));
+      svg.append(mk("text", { x: 10, y: 40 + i * 58, "font-weight": 700, style: `fill:${l[1]}` }, l[0]));
+    });
+    const STEPS = [
+      [0, "fs.readFile(path, cb)", "JS: 인자 검증, ReadFileContext 생성, FSReqCallback 객체(ReqWrap) 생성. <code>binding.open()</code> 호출. 메인 스레드."],
+      [1, "uv_fs_open → 큐 제출", "C++ <code>Open()</code>: uv_fs_t 요청을 만들어 <code>uv_fs_open(loop, req, path, flags, mode, cb)</code>. libuv가 FAST_IO 작업으로 스레드풀 큐에 넣고 <code>uv_cond_signal</code>. JS로 즉시 반환(비동기)."],
+      [2, "worker: open(2)", "워커가 큐에서 꺼내 <code>open(2)</code> 호출. 메인 스레드는 그동안 다른 콜백을 실행 중."],
+      [3, "fd 반환", "커널이 파일을 열고 fd를 돌려준다(경로 조회, 권한 검사)."],
+      [2, "uv_async_send(wq_async)", "워커가 완료 목록에 넣고 eventfd에 write → 메인의 epoll_wait가 깨어남."],
+      [1, "poll: uv__work_done → AfterOpen", "메인 poll 페이즈. C++ 완료 콜백이 <code>req.oncomplete</code>(JS readFileAfterOpen)를 MakeCallback으로 호출."],
+      [0, "readFileAfterOpen → binding.fstat", "JS: 파일 크기를 알아야 버퍼를 잡으므로 <b>두 번째 왕복</b> fstat 제출."],
+      [2, "worker: fstat(2)", "워커 왕복 #2. 크기 4096 반환."],
+      [0, "readFileAfterStat → binding.read", "JS: 4KiB Buffer 할당, <code>read(fd, buf, 0, 4096, pos)</code> 제출. <b>왕복 #3</b>. 파일이 512KiB보다 크면 512KiB씩 반복."],
+      [2, "worker: pread(2)", "워커가 <code>pread</code>로 4096바이트를 버퍼에 복사(페이지 캐시 히트면 수 µs, 미스면 디스크 대기)."],
+      [0, "readFileAfterRead → binding.close", "JS: 다 읽었으면(또는 EOF) <code>close(fd)</code> 제출. <b>왕복 #4</b>."],
+      [2, "worker: close(2)", "워커 왕복 #4. 완료 통지."],
+      [0, "readFileAfterClose → cb(null, buffer)", "JS: 인코딩 변환(utf8이면 여기서 디코드) 후 사용자 콜백 호출. 이 콜백 종료 후 nextTick/마이크로태스크 드레인. 총 <b>스레드풀 왕복 4회</b>."],
+    ];
+    const nodes = STEPS.map((s, i) => {
+      const x = 150 + (i % 7) * 104 - (i >= 7 ? 0 : 0);
+      const g = mk("g");
+      const bx = 150 + i * 54, by = 16 + s[0] * 58;
+      g.append(mk("rect", { x: bx, y: by, width: 50, height: 40, rx: 6, class: "st" + (s[0] === 2 ? " tp" : "") }));
+      g.append(mk("text", { x: bx + 25, y: by + 25, "text-anchor": "middle", "font-size": "11", "font-weight": 700 }, String(i + 1)));
+      svg.append(g);
+      if (i > 0) {
+        const p = STEPS[i - 1];
+        const px = 150 + (i - 1) * 54 + 25, py = 16 + p[0] * 58 + (p[0] < s[0] ? 40 : 0);
+        const cy = by + (p[0] < s[0] ? 0 : 40);
+        svg.append(mk("path", { d: `M${px} ${py} L${bx + 25} ${cy}`, class: "line", style: "stroke:var(--muted);stroke-width:1.2" }));
+      }
+      return g.querySelector("rect");
+    });
+    MM.stepper(document.getElementById("jr-step"), { steps: STEPS.length, interval: 1800, render(i) {
+      nodes.forEach((n, k) => n.classList.toggle("on", k === i));
+      return `<b>${i + 1}. ${STEPS[i][1]}</b> — ${STEPS[i][2]}`;
+    } });
+  })();
+
+  // ===== 위젯 2: readFile 왕복 계산기 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    const KiB = 1024, MiB = 1024 * 1024;
+    const sizes = [0, 512, 1 * KiB, 4 * KiB, 16 * KiB, 32 * KiB, 64 * KiB, 100 * KiB, 128 * KiB, 256 * KiB, 400 * KiB, 512 * KiB, 1 * MiB, 2 * MiB, 4 * MiB, 8 * MiB, 16 * MiB, 32 * MiB, 64 * MiB, 128 * MiB, 256 * MiB, 512 * MiB, 1024 * MiB, 2047 * MiB, 4 * 1024 * MiB];
+    function calc() {
+      const size = sizes[+$("rf-size").value], api = $("rf-api").value, ov = +$("rf-ov").value;
+      $("rf-size-v").textContent = MM.bytes(size); $("rf-ov-v").textContent = ov + "µs";
+      let trips = [], mem = 0, note = "";
+      const reads = (chunk) => Math.max(1, Math.ceil(size / chunk));
+      if (api === "sync") {
+        trips = []; mem = size;
+        note = "동기: 스레드풀 왕복 0. 메인 스레드가 open/fstat/read/close를 직접 호출하며 그동안 루프 정지. utf8 인코딩 지정 시 Node 20+는 C++ 단일 호출(readFileUtf8)로 처리.";
+      } else if (api === "rf") {
+        const n = reads(512 * KiB);
+        trips = ["open", "fstat", ...Array(n).fill("read 512KiB"), "close"]; mem = size;
+        note = `크기를 아는 일반 파일: 전체 크기 버퍼를 한 번에 할당하고 512KiB(kReadFileBufferLength)씩 ${n}회 읽는다. 2GiB 초과 파일은 ERR_FS_FILE_TOO_LARGE.`;
+        if (size > 2 * 1024 * MiB) note += " ← 이 크기는 readFile로 읽을 수 없습니다. 스트림을 쓰세요.";
+      } else if (api === "rfu") {
+        const n = reads(64 * KiB);
+        trips = ["open", "fstat(size=0)", ...Array(n).fill("read 64KiB"), "close"]; mem = size;
+        note = `크기를 모르는 입력(파이프·/proc·FIFO): 64KiB(kReadFileUnknownBufferLength) 버퍼로 EOF까지 반복 읽고 마지막에 Buffer.concat. 왕복 수가 8배.`;
+      } else {
+        const hwm = api === "rs" ? 64 * KiB : 256 * KiB;
+        const n = reads(hwm);
+        trips = ["open", ...Array(n).fill("read " + MM.bytes(hwm)), "close"]; mem = hwm * 2;
+        note = `스트림: fstat 없이 highWaterMark 단위로 읽어 'data'로 흘려보낸다. 피크 메모리는 파일 크기와 무관(소비자가 백프레셔를 지키면 hwm의 몇 배). 왕복은 많지만 각 왕복이 디스크 지연을 숨긴다. highWaterMark를 키우면 왕복이 줄고 메모리가 는다.`;
+      }
+      const max = 40;
+      $("rf-trips").innerHTML = (trips.length > max ? [...trips.slice(0, max - 1), `… +${trips.length - max + 1}`] : trips).map(t => `<span class="trip ${t.startsWith("read") ? "rd" : ""}">${t}</span>`).join("") || "<span class='muted' style='font-size:13px'>(왕복 없음)</span>";
+      $("rf-n").textContent = trips.length + " 회";
+      $("rf-cost").textContent = MM.ms(trips.length * ov / 1000);
+      $("rf-mem").textContent = MM.bytes(mem);
+      $("rf-note").innerHTML = note;
+    }
+    ["rf-size", "rf-api", "rf-ov"].forEach(id => $(id).oninput = calc); calc();
+  })();
+
+  // ===== 위젯 3: 스레드풀 포화 시뮬레이터 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    function build() {
+      const N = Math.max(1, Math.min(64, +$("tp-n").value || 4));
+      const cnt = { fs: +$("tp-fs").value, dns: +$("tp-dns").value, cpu: +$("tp-cpu").value };
+      const dur = { fs: +$("tp-fs-d").value, dns: +$("tp-dns-d").value, cpu: +$("tp-cpu-d").value };
+      const useAres = $("tp-ares").checked, slowLimit = $("tp-slow").checked ? Math.floor((N + 1) / 2) : Infinity;
+      const order = $("tp-order").value;
+      const mkJobs = k => Array.from({ length: cnt[k] }, (_, i) => ({ kind: k, d: dur[k], id: k + (i + 1) }));
+      let jobs;
+      if (order === "dns-first") jobs = [...mkJobs("dns"), ...mkJobs("cpu"), ...mkJobs("fs")];
+      else if (order === "fs-first") jobs = [...mkJobs("fs"), ...mkJobs("cpu"), ...mkJobs("dns")];
+      else { const a = [mkJobs("fs"), mkJobs("dns"), mkJobs("cpu")]; jobs = []; let more = true; while (more) { more = false; for (const q of a) if (q.length) { jobs.push(q.shift()); more = true; } } }
+      let aresJobs = [];
+      if (useAres) { aresJobs = jobs.filter(j => j.kind === "dns"); jobs = jobs.filter(j => j.kind !== "dns"); }
+      // 시뮬레이션: 이벤트 구동
+      const workers = Array.from({ length: N }, () => ({ free: 0, jobs: [] }));
+      const queue = jobs.map(j => ({ ...j, submit: 0 }));
+      let slowRunning = []; // {end}
+      let t = 0; const done = [];
+      const safety = 10000; let guard = 0;
+      while (queue.length && guard++ < safety) {
+        // 가장 먼저 비는 워커
+        const w = workers.reduce((a, b) => b.free < a.free ? b : a);
+        t = Math.max(t, w.free);
+        slowRunning = slowRunning.filter(e => e > t);
+        // 큐에서 실행 가능한 첫 작업 찾기 (slow는 제한 시 뒤로 밀림)
+        let idx = queue.findIndex(j => j.kind !== "dns" || slowRunning.length < slowLimit);
+        if (idx < 0) {
+          // 모두 slow이고 제한에 걸림: 가장 빨리 끝나는 slow 작업까지 시간 전진
+          const nextEnd = Math.min(...slowRunning);
+          t = nextEnd; w.free = Math.max(w.free, t); continue;
+        }
+        const j = queue.splice(idx, 1)[0];
+        const start = t, end = t + j.d;
+        w.jobs.push({ ...j, start, end }); w.free = end;
+        if (j.kind === "dns") slowRunning.push(end);
+        done.push({ ...j, start, end, wait: start - j.submit });
+      }
+      const makespan = Math.max(0, ...workers.map(w => w.free), ...aresJobs.map(j => j.d));
+      // 렌더
+      const scale = 100 / Math.max(1, makespan);
+      let html = workers.map((w, i) => `<div class="g-row"><div class="lbl">worker ${i + 1}</div><div class="track">${w.jobs.map(j => `<div class="job ${j.kind}" style="left:${j.start * scale}%;width:${Math.max(0.6, j.d * scale)}%" title="${j.id}: ${j.start}~${j.end}ms (대기 ${j.start}ms)">${j.id}</div>`).join("")}</div></div>`).join("");
+      if (aresJobs.length) html += `<div class="g-row"><div class="lbl">c-ares(epoll)</div><div class="track">${aresJobs.map((j, i) => `<div class="job dns" style="left:0;width:${Math.max(0.6, j.d * scale)}%;top:${2 + (i % 3) * 6}px;height:${Math.max(4, 18 - (i % 3) * 6)}px;opacity:.8" title="병렬 질의">${j.id}</div>`).join("")}</div></div>`;
+      html += `<div class="g-row"><div class="lbl"></div><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>0</span><span>${(makespan / 2).toFixed(0)}ms</span><span>${makespan.toFixed(0)}ms</span></div></div>`;
+      $("tp-gantt").innerHTML = html;
+      const fsJ = done.filter(j => j.kind === "fs"), dnsJ = done.filter(j => j.kind === "dns");
+      const avg = a => a.length ? a.reduce((s, j) => s + j.wait, 0) / a.length : 0;
+      $("tp-fs-avg").textContent = fsJ.length ? avg(fsJ).toFixed(1) + " ms" : "-";
+      $("tp-fs-max").textContent = fsJ.length ? Math.max(...fsJ.map(j => j.wait)).toFixed(0) + " ms" : "-";
+      $("tp-dns-max").textContent = dnsJ.length ? Math.max(...dnsJ.map(j => j.wait)).toFixed(0) + " ms" : (useAres && aresJobs.length ? "0 ms (c-ares)" : "-");
+      $("tp-makespan").textContent = makespan.toFixed(0) + " ms";
+    }
+    ["tp-n", "tp-fs", "tp-fs-d", "tp-dns", "tp-dns-d", "tp-cpu", "tp-cpu-d", "tp-order", "tp-ares", "tp-slow"].forEach(id => $(id).oninput = $(id).onchange = build);
+    build();
+  })();
+})();
+</script>
+</body>
+</html>

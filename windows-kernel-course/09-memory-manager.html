@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메모리 관리자 내부</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  /* 커밋 시뮬레이터 */
+  .meter { margin: 8px 0 12px; }
+  .meter .lbl { display: flex; justify-content: space-between; font-size: .85rem; color: var(--muted); }
+  .meter .lbl b { color: var(--head); font-family: var(--mono); font-weight: 700; }
+  .meter .track { position: relative; height: 16px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); overflow: hidden; }
+  .meter .fill { position: absolute; top: 0; bottom: 0; left: 0; transition: width .4s; }
+  .meter .fill.other { background: var(--hw-bg); border-right: 1px solid var(--hw); }
+  .meter .fill.mine { background: var(--kernel); opacity: .75; }
+  .meter .fill.res { background: var(--user); opacity: .6; }
+  .meter .fill.ws { background: var(--ok); opacity: .7; }
+  /* 페이지 리스트 시뮬레이터 */
+  .pl-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .pl-grid { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 4px; }
+  .pl-cell { position: relative; border-radius: 6px; border: 1.5px solid var(--line); background: var(--panel2); font: 10.5px/1.15 var(--mono); text-align: center; padding: 4px 0 3px; cursor: pointer; transition: background .35s, border-color .35s, transform .2s; }
+  .pl-cell:hover { transform: translateY(-1px); }
+  .pl-cell .o { display: block; font: 700 11px var(--sans); color: var(--head); min-height: 13px; }
+  .pl-cell.zero { background: var(--ok-bg); border-color: var(--ok); }
+  .pl-cell.free { background: var(--hw-bg); border-color: var(--hw); }
+  .pl-cell.standby { background: var(--user-bg); border-color: var(--user); }
+  .pl-cell.modified { background: var(--warn-bg); border-color: var(--warn); }
+  .pl-cell.active { background: var(--kernel-bg); border-color: var(--kernel); }
+  .pl-cell.dirty::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--bad); }
+  .pl-cell.flash { animation: pl-flash .9s; }
+  .pl-cell.sel { outline: 2px solid var(--acc); outline-offset: 1px; }
+  @keyframes pl-flash { 0% { transform: scale(1.18); box-shadow: 0 0 10px var(--acc); } 100% { transform: none; box-shadow: none; } }
+  .pl-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+  .pl-counts div { border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 4px 10px; background: var(--panel2); }
+  .pl-counts small { display: block; font-size: .74rem; color: var(--muted); }
+  .pl-counts b { font: 700 1.1rem var(--mono); color: var(--head); }
+  .pl-counts .c-zero { border-left-color: var(--ok); } .pl-counts .c-free { border-left-color: var(--hw); }
+  .pl-counts .c-standby { border-left-color: var(--user); } .pl-counts .c-modified { border-left-color: var(--warn); }
+  .pl-counts .c-active { border-left-color: var(--kernel); } .pl-counts .c-avail { border-left-color: var(--acc); }
+  .pl-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .8rem; color: var(--muted); }
+  .pl-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; border: 1.5px solid; }
+  .pl-info { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: .88rem; min-height: 2.4em; }
+  .sm-dia .ln { transition: stroke .2s, stroke-width .2s, opacity .3s; opacity: .45; }
+  .sm-dia .ln.hot { stroke: var(--acc); stroke-width: 3.2; opacity: 1; marker-end: url(#wk-arr-acc); stroke-dasharray: 7 6; animation: wk-flow .8s linear infinite; }
+  .sm-dia text.el { font-size: 10.5px; fill: var(--muted); }
+  .sm-dia text.el.hot { fill: var(--acc); font-weight: 700; }
+  .sm-dia .cnt { font: 700 15px var(--mono); fill: var(--head); }
+  .btn-group { display: flex; flex-wrap: wrap; gap: 6px; }
+  @media (max-width: 700px) { .pl-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+</style>
+</head>
+<body data-chapter="09">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part III · Chapter 09</div>
+  <h1>메모리 관리자 내부</h1>
+  <p class="sub">08장이 하드웨어의 규칙이었다면, 이 장은 그 규칙 위에서 Windows가 가상 주소와 물리 페이지를 어떻게 장부로 관리하는지 — VAD, 폴트 처리기, PFN 데이터베이스, 워킹셋, 섹션, 풀 — 를 해부합니다.</p>
+  <div class="meta"><span class="pill lv-adv">심화</span><span class="pill">⏱ 약 120분</span><span class="pill">선수: 08장, 06장(IRQL)</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>예약·커밋·워킹셋(물리 사용)의 차이와 커밋 차지/커밋 한도를 정확히 설명할 수 있다.</li>
+    <li>VAD 트리가 기록하는 정보와, 0 PTE에서 VAD를 참조해 PTE를 만들어 내는 지연 생성 방식을 이해한다.</li>
+    <li>페이지 폴트가 <code>KiPageFault → MmAccessFault</code>를 거쳐 디맨드 제로/트랜지션/하드/프로토타입/권한 위반으로 분기하는 과정을 추적할 수 있다.</li>
+    <li>프로토타입 PTE와 섹션 객체(CONTROL_AREA, SEGMENT, SUBSECTION)가 공유 메모리를 구현하는 방식을 설명할 수 있다.</li>
+    <li>PFN 데이터베이스와 Zero/Free/Standby/Modified/Active 상태 전이, 워킹셋 트리밍, Modified Page Writer, 메모리 압축의 관계를 그릴 수 있다.</li>
+    <li>커널 풀의 종류와 <code>ExAllocatePool2</code>, 풀 태그, 풀 손상 버그체크를 실무 수준으로 다룰 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="overview">메모리 관리자의 구성</h2>
+<p>
+  메모리 관리자(<code>Mm*</code>, 내부 <code>Mi*</code>)는 ntoskrnl 안에서 가장 큰 구성요소 중 하나입니다. 크게 보면 두 개의 장부를 관리합니다.
+</p>
+<div class="grid2">
+  <div class="card user"><h4>가상 쪽 장부</h4><p>프로세스마다: 어떤 VA 범위가 예약/커밋되었고 무엇(개인 메모리, 파일, 이미지)으로 뒷받침되는지 — <b>VAD 트리</b>와 <b>페이지 테이블</b>. 그리고 현재 물리 메모리에 올라와 있는 페이지 목록 — <b>워킹셋</b>.</p></div>
+  <div class="card hw"><h4>물리 쪽 장부</h4><p>시스템 전체: 물리 페이지 하나하나가 지금 무엇에 쓰이는지 — <b>PFN 데이터베이스</b>와 그 위의 <b>페이지 리스트</b>(Zero, Free, Standby, Modified …). 그리고 디스크 쪽 백업 저장소 — <b>페이지 파일</b>과 매핑된 파일.</p></div>
+</div>
+<p>폴트 처리 같은 동기 경로 외에, 여러 시스템 스레드가 백그라운드에서 두 장부의 균형을 맞춥니다.</p>
+<table>
+  <thead><tr><th>시스템 스레드 (대표 이름)</th><th>역할</th></tr></thead>
+  <tbody>
+    <tr><td>Balance Set Manager (<code>KeBalanceSetManager</code>)</td><td>주기적(약 1초) 또는 메모리 부족 이벤트 시 깨어나 <b>워킹셋 관리자</b>(<code>MmWorkingSetManager</code>)를 호출 — 워킹셋 에이징·트리밍</td></tr>
+    <tr><td>Modified Page Writer / Mapped Page Writer</td><td>수정 리스트의 페이지를 페이지 파일 / 원본 파일에 기록해 스탠바이로 옮김</td></tr>
+    <tr><td>제로 페이지 스레드</td><td>프리 리스트의 페이지를 0으로 채워 제로 리스트로 옮김 (우선순위 0 — 시스템이 한가할 때)</td></tr>
+    <tr><td>Segment dereference 등</td><td>섹션/세그먼트 정리, 페이지 파일 확장 같은 보조 작업</td></tr>
+  </tbody>
+</table>
+<p class="muted" style="font-size:.88rem">내부 함수·스레드 이름은 Windows 버전에 따라 바뀌거나 나뉩니다(예: 최신 버전은 페이지 제로화를 여러 스레드로 병렬화). <code>x nt!Mi*</code>와 <code>!thread</code>의 시작 주소로 확인하는 습관을 들이세요.</p>
+
+<h2 id="reserve">예약, 커밋, 그리고 실제 사용</h2>
+<p>
+  유저 모드 가상 메모리는 세 단계 상태를 가집니다. 이 구분을 정확히 하지 못하면 "메모리 사용량"에 관한 거의 모든 질문에 틀린 답을 하게 됩니다.
+</p>
+<div class="grid3">
+  <div class="card"><h4>Free</h4><p>아무 것도 없음. 접근하면 액세스 위반.</p></div>
+  <div class="card user"><h4>Reserved (예약)</h4><p><code>MEM_RESERVE</code>. VA 범위만 확보(VAD 생성). <b>커밋 차지도, 물리 메모리도 쓰지 않음</b>. 접근하면 여전히 액세스 위반. 시작 주소는 64KB 할당 단위로 정렬.</p></div>
+  <div class="card kernel"><h4>Committed (커밋)</h4><p><code>MEM_COMMIT</code>. "필요하면 반드시 물리 페이지 또는 페이지 파일로 뒷받침하겠다"는 약속 → <b>커밋 차지</b> 증가. 그러나 <b>처음 접근하기 전까지 물리 페이지는 없음</b>(디맨드 제로).</p></div>
+</div>
+<p>
+  <strong>커밋 차지(commit charge)</strong>는 시스템이 한 약속의 총량이고, <strong>커밋 한도(commit limit)</strong>는 지킬 수 있는 약속의 상한 — 대략 <b>물리 메모리 + 모든 페이지 파일 크기</b>입니다(페이지 파일이 자동 확장되면 한도도 커집니다).
+  차지가 한도에 닿으면 커밋 요청은 <code>STATUS_COMMITMENT_LIMIT</code>(0xC000012D), Win32로는 <code>ERROR_COMMITMENT_LIMIT</code>(1455, "페이징 파일이 너무 작아…")로 실패합니다 — <b>물리 메모리가 남아 있어도</b>.
+  커밋 차지에는 개인 커밋 메모리 외에 페이지 파일 기반 섹션, 쓰기 시 복사(Copy-on-Write) 뷰가 잠재적으로 만들 사본, 커널 풀, 커널 스택, 페이지 테이블 등이 포함됩니다.
+</p>
+
+<div class="sim" id="commitSim">
+  <div class="sim-title">예약 · 커밋 · 터치 실험실 — 무엇이 어떤 카운터를 움직이는가</div>
+  <div class="sim-controls btn-group">
+    <button class="btn" data-a="reserve">VirtualAlloc 1GB 예약 (MEM_RESERVE)</button>
+    <button class="btn" data-a="commit">예약 영역 256MB 커밋</button>
+    <button class="btn" data-a="touch">커밋 영역 128MB 쓰기 (터치)</button>
+    <button class="btn" data-a="section">페이지 파일 기반 섹션 512MB 생성</button>
+    <button class="btn" data-a="decommit">256MB 디커밋 (MEM_DECOMMIT)</button>
+    <button class="btn" data-a="reset">↺ 초기화</button>
+  </div>
+  <div class="meter"><div class="lbl"><span>이 프로세스의 예약된 가상 주소 (VAD)</span><b id="mRes">0 MB</b></div><div class="track"><div class="fill res" id="fRes" style="width:0"></div></div></div>
+  <div class="meter"><div class="lbl"><span>시스템 커밋 차지 / 커밋 한도 (회색 = 다른 프로세스·커널)</span><b id="mCom">0 / 0 MB</b></div><div class="track"><div class="fill other" id="fOther"></div><div class="fill mine" id="fMine"></div></div></div>
+  <div class="meter"><div class="lbl"><span>이 프로세스의 워킹셋 (실제 물리 페이지)</span><b id="mWs">0 MB</b></div><div class="track"><div class="fill ws" id="fWs" style="width:0"></div></div></div>
+  <div class="console" id="commitLog"></div>
+</div>
+
+<div class="callout expert">
+  <div class="callout-title">작업 관리자의 숫자 읽기</div>
+  <p><b>커밋됨 X / Y GB</b> = 시스템 커밋 차지 / 커밋 한도. <b>사용 중</b> ≈ 활성(워킹셋 등) 페이지. <b>사용 가능</b> = Zero + Free + <b>Standby</b>. 스탠바이는 캐시된 데이터지만 즉시 회수 가능하므로 "사용 가능"에 포함됩니다.
+  프로세스 열의 "메모리(개인 작업 집합)"는 물리 사용, "커밋 크기"는 개인 커밋 차지입니다. 메모리 누수 조사는 보통 <b>커밋(Private Bytes)</b>의 단조 증가로 판단합니다.</p>
+</div>
+
+<h2 id="vad">VAD 트리</h2>
+<p>
+  프로세스의 유저 주소 공간에서 "어디가 어떤 용도로 할당되었는가"는 페이지 테이블이 아니라 <strong>VAD(Virtual Address Descriptor)</strong>가 기록합니다.
+  예약 한 번, 매핑 한 번이 VAD 노드 하나가 되고, 노드들은 시작 VPN(VA &gt;&gt; 12)을 키로 하는 <b>균형 이진 트리(AVL)</b>에 들어갑니다(<code>EPROCESS.VadRoot</code>, Windows 8+에서는 <code>_RTL_AVL_TREE</code>).
+  덕분에 "이 주소는 어느 VAD에 속하는가"를 O(log n)에 찾을 수 있고, 최근 찾은 노드는 <code>VadHint</code>로 캐시됩니다.
+</p>
+<p>
+  왜 페이지 테이블만으로는 안 될까요? 1GB를 예약/커밋할 때 PTE 262,144개를 미리 채우는 것은 낭비입니다. Windows는 커밋 정보를 VAD에만 적어 두고 PTE는 0으로 둔 채,
+  <b>첫 폴트가 났을 때 VAD를 보고 PTE를 만들어 냅니다</b>(08장의 "0 PTE"). VAD는 또 매핑된 파일·이미지와의 연결(섹션의 프로토타입 PTE 위치), 보호 속성, 상속 여부, 커밋 양을 보관합니다.
+</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="VAD AVL 트리">
+    <path class="ln noarr" d="M440 70 L 230 140"/><path class="ln noarr" d="M440 70 L 650 140"/>
+    <path class="ln noarr" d="M230 180 L 120 250"/><path class="ln noarr" d="M230 180 L 340 250"/>
+    <path class="ln noarr" d="M650 180 L 540 250"/><path class="ln noarr" d="M650 180 L 760 250"/>
+    <g data-info="root"><rect class="box kernel" x="345" y="24" width="190" height="50" rx="8"/><text x="440" y="45" text-anchor="middle" class="mono">7FF6`12340–12398</text><text x="440" y="64" text-anchor="middle" class="sm">이미지 · notepad.exe</text></g>
+    <g data-info="heap"><rect class="box user" x="135" y="136" width="190" height="50" rx="8"/><text x="230" y="157" text-anchor="middle" class="mono">1F2`3A600–3A6FF</text><text x="230" y="176" text-anchor="middle" class="sm">개인 · 힙 세그먼트</text></g>
+    <g data-info="img2"><rect class="box kernel" x="555" y="136" width="190" height="50" rx="8"/><text x="650" y="157" text-anchor="middle" class="mono">7FFC`88A00–88CD8</text><text x="650" y="176" text-anchor="middle" class="sm">이미지 · KernelBase.dll</text></g>
+    <g data-info="stack"><rect class="box user" x="25" y="246" width="190" height="50" rx="8"/><text x="120" y="267" text-anchor="middle" class="mono">9A`1C200–1C2FF</text><text x="120" y="286" text-anchor="middle" class="sm">개인 · 스레드 스택</text></g>
+    <g data-info="mapped"><rect class="box hv" x="245" y="246" width="190" height="50" rx="8"/><text x="340" y="267" text-anchor="middle" class="mono">1F2`3C000–3C33F</text><text x="340" y="286" text-anchor="middle" class="sm">매핑 · locale.nls</text></g>
+    <g data-info="img3"><rect class="box kernel" x="445" y="246" width="190" height="50" rx="8"/><text x="540" y="267" text-anchor="middle" class="mono">7FFC`86E00–86EC3</text><text x="540" y="286" text-anchor="middle" class="sm">이미지 · kernel32.dll</text></g>
+    <g data-info="ntdll"><rect class="box kernel" x="665" y="246" width="190" height="50" rx="8"/><text x="760" y="267" text-anchor="middle" class="mono">7FFC`8AD00–8AF07</text><text x="760" y="286" text-anchor="middle" class="sm">이미지 · ntdll.dll</text></g>
+    <text x="440" y="320" text-anchor="middle" class="sm">키 = 시작 VPN (VA &gt;&gt; 12). 왼쪽 서브트리 &lt; 노드 &lt; 오른쪽 서브트리. 주소·크기는 예시</text>
+  </svg>
+  <template data-key="root"><h4>이미지 VAD (VadImageMap)</h4><p>EXE가 매핑된 범위. 노드 타입은 확장형 <code>_MMVAD</code>로, 기본형 <code>_MMVAD_SHORT</code>(시작/끝 VPN, 플래그, 트리 링크)에 더해 <b>Subsection 포인터</b>, <code>FirstPrototypePte</code>/<code>LastContiguousPte</code> 등을 가집니다. 이 범위의 PTE 폴트는 VAD → 서브섹션 → 이미지 섹션의 프로토타입 PTE로 이어집니다.</p><p><code>VadFlags.VadType</code> = <code>VadImageMap</code>, 보호 속성은 섹션별로 다르므로 실제 보호는 프로토타입 PTE/서브섹션 쪽이 결정합니다.</p></template>
+  <template data-key="heap"><h4>개인 메모리 VAD (VadNone, PrivateMemory=1)</h4><p><code>VirtualAlloc</code>으로 만든 범위. 힙 세그먼트도 내부적으로 이렇게 예약·커밋됩니다. 짧은 형식 <code>_MMVAD_SHORT</code>로 충분하며, 플래그에 보호 속성과 커밋 여부, 커밋된 페이지 수(<code>CommitCharge</code>)가 기록됩니다. 부분만 커밋된 범위는 PTE 쪽에 커밋 정보가 들어갑니다.</p></template>
+  <template data-key="img2"><h4>이미지 VAD — KernelBase.dll</h4><p>시스템 DLL은 대부분의 프로세스에서 같은 주소에 매핑되어 이미지 섹션의 물리 페이지를 공유합니다. 쓰기 가능한 섹션(.data)은 <b>쓰기 시 복사</b>로 매핑되어, 프로세스가 처음 쓰는 순간 개인 사본이 생깁니다.</p></template>
+  <template data-key="stack"><h4>스레드 스택 VAD</h4><p>기본적으로 1MB 예약 + 일부 커밋, 커밋 영역 바로 아래에 <b>가드 페이지</b>(<code>PAGE_GUARD</code>)를 둡니다. 스택이 자라 가드 페이지를 건드리면 <code>STATUS_GUARD_PAGE_VIOLATION</code> 폴트가 나고, 유저 모드 스택 확장 로직이 다음 페이지를 커밋한 뒤 새 가드 페이지를 설정합니다. 예약 끝까지 자라면 <code>STATUS_STACK_OVERFLOW</code>.</p></template>
+  <template data-key="mapped"><h4>매핑된 파일 VAD (데이터 섹션)</h4><p><code>MapViewOfFile</code>로 만든 뷰. <code>_MMVAD</code>의 서브섹션이 데이터 섹션의 CONTROL_AREA → 파일 객체로 이어집니다. 같은 파일을 여러 프로세스가 매핑하면 같은 프로토타입 PTE를 공유하고, 캐시 관리자(파일 I/O)도 같은 섹션을 쓰므로 <code>ReadFile</code>과 매핑 뷰가 항상 일관된 데이터를 봅니다.</p></template>
+  <template data-key="img3"><h4>AVL 균형</h4><p>삽입·삭제 시 좌우 서브트리 높이 차가 1을 넘지 않도록 회전합니다. 수천 개의 VAD를 가진 프로세스(브라우저, JIT 엔진)에서도 검색이 빠른 이유입니다. 트리 링크는 <code>VadNode</code>(<code>_RTL_BALANCED_NODE</code>)에 있습니다.</p></template>
+  <template data-key="ntdll"><h4>ntdll.dll과 VAD 순회</h4><p><code>!vad</code>는 이 트리를 순서대로(in-order) 출력하므로 결과가 주소 순으로 정렬되어 나옵니다. 유저 모드에서는 <code>VirtualQuery</code>가 같은 정보를 돌려주며, 보안 제품은 "이미지 VAD가 아닌 곳에서 실행되는 코드"(셸코드, 수동 매핑 DLL)를 찾는 데 VAD를 자주 검사합니다.</p></template>
+  <figcaption><b>그림 9-1.</b> 한 프로세스의 VAD AVL 트리(일부). 노드를 클릭해 종류별 차이를 보세요. 정확한 필드 구성은 <code>dt nt!_MMVAD_SHORT</code>, <code>dt nt!_MMVAD</code>로 확인합니다.</figcaption>
+</figure>
+
+<h2 id="fault">페이지 폴트 처리 흐름</h2>
+<p>
+  페이지 폴트는 오류가 아니라 <b>메모리 관리자의 정상적인 작동 방식</b>입니다. 시스템은 초당 수천~수만 번의 폴트를 처리하며, 대부분은 디스크 I/O가 없는 <b>소프트 폴트</b>입니다.
+  아래는 하드웨어 예외에서 시작해 원인별 해결 루틴으로 분기하는 전체 흐름입니다.
+</p>
+
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 380" role="img" aria-label="페이지 폴트 처리 흐름">
+    <g data-hl="1"><rect class="box hw" x="20" y="16" width="240" height="54" rx="8"/><text x="140" y="38" text-anchor="middle" class="b">CPU: #PF (벡터 14)</text><text x="140" y="57" text-anchor="middle" class="sm">CR2 = 폴트 VA · 에러 코드 푸시</text></g>
+    <g data-hl="2"><rect class="box kernel" x="20" y="90" width="240" height="54" rx="8"/><text x="140" y="112" text-anchor="middle" class="b mono">nt!KiPageFault</text><text x="140" y="131" text-anchor="middle" class="sm">트랩 프레임 생성 · 인자 준비</text></g>
+    <g data-hl="3"><rect class="box kernel" x="20" y="164" width="240" height="54" rx="8"/><text x="140" y="186" text-anchor="middle" class="b mono">nt!MmAccessFault</text><text x="140" y="205" text-anchor="middle" class="sm">IRQL · 주소 범위 · 워킹셋 락</text></g>
+    <g data-hl="4"><rect class="box kernel" x="20" y="238" width="240" height="54" rx="8"/><text x="140" y="260" text-anchor="middle" class="b">상위 테이블 확인</text><text x="140" y="279" text-anchor="middle" class="sm">PXE → PPE → PDE 먼저 해결</text></g>
+    <path class="ln" d="M140 70 L 140 88"/><path class="ln" d="M140 144 L 140 162"/><path class="ln" d="M140 218 L 140 236"/>
+    <rect class="zone kernel" x="290" y="10" width="580" height="226" rx="12"/>
+    <text x="304" y="28" class="sm b c-kernel">최종 PTE의 모양으로 분기</text>
+    <path class="ln kernel" d="M260 265 C 280 265, 280 200, 288 190" data-on="5" data-off="99"/>
+    <g data-hl="5"><rect class="box plain" x="304" y="38" width="270" height="54" rx="8"/><text x="439" y="60" text-anchor="middle" class="b">0 PTE → VAD 검색</text><text x="439" y="79" text-anchor="middle" class="sm mono">MiCheckVirtualAddress</text></g>
+    <g data-hl="6"><rect class="box ok" x="590" y="38" width="266" height="54" rx="8"/><text x="723" y="60" text-anchor="middle" class="b">디맨드 제로 (소프트)</text><text x="723" y="79" text-anchor="middle" class="sm mono">MiResolveDemandZeroFault</text></g>
+    <g data-hl="6"><rect class="box ok" x="304" y="106" width="270" height="54" rx="8"/><text x="439" y="128" text-anchor="middle" class="b">트랜지션 (소프트)</text><text x="439" y="147" text-anchor="middle" class="sm mono">MiResolveTransitionFault</text></g>
+    <g data-hl="6"><rect class="box warn" x="590" y="106" width="266" height="54" rx="8"/><text x="723" y="128" text-anchor="middle" class="b">페이지 파일 (하드)</text><text x="723" y="147" text-anchor="middle" class="sm mono">MiResolvePageFileFault</text></g>
+    <g data-hl="6"><rect class="box hv" x="304" y="174" width="270" height="54" rx="8"/><text x="439" y="196" text-anchor="middle" class="b">프로토타입 PTE</text><text x="439" y="215" text-anchor="middle" class="sm mono">MiResolveProtoPteFault</text></g>
+    <g data-hl="7"><rect class="box bad" x="590" y="174" width="266" height="54" rx="8"/><text x="723" y="196" text-anchor="middle" class="b">유효 PTE · 권한 위반</text><text x="723" y="215" text-anchor="middle" class="sm">쓰기 시 복사 · 가드 · AV</text></g>
+    <path class="ln acc" d="M574 65 L 588 65" data-on="5" data-off="99"/>
+    <g data-hl="8"><rect class="box ok" x="20" y="316" width="260" height="54" rx="8"/><text x="150" y="338" text-anchor="middle" class="b">해결 → 명령 재실행</text><text x="150" y="357" text-anchor="middle" class="sm">트랩에서 복귀, 같은 명령 다시</text></g>
+    <g data-hl="8"><rect class="box warn" x="300" y="316" width="270" height="54" rx="8"/><text x="435" y="338" text-anchor="middle" class="b">유저 모드 → 예외 디스패치</text><text x="435" y="357" text-anchor="middle" class="sm mono">0xC0000005 · 0x80000001</text></g>
+    <g data-hl="8"><rect class="box bad" x="590" y="316" width="270" height="54" rx="8"/><text x="725" y="338" text-anchor="middle" class="b">커널 모드 → 버그체크</text><text x="725" y="357" text-anchor="middle" class="sm mono">0x50 · 0xA/0xD1 · 0x7A</text></g>
+    <path class="ln ok" d="M440 236 C 440 290, 160 270, 150 314" data-on="8" data-off="99"/>
+    <path class="ln" d="M580 236 L 470 314" data-on="8" data-off="99"/>
+    <path class="ln bad" d="M723 236 L 723 314" data-on="8" data-off="99"/>
+  </svg>
+  <ol class="steps">
+    <li><b>하드웨어</b>: 변환 중 P=0이거나 권한이 맞지 않으면 CPU는 폴트 주소를 <code>CR2</code>에 넣고, 에러 코드(P, W/R, U/S, RSVD, I/D…)를 스택에 쌓은 뒤 IDT 14번 핸들러로 들어갑니다. 유저 모드였다면 커널 스택으로 전환됩니다.</li>
+    <li><b>KiPageFault</b>: <code>KTRAP_FRAME</code>을 구성하고 CR2를 읽어, 에러 코드에서 뽑은 접근 종류(읽기/쓰기/실행), 폴트 주소, 이전 모드(유저/커널), 트랩 정보를 인자로 <code>MmAccessFault</code>를 호출합니다. 결과가 실패이면 예외 디스패치나 버그체크 경로로 갑니다.</li>
+    <li><b>MmAccessFault 사전 검사</b>: (a) <b>IRQL</b> — DISPATCH_LEVEL 이상에서는 대기·I/O·워킹셋 락 획득이 불가능하므로 페이징 가능한 메모리 폴트를 해결할 수 없습니다(→ 0xA/0xD1). (b) <b>주소 범위</b> — 유저 모드가 커널 주소를 건드렸다면 즉시 액세스 위반. (c) 주소에 맞는 <b>워킹셋</b>(프로세스·시스템·세션)을 고르고 그 락을 잡습니다.</li>
+    <li><b>상위 단계 먼저</b>: PTE를 읽기 전에 PXE/PPE/PDE가 유효한지 확인합니다. 페이지 테이블 페이지 자체도 페이징되거나 아직 생성되지 않았을 수 있어(셀프맵 영역 폴트), 위에서부터 차례로 해결합니다.</li>
+    <li><b>0 PTE</b>: 아무 정보가 없으면 VAD 트리에서 주소를 찾습니다. 커밋된 개인 범위면 VAD의 보호 속성으로 <b>디맨드 제로 PTE</b>를, 매핑 범위면 프로토타입 PTE를 가리키는 PTE를 만든 뒤 다시 분기합니다. VAD가 없거나 예약만 된 범위면 액세스 위반입니다.</li>
+    <li><b>원인별 해결</b>: <b>디맨드 제로</b> — 제로 리스트에서 페이지를 받아 매핑. <b>트랜지션</b> — PFN이 스탠바이/수정 리스트에 있으니 떼어 내 다시 유효화(I/O 없음; 인페이지 진행 중이면 그 I/O를 함께 기다리는 <i>충돌 폴트</i>). <b>페이지 파일</b> — 새 물리 페이지를 잡고 페이지 파일에서 읽는 <b>하드 폴트</b>(인접 페이지까지 묶어 읽는 클러스터링). <b>프로토타입</b> — 섹션의 프로토타입 PTE를 따라가 그 상태로 다시 분기.</li>
+    <li><b>PTE는 유효한데 폴트</b>: 권한 문제입니다. 쓰기 시 복사 페이지에 쓰기 → 개인 사본을 만들어 쓰기 가능하게 매핑. 가드 페이지 → 가드 속성을 지우고 <code>STATUS_GUARD_PAGE_VIOLATION</code>(0x80000001) 예외. 그 외(읽기 전용에 쓰기, NX 실행) → 액세스 위반.</li>
+    <li><b>결과</b>: 해결되면 트랩에서 복귀해 <b>같은 명령을 다시 실행</b>합니다. 실패하면 유저 모드는 <code>STATUS_ACCESS_VIOLATION</code>(0xC0000005) 같은 예외로 SEH가 처리할 기회를 얻고, 커널 모드는 <code>PAGE_FAULT_IN_NONPAGED_AREA</code>(0x50), <code>IRQL_NOT_LESS_OR_EQUAL</code>(0xA)/<code>DRIVER_IRQL_NOT_LESS_OR_EQUAL</code>(0xD1), 인페이지 I/O 실패 시 <code>KERNEL_DATA_INPAGE_ERROR</code>(0x7A) 등으로 버그체크합니다. (커널 코드가 <code>__try</code>로 감싼 유저 주소 접근은 예외로 처리 가능)</li>
+  </ol>
+  <figcaption><b>그림 9-2.</b> 페이지 폴트 처리. 내부 함수 이름(<code>Mi*</code>)은 대표적인 것이며 빌드에 따라 달라질 수 있습니다.</figcaption>
+</figure>
+
+<div class="callout warn">
+  <div class="callout-title">드라이버 버그의 고전: DISPATCH_LEVEL에서 페이징 가능한 메모리 접근</div>
+  <p>스핀락을 잡은 채(IRQL = DISPATCH_LEVEL) Paged 풀이나 페이징 가능한 코드(<code>#pragma alloc_text(PAGE, …)</code>)를 건드리면, 그 페이지가 <b>마침</b> 메모리에 있을 때는 아무 문제가 없다가 메모리 압박으로 트림된 날에만 0xA/0xD1로 죽습니다.
+  재현이 어려운 이유가 바로 이것입니다. <b>Driver Verifier</b>의 IRQL 검사는 IRQL을 올릴 때마다 페이징 가능한 메모리를 강제로 워킹셋에서 내보내 이 버그를 즉시 드러나게 합니다. 페이징 가능 함수 첫 줄에는 <code>PAGED_CODE()</code>를 두세요.</p>
+</div>
+
+<h2 id="proto">프로토타입 PTE와 공유 메모리</h2>
+<p>
+  두 프로세스가 같은 파일 페이지를 매핑하면 물리 페이지 하나를 두 PTE가 가리킵니다. 문제는 그 페이지가 메모리에서 나갈 때입니다.
+  PTE마다 "이 페이지는 이제 디스크에 있다"고 고쳐 써야 한다면, 메모리 관리자는 어떤 프로세스의 어떤 PTE가 그 페이지를 가리키는지 모두 추적해야 합니다(역매핑).
+  Windows의 답은 <strong>프로토타입 PTE</strong>라는 한 단계의 간접 참조입니다. 섹션의 각 페이지마다 프로토타입 PTE 하나가 있고(섹션의 <b>세그먼트</b>에 배열로 존재),
+  프로세스 PTE는 페이지가 유효할 때만 PFN을 직접 가리키며, 그 외에는 "프로토타입 PTE를 보라"는 형식으로 남습니다.
+</p>
+
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="프로토타입 PTE를 통한 공유">
+    <g data-hl="2,4,6"><rect class="box user" x="20" y="30" width="220" height="62" rx="8"/><text x="130" y="53" text-anchor="middle" class="b">프로세스 A의 PTE</text>
+      <text x="130" y="76" text-anchor="middle" class="mono" data-text="1:Proto → 프로토타입 PTE|2:Valid · PFN 2A41F|4:Proto → 프로토타입 PTE|6:Valid · PFN 2A41F|7:Proto → 프로토타입 PTE">Proto → 프로토타입 PTE</text></g>
+    <g data-hl="3,5"><rect class="box user" x="20" y="236" width="220" height="62" rx="8"/><text x="130" y="259" text-anchor="middle" class="b">프로세스 B의 PTE</text>
+      <text x="130" y="282" text-anchor="middle" class="mono" data-text="1:Proto → 프로토타입 PTE|3:Valid · PFN 2A41F|5:Proto → 프로토타입 PTE">Proto → 프로토타입 PTE</text></g>
+    <rect class="zone hv" x="320" y="112" width="250" height="104" rx="12"/>
+    <text x="332" y="130" class="sm b c-hv">섹션 · SEGMENT</text>
+    <g data-hl="2,5,7"><rect class="box hv" x="335" y="138" width="220" height="62" rx="8"/><text x="445" y="161" text-anchor="middle" class="b">프로토타입 PTE</text>
+      <text x="445" y="184" text-anchor="middle" class="mono" data-text="1:파일 참조 (Subsection)|2:Valid · PFN 2A41F|5:Transition · PFN 2A41F|6:Valid · PFN 2A41F|7:파일 참조 (Subsection)">파일 참조 (Subsection)</text></g>
+    <g data-hl="2-7"><rect class="box kernel" x="640" y="30" width="220" height="62" rx="8"/><text x="750" y="53" text-anchor="middle" class="b">PFN 2A41F (물리 페이지)</text>
+      <text x="750" y="76" text-anchor="middle" class="mono" data-text="1:(아직 없음)|2:Active · Share=1|3:Active · Share=2|4:Active · Share=1|5:Standby · Share=0|6:Active · Share=1|7:재사용됨 (다른 용도)">(아직 없음)</text></g>
+    <g><rect class="box hw" x="640" y="236" width="220" height="62" rx="8"/><text x="750" y="259" text-anchor="middle" class="b">report.dat (디스크)</text><text x="750" y="282" text-anchor="middle" class="sm">섹션의 원본 파일</text></g>
+    <path class="ln user dash" d="M240 62 C 290 62, 290 160, 333 162" data-only="1,4,5,7"/>
+    <path class="ln user" d="M240 50 C 420 20, 560 40, 638 52" data-only="2,3,6"/>
+    <path class="ln user dash" d="M240 266 C 290 266, 290 180, 333 180" data-only="1,2,5,6,7"/>
+    <path class="ln user" d="M240 252 C 420 200, 560 110, 650 94" data-only="3,4"/>
+    <path class="ln kernel" d="M555 160 C 600 160, 610 80, 638 74" data-only="2-6"/>
+    <path class="ln dash" d="M555 182 C 600 182, 610 262, 638 266" data-only="1,7"/>
+    <path class="ln acc flow" d="M770 234 L 770 94" data-only="2"/>
+    <text x="780" y="168" class="sm b c-acc" data-only="2">읽기 I/O (하드 폴트)</text>
+    <text x="440" y="318" text-anchor="middle" class="sm" data-text="1:둘 다 아직 접근 전: 프로세스 PTE는 프로토타입 PTE를 가리키는 형식|2:A의 첫 접근 = 하드 폴트|3:B의 접근 = 소프트 폴트 (I/O 없음)|4:A 트림: A의 PTE만 프로토타입 형식으로 되돌림|5:B도 트림: 공유 수 0 → 스탠바이, 프로토타입 PTE가 트랜지션|6:A 재접근: 프로토타입 PTE만 보고 소프트 폴트|7:페이지 재사용: 고칠 것은 프로토타입 PTE 하나뿐">둘 다 아직 접근 전</text>
+  </svg>
+  <ol class="steps">
+    <li><b>매핑 직후</b>: A와 B가 같은 파일(<code>report.dat</code>)의 섹션 뷰를 매핑했습니다. 프로세스 PTE는 아직 0이거나 "프로토타입 PTE를 보라"(Prototype=1) 형식이고, 프로토타입 PTE는 "파일의 이 서브섹션 위치"를 가리킵니다. 물리 페이지는 없습니다.</li>
+    <li><b>A가 접근</b>: 폴트 → 프로토타입 PTE를 따라가 보니 파일에 있음 → 물리 페이지 <code>2A41F</code>를 할당하고 파일에서 읽음(하드 폴트). <b>프로토타입 PTE가 유효(PFN 2A41F)</b>해지고, A의 PTE도 같은 PFN으로 유효해집니다. PFN 엔트리의 <code>PteAddress</code>는 A의 PTE가 아니라 <b>프로토타입 PTE</b>를 가리키며 ShareCount = 1.</li>
+    <li><b>B가 접근</b>: 폴트 → 프로토타입 PTE가 이미 유효 → I/O 없이 B의 PTE를 유효화. ShareCount = 2. 같은 물리 페이지를 두 프로세스가 공유합니다.</li>
+    <li><b>A의 워킹셋에서 트림</b>: A의 PTE만 다시 프로토타입 형식으로 되돌리고 ShareCount를 1로 줄입니다. 페이지는 B가 쓰고 있으므로 계속 Active입니다.</li>
+    <li><b>B에서도 트림</b>: ShareCount = 0 → 페이지는 스탠바이(깨끗) 또는 수정(더티) 리스트로 가고, <b>프로토타입 PTE가 트랜지션 형식</b>이 됩니다. 프로세스 PTE들은 이미 프로토타입을 가리키므로 손댈 필요가 없습니다.</li>
+    <li><b>A가 재접근</b>: 폴트 → 프로토타입 PTE가 트랜지션 → 스탠바이에서 떼어 내 유효화(소프트 폴트). A의 PTE 유효, ShareCount = 1.</li>
+    <li><b>재사용</b>: 모두 트림된 뒤 메모리 압박으로 이 물리 페이지가 다른 용도로 쓰이게 되면, 메모리 관리자는 PFN의 <code>PteAddress</code>(= 프로토타입 PTE)와 <code>OriginalPte</code>를 이용해 <b>프로토타입 PTE 하나만</b> "파일 참조" 형식으로 되돌립니다. 몇 개의 프로세스가 매핑하고 있었든 비용은 같습니다.</li>
+  </ol>
+  <figcaption><b>그림 9-3.</b> 프로토타입 PTE는 공유 페이지의 "진짜 상태"를 한곳에 모아, 페이지가 메모리를 들고 날 때 고칠 곳을 하나로 줄인다.</figcaption>
+</figure>
+
+<div class="callout note">
+  <div class="callout-title">개인 페이지에는 프로토타입 PTE가 없다</div>
+  <p>프로토타입 PTE는 <b>공유 가능한 메모리(섹션)</b>에만 있습니다. <code>VirtualAlloc</code> 개인 메모리는 매핑하는 PTE가 하나뿐이므로 PFN의 <code>PteAddress</code>가 그 하드웨어 PTE를 직접 가리키고, 페이지가 나갈 때 그 PTE를 바로 트랜지션/페이지 파일 형식으로 고칩니다. 쓰기 시 복사로 생긴 개인 사본도 마찬가지로 개인 페이지가 됩니다.</p>
+</div>
+
+<h2 id="section">섹션 객체</h2>
+<p>
+  <strong>섹션(Section)</strong>은 "매핑할 수 있는 메모리 덩어리"를 나타내는 커널 객체입니다(Win32 이름은 파일 매핑 객체, <code>CreateFileMapping</code>/<code>NtCreateSection</code>).
+  세 종류가 있습니다: <b>데이터 파일 섹션</b>(일반 파일을 그대로 매핑), <b>이미지 섹션</b>(<code>SEC_IMAGE</code>: PE 파일을 섹션별 보호 속성·정렬에 맞춰 매핑 — 로더가 DLL/EXE를 올리는 방식),
+  <b>페이지 파일 기반 섹션</b>(<code>INVALID_HANDLE_VALUE</code>로 만든 이름 있는/없는 공유 메모리 — 백업 저장소가 페이지 파일). 아래 구조도를 클릭해 보세요.
+</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 400" role="img" aria-label="섹션 관련 구조">
+    <g data-info="fo"><rect class="box plain" x="20" y="20" width="200" height="54" rx="8"/><text x="120" y="43" text-anchor="middle" class="b mono">FILE_OBJECT</text><text x="120" y="62" text-anchor="middle" class="sm">열린 파일 인스턴스</text></g>
+    <g data-info="sop"><rect class="box kernel" x="20" y="110" width="200" height="110" rx="8"/><text x="120" y="132" text-anchor="middle" class="b mono" style="font-size:11px">SECTION_OBJECT_POINTERS</text>
+      <text x="32" y="158" class="mono sm">DataSectionObject</text><text x="32" y="180" class="mono sm">SharedCacheMap</text><text x="32" y="202" class="mono sm">ImageSectionObject</text></g>
+    <path class="ln" d="M120 74 L 120 108"/>
+    <g data-info="sec"><rect class="box user" x="20" y="300" width="200" height="54" rx="8"/><text x="120" y="323" text-anchor="middle" class="b mono">SECTION 객체</text><text x="120" y="342" text-anchor="middle" class="sm">핸들로 참조 · 크기/속성</text></g>
+    <g data-info="cad"><rect class="box hv" x="300" y="110" width="210" height="54" rx="8"/><text x="405" y="133" text-anchor="middle" class="b mono">CONTROL_AREA (데이터)</text><text x="405" y="152" text-anchor="middle" class="sm">파일당 1개 · 참조 수 · 플래그</text></g>
+    <g data-info="cai"><rect class="box hv" x="300" y="200" width="210" height="54" rx="8"/><text x="405" y="223" text-anchor="middle" class="b mono">CONTROL_AREA (이미지)</text><text x="405" y="242" text-anchor="middle" class="sm">같은 파일이라도 별도</text></g>
+    <g data-info="ccm"><rect class="box plain" x="300" y="20" width="210" height="54" rx="8"/><text x="405" y="43" text-anchor="middle" class="b mono">SHARED_CACHE_MAP</text><text x="405" y="62" text-anchor="middle" class="sm">캐시 관리자 (12장)</text></g>
+    <path class="ln" d="M220 157 C 260 157, 260 137, 298 137"/>
+    <path class="ln" d="M220 179 C 262 179, 262 47, 298 47"/>
+    <path class="ln" d="M220 201 C 260 201, 260 227, 298 227"/>
+    <path class="ln dash" d="M220 327 C 280 327, 280 250, 298 245"/>
+    <g data-info="seg"><rect class="box ok" x="590" y="80" width="270" height="74" rx="8"/><text x="725" y="104" text-anchor="middle" class="b mono">SEGMENT</text><text x="725" y="123" text-anchor="middle" class="sm">프로토타입 PTE 배열</text><text x="725" y="142" text-anchor="middle" class="mono sm">[PTE0][PTE1][PTE2] …</text></g>
+    <g data-info="sub"><rect class="box ok" x="590" y="190" width="270" height="74" rx="8"/><text x="725" y="214" text-anchor="middle" class="b mono">SUBSECTION 체인</text><text x="725" y="233" text-anchor="middle" class="sm">파일 범위 ↔ 프로토타입 PTE 범위</text><text x="725" y="252" text-anchor="middle" class="sm">이미지: PE 섹션마다 1개</text></g>
+    <path class="ln" d="M510 130 C 550 130, 550 117, 588 117"/>
+    <path class="ln" d="M510 140 C 560 160, 560 220, 588 222"/>
+    <g data-info="vad"><rect class="box user" x="590" y="300" width="270" height="54" rx="8"/><text x="725" y="323" text-anchor="middle" class="b mono">MMVAD (프로세스의 뷰)</text><text x="725" y="342" text-anchor="middle" class="sm">Subsection · FirstPrototypePte</text></g>
+    <path class="ln user" d="M725 300 L 725 266"/>
+    <text x="440" y="388" text-anchor="middle" class="sm">점선: SECTION 객체는 이 셋 중 하나의 CONTROL_AREA를 참조한다 (페이지 파일 기반 섹션은 파일 없이 CONTROL_AREA만)</text>
+  </svg>
+  <template data-key="fo"><h4>FILE_OBJECT</h4><p>파일을 열 때마다 생기는 객체지만, 같은 파일의 모든 FILE_OBJECT는 파일 시스템이 관리하는 <b>같은</b> <code>SectionObjectPointer</code>를 공유합니다(파일 시스템의 FCB 수준). 그래서 누가 열든 같은 섹션·같은 캐시를 봅니다.</p></template>
+  <template data-key="sop"><h4>SECTION_OBJECT_POINTERS</h4><p>파일과 메모리 관리자/캐시 관리자를 잇는 세 포인터. <code>DataSectionObject</code> → 데이터 섹션의 CONTROL_AREA, <code>SharedCacheMap</code> → 캐시 관리자의 상태, <code>ImageSectionObject</code> → 이미지 섹션의 CONTROL_AREA. 파일 시스템 필터·미니필터 개발자가 "실행 중인 이미지 파일을 왜 지울 수 없는가", "캐시 플러시/퍼지"를 다룰 때 반드시 만나는 구조입니다.</p></template>
+  <template data-key="sec"><h4>SECTION 객체</h4><p>핸들 테이블에 들어가는 객체 관리자 객체. 크기, 할당 속성(<code>SEC_COMMIT</code>, <code>SEC_RESERVE</code>, <code>SEC_IMAGE</code> 등)을 가지고 CONTROL_AREA를 참조합니다. 같은 파일에 대해 섹션 객체를 여러 개 만들어도 CONTROL_AREA는 파일당 (데이터/이미지 각각) 하나입니다. 페이지 파일 기반 섹션은 기본적으로 생성 시점에 전체 크기만큼 커밋 차지가 발생합니다(<code>SEC_RESERVE</code>면 뷰에서 나중에 커밋).</p></template>
+  <template data-key="cad"><h4>CONTROL_AREA (데이터)</h4><p>섹션의 중심 구조. 세그먼트 포인터, 첫 서브섹션, 매핑 뷰 수·섹션 참조 수, 파일 포인터, 플래그(이미지인지, 파일 기반인지 등)를 담습니다. 디버거 <code>!ca &lt;주소&gt;</code>로 내용을 볼 수 있습니다. 참조가 모두 사라져도 바로 해제되지 않고, 스탠바이에 캐시된 페이지가 남아 있는 동안 유지될 수 있습니다.</p></template>
+  <template data-key="cai"><h4>CONTROL_AREA (이미지)</h4><p>같은 <code>kernel32.dll</code>이라도 <b>데이터로 매핑</b>한 것과 <b>이미지로 매핑</b>한 것은 레이아웃이 다릅니다(파일 정렬 vs 섹션 정렬, 섹션별 보호). 그래서 별도의 CONTROL_AREA를 씁니다. 이미지 섹션의 쓰기 가능 영역은 쓰기 시 복사로 매핑되어 원본 파일이 바뀌지 않습니다. 이미지가 매핑되어 있는 동안 파일 쓰기/삭제가 막히는 것도 이 구조 때문입니다.</p></template>
+  <template data-key="ccm"><h4>SHARED_CACHE_MAP</h4><p>캐시 관리자가 파일마다 두는 상태. 캐시 관리자는 바로 이 파일의 <b>데이터 섹션</b>을 시스템 캐시 영역에 뷰로 매핑해 <code>ReadFile</code>/<code>WriteFile</code>을 처리합니다. 즉, 파일 캐시의 물리 페이지 = 데이터 섹션의 페이지 = 다른 프로세스의 매핑 뷰가 보는 페이지. → 12장</p></template>
+  <template data-key="seg"><h4>SEGMENT와 프로토타입 PTE</h4><p>섹션의 페이지마다 하나씩 프로토타입 PTE를 가진 배열(데이터 섹션은 필요에 따라 동적으로 확장). 공유 페이지의 진짜 상태(유효 PFN / 트랜지션 / 파일 위치 / 페이지 파일 위치)가 여기 기록됩니다. 페이지 파일 기반 섹션은 처음엔 디맨드 제로 형식, 내보내진 뒤엔 페이지 파일 형식이 됩니다.</p></template>
+  <template data-key="sub"><h4>SUBSECTION</h4><p>"파일의 어느 범위가 프로토타입 PTE의 어느 범위에 해당하는가"를 기술합니다. 데이터 섹션은 보통 파일을 큰 덩어리로 나눈 서브섹션들을, 이미지 섹션은 <b>PE 섹션 헤더마다 하나씩</b>(각자 다른 보호 속성) 가집니다. 파일 기반 프로토타입 PTE의 "파일 참조" 형식은 결국 서브섹션을 가리킵니다.</p></template>
+  <template data-key="vad"><h4>MMVAD — 프로세스의 뷰</h4><p><code>MapViewOfFile</code>마다 프로세스에 VAD가 생기고, 그 VAD가 서브섹션과 첫 프로토타입 PTE 위치를 기억합니다. 0 PTE 폴트가 나면 "VA − 뷰 시작"으로 몇 번째 프로토타입 PTE인지 계산해 프로세스 PTE를 만듭니다. 이렇게 VAD → 서브섹션 → CONTROL_AREA → FILE_OBJECT를 따라가면 <b>어떤 주소가 어떤 파일의 몇 번째 바이트인지</b> 알 수 있습니다(<code>!vad</code>가 파일 이름을 보여 주는 원리).</p></template>
+  <figcaption><b>그림 9-4.</b> 섹션을 이루는 구조. 데이터 섹션은 캐시 관리자와 공유되고, 이미지 섹션은 같은 파일이라도 별개다.</figcaption>
+</figure>
+
+<h2 id="ws">워킹셋과 트리밍</h2>
+<p>
+  <strong>워킹셋(working set)</strong>은 "현재 이 주소 공간에서 유효한 PTE로 매핑된 물리 페이지들"의 목록입니다. 프로세스마다 하나씩 있고(<code>EPROCESS.Vm</code>의 워킹셋 리스트, WSLE 배열),
+  커널에도 시스템 워킹셋(Windows 8 이후 시스템 캐시·페이지드 풀·시스템 PTE(드라이버 이미지 등)로 나뉨)과 세션 워킹셋이 있습니다. 페이지가 워킹셋에 들어오는 길은 폴트이고, 나가는 길은 트리밍입니다.
+</p>
+<ul>
+  <li><b>최소/최대 크기</b>: 기본 최소 50페이지, 최대 345페이지지만 기본적으로 <b>소프트 한도</b>라 메모리가 충분하면 최대를 넘어 자랄 수 있습니다. <code>SetProcessWorkingSetSizeEx</code>로 하드 한도(<code>QUOTA_LIMITS_HARDWS_MIN_ENABLE</code>/<code>MAX_ENABLE</code>)를 걸 수 있습니다.</li>
+  <li><b>에이징</b>: 워킹셋 관리자는 PTE의 <b>A 비트</b>를 주기적으로 검사·클리어해 페이지별 나이를 매기고, 메모리가 부족해질수록 오래 쓰지 않은 페이지부터 더 공격적으로 내보냅니다. 오래 쉬고 있는 프로세스, 최소화된 GUI 앱이 먼저 트림됩니다.</li>
+  <li><b>트림된 페이지의 행방</b>: 바로 버려지지 않습니다. 깨끗하면(D=0, 디스크에 같은 내용이 있음) <b>스탠바이</b>, 더티하면 <b>수정</b> 리스트로 갑니다. PTE는 트랜지션 형식으로 남아 다시 접근하면 소프트 폴트로 돌아옵니다. 그래서 "트림 = 성능 손실"이 아니라 "회수 가능 후보로 표시"에 가깝습니다.</li>
+  <li><code>EmptyWorkingSet</code>/<code>SetProcessWorkingSetSize(h, -1, -1)</code>는 워킹셋 전체를 트림합니다. 작업 관리자의 메모리 수치는 즉시 줄지만 커밋은 그대로이며, 곧 소프트 폴트로 되돌아오는 경우가 많습니다.</li>
+</ul>
+
+<h2 id="pfn">PFN 데이터베이스와 페이지 리스트</h2>
+<p>
+  물리 페이지마다 <code>_MMPFN</code> 엔트리 하나가 있고, 전체는 <code>nt!MmPfnDatabase</code>가 가리키는 배열입니다(인덱스 = PFN). x64 Windows 10/11에서 엔트리 크기는 보통 0x30바이트이지만 빌드마다 확인하세요(<code>?? sizeof(nt!_MMPFN)</code>).
+  필드는 공용체로 빽빽하게 겹쳐 있어 상태마다 의미가 달라집니다. 개념적으로 중요한 것은 다음과 같습니다.
+</p>
+<table class="struct">
+  <thead><tr><th>개념 필드</th><th>대표 이름</th><th>타입/형태</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td>리스트 링크</td><td>u1.Flink / u2.Blink</td><td>PFN 인덱스</td><td>페이지가 리스트(Free, Standby…)에 있을 때 이웃 PFN. 활성 상태에서는 같은 자리가 워킹셋 인덱스(<code>WsIndex</code>) 등 다른 의미로 쓰임</td></tr>
+    <tr><td>매핑 PTE</td><td>PteAddress</td><td>PTE의 VA</td><td>이 페이지를 매핑하는 PTE(개인) 또는 프로토타입 PTE(공유). 페이지를 회수할 때 고칠 곳</td></tr>
+    <tr><td>원래 PTE</td><td>OriginalPte</td><td>MMPTE</td><td>페이지가 메모리를 떠날 때 PTE에 되돌려 놓을 값 — 페이지 파일 위치, 디맨드 제로 보호 속성, 서브섹션 참조 등</td></tr>
+    <tr><td>참조 수 / 공유 수</td><td>ReferenceCount / ShareCount</td><td>정수</td><td>공유 수 = 이 페이지를 유효하게 매핑한 PTE 수. 참조 수 = 공유 수 기반 참조 + I/O 잠금(<code>MmProbeAndLockPages</code>) 등. 참조 수가 0이 되면 리스트로 이동</td></tr>
+    <tr><td>위치</td><td>u3.e1.PageLocation</td><td><code>_MMLISTS</code></td><td>ZeroedPageList(0), FreePageList(1), StandbyPageList(2), ModifiedPageList(3), ModifiedNoWritePageList(4), BadPageList(5), ActiveAndValid(6), TransitionPage(7)</td></tr>
+    <tr><td>플래그</td><td>Modified, ReadInProgress, WriteInProgress, CacheAttribute, Priority …</td><td>비트</td><td>더티 여부, 진행 중인 I/O, 캐시 타입, 스탠바이 우선순위(0–7)</td></tr>
+    <tr><td>상위 테이블</td><td>u4.PteFrame</td><td>PFN</td><td>이 페이지를 가리키는 PTE가 들어 있는 페이지 테이블 페이지의 PFN</td></tr>
+  </tbody>
+</table>
+<p>
+  페이지 리스트는 PFN 엔트리들을 엮은 연결 리스트입니다(실제로는 NUMA 노드·페이지 색(color)별로 나뉘고, 스탠바이는 우선순위 0–7별로 8개). <b>Active</b>는 리스트가 아니라 "어딘가의 워킹셋에 매핑된" 상태입니다.
+  아래 시뮬레이터에서 이벤트를 일으켜 페이지가 상태 사이를 어떻게 이동하는지, 어떤 카운터가 움직이는지 관찰하세요.
+</p>
+
+<div class="sim" id="plSim">
+  <div class="sim-title">페이지 리스트 상태 전이 시뮬레이터 — 물리 페이지 48개</div>
+  <div class="sim-controls">
+    <span class="muted" style="font-size:.85rem">폴트를 일으킬 프로세스:</span>
+    <button class="btn on" data-proc="A">프로세스 A</button>
+    <button class="btn" data-proc="B">프로세스 B</button>
+  </div>
+  <div class="sim-controls btn-group">
+    <button class="btn" data-ev="dz">디맨드 제로 폴트</button>
+    <button class="btn" data-ev="read">하드 폴트 (파일 읽기)</button>
+    <button class="btn" data-ev="write">페이지에 쓰기 (D=1)</button>
+    <button class="btn" data-ev="trim">워킹셋 트리밍</button>
+    <button class="btn" data-ev="soft">소프트 폴트 (재접근)</button>
+    <button class="btn" data-ev="mpw">Modified Page Writer</button>
+    <button class="btn" data-ev="zero">제로 페이지 스레드</button>
+    <button class="btn" data-ev="exit">현재 프로세스 종료</button>
+    <button class="btn" data-ev="reset">↺ 초기화</button>
+  </div>
+  <svg class="dia sm-dia" viewBox="0 0 880 330" role="img" aria-label="페이지 상태 전이도">
+    <rect class="box hw" x="60" y="30" width="140" height="54" rx="10"/><text x="130" y="52" text-anchor="middle" class="b">Free</text><text x="130" y="74" text-anchor="middle" class="cnt" id="n-free">0</text>
+    <rect class="box ok" x="60" y="240" width="140" height="54" rx="10"/><text x="130" y="262" text-anchor="middle" class="b">Zero</text><text x="130" y="284" text-anchor="middle" class="cnt" id="n-zero">0</text>
+    <rect class="box kernel" x="370" y="132" width="150" height="62" rx="10"/><text x="445" y="156" text-anchor="middle" class="b">Active (워킹셋)</text><text x="445" y="180" text-anchor="middle" class="cnt" id="n-active">0</text>
+    <rect class="box user" x="690" y="30" width="150" height="54" rx="10"/><text x="765" y="52" text-anchor="middle" class="b">Standby</text><text x="765" y="74" text-anchor="middle" class="cnt" id="n-standby">0</text>
+    <rect class="box warn" x="690" y="240" width="150" height="54" rx="10"/><text x="765" y="262" text-anchor="middle" class="b">Modified</text><text x="765" y="284" text-anchor="middle" class="cnt" id="n-modified">0</text>
+
+    <path class="ln" id="e-fz" d="M100 86 L 100 238"/><text class="el" id="t-fz" x="108" y="165">제로 스레드</text>
+    <path class="ln" id="e-fa" d="M200 76 C 280 110, 320 150, 368 156"/><text class="el" id="t-fa" x="214" y="118">하드 폴트 / 즉석 제로</text>
+    <path class="ln" id="e-za" d="M200 262 C 290 262, 330 190, 368 180"/><text class="el" id="t-za" x="230" y="240">디맨드 제로</text>
+    <path class="ln" id="e-af" d="M420 130 C 390 50, 280 46, 202 50"/><text class="el" id="t-af" x="290" y="40">해제 · 종료 (개인)</text>
+    <path class="ln" id="e-as" d="M522 148 C 600 148, 640 76, 688 70"/><text class="el" id="t-as" x="600" y="128">트림 D=0</text>
+    <path class="ln" id="e-sa" d="M690 44 C 610 36, 520 80, 492 130"/><text class="el" id="t-sa" x="560" y="38">소프트 폴트 · 재사용</text>
+    <path class="ln" id="e-am" d="M522 180 C 600 180, 640 250, 688 256"/><text class="el" id="t-am" x="600" y="204">트림 D=1</text>
+    <path class="ln" id="e-ma" d="M690 282 C 610 300, 520 250, 492 196"/><text class="el" id="t-ma" x="540" y="300">소프트 폴트</text>
+    <path class="ln" id="e-ms" d="M812 238 L 812 86"/><text class="el" id="t-ms" x="820" y="165">MPW 기록</text>
+    <path class="ln" id="e-sf" d="M740 28 C 700 6, 260 6, 180 28"/><text class="el" id="t-sf" x="440" y="14" text-anchor="middle">종료 (개인 스탠바이)</text>
+    <path class="ln" id="e-mf" d="M760 296 L 760 314 Q 760 318 756 318 L 24 318 Q 20 318 20 314 L 20 62 Q 20 57 26 57 L 58 57"/><text class="el" id="t-mf" x="440" y="311" text-anchor="middle">종료 (개인 수정 — 기록 없이 해제)</text>
+  </svg>
+  <div class="pl-counts" id="plCounts"></div>
+  <div class="pl-legend">
+    <span><i style="background:var(--ok-bg);border-color:var(--ok)"></i>Zero</span>
+    <span><i style="background:var(--hw-bg);border-color:var(--hw)"></i>Free</span>
+    <span><i style="background:var(--user-bg);border-color:var(--user)"></i>Standby</span>
+    <span><i style="background:var(--warn-bg);border-color:var(--warn)"></i>Modified</span>
+    <span><i style="background:var(--kernel-bg);border-color:var(--kernel)"></i>Active</span>
+    <span>칸 위 글자 = 소유자(A/B) · 소문자 f = 파일 페이지 · <span style="color:var(--bad)">●</span> = 더티</span>
+  </div>
+  <div class="pl-grid" id="plGrid"></div>
+  <div class="pl-info" id="plInfo">칸을 클릭하면 그 물리 페이지의 PFN 엔트리 요약이 표시됩니다.</div>
+  <div class="console" id="plLog"></div>
+</div>
+
+<div class="callout expert">
+  <div class="callout-title">시뮬레이터에서 꼭 확인할 것</div>
+  <ul>
+    <li><b>디맨드 제로 페이지는 처음부터 더티(●)</b>입니다. 이 내용은 어디에도 백업이 없으므로, 트림되면 스탠바이가 아니라 수정 리스트로 가서 페이지 파일에 기록되어야 합니다.</li>
+    <li>제로·프리가 바닥나면 <b>스탠바이 페이지가 재사용(repurpose)</b>됩니다. 이때 원래 소유자의 PTE(또는 프로토타입 PTE)는 트랜지션에서 페이지 파일/파일 참조 형식으로 바뀌고, 그 소유자의 다음 접근은 하드 폴트가 됩니다. "사용 가능" 메모리는 줄지 않았는데 하드 폴트가 늘어나는 현상의 정체입니다.</li>
+    <li>프로세스가 종료되면 개인 수정 페이지는 <b>기록 없이 바로 Free</b>로 갑니다. 다시 읽힐 일이 없으니 쓸 이유가 없습니다. 반면 파일 페이지는 스탠바이(캐시)로 남아 다음 실행을 빠르게 합니다.</li>
+  </ul>
+</div>
+
+<h2 id="writer">Modified Page Writer와 커밋</h2>
+<p>
+  수정 리스트의 페이지는 디스크에 기록되기 전까지 재사용할 수 없습니다. <b>Modified Page Writer</b>(페이지 파일 대상)와 <b>Mapped Page Writer</b>(매핑 파일 대상) 스레드는
+  수정 리스트가 일정 크기를 넘거나 가용 페이지가 부족해지면 깨어나, 페이지들을 <b>클러스터로 묶어</b> 기록하고 스탠바이로 옮깁니다(기록 중에는 <code>WriteInProgress</code>, 그 사이 다시 더티해지면 수정 리스트로 복귀).
+  매핑 파일 쪽을 별도 스레드로 두는 이유는, 파일 시스템에 쓰는 과정에서 다시 페이지 폴트·메모리 할당이 필요할 수 있어 페이지 파일 기록 경로와 서로 막히지 않게(교착 방지) 하기 위해서입니다.
+</p>
+<div class="grid2">
+  <div class="card kernel"><h4>페이지 파일 공간은 언제 할당되나</h4><p>커밋 시점이 아니라 <b>실제로 기록할 때</b> 페이지 파일 블록이 할당됩니다. 커밋 차지는 "페이지 파일에 자리를 만들어 줄 수 있다"는 보장일 뿐입니다. 그래서 페이지 파일이 거의 비어 있어도 커밋 한도에 걸릴 수 있습니다.</p></div>
+  <div class="card hw"><h4>Modified No-Write 리스트</h4><p>기록이 허용되기 전까지 묶어 둬야 하는 더티 페이지(예: 트랜잭션·로그 순서 제약이 있는 파일 시스템 메타데이터)를 따로 보관합니다. 일반 드라이버가 직접 다룰 일은 드뭅니다.</p></div>
+</div>
+
+<h2 id="pool">커널 풀</h2>
+<p>
+  커널 코드의 범용 동적 메모리가 <strong>풀(pool)</strong>입니다. 유저 모드 힙에 해당하지만 실수의 대가가 시스템 크래시라는 점이 다릅니다.
+</p>
+<table>
+  <thead><tr><th>풀</th><th>상주</th><th>할당 가능 IRQL</th><th>접근 가능 IRQL</th><th>용도</th></tr></thead>
+  <tbody>
+    <tr><td>NonPaged (Nx)</td><td>항상 물리 메모리</td><td>≤ DISPATCH_LEVEL</td><td>모든 IRQL</td><td>ISR/DPC가 만지는 데이터, 스핀락으로 보호되는 구조, I/O 버퍼</td></tr>
+    <tr><td>Paged</td><td>페이징 가능</td><td>≤ APC_LEVEL</td><td>≤ APC_LEVEL</td><td>그 외 대부분(문자열, 레지스트리 데이터, 큰 테이블)</td></tr>
+    <tr><td>NonPaged Execute</td><td>항상</td><td>≤ DISPATCH_LEVEL</td><td>모든 IRQL</td><td>실행 가능한 풀 — 특별한 이유가 없으면 쓰지 말 것(HVCI와도 충돌)</td></tr>
+  </tbody>
+</table>
+
+<div class="tabs">
+  <div class="tab-bar"><button>ExAllocatePool2 (권장)</button><button>풀 태그</button><button>내부 구현</button><button>손상과 디버깅</button></div>
+  <div class="tab-panel">
+<pre data-title="C — 드라이버"><code class="lang-c">#define TAG_CTX 'xtCM'   // 도구에서는 "MCtx"로 보인다 (문자 리터럴은 역순 저장)
+
+typedef struct _MY_CTX { LIST_ENTRY Link; KSPIN_LOCK Lock; ULONG State; } MY_CTX, *PMY_CTX;
+
+NTSTATUS CreateCtx(_Out_ PMY_CTX* Out)
+{
+    // Windows 10 2004+. 기본으로 0 초기화된다 (원치 않으면 POOL_FLAG_UNINITIALIZED).
+    PMY_CTX ctx = (PMY_CTX)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MY_CTX), TAG_CTX);
+    if (ctx == NULL) {                // 실패 시 NULL (POOL_FLAG_RAISE_ON_FAILURE면 예외)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    KeInitializeSpinLock(&amp;ctx-&gt;Lock); // 스핀락으로 보호 → NonPaged 여야 한다
+    *Out = ctx;
+    return STATUS_SUCCESS;
+}
+
+VOID DestroyCtx(_In_ PMY_CTX Ctx)
+{
+    ExFreePoolWithTag(Ctx, TAG_CTX);  // 태그 불일치를 검출할 수 있게 태그와 함께 해제
+}</code></pre>
+    <p><code>ExAllocatePoolWithTag</code>는 Windows 10 2004부터 사용 중단(deprecated)되었습니다. 이전 OS를 함께 지원해야 하면 <code>ExAllocatePoolZero</code> 등 다운레벨 지원 래퍼를 검토하세요. 기본 0 초기화는 "초기화 안 된 풀 메모리 유출" 취약점 계열을 크게 줄입니다.</p>
+  </div>
+  <div class="tab-panel">
+    <p>태그는 4바이트 <code>ULONG</code>입니다. C의 다중 문자 리터럴 <code>'xtCM'</code>은 리틀 엔디언 메모리에 <code>M C t x</code> 순으로 놓이므로 <code>poolmon</code>, <code>!poolused</code>, <code>!pool</code>에서는 <b>"MCtx"</b>로 보입니다. 그래서 소스에는 역순으로 씁니다.</p>
+    <ul>
+      <li>드라이버마다 고유한 태그를 쓰고, 구조체 종류별로 다른 태그를 쓰면 누수 원인 추적이 쉬워집니다.</li>
+      <li>각 문자는 0x20–0x7E 범위의 ASCII여야 합니다. <code>pooltag.txt</code>(디버거 설치 폴더)에 알려진 태그 목록이 있습니다.</li>
+      <li>누수 조사: <code>poolmon -b</code>(바이트 순 정렬), WinDbg <code>!poolused 2</code>(NonPaged 사용량 순) / <code>!poolused 4</code>(Paged 순).</li>
+    </ul>
+  </div>
+  <div class="tab-panel">
+    <p>Windows 10 19H1(1903)부터 커널 풀은 유저 모드에서 쓰이던 <b>세그먼트 힙</b>을 기반으로 재구현되었습니다. 할당 크기에 따라 서로 다른 백엔드로 갑니다.</p>
+    <ul>
+      <li><b>LFH</b>(Low Fragmentation Heap): 자주 쓰이는 작은 크기 — 크기별 버킷에서 빠르게 할당.</li>
+      <li><b>VS</b>(Variable Size): 그 밖의 작은~중간 크기.</li>
+      <li><b>세그먼트 / Large</b>: 큰 할당은 페이지 단위로 직접 할당. 대략 한 페이지 이상의 큰 할당은 별도의 "빅 풀" 테이블로 추적되어 <code>!pool</code>이 태그를 찾을 수 있습니다.</li>
+    </ul>
+    <p>작은 할당 앞에는 호환성을 위해 여전히 16바이트 <code>_POOL_HEADER</code>(이전 크기, 블록 크기, 풀 타입, 태그 등)가 붙지만, 그 앞뒤의 힙 메타데이터 구조는 이전 풀과 다릅니다. 버전마다 세부가 바뀌므로 익스플로잇·포렌식 분석 시에는 대상 빌드의 심볼(<code>dt nt!_POOL_HEADER</code>, <code>dt nt!_SEGMENT_HEAP</code>)로 확인하세요.</p>
+    <p>자주 같은 크기를 할당·해제한다면 <b>룩어사이드 리스트</b>(<code>ExInitializeLookasideListEx</code>, <code>ExAllocateFromLookasideListEx</code>)가 풀 경합을 줄입니다.</p>
+  </div>
+  <div class="tab-panel">
+    <table>
+      <thead><tr><th>버그체크</th><th>전형적 원인</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x19 BAD_POOL_HEADER</code></td><td>앞 블록의 버퍼 오버런이 다음 블록 헤더를 덮음</td></tr>
+        <tr><td><code>0xC2 BAD_POOL_CALLER</code></td><td>이중 해제, 잘못된 IRQL에서 할당/해제, 풀이 아닌 주소 해제</td></tr>
+        <tr><td><code>0xC5 DRIVER_CORRUPTED_EXPOOL</code></td><td>높은 IRQL에서 손상된 풀 접근(대개 이전 손상의 결과)</td></tr>
+        <tr><td><code>0x13A KERNEL_MODE_HEAP_CORRUPTION</code></td><td>세그먼트 힙 기반 풀이 감지한 손상</td></tr>
+      </tbody>
+    </table>
+    <p>풀 손상의 버그체크는 <b>손상을 일으킨 순간이 아니라 발견한 순간</b>에 납니다. 콜스택의 드라이버는 피해자일 가능성이 큽니다. <b>Driver Verifier의 Special Pool</b>을 켜면 할당마다 별도 페이지와 가드 페이지를 써서, 오버런하는 바로 그 명령에서 폴트가 나게 만듭니다.</p>
+  </div>
+</div>
+
+<h2 id="compress">메모리 압축</h2>
+<p>
+  Windows 10부터 메모리 관리자는 수정 리스트의 개인 페이지를 곧바로 페이지 파일에 쓰는 대신 <b>압축해서 메모리 안의 저장소(store)</b>에 넣을 수 있습니다.
+  저장소를 관리하는 것은 스토어 관리자(<code>Sm*</code>/<code>St*</code>)이고, 압축된 데이터는 <b>Memory Compression</b>이라는 최소(minimal) 프로세스의 사용자 주소 공간에 담깁니다(Windows 10 1607 이후 별도 프로세스로 보임).
+</p>
+<div class="grid3">
+  <div class="card ok"><h4>이득</h4><p>여러 페이지가 압축되어 더 적은 물리 페이지에 담긴다. 다시 필요해지면 디스크 I/O 대신 압축 해제(CPU)로 복구 — 하드 폴트보다 훨씬 빠르다.</p></div>
+  <div class="card"><h4>비용</h4><p>압축/해제 CPU 시간. 저장소 페이지 자체도 메모리를 쓰며, 압박이 계속되면 저장소의 페이지가 다시 페이지 파일로 기록될 수 있다.</p></div>
+  <div class="card hw"><h4>관찰과 설정</h4><p>작업 관리자 메모리 탭의 "압축됨", <code>Get-MMAgent</code>의 MemoryCompression. <code>Disable-MMAgent -MemoryCompression</code>으로 끌 수 있다. 서버 SKU는 기본 비활성인 경우가 많다.</p></div>
+</div>
+<div class="callout tip">
+  <div class="callout-title">"Memory Compression 프로세스가 메모리를 많이 쓴다"는 오해</div>
+  <p>그 프로세스의 워킹셋은 <b>다른 프로세스들의 페이지를 압축해 담은 것</b>입니다. 그 수치가 크다는 것은 메모리 압박이 있다는 신호이지 그 프로세스가 원인이라는 뜻이 아닙니다. 원인은 커밋을 늘리고 있는 다른 프로세스에서 찾으세요.</p>
+</div>
+
+<h2 id="lab">실습: 메모리 관리자 장부 들여다보기</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 9-1 · !vad, !pte, !pfn, !vm, !poolused</div>
+  <p>VM 커널 디버깅 또는 로컬 커널 디버깅으로 진행합니다. 출력은 <b>형식 이해용 예시</b>이며 주소·값·열 구성은 시스템과 디버거 버전마다 다릅니다. Sysinternals <b>RAMMap</b>을 함께 쓰면 페이지 리스트별 사용량을 GUI로 볼 수 있습니다.</p>
+</div>
+<pre data-title="WinDbg — VAD와 섹션"><code class="lang-windbg">lkd> !process 0 1 notepad.exe          $$ VadRoot 주소 확인
+lkd> .process /p /r ffffa60c`b1d2e080
+lkd> !vad ffffa60c`b3a1e5c0             $$ VadRoot 또는 아무 VAD 노드
+VAD             Level     Start       End Commit
+ffffa60c`b3a1c0a0  3     9a1c200   9a1c2ff      4 Private      READWRITE
+ffffa60c`b3a1d6f0  2    1f23a600  1f23a6ff     12 Private      READWRITE
+ffffa60c`b3a1e5c0  1   7ff612340 7ff612398      5 Mapped  Exe  EXECUTE_WRITECOPY  \Windows\System32\notepad.exe
+...
+lkd> !vad ffffa60c`b3a1e5c0 1           $$ 한 노드의 상세: Subsection, ControlArea, FileObject
+lkd> !ca &lt;ControlArea 주소&gt;             $$ CONTROL_AREA · SEGMENT · 서브섹션 · 매핑 수</code></pre>
+
+<pre data-title="WinDbg — 페이지 하나의 일생 추적"><code class="lang-windbg">lkd> !pte 7ff6`12341000                 $$ 코드 페이지 — Valid면 pfn 확인
+lkd> !pfn 2a41f
+    PFN 0002A41F at address FFFF....
+    flink       ...  blink / share count 00000002  pteaddress FFFF....
+    reference count 0001   used entry count  0000   Cached   color 0   Priority 5
+    restore pte ...  containing page ...  Active     P
+      Shared
+$$ "pteaddress"가 프로토타입 PTE를 가리키면(P 플래그) 공유 페이지, share count = 매핑한 PTE 수
+$$ "restore pte" = OriginalPte, 상태(Active/Standby/Modified …)는 PageLocation
+
+lkd> !vm 1                              $$ 시스템 전체 메모리/커밋/풀 요약
+lkd> !memusage 8                        $$ 페이지 리스트별 개수 (느림: PFN DB 전체 순회)</code></pre>
+
+<pre data-title="WinDbg / PowerShell — 풀과 압축"><code class="lang-windbg">lkd> !poolused 2                        $$ NonPaged 사용량 순 태그 목록
+lkd> !pool ffffbb8c`41a2f540            $$ 이 주소를 담은 풀 블록과 태그
+lkd> !poolfind MCtx                     $$ 특정 태그의 블록 찾기 (느릴 수 있음)</code></pre>
+<pre data-title="PowerShell"><code class="lang-ps">PS C:\> Get-MMAgent                    # MemoryCompression, PageCombining 등 확인
+PS C:\> Get-Counter '\Memory\Standby Cache Normal Priority Bytes','\Memory\Modified Page List Bytes','\Memory\Free &amp; Zero Page List Bytes'</code></pre>
+
+<ol>
+  <li>notepad에서 큰 파일을 연 뒤 <code>!vad</code>로 매핑 VAD를 찾고, <code>!ca</code>로 그 파일의 CONTROL_AREA와 매핑 뷰 수를 확인하세요.</li>
+  <li>notepad를 두 개 띄워 같은 <code>ntdll.dll</code> 코드 페이지에 대해 각각 <code>!pte</code>를 실행하고, PFN이 같은지 확인한 뒤 <code>!pfn</code>으로 share count를 보세요.</li>
+  <li>RAMMap의 "Use Counts" 탭에서 Standby/Modified 크기를 기록하고, 큰 파일을 복사한 뒤 어떻게 변하는지 관찰하세요(스탠바이 = 파일 캐시).</li>
+  <li><code>!poolused 2</code> 상위 태그 3개를 <code>pooltag.txt</code>에서 찾아 어느 드라이버인지 확인하세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q"><code>VirtualAlloc(NULL, 1GB, MEM_RESERVE, PAGE_READWRITE)</code>가 성공했을 때 변하는 것은?</p>
+  <ol class="opts">
+    <li>시스템 커밋 차지가 1GB 증가</li>
+    <li>프로세스 워킹셋이 1GB 증가</li>
+    <li data-correct>VAD가 하나 생기고 가상 주소 범위만 확보된다</li>
+    <li>페이지 파일에 1GB 공간이 할당된다</li>
+  </ol>
+  <div class="explain">예약은 VAD만 만듭니다. 커밋 차지는 <code>MEM_COMMIT</code> 시점에, 물리 페이지는 첫 접근(디맨드 제로 폴트) 시점에, 페이지 파일 블록은 실제로 페이지를 기록할 때 할당됩니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">작업 관리자의 "사용 가능" 메모리에 포함되는 페이지 리스트 조합은?</p>
+  <ol class="opts">
+    <li>Free + Zero</li>
+    <li data-correct>Free + Zero + Standby</li>
+    <li>Free + Zero + Standby + Modified</li>
+    <li>Active를 제외한 모든 페이지</li>
+  </ol>
+  <div class="explain">스탠바이 페이지는 내용이 디스크에도 있으므로 즉시 재사용할 수 있어 "사용 가능"입니다. 수정 페이지는 먼저 기록해야 하므로 포함되지 않습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">스핀락을 잡은 상태에서 Paged 풀 데이터를 읽었는데, 그 페이지는 스탠바이 리스트에 있었습니다(트랜지션 PTE). 결과는?</p>
+  <ol class="opts">
+    <li>소프트 폴트이므로 I/O 없이 정상 처리된다</li>
+    <li>MmAccessFault가 IRQL을 낮춘 뒤 처리한다</li>
+    <li data-correct>DISPATCH_LEVEL에서는 폴트를 해결할 수 없어 버그체크(0xA/0xD1)한다</li>
+    <li>STATUS_ACCESS_VIOLATION 예외가 드라이버의 __try로 전달된다</li>
+  </ol>
+  <div class="explain">I/O가 필요 없는 트랜지션 폴트라도 워킹셋 락 획득 등이 필요하므로 DISPATCH_LEVEL 이상에서는 처리되지 않습니다. "운 좋게 Active면 괜찮고 아니면 죽는" 전형적인 간헐 버그입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">10개 프로세스가 매핑한 공유 파일 페이지가 모든 워킹셋에서 트림된 뒤 물리 페이지가 재사용될 때, 메모리 관리자가 고쳐 쓰는 PTE는?</p>
+  <ol class="opts">
+    <li>10개 프로세스의 하드웨어 PTE 모두</li>
+    <li data-correct>프로토타입 PTE 하나</li>
+    <li>마지막으로 접근한 프로세스의 PTE 하나</li>
+    <li>고칠 필요 없음 — PFN 엔트리만 갱신</li>
+  </ol>
+  <div class="explain">트림 시점에 각 프로세스 PTE는 이미 "프로토타입 PTE를 보라" 형식으로 돌아가 있습니다. 재사용 시에는 PFN의 <code>PteAddress</code>가 가리키는 프로토타입 PTE만 파일 참조 형식으로 바꾸면 됩니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">프로세스가 종료될 때, 그 프로세스의 개인 메모리 중 수정 리스트에 있던 페이지는?</p>
+  <ol class="opts">
+    <li>Modified Page Writer가 페이지 파일에 기록한 뒤 스탠바이로 간다</li>
+    <li>스탠바이로 가서 다음 실행 때 재사용된다</li>
+    <li data-correct>기록 없이 Free 리스트로 간다</li>
+    <li>메모리 압축 저장소로 이동한다</li>
+  </ol>
+  <div class="explain">종료된 프로세스의 개인 데이터는 다시 읽힐 일이 없으므로 기록할 이유가 없습니다. 반면 파일 기반 페이지는 파일 내용이므로 더티면 기록되고, 깨끗하면 캐시로 스탠바이에 남습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>ExAllocatePool2</code>에 대한 설명으로 옳은 것은?</p>
+  <ol class="opts">
+    <li>Paged 풀은 DISPATCH_LEVEL에서도 할당할 수 있다</li>
+    <li>반환된 메모리는 이전 내용을 그대로 담고 있으므로 직접 0으로 채워야 한다</li>
+    <li data-correct>기본으로 0 초기화되며, 태그 <code>'xtCM'</code>은 도구에서 "MCtx"로 표시된다</li>
+    <li>실패하면 항상 예외를 던지므로 NULL 검사가 필요 없다</li>
+  </ol>
+  <div class="explain"><code>ExAllocatePool2</code>는 <code>POOL_FLAG_UNINITIALIZED</code>를 주지 않는 한 0으로 초기화합니다. 실패 시 기본은 NULL 반환(<code>POOL_FLAG_RAISE_ON_FAILURE</code>일 때만 예외), Paged 풀 할당은 APC_LEVEL 이하에서만 가능합니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>예약(VAD만) → 커밋(커밋 차지, 약속) → 터치(물리 페이지, 워킹셋). 커밋 한도 ≈ RAM + 페이지 파일이며 초과 시 물리 메모리가 남아도 실패한다.</li>
+    <li>VAD는 시작 VPN을 키로 한 AVL 트리. PTE는 지연 생성되며 0 PTE 폴트 시 VAD를 보고 만들어진다.</li>
+    <li>#PF → KiPageFault → MmAccessFault → 디맨드 제로 / 트랜지션(소프트) / 페이지 파일(하드) / 프로토타입 / 권한(CoW·가드·AV). DISPATCH_LEVEL 이상의 폴트는 해결 불가.</li>
+    <li>공유 메모리는 섹션(CONTROL_AREA·SEGMENT·SUBSECTION)의 프로토타입 PTE로 구현되어, 페이지 회수 시 고칠 곳이 하나다.</li>
+    <li>PFN DB가 물리 페이지 상태를 기록한다. Zero/Free/Standby/Modified 리스트와 Active 상태 사이를 폴트·트림·MPW·제로 스레드·종료가 이동시킨다. 사용 가능 = Zero + Free + Standby.</li>
+    <li>커널 풀: NonPaged(모든 IRQL 접근) vs Paged(≤ APC_LEVEL). <code>ExAllocatePool2</code> + 고유 태그 + <code>ExFreePoolWithTag</code>. 19H1부터 세그먼트 힙 기반.</li>
+    <li>메모리 압축은 수정 페이지를 디스크 대신 메모리 저장소에 압축해 담아 하드 폴트를 줄인다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+
+  /* ---------------- 예약/커밋 실험실 ---------------- */
+  const LIMIT = 4096, OTHER = 2560;
+  let cs;
+  const cReset = () => { cs = { res: 0, com: 0, ws: 0, sec: 0 }; };
+  const clog = (h, cls) => { const c = $('commitLog'); c.innerHTML = (cls ? `<span class="${cls}">${h}</span>` : h) + '\n' + c.innerHTML; };
+  function cPaint() {
+    const mine = cs.com + cs.sec;
+    $('mRes').textContent = cs.res + ' MB';
+    $('fRes').style.width = Math.min(100, cs.res / 2048 * 100) + '%';
+    $('mCom').textContent = `${OTHER + mine} / ${LIMIT} MB`;
+    $('fOther').style.width = (OTHER / LIMIT * 100) + '%';
+    $('fMine').style.left = (OTHER / LIMIT * 100) + '%';
+    $('fMine').style.width = Math.min(100 - OTHER / LIMIT * 100, mine / LIMIT * 100) + '%';
+    $('mWs').textContent = cs.ws + ' MB';
+    $('fWs').style.width = Math.min(100, cs.ws / 2048 * 100) + '%';
+  }
+  const ACT = {
+    reserve() {
+      if (cs.res >= 2048) return clog('예약은 2GB까지만 시뮬레이션합니다.', 'dim');
+      cs.res += 1024;
+      clog('MEM_RESERVE 1GB → VAD 생성. <b>커밋 차지 변화 없음, 물리 메모리 변화 없음.</b> 이 범위를 읽으면 아직 액세스 위반.', 'ok');
+    },
+    commit() {
+      if (cs.com + 256 > cs.res) return clog('커밋할 예약 공간이 부족합니다. 먼저 예약하세요.', 'warn');
+      if (OTHER + cs.com + cs.sec + 256 > LIMIT) return clog('✗ VirtualAlloc(MEM_COMMIT) 실패: ERROR_COMMITMENT_LIMIT (1455) — 커밋 한도 초과. 물리 메모리는 남아 있어도 약속을 지킬 수 없다.', 'bad');
+      cs.com += 256;
+      clog('MEM_COMMIT 256MB → <b>커밋 차지 +256MB</b>. PTE는 아직 0(또는 디맨드 제로) — 워킹셋 변화 없음.', 'ok');
+    },
+    touch() {
+      if (cs.ws + 128 > cs.com) return clog('터치할 커밋 영역이 없습니다. (커밋되지 않은 예약 영역을 쓰면 액세스 위반)', 'warn');
+      cs.ws += 128;
+      clog('128MB 쓰기 → 디맨드 제로 폴트 32,768회 → 제로 리스트에서 페이지를 받아 매핑. <b>워킹셋 +128MB</b>, 커밋 차지는 그대로.', 'ok');
+    },
+    section() {
+      if (cs.sec) return clog('섹션은 하나만 만듭니다.', 'dim');
+      if (OTHER + cs.com + 512 > LIMIT) return clog('✗ NtCreateSection 실패: STATUS_COMMITMENT_LIMIT (0xC000012D) — 페이지 파일 기반 섹션은 생성 시 전체를 커밋 차지한다.', 'bad');
+      cs.sec = 512;
+      clog('CreateFileMapping(INVALID_HANDLE_VALUE, 512MB) → 페이지 파일 기반 섹션. <b>생성 즉시 커밋 차지 +512MB</b>(SEC_COMMIT 기본). 뷰를 매핑하기 전엔 예약 공간도, 물리 메모리도 없음.', 'warn');
+    },
+    decommit() {
+      if (cs.com < 256) return clog('디커밋할 커밋 영역이 없습니다.', 'dim');
+      cs.com -= 256;
+      const freed = Math.min(cs.ws, 256);
+      cs.ws -= freed;
+      clog(`MEM_DECOMMIT 256MB → 커밋 차지 -256MB, 그 범위의 물리 페이지 ${freed}MB는 Free 리스트로. 예약(VAD)은 남는다.`, 'ok');
+    },
+    reset() { cReset(); $('commitLog').innerHTML = ''; clog(`초기 상태: 커밋 한도 ${LIMIT}MB(RAM+페이지 파일 가정), 다른 프로세스·커널이 ${OTHER}MB 사용 중.`, 'dim'); }
+  };
+  document.querySelectorAll('#commitSim [data-a]').forEach(b => b.addEventListener('click', () => { ACT[b.dataset.a](); cPaint(); }));
+  cReset(); ACT.reset(); cPaint();
+
+  /* ---------------- 페이지 리스트 시뮬레이터 ---------------- */
+  const N = 48;
+  const NAMES = { zero: 'Zero', free: 'Free', standby: 'Standby', modified: 'Modified', active: 'Active' };
+  const LOC = { zero: 'ZeroedPageList (0)', free: 'FreePageList (1)', standby: 'StandbyPageList (2)', modified: 'ModifiedPageList (3)', active: 'ActiveAndValid (6)' };
+  let pages, proc = 'A', stats, selPfn = null, age = 0;
+  const grid = $('plGrid'), plog = $('plLog');
+  const log = (h, cls) => { plog.innerHTML = (cls ? `<span class="${cls}">${h}</span>` : h) + '\n' + plog.innerHTML; };
+  const hex = n => n.toString(16).toUpperCase();
+
+  function reset() {
+    pages = []; age = 0;
+    stats = { soft: 0, hard: 0, writes: 0, repurp: 0 };
+    const plan = [
+      ...Array(9).fill(['zero', null, null, false]),
+      ...Array(10).fill(['free', null, null, false]),
+      ['standby', 'A', 'file', false], ['standby', 'A', 'file', false], ['standby', 'B', 'file', false],
+      ['standby', 'B', 'file', false], ['standby', 'A', 'private', false], ['standby', null, 'file', false],
+      ['modified', 'A', 'private', true], ['modified', 'B', 'private', true], ['modified', 'B', 'file', true],
+      ['active', 'A', 'private', true], ['active', 'A', 'private', true], ['active', 'A', 'private', false],
+      ['active', 'A', 'file', false], ['active', 'A', 'file', false], ['active', 'A', 'file', true],
+      ['active', 'A', 'private', true], ['active', 'B', 'private', true], ['active', 'B', 'private', true],
+      ['active', 'B', 'file', false], ['active', 'B', 'file', false], ['active', 'B', 'private', false],
+      ['active', 'B', 'file', false], ['active', 'A', 'private', true],
+    ];
+    while (plan.length < N) plan.push(['free', null, null, false]);
+    plan.forEach(([st, owner, kind, dirty], i) => pages.push({ pfn: 0x2A400 + i, st, owner, kind, dirty, t: age++ }));
+    // 섞어서 실제처럼 흩어 놓기 (결정적)
+    let seed = 12345;
+    for (let i = pages.length - 1; i > 0; i--) { seed = (seed * 1103515245 + 12345) % 2147483648; const j = seed % (i + 1); [pages[i], pages[j]] = [pages[j], pages[i]]; }
+    pages.forEach((p, i) => p.pfn = 0x2A400 + i);
+    plog.innerHTML = '';
+    log('초기화: 물리 페이지 48개. 이벤트 버튼으로 페이지를 움직여 보세요.', 'dim');
+  }
+  const of = st => pages.filter(p => p.st === st);
+  const flashSet = new Set();
+  function move(p, st) { p.st = st; flashSet.add(p.pfn); if (st === 'active') p.t = age++; }
+
+  // 할당 순서: 선호 리스트 → 대체 리스트들
+  function grab(order) {
+    for (const st of order) {
+      const c = of(st);
+      if (c.length) {
+        // 스탠바이 재사용은 가장 오래된 것부터 (실제로는 낮은 우선순위부터)
+        c.sort((a, b) => a.t - b.t);
+        return { p: c[0], from: st };
+      }
+    }
+    return null;
+  }
+  function hot(...ids) {
+    document.querySelectorAll('#plSim .sm-dia .hot').forEach(e => e.classList.remove('hot'));
+    ids.forEach(id => { const e = $('e-' + id), t = $('t-' + id); if (e) e.classList.add('hot'); if (t) t.classList.add('hot'); });
+  }
+
+  const EV = {
+    dz() {
+      const g = grab(['zero', 'free', 'standby']);
+      if (!g) return log('✗ 가용 페이지 없음 — 스레드는 대기. Modified Page Writer가 수정 페이지를 기록해 스탠바이를 만들어야 한다.', 'bad'), [];
+      const { p, from } = g;
+      const edges = [];
+      if (from === 'zero') { log(`디맨드 제로 폴트(${proc}): Zero 리스트의 PFN ${hex(p.pfn)} → Active. 이미 0이므로 바로 매핑.`, 'ok'); edges.push('za'); }
+      else if (from === 'free') { log(`디맨드 제로 폴트(${proc}): Zero가 비어 Free의 PFN ${hex(p.pfn)}을 <b>즉석에서 0으로 채운 뒤</b> 매핑 (폴트가 더 느려짐).`, 'warn'); edges.push('fa'); }
+      else { stats.repurp++; log(`디맨드 제로 폴트(${proc}): Zero·Free 모두 없음 → <b>Standby 재사용</b> PFN ${hex(p.pfn)} (원래 소유자 ${p.owner || '-'}의 PTE는 트랜지션 → ${p.kind === 'file' ? '파일 참조' : '페이지 파일'} 형식으로). 0으로 채운 뒤 매핑.`, 'warn'); edges.push('sa'); }
+      p.owner = proc; p.kind = 'private'; p.dirty = true; move(p, 'active');
+      log('  └ 새 개인 페이지는 백업이 없으므로 처음부터 "수정됨"(●)으로 취급된다.', 'dim');
+      stats.soft++;
+      return edges;
+    },
+    read() {
+      const g = grab(['free', 'zero', 'standby']);
+      if (!g) return log('✗ 가용 페이지 없음 — 인페이지 I/O를 시작할 수 없어 대기.', 'bad'), [];
+      const { p, from } = g;
+      const edges = from === 'free' ? ['fa'] : from === 'zero' ? ['za'] : ['sa'];
+      if (from === 'standby') stats.repurp++;
+      log(`하드 폴트(${proc}): 파일/이미지 페이지를 디스크에서 읽음. ${from === 'free' ? 'Free 페이지 사용(곧 덮어쓸 것이므로 0으로 채울 필요 없음)' : from === 'zero' ? 'Free가 없어 Zero 페이지 사용(제로화 노력 낭비)' : 'Standby 재사용'} PFN ${hex(p.pfn)} → (Transition: ReadInProgress) → Active.`, 'ok');
+      p.owner = proc; p.kind = 'file'; p.dirty = false; move(p, 'active');
+      stats.hard++;
+      return edges;
+    },
+    write() {
+      const c = of('active').filter(p => p.owner === proc && !p.dirty);
+      if (!c.length) return log(`프로세스 ${proc}에 깨끗한 Active 페이지가 없습니다.`, 'dim'), [];
+      const p = c[(age * 5) % c.length]; age++;
+      p.dirty = true; flashSet.add(p.pfn);
+      log(`쓰기: PFN ${hex(p.pfn)} (${p.kind === 'file' ? '파일' : '개인'}) — CPU가 PTE의 D 비트를 세트. 상태는 그대로 Active.`, 'ok');
+      return [];
+    },
+    trim() {
+      const c = of('active').sort((a, b) => a.t - b.t).slice(0, 4);
+      if (!c.length) return log('트림할 Active 페이지가 없습니다.', 'dim'), [];
+      const e = new Set();
+      c.forEach(p => {
+        if (p.dirty) { move(p, 'modified'); e.add('am'); }
+        else { move(p, 'standby'); e.add('as'); }
+      });
+      log(`워킹셋 트리밍: 가장 오래 안 쓰인 ${c.length}개 → ` + c.map(p => `${hex(p.pfn)}${p.dirty ? '→Modified' : '→Standby'}`).join(', ') + '. 각 PTE는 Transition 형식(PFN 유지), TLB shootdown 수행.', 'ok');
+      return [...e];
+    },
+    soft() {
+      const c = pages.filter(p => (p.st === 'standby' || p.st === 'modified') && p.owner === proc);
+      if (!c.length) return log(`프로세스 ${proc}의 페이지가 Standby/Modified에 없습니다 — 재접근해도 하드 폴트가 필요합니다.`, 'dim'), [];
+      const p = c.sort((a, b) => b.t - a.t)[0];
+      const from = p.st;
+      move(p, 'active'); stats.soft++;
+      log(`소프트 폴트(${proc}): Transition PTE → PFN ${hex(p.pfn)}을 ${NAMES[from]} 리스트에서 떼어 다시 Valid. 디스크 I/O 없음.${from === 'modified' ? ' (아직 더티 — 나중에 다시 기록 대상)' : ''}`, 'ok');
+      return [from === 'standby' ? 'sa' : 'ma'];
+    },
+    mpw() {
+      const c = of('modified').slice(0, 8);
+      if (!c.length) return log('Modified 리스트가 비어 있어 기록할 것이 없습니다.', 'dim'), [];
+      c.forEach(p => { p.dirty = false; move(p, 'standby'); });
+      stats.writes++;
+      const pf = c.filter(p => p.kind === 'private').length, mf = c.length - pf;
+      log(`Modified/Mapped Page Writer: ${c.length}페이지 클러스터 기록 (페이지 파일 ${pf}, 매핑 파일 ${mf}) → 깨끗해져 Standby로. OriginalPte에 기록 위치가 저장된다.`, 'ok');
+      return ['ms'];
+    },
+    zero() {
+      const c = of('free').slice(0, 6);
+      if (!c.length) return log('Free 리스트가 비어 있습니다.', 'dim'), [];
+      c.forEach(p => { p.owner = null; p.kind = null; p.dirty = false; move(p, 'zero'); });
+      log(`제로 페이지 스레드(우선순위 0, 유휴 시): Free ${c.length}개를 0으로 채워 Zero 리스트로.`, 'ok');
+      return ['fz'];
+    },
+    exit() {
+      const mine = pages.filter(p => p.owner === proc && p.st !== 'free' && p.st !== 'zero');
+      if (!mine.length) return log(`프로세스 ${proc}의 페이지가 없습니다.`, 'dim'), [];
+      const e = new Set(); let nf = 0, ns = 0, nm = 0;
+      mine.forEach(p => {
+        if (p.kind === 'private') {
+          e.add(p.st === 'active' ? 'af' : p.st === 'standby' ? 'sf' : 'mf');
+          p.owner = null; p.kind = null; p.dirty = false; move(p, 'free'); nf++;
+        } else if (p.st === 'active') {
+          if (p.dirty) { move(p, 'modified'); e.add('am'); nm++; } else { move(p, 'standby'); e.add('as'); ns++; }
+        }
+      });
+      log(`프로세스 ${proc} 종료: 개인 페이지 ${nf}개 → Free (수정 페이지도 기록 없이). 파일 페이지 → Standby ${ns}개 / Modified ${nm}개 (파일 내용은 보존·캐시).`, 'warn');
+      return [...e];
+    },
+  };
+
+  function paint() {
+    const cnt = { zero: 0, free: 0, standby: 0, modified: 0, active: 0 };
+    pages.forEach(p => cnt[p.st]++);
+    Object.keys(cnt).forEach(k => { $('n-' + k).textContent = cnt[k]; });
+    $('plCounts').innerHTML =
+      ['zero', 'free', 'standby', 'modified', 'active'].map(k => `<div class="c-${k}"><small>${NAMES[k]}</small><b>${cnt[k]}</b></div>`).join('') +
+      `<div class="c-avail"><small>사용 가능 = Z+F+S</small><b>${cnt.zero + cnt.free + cnt.standby}</b></div>` +
+      `<div><small>소프트 / 하드 폴트</small><b>${stats.soft} / ${stats.hard}</b></div>` +
+      `<div><small>기록 I/O · 재사용</small><b>${stats.writes} · ${stats.repurp}</b></div>`;
+    grid.innerHTML = '';
+    pages.forEach(p => {
+      const d = document.createElement('div');
+      d.className = `pl-cell ${p.st}${p.dirty ? ' dirty' : ''}${flashSet.has(p.pfn) ? ' flash' : ''}${selPfn === p.pfn ? ' sel' : ''}`;
+      d.innerHTML = `<span class="o">${p.owner ? p.owner + (p.kind === 'file' ? 'f' : '') : ''}</span>${hex(p.pfn).slice(-3)}`;
+      d.title = `PFN ${hex(p.pfn)} · ${NAMES[p.st]}`;
+      d.addEventListener('click', () => { selPfn = p.pfn; info(p); paint(); });
+      grid.appendChild(d);
+    });
+    flashSet.clear();
+    if (selPfn !== null) info(pages.find(p => p.pfn === selPfn));
+  }
+  function info(p) {
+    const share = p.st === 'active' ? 1 : 0;
+    const pteKind = p.st === 'active' ? 'Valid (하드웨어 PTE, P=1)'
+      : p.st === 'standby' || p.st === 'modified' ? 'Transition (P=0, PFN 유지)'
+      : '— (매핑 없음)';
+    const orig = !p.owner ? '—' : p.kind === 'file' ? '파일 서브섹션 참조' : (p.dirty ? '디맨드 제로 / 미기록' : '페이지 파일 위치');
+    $('plInfo').innerHTML = `<b class="mono">PFN ${hex(p.pfn)}</b> · PageLocation = <code>${LOC[p.st]}</code> · 소유자: ${p.owner ? '프로세스 ' + p.owner + (p.kind === 'file' ? ' (파일/섹션 페이지 — PteAddress는 프로토타입 PTE)' : ' (개인 페이지)') : '없음'}<br>` +
+      `ShareCount = ${share} · Modified = ${p.dirty ? 1 : 0} · 매핑 PTE 상태: ${pteKind} · OriginalPte: ${orig}`;
+  }
+
+  document.querySelectorAll('#plSim [data-proc]').forEach(b => b.addEventListener('click', () => {
+    proc = b.dataset.proc;
+    document.querySelectorAll('#plSim [data-proc]').forEach(x => x.classList.toggle('on', x === b));
+    log(`이제 프로세스 ${proc}가 폴트를 일으킵니다.`, 'dim');
+  }));
+  document.querySelectorAll('#plSim [data-ev]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.ev === 'reset') { reset(); hot(); selPfn = null; $('plInfo').textContent = '칸을 클릭하면 그 물리 페이지의 PFN 엔트리 요약이 표시됩니다.'; paint(); return; }
+    const edges = EV[b.dataset.ev]() || [];
+    hot(...edges);
+    paint();
+  }));
+  reset(); paint();
+})();
+</script>
+</body>
+</html>

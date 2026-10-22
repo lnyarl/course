@@ -1,0 +1,1202 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>페이지 교체 알고리즘</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 07장 전용 */
+.rgrid { border-collapse: separate; border-spacing: 2px; width: auto; font-family: var(--mono); font-size: 13px; }
+.rgrid th, .rgrid td { border: 1px solid var(--border); padding: 0; min-width: 30px; height: 30px; text-align: center; vertical-align: middle; border-radius: 4px; background: var(--surface); }
+.rgrid th { background: var(--surface-2); font-weight: 700; }
+.rgrid th.rowh { min-width: 46px; font-size: 11.5px; color: var(--muted); font-weight: 600; padding: 0 4px; }
+.rgrid th.w { color: var(--warn); }
+.rgrid td.fault { background: var(--bad-soft); border-color: var(--bad); }
+.rgrid td.hitc { background: var(--ok-soft); border-color: var(--ok); }
+.rgrid td.fut, .rgrid th.fut { opacity: .28; }
+.rgrid .cur { box-shadow: 0 0 0 2px var(--accent); }
+.rgrid .aux { display: block; font-size: 9.5px; color: var(--muted); line-height: 1.05; }
+.rgrid tr.res td { border-color: transparent; background: transparent; font-weight: 700; font-size: 12px; }
+.rgrid td.ev { font-size: 11px; color: var(--muted); }
+.rgrid td.ev.dirty { color: var(--warn); font-weight: 700; }
+.rgrid td.incl-no { color: var(--bad); font-weight: 700; }
+.rgrid td.incl-yes { color: var(--ok); }
+.sim-flex { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.sim-flex > .stage { flex: 1 1 380px; min-width: 0; }
+.dial-wrap { flex: 0 0 240px; max-width: 100%; margin: 0 auto; }
+.dial-wrap svg { width: 240px; max-width: 100%; height: auto; display: block; margin: 0 auto; font-family: var(--mono); }
+.dial-note { font-size: 12.5px; color: var(--muted); text-align: center; }
+.ptr-g { transition: transform .32s ease; }
+.ptr-g.nojump { transition: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; margin: 6px 0; }
+.legend label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.sw { display: inline-block; width: 18px; height: 4px; border-radius: 2px; }
+.chart text { font-size: 12px; }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .axis { stroke: var(--muted); }
+.s-FIFO { stroke: var(--accent); fill: var(--accent); background: var(--accent); }
+.s-OPT { stroke: var(--ok); fill: var(--ok); background: var(--ok); }
+.s-LRU { stroke: var(--violet); fill: var(--violet); background: var(--violet); }
+.s-CLOCK { stroke: var(--teal); fill: var(--teal); background: var(--teal); }
+.s-ECLOCK { stroke: var(--warn); fill: var(--warn); background: var(--warn); }
+.s-LFU { stroke: var(--bad); fill: var(--bad); background: var(--bad); }
+.s-MFU { stroke: var(--muted); fill: var(--muted); background: var(--muted); }
+.chart path.series { fill: none; stroke-width: 2.2; }
+.chart .anom { fill: none; stroke: var(--bad); stroke-width: 2; }
+.aging-tbl td, .aging-tbl th { text-align: center; font-family: var(--mono); font-size: 13px; padding: 5px 6px; }
+.aging-tbl td.victim { background: var(--bad-soft); }
+.rbtn { min-width: 64px; }
+.rbtn.on { background: var(--warn-soft); border-color: var(--warn); }
+.calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px 16px; font-size: 14px; }
+.calc-grid label { display: flex; flex-direction: column; gap: 2px; }
+.calc-grid input[type="range"] { width: 100%; }
+.small { font-size: 13px; color: var(--muted); }
+.ref-input { width: 100%; font-family: var(--mono); }
+</style>
+</head>
+<body data-chapter="07">
+<main>
+  <header class="chapter-head">
+    <span class="label">개론 · Chapter 07</span>
+    <h1>페이지 교체 알고리즘</h1>
+    <p class="lead">빈 프레임이 없을 때 누구를 내보낼 것인가. 이 질문 하나에 OS 성능의 상당 부분이 걸려 있다. FIFO부터 OPT, LRU, Clock 계열, 그리고 ARC·Linux LRU 리스트까지, "미래를 모르는 상태에서 미래를 추측하는 기술"을 정확한 시뮬레이션으로 해부한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>페이지 교체가 폴트 처리 경로의 어디에 끼어드는지, dirty 비트가 비용을 어떻게 두 배로 만드는지 설명한다.</li>
+      <li>FIFO·OPT·LRU·Clock·Enhanced Clock·LFU·MFU를 손으로, 그리고 시뮬레이터로 정확히 추적한다.</li>
+      <li>Belady의 이상 현상을 재현하고, 스택 알고리즘(포함 성질)이 왜 이를 막는지 증명 수준으로 이해한다.</li>
+      <li>LRU를 정확히 구현하는 비용과 근사 기법(참조 비트, aging, Clock)을 비교한다.</li>
+      <li>2Q·ARC·LIRS의 아이디어와 Linux active/inactive 리스트·MGLRU의 위치를 파악한다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">교체는 왜, 언제 필요한가</a></li>
+    <li><a href="#s2">dirty 비트와 write-back 비용</a></li>
+    <li><a href="#s3">알고리즘을 평가하는 방법: 참조열</a></li>
+    <li><a href="#s4">FIFO, OPT, LRU</a></li>
+    <li><a href="#s5">페이지 교체 시뮬레이터</a></li>
+    <li><a href="#s6">LRU의 구현 비용과 근사: 참조 비트, aging</a></li>
+    <li><a href="#s7">Clock(Second Chance)과 Enhanced Clock</a></li>
+    <li><a href="#s8">빈도 기반: LFU와 MFU</a></li>
+    <li><a href="#s9">알고리즘 비교와 Belady의 이상 현상</a></li>
+    <li><a href="#s10">스캔 저항성: 2Q, ARC, LIRS</a></li>
+    <li><a href="#s11">실제 OS는 무엇을 쓰나: Linux LRU 리스트</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 교체는 왜, 언제 필요한가</h2>
+    <p>6장에서 요구 페이징(demand paging)은 "필요할 때만 페이지를 올린다"는 전략이었다. 이 전략 덕분에 물리 메모리보다 큰 가상 주소 공간, 더 많은 동시 프로세스가 가능해진다. 그 대가로 OS는 의도적으로 <b>메모리를 과다 할당(over-allocation)</b>한다. 모든 프로세스가 동시에 자기 페이지를 다 쓰려 하면 프레임이 모자라는 순간이 반드시 온다.</p>
+    <p>페이지 폴트가 났는데 자유 프레임 리스트가 비어 있으면 선택지는 세 가지다.</p>
+    <ul>
+      <li><b>프로세스를 종료</b>한다 — 사용자에게 가상 메모리의 존재를 드러내는 최악의 방법. (Linux의 OOM killer는 회수조차 실패한 마지막 수단이다. 12장.)</li>
+      <li><b>프로세스 전체를 스왑 아웃</b>해 다중 프로그래밍 정도를 낮춘다 — 8장의 스래싱 대응에서 다시 나온다.</li>
+      <li><b>페이지 하나를 골라 내보내고(evict) 그 프레임을 재사용</b>한다 — 이것이 페이지 교체이며, 가장 일반적인 해법이다.</li>
+    </ul>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="페이지 교체를 포함한 폴트 처리 흐름">
+        <defs><marker id="ar7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="box" x="10" y="20" width="130" height="50" rx="8"/>
+        <text x="75" y="42" text-anchor="middle">페이지 폴트</text><text x="75" y="60" text-anchor="middle" class="muted" style="font-size:11.5px">PTE present=0</text>
+        <rect class="box" x="180" y="20" width="150" height="50" rx="8"/>
+        <text x="255" y="42" text-anchor="middle">자유 프레임 있음?</text><text x="255" y="60" text-anchor="middle" class="muted" style="font-size:11.5px">free list 확인</text>
+        <line class="line" x1="140" y1="45" x2="178" y2="45" marker-end="url(#ar7)"/>
+        <rect x="380" y="20" width="150" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="455" y="42" text-anchor="middle">그 프레임 사용</text><text x="455" y="60" text-anchor="middle" class="muted" style="font-size:11.5px">교체 불필요</text>
+        <line class="line" x1="330" y1="45" x2="378" y2="45" marker-end="url(#ar7)"/><text x="354" y="38" text-anchor="middle" class="muted" style="font-size:11px">예</text>
+        <line class="line" x1="255" y1="70" x2="255" y2="108" marker-end="url(#ar7)"/><text x="268" y="94" class="muted" style="font-size:11px">아니오</text>
+        <rect x="170" y="110" width="170" height="50" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="255" y="132" text-anchor="middle" style="font-weight:700">① 희생 페이지 선택</text><text x="255" y="150" text-anchor="middle" class="muted" style="font-size:11.5px">교체 알고리즘의 일</text>
+        <rect x="380" y="110" width="150" height="50" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="455" y="132" text-anchor="middle">② dirty 비트?</text><text x="455" y="150" text-anchor="middle" class="muted" style="font-size:11.5px">PTE D=1이면 기록</text>
+        <line class="line" x1="340" y1="135" x2="378" y2="135" marker-end="url(#ar7)"/>
+        <rect x="570" y="110" width="140" height="50" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="640" y="132" text-anchor="middle">write-back I/O</text><text x="640" y="150" text-anchor="middle" class="muted" style="font-size:11.5px">스왑/파일에 쓰기</text>
+        <line class="line" x1="530" y1="135" x2="568" y2="135" marker-end="url(#ar7)"/><text x="549" y="128" text-anchor="middle" class="muted" style="font-size:11px">D=1</text>
+        <rect class="box" x="380" y="200" width="150" height="50" rx="8"/>
+        <text x="455" y="222" text-anchor="middle">③ PTE 무효화</text><text x="455" y="240" text-anchor="middle" class="muted" style="font-size:11.5px">+ TLB shootdown</text>
+        <line class="line" x1="455" y1="160" x2="455" y2="198" marker-end="url(#ar7)"/><text x="468" y="184" class="muted" style="font-size:11px">D=0</text>
+        <path class="line" d="M640,160 L640,225 L532,225" marker-end="url(#ar7)"/>
+        <rect class="box" x="170" y="200" width="170" height="50" rx="8"/>
+        <text x="255" y="222" text-anchor="middle">④ 원하는 페이지 read</text><text x="255" y="240" text-anchor="middle" class="muted" style="font-size:11.5px">디스크 → 해제된 프레임</text>
+        <line class="line" x1="380" y1="225" x2="342" y2="225" marker-end="url(#ar7)"/>
+        <rect class="box" x="10" y="200" width="130" height="50" rx="8"/>
+        <text x="75" y="222" text-anchor="middle">⑤ PTE 갱신</text><text x="75" y="240" text-anchor="middle" class="muted" style="font-size:11.5px">명령어 재시작</text>
+        <line class="line" x1="170" y1="225" x2="142" y2="225" marker-end="url(#ar7)"/>
+        <text x="360" y="285" text-anchor="middle" class="muted" style="font-size:12px">dirty 희생자를 고르면 폴트 한 번에 디스크 I/O가 두 번(쓰기 + 읽기) 일어난다</text>
+      </svg>
+      <figcaption>그림 7-1. 교체가 끼어든 페이지 폴트 처리 경로. 알고리즘이 결정하는 것은 ①뿐이지만, 그 선택이 ②~④의 비용을 좌우한다.</figcaption>
+    </figure>
+
+    <p>여기서 두 가지를 분리해 생각해야 한다. <b>프레임 할당</b>(프로세스마다 프레임을 몇 개 줄 것인가, 8장)과 <b>페이지 교체</b>(그 프레임들 중 무엇을 내보낼 것인가, 이 장)다. 교체 알고리즘의 목표는 단순하다. <em>같은 프레임 수로 페이지 폴트를 최소화</em>하는 것. 디스크 접근은 DRAM 접근보다 10<sup>4</sup>~10<sup>5</sup>배 느리기 때문에 폴트율 개선 1%가 전체 성능을 몇 배씩 바꿀 수 있다.</p>
+
+    <div class="callout warn"><span class="title">현업 관점: "교체"는 항상 일어나고 있다</span>
+      Linux 서버에서 <code>free</code>의 "free" 값이 작다고 놀랄 필요는 없다. 남는 메모리는 페이지 캐시로 쓰이고, 새 할당이 오면 커널이 캐시 페이지를 교체(회수)해서 내준다. 즉 교체 알고리즘은 "메모리 부족 비상 상황"에만 도는 코드가 아니라, 파일 I/O가 있는 모든 시스템에서 상시 작동하는 캐시 정책이다. 문제가 되는 것은 교체가 <em>필요한 페이지</em>를 내보내기 시작할 때다.
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2>2. dirty 비트와 write-back 비용</h2>
+    <p>희생 페이지가 메모리에 올라온 뒤 한 번도 수정되지 않았다면, 디스크(스왑 영역이나 원본 파일)에 같은 내용이 이미 있으므로 그냥 버리면 된다. 수정됐다면 내보내기 전에 반드시 기록해야 한다. 이를 판별하는 것이 PTE의 <b>dirty(modify) 비트</b>다. 하드웨어는 해당 페이지에 쓰기가 일어나면 자동으로 이 비트를 세운다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>아키텍처</th><th>참조(accessed) 정보</th><th>dirty 정보</th><th>비고</th></tr>
+      <tr><td>x86-64</td><td>PTE 비트 5 <code>A</code> (하드웨어가 페이지 워크 중 설정)</td><td>PTE 비트 6 <code>D</code> (첫 쓰기 시 설정)</td><td>OS가 비트를 지운다. 하드웨어는 세우기만 한다.</td></tr>
+      <tr><td>ARM64</td><td>디스크립터 비트 10 <code>AF</code></td><td>DBM(비트 51) + 읽기 전용 비트 조합</td><td>하드웨어 관리(FEAT_HAFDBS, ARMv8.1)가 없으면 AF=0 접근 시 Access flag fault가 나고 커널이 소프트웨어로 설정한다.</td></tr>
+    </table></div>
+
+    <p>페이지 종류별로 "버려도 되는가"가 다르다.</p>
+    <ul>
+      <li><b>깨끗한 파일 페이지</b>(실행 코드, 읽기만 한 파일 캐시): 버리고 나중에 파일에서 다시 읽으면 된다. 가장 싼 희생자.</li>
+      <li><b>dirty 파일 페이지</b>: 파일에 write-back 후 해제. Linux에서는 이 기록을 주로 flusher 스레드가 맡고, 회수 경로는 깨끗한 페이지를 먼저 찾는 쪽으로 설계돼 있다.</li>
+      <li><b>익명(anonymous) 페이지</b>(힙, 스택): 원본 파일이 없다. 처음 내보낼 때는 스왑 슬롯을 할당해 기록해야 한다. 단, 스왑에서 읽어 들인 뒤 수정되지 않았고 스왑 사본이 남아 있다면(스왑 캐시) 쓰기 없이 해제할 수 있다.</li>
+    </ul>
+
+    <p>폴트 서비스 시간을 <code>T<sub>f</sub></code>, 희생자가 dirty일 확률을 <code>d</code>, 쓰기 비용을 <code>T<sub>w</sub></code>라 하면 유효 접근 시간(EAT)은 다음과 같다.</p>
+    <pre>EAT = (1 − p) × T<sub>mem</sub> + p × (T<sub>f</sub> + d × T<sub>w</sub>)</pre>
+    <p>교과서 수치(메모리 200ns, 폴트 서비스 8ms)로 계산하면 EAT ≈ 200 + 7,999,800·p (ns)이다. 성능 저하를 10% 이내로 묶으려면 <b>p &lt; 0.0000025</b>, 즉 약 40만 번 접근에 폴트 한 번 미만이어야 한다. dirty 희생자 비율까지 높으면 이 기준은 더 가혹해진다. 아래 계산기로 감을 잡아 보자.</p>
+
+    <div class="widget" id="eat">
+      <div class="w-title">dirty 비율에 따른 유효 접근 시간 계산기</div>
+      <div class="w-desc">폴트율과 dirty 희생자 비율을 바꾸며 평균 접근 시간이 얼마나 늘어나는지 본다. 장치 프리셋으로 HDD와 NVMe의 차이도 비교할 수 있다.</div>
+      <div class="controls">
+        <span>장치 프리셋:</span>
+        <button class="btn" data-dev="tb">교과서 (8ms)</button>
+        <button class="btn" data-dev="hdd">HDD (~10ms)</button>
+        <button class="btn" data-dev="nvme">NVMe SSD (~100µs)</button>
+      </div>
+      <div class="calc-grid">
+        <label>메모리 접근 시간 T<sub>mem</sub> (ns) <input type="number" id="eat-mem" value="200" min="1"></label>
+        <label>폴트 서비스 시간 T<sub>f</sub> (µs) <input type="number" id="eat-tf" value="8000" min="1"></label>
+        <label>write-back 추가 시간 T<sub>w</sub> (µs) <input type="number" id="eat-tw" value="8000" min="0"></label>
+        <label>폴트율: 접근 <b id="eat-pv">1,000,000</b>번당 1회 <input type="range" id="eat-p" min="2" max="8" step="0.1" value="6"></label>
+        <label>dirty 희생자 비율 d: <b id="eat-dv">50%</b> <input type="range" id="eat-d" min="0" max="100" value="50"></label>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">EAT (clean만)</div><div class="v" id="eat-o1">-</div></div>
+        <div class="stat"><div class="k">EAT (dirty 반영)</div><div class="v" id="eat-o2">-</div></div>
+        <div class="stat"><div class="k">메모리 대비 감속</div><div class="v" id="eat-o3">-</div></div>
+        <div class="stat"><div class="k">10% 저하 한계 p</div><div class="v" id="eat-o4" style="font-size:15px">-</div></div>
+      </div>
+      <div class="small" id="eat-msg"></div>
+    </div>
+
+    <div class="callout tip"><span class="title">설계 포인트: 교체 알고리즘은 dirty를 "비용"으로 본다</span>
+      순수하게 폴트 수만 최소화하는 OPT와 달리 실제 시스템은 깨끗한 페이지를 선호한다. 7절의 Enhanced Clock은 (참조, 수정) 비트 쌍으로 이 선호를 명시적으로 구현한다. Linux도 회수 중 dirty 페이지를 만나면 즉시 기록하기보다 리스트에서 넘기고 깨끗한 페이지를 먼저 회수하려 한다. 그리고 백그라운드에서 미리 기록해 두면(<em>page cleaning</em>, 주기적 write-back) 교체 시점에 dirty가 될 확률 d 자체를 낮출 수 있다.
+    </div>
+  </section>
+
+  <section id="s3">
+    <h2>3. 알고리즘을 평가하는 방법: 참조열</h2>
+    <p>교체 알고리즘은 <b>참조열(reference string)</b> — 메모리 접근을 페이지 번호로 축약한 순서열 — 위에서 폴트 수를 세어 비교한다. 주소 트레이스를 참조열로 만들 때는 두 가지 축약을 한다.</p>
+    <ol>
+      <li>페이지 크기로 나눠 페이지 번호만 남긴다. (예: 4KiB 페이지에서 0x1234, 0x1F00은 모두 페이지 1)</li>
+      <li>같은 페이지에 대한 <em>연속</em> 참조는 하나로 합친다. 페이지 p를 방금 참조했다면 바로 다음 p 참조는 반드시 히트이기 때문이다.</li>
+    </ol>
+    <p>프레임 수가 늘면 폴트 수는 줄어드는 것이 "직관"이다. 프레임 수 = 서로 다른 페이지 수이면 폴트는 <em>강제 폴트(compulsory miss)</em>만 남는다. 그런데 이 직관이 모든 알고리즘에서 성립하지는 않는다는 사실이 9절의 주제다.</p>
+    <div class="callout"><span class="title">표기 규칙</span>
+      이 장의 위젯은 참조열을 <code>7,0,1,2w,0</code>처럼 쉼표나 공백으로 구분한다. 숫자 뒤의 <code>w</code>는 그 참조가 <b>쓰기</b>라는 뜻이다. 쓰기는 해당 페이지의 dirty(M) 비트를 세우며, Enhanced Clock의 선택과 write-back 횟수 집계에 쓰인다.
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. FIFO, OPT, LRU</h2>
+    <h3>FIFO: 가장 먼저 들어온 페이지를 내보낸다</h3>
+    <p>적재 순서대로 큐에 넣고 머리를 내보낸다. 구현은 원형 포인터 하나면 된다. 문제는 "오래전에 들어왔다"와 "앞으로 안 쓴다"가 무관하다는 점이다. 초기화 때 한 번 쓰고 마는 페이지도, 프로그램 내내 쓰는 핵심 변수가 든 페이지도 똑같이 나이만 보고 쫓겨난다. 교과서 참조열(3프레임)에서 <b>15번</b> 폴트를 낸다.</p>
+
+    <h3>OPT(MIN): 가장 오랫동안 쓰이지 않을 페이지를 내보낸다</h3>
+    <p>Bélády가 1966년에 제시한 최적 알고리즘으로, 모든 프레임 수에서 가능한 최소 폴트를 보장한다. 증명의 핵심은 교환 논증(exchange argument)이다. 어떤 알고리즘이 OPT와 다른 희생자를 고르면, 그 선택을 OPT의 선택으로 바꿔도 폴트가 늘지 않음을 보일 수 있다. 같은 참조열에서 <b>9번</b>. 미래 참조를 알아야 하므로 실제로는 구현할 수 없다. 대신 <em>상한 기준선</em>으로 쓴다. "새 알고리즘이 LRU보다 3% 낫다"보다 "OPT와의 격차를 40% 줄였다"가 훨씬 정보가 많다.</p>
+
+    <h3>LRU: 가장 오래전에 사용된 페이지를 내보낸다</h3>
+    <p>"최근 과거는 가까운 미래를 닮는다"는 시간 지역성(temporal locality) 가정 아래, OPT를 과거 방향으로 뒤집은 것이 LRU다. 실제로 참조열 S에 LRU를 적용한 폴트 수는 뒤집은 참조열 S<sup>R</sup>에 OPT를 적용한 폴트 수와 같다. 교과서 참조열에서 <b>12번</b>. OPT에 꽤 근접하지만, 대가는 <em>매 메모리 참조마다</em> 순서 정보를 갱신해야 한다는 구현 비용이다(6절).</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>알고리즘</th><th>희생자 기준</th><th>필요한 정보</th><th>교과서 예제 (3프레임)</th><th>Belady 이상</th></tr>
+      <tr><td>FIFO</td><td>적재 시각 최소</td><td>적재 순서</td><td>15</td><td class="c-bad">발생 가능</td></tr>
+      <tr><td>OPT</td><td>다음 사용 시각 최대</td><td>미래 참조 전체</td><td>9</td><td class="c-ok">없음</td></tr>
+      <tr><td>LRU</td><td>마지막 사용 시각 최소</td><td>모든 참조의 순서</td><td>12</td><td class="c-ok">없음</td></tr>
+    </table></div>
+  </section>
+
+  <section id="s5">
+    <h2>5. 페이지 교체 시뮬레이터</h2>
+    <p>아래 시뮬레이터는 이 장의 모든 알고리즘을 같은 규칙으로 실행한다. 열은 시간, 행은 프레임이다. <span class="c-bad">빨간 칸</span>은 폴트로 새 페이지가 적재된 프레임, <span class="c-ok">초록 칸</span>은 히트한 프레임이다. 맨 아래 "교체" 행은 쫓겨난 페이지이며, dirty였으면 <span class="c-warn">*</span>로 write-back을 표시한다. Clock 계열을 고르면 오른쪽 원형 다이얼에서 포인터가 돌며 참조 비트를 지우는 과정을 볼 수 있다.</p>
+
+    <div class="widget" id="sim">
+      <div class="w-title">페이지 교체 시뮬레이터</div>
+      <div class="w-desc">참조열과 프레임 수, 알고리즘을 고르고 "실행"을 누른 뒤 ▶ 재생 또는 다음 ▶으로 한 단계씩 진행한다. 숫자 뒤 <code>w</code>는 쓰기 참조다.</div>
+      <div class="controls">
+        <span>프리셋:</span>
+        <select id="sim-preset">
+          <option value="7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1">교과서 예제 (Silberschatz)</option>
+          <option value="1,2,3,4,1,2,5,1,2,3,4,5">Belady 이상 현상</option>
+          <option value="2w,5w,1,3,2w,5w,0,3,1,0w,1,2,3w,0,5w,0">쓰기 포함 (Enhanced Clock용)</option>
+          <option value="1,2,3,4,5,1,2,3,4,5,1,2,3,4,5">순환 루프 (LRU의 약점)</option>
+          <option value="1,1w,2,1,3,1,4,5,6,7,4,5,6,7,4,5,6,7">빈도 편향 (LFU의 약점)</option>
+          <option value="random">무작위 생성</option>
+        </select>
+        <label>프레임 <select id="sim-nf"></select></label>
+        <label>알고리즘 <select id="sim-algo">
+          <option value="FIFO">FIFO</option><option value="OPT">OPT</option><option value="LRU" selected>LRU</option>
+          <option value="CLOCK">Clock (Second Chance)</option><option value="ECLOCK">Enhanced Clock (R,M)</option>
+          <option value="LFU">LFU</option><option value="MFU">MFU</option>
+        </select></label>
+        <label>속도 <select id="sim-speed"><option value="1600">느리게</option><option value="1000" selected>보통</option><option value="500">빠르게</option></select></label>
+      </div>
+      <div class="controls">
+        <input type="text" class="ref-input" id="sim-refs" value="7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1" aria-label="참조열">
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="sim-run">실행</button>
+        <button class="btn" id="sim-end">결과로 바로 이동</button>
+        <span class="small" id="sim-err"></span>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">폴트</div><div class="v c-bad" id="sim-f">-</div></div>
+        <div class="stat"><div class="k">히트</div><div class="v c-ok" id="sim-h">-</div></div>
+        <div class="stat"><div class="k">폴트율</div><div class="v" id="sim-r">-</div></div>
+        <div class="stat"><div class="k">write-back</div><div class="v c-warn" id="sim-wb">-</div></div>
+      </div>
+      <div class="sim-flex">
+        <div class="stage" id="sim-grid"></div>
+        <div class="dial-wrap" id="sim-dial" hidden>
+          <svg viewBox="0 0 240 240" id="dial-svg" aria-label="Clock 다이얼"></svg>
+          <div class="dial-note" id="dial-note">포인터 = 다음에 검사할 프레임</div>
+        </div>
+      </div>
+      <div id="sim-step"></div>
+    </div>
+
+    <div class="callout"><span class="title">해 볼 것</span>
+      <ul>
+        <li>교과서 예제에서 FIFO 15 / OPT 9 / LRU 12를 확인하고, Clock이 LRU와 FIFO 사이(14)에 오는 것을 보라. Clock은 LRU의 근사다.</li>
+        <li>"순환 루프" 프리셋을 4프레임 LRU로 돌려 보라. 5개 페이지가 순환하면 LRU는 <em>항상</em> 다음에 쓸 페이지를 내보낸다. 모든 참조가 폴트다. 큰 배열 순차 스캔이 캐시를 오염시키는 현상의 축소판이다.</li>
+        <li>"빈도 편향"을 LFU 3프레임으로 돌려 보라. 초반에 많이 쓰인 페이지 1이 이후 거의 안 쓰이는데도 높은 카운트 때문에 오래 남는다.</li>
+        <li>"쓰기 포함"을 3프레임 Clock과 Enhanced Clock으로 비교하라. Clock은 폴트 12·write-back 6, Enhanced Clock은 폴트 10·write-back 2다. 깨끗한 페이지를 먼저 내보내는 선호가 I/O를 크게 줄인다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="s6">
+    <h2>6. LRU의 구현 비용과 근사: 참조 비트, aging</h2>
+    <p>LRU가 좋다면 왜 OS는 LRU를 그대로 쓰지 않을까? 정확한 LRU는 <em>모든 메모리 참조</em>마다 순서를 갱신해야 한다. 메모리 참조는 초당 수십억 번 일어나고, 그중 TLB 히트는 OS가 개입할 틈도 없이 하드웨어가 처리한다. 고전적인 구현 방식 두 가지를 보자.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 270" role="img" aria-label="LRU 구현: 카운터 방식과 스택(이중 연결 리스트) 방식">
+        <defs><marker id="ar7b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="170" y="22" text-anchor="middle" style="font-weight:700">(a) 카운터(타임스탬프) 방식</text>
+        <rect x="20" y="36" width="120" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="80" y="58" text-anchor="middle">CPU 논리 시계</text>
+        <text x="80" y="88" text-anchor="middle" class="muted" style="font-size:11.5px">참조마다 +1</text>
+        <rect class="box" x="190" y="36" width="140" height="150" rx="6"/>
+        <text x="260" y="56" text-anchor="middle" class="muted" style="font-size:11.5px">PTE의 time-of-use</text>
+        <text x="215" y="82" style="font-family:var(--mono)">p0</text><text x="305" y="82" text-anchor="end" style="font-family:var(--mono)">1042</text>
+        <text x="215" y="106" style="font-family:var(--mono)">p1</text><text x="305" y="106" text-anchor="end" style="font-family:var(--mono)">1077</text>
+        <rect x="200" y="114" width="120" height="22" rx="4" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="215" y="130" style="font-family:var(--mono)">p2</text><text x="305" y="130" text-anchor="end" style="font-family:var(--mono)">  995</text>
+        <text x="215" y="154" style="font-family:var(--mono)">p3</text><text x="305" y="154" text-anchor="end" style="font-family:var(--mono)">1080</text>
+        <text x="260" y="176" text-anchor="middle" class="muted" style="font-size:11.5px">희생자 = 최소값 탐색</text>
+        <line class="line" x1="140" y1="53" x2="188" y2="150" marker-end="url(#ar7b)"/>
+        <text x="20" y="214" style="font-size:12px">· 참조마다 PTE에 시각을 써야 함 (메모리 쓰기 추가)</text>
+        <text x="20" y="232" style="font-size:12px">· 교체 시 O(n) 탐색, 카운터 오버플로 처리</text>
+        <text x="20" y="250" style="font-size:12px">· PTE에 시각 필드가 있는 하드웨어는 현실에 없다</text>
+
+        <text x="540" y="22" text-anchor="middle" style="font-weight:700">(b) 스택(이중 연결 리스트) 방식</text>
+        <text x="395" y="62" class="muted" style="font-size:11.5px">MRU</text>
+        <rect x="380" y="70" width="60" height="34" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="410" y="92" text-anchor="middle" style="font-family:var(--mono)">p3</text>
+        <rect class="box" x="460" y="70" width="60" height="34" rx="6"/><text x="490" y="92" text-anchor="middle" style="font-family:var(--mono)">p1</text>
+        <rect class="box" x="540" y="70" width="60" height="34" rx="6"/><text x="570" y="92" text-anchor="middle" style="font-family:var(--mono)">p0</text>
+        <rect x="620" y="70" width="60" height="34" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="650" y="92" text-anchor="middle" style="font-family:var(--mono)">p2</text>
+        <text x="650" y="62" text-anchor="middle" class="muted" style="font-size:11.5px">LRU (희생자)</text>
+        <line class="line" x1="440" y1="82" x2="458" y2="82" marker-end="url(#ar7b)"/><line class="line" x1="458" y1="94" x2="440" y2="94" marker-end="url(#ar7b)"/>
+        <line class="line" x1="520" y1="82" x2="538" y2="82" marker-end="url(#ar7b)"/><line class="line" x1="538" y1="94" x2="520" y2="94" marker-end="url(#ar7b)"/>
+        <line class="line" x1="600" y1="82" x2="618" y2="82" marker-end="url(#ar7b)"/><line class="line" x1="618" y1="94" x2="600" y2="94" marker-end="url(#ar7b)"/>
+        <path d="M570,104 C570,140 410,140 410,108" style="fill:none;stroke:var(--accent);stroke-width:1.8;stroke-dasharray:5 3" marker-end="url(#ar7b)"/>
+        <text x="490" y="150" text-anchor="middle" style="font-size:12px;fill:var(--accent)">p0 참조 → 머리로 이동 (포인터 최대 6개 수정)</text>
+        <text x="380" y="190" style="font-size:12px">· 교체는 O(1): 꼬리를 떼면 끝</text>
+        <text x="380" y="208" style="font-size:12px">· 대신 <tspan style="font-weight:700">모든 참조</tspan>가 리스트 조작 = 락 + 캐시 미스</text>
+        <text x="380" y="226" style="font-size:12px">· 해시맵과 결합하면 소프트웨어 캐시의 표준 구현</text>
+        <text x="380" y="244" style="font-size:12px">  (예: 애플리케이션 LRU 캐시)</text>
+      </svg>
+      <figcaption>그림 7-2. 정확한 LRU의 두 구현. 둘 다 "매 참조마다 무언가를 갱신"해야 한다는 점이 페이지 단위 교체에서는 치명적이다.</figcaption>
+    </figure>
+
+    <p>메모리 참조마다 인터럽트를 걸어 소프트웨어로 갱신하면 모든 접근이 열 배 이상 느려진다. 그래서 실제 하드웨어가 주는 것은 단 하나, <b>참조 비트</b>(x86의 A 비트)다. 페이지가 접근되면 하드웨어가 1로 세운다. OS는 주기적으로 이 비트를 읽고 지운다. 비트 하나로는 "최근 일정 기간 안에 쓰였는가"만 알 수 있을 뿐, 순서는 모른다. 근사 LRU 알고리즘들은 모두 이 1비트로 순서를 최대한 복원하려는 시도다.</p>
+
+    <h3>부가 참조 비트(additional-reference-bits) = aging</h3>
+    <p>페이지마다 8비트 시프트 레지스터를 둔다. 일정 주기(예: 100ms)마다 타이머 인터럽트에서 OS가 각 레지스터를 오른쪽으로 한 비트 밀고, 현재 참조 비트를 최상위 비트(MSB)에 넣은 뒤 참조 비트를 지운다. 레지스터를 부호 없는 정수로 보면 <em>값이 작을수록 오래 안 쓰인 페이지</em>다. <code>11000100</code>은 <code>01110111</code>보다 최근에 쓰였다. 최근 구간일수록 높은 가중치를 받기 때문이다.</p>
+    <p>정확한 LRU와의 차이는 두 가지다. (1) 한 틱 안에서 누가 먼저 참조됐는지 구분하지 못한다. (2) 8틱보다 오래된 이력은 잊는다. 레지스터가 둘 다 <code>00000000</code>이면 하나는 9틱 전, 다른 하나는 1000틱 전에 쓰였어도 구분할 수 없다. 동률은 FIFO 등으로 깬다.</p>
+
+    <div class="widget" id="aging">
+      <div class="w-title">Aging: 8비트 시프트 레지스터</div>
+      <div class="w-desc">이번 틱 동안 참조된 페이지를 버튼으로 켠 뒤(R=1) "타이머 틱"을 누른다. 레지스터가 오른쪽으로 밀리며 R이 MSB로 들어간다. 빨간 행이 현재 희생자(최솟값)다. "예제 패턴"은 5틱 동안 정해진 R 비트를 차례로 적용한다.</div>
+      <div class="controls" id="aging-btns"></div>
+      <div class="controls">
+        <button class="btn primary" id="aging-tick">타이머 틱 ⏱</button>
+        <button class="btn" id="aging-demo">예제 패턴 재생</button>
+        <button class="btn" id="aging-reset">초기화</button>
+        <span class="small" id="aging-t">틱 0</span>
+      </div>
+      <div class="tbl-wrap"><table class="aging-tbl" id="aging-tbl"></table></div>
+      <div class="small" id="aging-msg"></div>
+    </div>
+
+    <details class="deep"><summary>심화: x86에서 A 비트를 지울 때 TLB는 왜 안 비우나</summary><div>
+      <p>CPU는 TLB에 캐시된 엔트리의 A 비트가 이미 1이면 페이지 테이블을 다시 쓰지 않는다. 따라서 OS가 메모리의 PTE에서 A를 지워도, TLB에 그 엔트리가 남아 있는 동안에는 접근이 일어나도 A가 다시 서지 않을 수 있다. 정석대로라면 A를 지운 뒤 TLB를 무효화해야 한다.</p>
+      <p>Linux x86의 <code>ptep_clear_flush_young()</code>은 이름과 달리 의도적으로 TLB를 비우지 않는다. 소스 주석의 논리는 이렇다. A 비트를 TLB 플러시 없이 지워도 데이터가 깨지지는 않는다. 최악의 경우 뜨거운 페이지를 차갑게 오인할 수 있지만 그럴 가능성은 낮다. 엔트리는 결국 컨텍스트 스위치나 다른 VM 연산으로 플러시된다. 반면 모든 CPU에 IPI를 보내는 TLB shootdown 비용은 확실하고 크다. <b>정확도를 약간 포기하고 확장성을 얻는</b> 전형적인 커널 트레이드오프다.</p>
+    </div></details>
+
+    <div class="callout deep"><span class="title">소프트웨어 캐시도 같은 이유로 근사한다</span>
+      Redis의 <code>allkeys-lru</code>는 정확한 LRU 리스트를 유지하지 않는다. 키마다 마지막 접근 시각을 저장하고, 퇴출할 때 <code>maxmemory-samples</code>(기본 5)개를 무작위로 뽑아 그중 가장 오래된 키를 내보낸다. 모든 접근에서 리스트를 조작하는 비용을 피하기 위해서다. 페이지 교체와 똑같은 압력에서 나온 설계다.
+    </div>
+  </section>
+
+  <section id="s7">
+    <h2>7. Clock(Second Chance)과 Enhanced Clock</h2>
+    <h3>Second Chance / Clock</h3>
+    <p>FIFO에 참조 비트 하나를 더한 알고리즘이다. 프레임을 원형으로 늘어놓고 포인터(시계 바늘)가 다음 후보를 가리킨다. 교체가 필요하면 다음을 반복한다.</p>
+    <ul>
+      <li>포인터가 가리키는 페이지의 R=1이면 R을 0으로 지우고 <b>두 번째 기회</b>를 준 뒤 포인터를 한 칸 전진한다.</li>
+      <li>R=0이면 그 페이지를 교체하고, 새 페이지를 넣은 뒤 포인터를 다음 칸으로 옮긴다.</li>
+    </ul>
+    <p>히트 때는 하드웨어가 R을 세울 뿐 포인터는 움직이지 않는다. 모든 페이지의 R이 1이면 포인터가 한 바퀴 돌며 전부 지우고 처음 자리로 돌아와 교체하므로 FIFO로 퇴화한다. 바늘이 빨리 돈다는 것은 그 자체로 신호다. 대부분의 페이지가 자주 쓰이고 있다는 뜻, 즉 메모리 압력이 높다는 뜻이다. 이 관찰은 8장의 워킹셋 추정으로 이어진다.</p>
+    <p class="small">이 시뮬레이터의 규칙: 새로 적재된 페이지는 방금 참조됐으므로 R=1로 시작한다. 빈 프레임은 R=0인 프레임처럼 즉시 선택된다.</p>
+
+    <h3>Enhanced Clock (NRU 클래스)</h3>
+    <p>(R, M) 쌍으로 페이지를 네 등급으로 나눈다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>등급</th><th>(R, M)</th><th>의미</th><th>교체 선호도</th></tr>
+      <tr><td>0</td><td>(0, 0)</td><td>최근 안 쓰였고 깨끗함</td><td class="c-ok">최우선 희생자</td></tr>
+      <tr><td>1</td><td>(0, 1)</td><td>최근 안 쓰였지만 dirty (write-back 필요)</td><td>차선</td></tr>
+      <tr><td>2</td><td>(1, 0)</td><td>최근 쓰였고 깨끗함</td><td>곧 다시 쓰일 가능성</td></tr>
+      <tr><td>3</td><td>(1, 1)</td><td>최근 쓰였고 dirty</td><td class="c-bad">마지막</td></tr>
+    </table></div>
+    <p>탐색 절차(교과서판):</p>
+    <ol>
+      <li>1차 탐색: 포인터부터 한 바퀴 돌며 (0,0)을 찾는다. 이 단계에서는 비트를 건드리지 않는다.</li>
+      <li>2차 탐색: 못 찾으면 다시 한 바퀴 돌며 (0,1)을 찾는다. 지나가는 프레임의 R은 0으로 지운다.</li>
+      <li>그래도 못 찾으면 이제 모든 R이 0이므로 1단계로 돌아간다. 최대 네 바퀴 안에 반드시 희생자가 나온다.</li>
+    </ol>
+    <p>(1,0)보다 (0,1)을 먼저 내보내는 이유는 무엇일까? write-back 한 번은 비용이 확정된 손해지만, 최근에 쓰인 페이지를 내보내면 곧 폴트가 나서 읽기 I/O가 생길 <em>가능성</em>이 크다. 설계자는 "최근성"을 "깨끗함"보다 강한 신호로 판단한 것이다.</p>
+
+    <div class="callout warn"><span class="title">Clock의 현업 변형</span>
+      PostgreSQL의 공유 버퍼 교체는 <b>clock sweep</b>이다. 버퍼마다 1비트 대신 <code>usage_count</code>(최대 5)를 두고, 접근 시 증가, 바늘이 지날 때 감소, 0인 버퍼를 교체한다. Clock과 LFU의 중간쯤 되는 설계로, 자주 쓰이는 인덱스 루트 페이지가 한 번의 큰 스캔에 밀려나지 않게 해 준다.
+    </div>
+  </section>
+
+  <section id="s8">
+    <h2>8. 빈도 기반: LFU와 MFU</h2>
+    <p><b>LFU</b>(Least Frequently Used)는 참조 횟수가 가장 적은 페이지를 내보낸다. "많이 쓰인 페이지는 계속 쓰인다"는 가정이다. 약점은 두 가지다. 과거에 몰아서 많이 쓰인 페이지가 나중에 안 쓰여도 높은 카운트 때문에 오래 남고(캐시 오염), 새로 들어온 페이지는 카운트 1로 시작하므로 쓸모와 무관하게 바로 쫓겨나기 쉽다. 실용 구현은 카운트를 주기적으로 오른쪽 시프트해 감쇠(decay)시킨다. aging과 같은 발상이다.</p>
+    <p><b>MFU</b>(Most Frequently Used)는 반대로 가장 많이 쓰인 페이지를 내보낸다. 근거는 "카운트가 작은 페이지는 방금 들어와서 아직 쓰일 차례가 남았다"는 것이다. 교과서에서 언급되지만 일반 워크로드에서 좋은 성능을 보이는 경우는 드물다. 두 알고리즘 모두 구현 비용이 크고 OPT 근사로서 성능도 일정하지 않아 순수한 형태로는 거의 쓰이지 않는다.</p>
+    <p class="small">이 시뮬레이터에서 카운트는 페이지가 메모리에 있는 동안만 유지되고, 교체되면 초기화된다. 동률이면 먼저 적재된 페이지를 내보낸다.</p>
+    <div class="callout tip"><span class="title">현대적인 빈도 정책</span>
+      Redis 4.0의 <code>allkeys-lfu</code>는 키마다 8비트 <em>로그 스케일 확률 카운터</em>와 감쇠 시각을 둔다. 빈도 정보는 오래된 것일수록 힘을 잃어야 한다는 LFU의 교훈을 그대로 반영한 설계다. 10절의 ARC와 LIRS는 빈도와 최근성을 결합하는 더 정교한 답이다.
+    </div>
+  </section>
+
+  <section id="s9">
+    <h2>9. 알고리즘 비교와 Belady의 이상 현상</h2>
+    <p>1969년 Bélády, Nelson, Shedler는 FIFO에서 <b>프레임을 늘렸는데 폴트가 늘어나는</b> 참조열을 보고했다. 가장 유명한 예가 <code>1,2,3,4,1,2,5,1,2,3,4,5</code>이다. FIFO는 3프레임에서 9번, 4프레임에서 10번 폴트를 낸다. 아래 그래프에서 직접 확인해 보자.</p>
+
+    <div class="widget" id="cmp">
+      <div class="w-title">알고리즘 비교: 프레임 수 vs 폴트 수</div>
+      <div class="w-desc">같은 참조열에 대해 프레임 1~10개일 때의 폴트 수를 알고리즘별로 그린다. 빨간 동그라미는 프레임이 늘었는데 폴트가 증가한 지점(Belady 이상)이다.</div>
+      <div class="controls">
+        <select id="cmp-preset">
+          <option value="1,2,3,4,1,2,5,1,2,3,4,5">Belady 이상 현상</option>
+          <option value="7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1">교과서 예제</option>
+          <option value="1,2,3,4,5,1,2,3,4,5,1,2,3,4,5">순환 루프</option>
+          <option value="0,1,2,3,0,1,4,0,1,2,3,4,5,0,1,2,6,7,0,1,2,3,4,5,6,7,8,9">긴 무작위풍</option>
+          <option value="random">무작위 생성</option>
+        </select>
+        <button class="btn" id="cmp-find">FIFO 이상 현상 탐색 (무작위)</button>
+        <span class="small">무작위 참조열에서 FIFO 이상은 수천 개 중 하나꼴로 드물다.</span>
+      </div>
+      <div class="controls"><input type="text" class="ref-input" id="cmp-refs" value="1,2,3,4,1,2,5,1,2,3,4,5" aria-label="비교용 참조열"></div>
+      <div class="legend" id="cmp-legend"></div>
+      <div class="stage"><svg class="chart" id="cmp-svg" viewBox="0 0 640 300" style="width:100%;min-width:320px;height:auto;display:block"></svg></div>
+      <div class="small" id="cmp-msg"></div>
+      <div class="tbl-wrap" id="cmp-tbl"></div>
+    </div>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 586 300" role="img" aria-label="FIFO 3프레임과 4프레임의 시간축 비교">
+<rect x="334" y="6" width="84" height="268" rx="6" style="fill:var(--accent-soft);stroke:var(--accent);stroke-dasharray:4 3"/>
+<text x="8" y="22" class="muted">참조</text>
+<text x="116" y="22" text-anchor="middle" style="font-weight:700">1</text>
+<text x="156" y="22" text-anchor="middle" style="font-weight:700">2</text>
+<text x="196" y="22" text-anchor="middle" style="font-weight:700">3</text>
+<text x="236" y="22" text-anchor="middle" style="font-weight:700">4</text>
+<text x="276" y="22" text-anchor="middle" style="font-weight:700">1</text>
+<text x="316" y="22" text-anchor="middle" style="font-weight:700">2</text>
+<text x="356" y="22" text-anchor="middle" style="font-weight:700">5</text>
+<text x="396" y="22" text-anchor="middle" style="font-weight:700">1</text>
+<text x="436" y="22" text-anchor="middle" style="font-weight:700">2</text>
+<text x="476" y="22" text-anchor="middle" style="font-weight:700">3</text>
+<text x="516" y="22" text-anchor="middle" style="font-weight:700">4</text>
+<text x="556" y="22" text-anchor="middle" style="font-weight:700">5</text>
+<text x="8" y="78" style="font-weight:700">3프레임</text>
+<text x="8" y="94" class="muted">폴트 9</text>
+<rect x="98" y="38" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="116" y="54" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="138" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="156" y="54" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="178" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="196" y="54" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="218" y="38" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="236" y="54" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="258" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="276" y="54" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="298" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="316" y="54" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="338" y="38" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="356" y="54" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="378" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="396" y="54" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="418" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="436" y="54" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="458" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="476" y="54" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="498" y="38" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="516" y="54" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="538" y="38" width="36" height="21" rx="3" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+<text x="556" y="54" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="98" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="138" y="62" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="156" y="78" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="178" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="196" y="78" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="218" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="236" y="78" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="258" y="62" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="276" y="78" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="298" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="316" y="78" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="338" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="356" y="78" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="378" y="62" width="36" height="21" rx="3" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+<text x="396" y="78" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="418" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="436" y="78" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="458" y="62" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="476" y="78" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="498" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="516" y="78" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="538" y="62" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="556" y="78" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="98" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="138" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="178" y="86" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="196" y="102" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="218" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="236" y="102" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="258" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="276" y="102" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="298" y="86" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="316" y="102" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="338" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="356" y="102" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="378" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="396" y="102" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="418" y="86" width="36" height="21" rx="3" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+<text x="436" y="102" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="458" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="476" y="102" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="498" y="86" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="516" y="102" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="538" y="86" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="556" y="102" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<text x="116" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="156" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="196" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="236" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="276" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="316" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="356" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="396" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--ok)">H</text>
+<text x="436" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--ok)">H</text>
+<text x="476" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="516" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="556" y="126" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--ok)">H</text>
+<text x="8" y="202" style="font-weight:700">4프레임</text>
+<text x="8" y="218" class="muted">폴트 10</text>
+<rect x="98" y="150" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="116" y="166" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="138" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="156" y="166" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="178" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="196" y="166" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="218" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="236" y="166" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="258" y="150" width="36" height="21" rx="3" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+<text x="276" y="166" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="298" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="316" y="166" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="338" y="150" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="356" y="166" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="378" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="396" y="166" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="418" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="436" y="166" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="458" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="476" y="166" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="498" y="150" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="516" y="166" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="538" y="150" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="556" y="166" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="98" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="138" y="174" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="156" y="190" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="178" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="196" y="190" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="218" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="236" y="190" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="258" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="276" y="190" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="298" y="174" width="36" height="21" rx="3" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+<text x="316" y="190" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="338" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="356" y="190" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="378" y="174" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="396" y="190" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="418" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="436" y="190" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="458" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="476" y="190" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="498" y="174" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="516" y="190" text-anchor="middle" style="font-family:var(--mono)">1</text>
+<rect x="538" y="174" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="556" y="190" text-anchor="middle" style="font-family:var(--mono)">5</text>
+<rect x="98" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="138" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="178" y="198" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="196" y="214" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="218" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="236" y="214" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="258" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="276" y="214" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="298" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="316" y="214" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="338" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="356" y="214" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="378" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="396" y="214" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="418" y="198" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="436" y="214" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="458" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="476" y="214" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="498" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="516" y="214" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="538" y="198" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="556" y="214" text-anchor="middle" style="font-family:var(--mono)">2</text>
+<rect x="98" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="138" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="178" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<rect x="218" y="222" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="236" y="238" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="258" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="276" y="238" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="298" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="316" y="238" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="338" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="356" y="238" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="378" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="396" y="238" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="418" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="436" y="238" text-anchor="middle" style="font-family:var(--mono)">4</text>
+<rect x="458" y="222" width="36" height="21" rx="3" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+<text x="476" y="238" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="498" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="516" y="238" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<rect x="538" y="222" width="36" height="21" rx="3" style="fill:var(--surface);stroke:var(--border)"/>
+<text x="556" y="238" text-anchor="middle" style="font-family:var(--mono)">3</text>
+<text x="116" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="156" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="196" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="236" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="276" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--ok)">H</text>
+<text x="316" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--ok)">H</text>
+<text x="356" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="396" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="436" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="476" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="516" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="556" y="262" text-anchor="middle" style="font-size:12px;font-weight:700;fill:var(--bad)">F</text>
+<text x="376" y="290" text-anchor="middle" class="muted" style="font-size:12px">t=7: {5,1,2} ⊄ {5,2,3,4}</text>
+</svg>
+      <figcaption>그림 7-3. FIFO의 Belady 이상. t=7(참조 5)에서 3프레임은 {5,1,2}를 갖지만 4프레임은 {5,2,3,4}를 갖는다. 바로 다음 참조 1, 2가 3프레임에서는 히트, 4프레임에서는 폴트다.</figcaption>
+    </figure>
+
+    <h3>스택 알고리즘: 이상 현상이 없다는 보장</h3>
+    <p>M(n, t)를 프레임 n개로 시각 t까지 처리했을 때 메모리에 있는 페이지 집합이라 하자. 모든 참조열과 모든 t, n에 대해 다음 <b>포함 성질(inclusion property)</b>이 성립하는 알고리즘을 <b>스택 알고리즘</b>이라 한다(Mattson 등, 1970).</p>
+    <pre>M(n, t) ⊆ M(n + 1, t)</pre>
+    <p>포함 성질이 있으면 Belady 이상은 불가능하다. n+1 프레임 메모리는 항상 n 프레임 메모리의 상위집합이므로, n 프레임에서 히트인 참조는 n+1 프레임에서도 히트다. 따라서 폴트 수는 프레임 수에 대해 단조 감소한다.</p>
+    <p><b>LRU는 왜 스택 알고리즘인가.</b> 모든 페이지를 마지막 사용 시각 순으로 줄 세운 "LRU 스택"을 생각하자. n 프레임 LRU 메모리의 내용은 항상 이 스택의 위쪽 n개다. 스택 순서는 프레임 수와 무관하게 참조열만으로 결정된다. 위쪽 n개는 위쪽 n+1개에 당연히 포함된다. OPT도 "다음 사용 시각" 순서로 같은 논리가 성립한다. FIFO는 다르다. 적재 순서는 <em>언제 폴트가 났는가</em>에 의존하고, 그것은 프레임 수에 따라 달라진다. 순서 자체가 n에 의존하니 포함 성질이 깨질 수 있다.</p>
+
+    <div class="widget" id="incl">
+      <div class="w-title">포함 성질 검사기: M(a, t) ⊆ M(b, t)?</div>
+      <div class="w-desc">같은 참조열을 두 프레임 수로 나란히 돌리고, 매 시각 작은 쪽 메모리가 큰 쪽에 포함되는지 검사한다. FIFO에서는 ✗가 나타날 수 있지만 LRU·OPT에서는 절대 나타나지 않는다.</div>
+      <div class="controls">
+        <label>알고리즘 <select id="incl-algo"><option value="FIFO">FIFO</option><option value="LRU">LRU</option><option value="OPT">OPT</option><option value="CLOCK">Clock</option></select></label>
+        <label>a <select id="incl-a"></select></label>
+        <label>b <select id="incl-b"></select></label>
+      </div>
+      <div class="controls"><input type="text" class="ref-input" id="incl-refs" value="1,2,3,4,1,2,5,1,2,3,4,5" aria-label="포함 검사용 참조열"></div>
+      <div class="stage" id="incl-out"></div>
+      <div class="small" id="incl-msg"></div>
+    </div>
+
+    <div class="callout deep"><span class="title">스택 성질의 실용적 가치: 한 번의 시뮬레이션으로 모든 크기를 평가</span>
+      Mattson의 스택 처리(stack processing)는 참조열을 한 번만 훑으며 각 참조의 <em>스택 거리</em>(LRU 스택에서의 깊이)를 기록한다. 스택 거리 분포 히스토그램만 있으면 <em>임의의 프레임 수</em>에서의 LRU 폴트 수를 즉시 계산할 수 있다. 거리가 n보다 큰 참조의 수가 곧 n 프레임 폴트 수다. 캐시 크기 산정(miss ratio curve) 도구들이 이 원리를 쓴다. 8장의 Linux refault distance도 같은 계보의 아이디어다.
+    </div>
+    <p>Clock은 스택 알고리즘이 아니다. 포인터 위치와 R 비트 상태가 폴트 이력에 의존하기 때문이다. 실제로 Belady 이상이 나타나는 참조열이 존재한다. 위 비교 위젯의 "무작위 생성"을 여러 번 눌러 Clock 곡선에서 빨간 동그라미를 찾아보라.</p>
+  </section>
+
+  <section id="s10">
+    <h2>10. 스캔 저항성: 2Q, ARC, LIRS</h2>
+    <p>LRU의 고질적 약점은 <b>한 번만 쓰이는 대량 접근</b>이다. 백업, <code>grep -r</code>, 테이블 풀 스캔 같은 순차 스캔이 지나가면 그 페이지들이 모두 "가장 최근 사용"이 되어 진짜 워킹셋을 밀어낸다. 순환 루프 프리셋에서 본 병리 현상이다. 1990~2000년대 연구는 "최근성(recency)만으로는 부족하고, 두 번 이상 쓰였다는 증거가 필요하다"는 방향으로 수렴했다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>알고리즘</th><th>핵심 아이디어</th><th>쓰이는 곳</th></tr>
+      <tr><td><b>2Q</b><br><span class="small">Johnson &amp; Shasha, VLDB 1994</span></td><td>처음 들어온 페이지는 FIFO 큐 A1in에 둔다. 거기서 밀려난 페이지는 <em>식별자만</em> A1out(ghost)에 기억한다. A1out에 있는 동안 다시 참조되면 그제야 메인 LRU 큐 Am으로 승격한다. 한 번만 쓰인 스캔 페이지는 Am을 오염시키지 못한다.</td><td>DB 버퍼 관리의 고전. MySQL InnoDB의 midpoint insertion(old 서브리스트, <code>innodb_old_blocks_pct</code> 기본 37%)도 같은 계열이다.</td></tr>
+      <tr><td><b>ARC</b><br><span class="small">Megiddo &amp; Modha, FAST 2003</span></td><td>최근 1회 참조 리스트 T1과 2회 이상 참조 리스트 T2, 각각의 ghost 리스트 B1·B2를 둔다. B1에서 히트하면 "최근성 쪽이 부족했다"는 뜻이므로 T1 목표 크기 p를 늘리고, B2 히트면 줄인다. <b>파라미터 없이 워크로드에 스스로 적응</b>한다.</td><td>ZFS의 ARC(Adaptive Replacement Cache). IBM 스토리지 컨트롤러.</td></tr>
+      <tr><td><b>LIRS</b><br><span class="small">Jiang &amp; Zhang, SIGMETRICS 2002</span></td><td>마지막 사용 이후 경과 시간 대신 <b>재참조 거리(IRR: 직전 두 참조 사이에 등장한 다른 페이지 수)</b>로 페이지를 LIR(낮은 IRR, 보호)과 HIR(높은 IRR, 후보)로 나눈다. 루프 패턴에서 LRU보다 훨씬 강하다.</td><td>CLOCK-Pro(USENIX ATC 2005)는 LIRS를 Clock 구조로 근사한 것으로, Linux 커널에 제안된 적이 있다.</td></tr>
+    </table></div>
+    <p>세 알고리즘의 공통점은 <b>ghost 엔트리</b>, 즉 이미 내보낸 페이지의 "기억"을 활용한다는 것이다. 내보낸 페이지가 금방 다시 필요해지면 그것은 정책이 틀렸다는 증거다. 이 피드백을 정책에 반영한다. Linux의 shadow entry와 refault distance(8장)도 정확히 이 발상이다.</p>
+  </section>
+
+  <section id="s11">
+    <h2>11. 실제 OS는 무엇을 쓰나: Linux LRU 리스트</h2>
+    <p>Linux는 교과서 알고리즘 중 어느 것도 그대로 쓰지 않는다. 오래 쓰여 온 기본 구조는 <b>2-리스트(active/inactive) 근사 LRU</b>이다. 2Q의 정신을 Clock식 참조 비트 샘플링과 결합한 것이다. 리스트는 노드별(그리고 memcg별) <code>lruvec</code> 안에 종류별로 존재한다.</p>
+    <ul>
+      <li><code>LRU_INACTIVE_ANON</code>, <code>LRU_ACTIVE_ANON</code>: 익명 페이지 (회수하려면 스왑 필요)</li>
+      <li><code>LRU_INACTIVE_FILE</code>, <code>LRU_ACTIVE_FILE</code>: 파일 페이지 (페이지 캐시)</li>
+      <li><code>LRU_UNEVICTABLE</code>: <code>mlock</code>된 페이지 등 회수 불가</li>
+    </ul>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Linux active/inactive LRU 리스트 흐름">
+        <defs><marker id="ar7c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="20" y="40" style="font-weight:700">active 리스트</text>
+        <text x="20" y="56" class="muted" style="font-size:11.5px">(보호되는 워킹셋)</text>
+        <rect x="140" y="24" width="440" height="44" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="152" y="50" class="muted" style="font-size:11.5px">head</text><text x="568" y="50" text-anchor="end" class="muted" style="font-size:11.5px">tail</text>
+        <g style="font-family:var(--mono);font-size:12px">
+          <rect class="box" x="200" y="32" width="44" height="28" rx="4"/><rect class="box" x="254" y="32" width="44" height="28" rx="4"/><rect class="box" x="308" y="32" width="44" height="28" rx="4"/><rect class="box" x="362" y="32" width="44" height="28" rx="4"/><rect class="box" x="416" y="32" width="44" height="28" rx="4"/><rect class="box" x="470" y="32" width="44" height="28" rx="4"/>
+        </g>
+        <text x="20" y="180" style="font-weight:700">inactive 리스트</text>
+        <text x="20" y="196" class="muted" style="font-size:11.5px">(회수 후보)</text>
+        <rect x="140" y="164" width="440" height="44" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="152" y="190" class="muted" style="font-size:11.5px">head</text><text x="568" y="190" text-anchor="end" class="muted" style="font-size:11.5px">tail</text>
+        <rect class="box" x="200" y="172" width="44" height="28" rx="4"/><rect class="box" x="254" y="172" width="44" height="28" rx="4"/><rect class="box" x="308" y="172" width="44" height="28" rx="4"/><rect class="box" x="362" y="172" width="44" height="28" rx="4"/><rect class="box" x="416" y="172" width="44" height="28" rx="4"/><rect x="470" y="172" width="44" height="28" rx="4" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="80" y="128" text-anchor="middle" style="font-size:12px">새 페이지</text>
+        <path class="line" d="M80,136 L80,150 L196,175" marker-end="url(#ar7c)"/>
+        <path d="M222,164 C222,120 222,110 222,72" style="fill:none;stroke:var(--ok);stroke-width:1.8" marker-end="url(#ar7c)"/>
+        <text x="232" y="112" style="font-size:12px;fill:var(--ok)">두 번째 접근 / 참조 확인 → 승격(activate)</text>
+        <path d="M514,68 C600,90 600,140 520,166" style="fill:none;stroke:var(--warn);stroke-width:1.8" marker-end="url(#ar7c)"/>
+        <text x="598" y="122" style="font-size:12px;fill:var(--warn)">강등</text>
+        <text x="598" y="138" class="muted" style="font-size:11px">(크기 균형)</text>
+        <path d="M514,200 L600,240" style="fill:none;stroke:var(--bad);stroke-width:1.8" marker-end="url(#ar7c)"/>
+        <text x="604" y="250" style="font-size:12px;fill:var(--bad)">회수(evict)</text>
+        <text x="604" y="266" class="muted" style="font-size:11px">shadow entry 남김</text>
+        <path d="M492,206 C470,250 300,260 250,206" style="fill:none;stroke:var(--accent);stroke-width:1.5;stroke-dasharray:5 3" marker-end="url(#ar7c)"/>
+        <text x="370" y="262" text-anchor="middle" style="font-size:12px;fill:var(--accent)">tail에서 PTE A 비트가 1이면 → 회전 또는 승격</text>
+        <text x="360" y="290" text-anchor="middle" class="muted" style="font-size:12px">kswapd / direct reclaim이 tail부터 스캔 (mm/vmscan.c)</text>
+      </svg>
+      <figcaption>그림 7-4. Linux의 2-리스트 근사 LRU(개념도). 한 번만 쓰인 페이지는 inactive에서 조용히 사라지고, 두 번 이상 쓰인 페이지만 active로 올라간다. 2Q와 같은 스캔 저항성이다.</figcaption>
+    </figure>
+
+    <ul>
+      <li><b>두 번 접근(two-touch) 승격</b>: <code>read()</code> 같은 시스템 콜 경로에서는 <code>folio_mark_accessed()</code>(옛 이름 <code>mark_page_accessed()</code>)가 첫 접근에 referenced 플래그만 세우고, 두 번째 접근에서 active로 올린다.</li>
+      <li><b>매핑된 페이지</b>는 커널이 접근을 직접 볼 수 없다. 스캔할 때 역매핑(rmap)으로 그 페이지를 매핑한 모든 PTE의 A 비트를 확인하고 지운다(<code>folio_referenced()</code>). Clock의 참조 비트 검사와 같다.</li>
+      <li><b>회수</b>는 <code>mm/vmscan.c</code>의 <code>shrink_inactive_list()</code> / <code>shrink_active_list()</code>가 inactive tail부터 처리한다. 백그라운드 회수는 <code>kswapd</code>가, 할당 경로에서 급하게 하는 회수는 direct reclaim이 맡는다.</li>
+      <li><b>anon vs file 균형</b>은 <code>vm.swappiness</code>(기본 60, 5.8부터 범위 0~200)로 조정한다. 값이 낮을수록 파일 페이지를 먼저 회수한다.</li>
+    </ul>
+
+    <div class="callout deep"><span class="title">MGLRU (Multi-Gen LRU)</span>
+      Linux 6.1에 병합된 MGLRU(<code>CONFIG_LRU_GEN</code>)는 두 리스트를 여러 <b>세대(generation)</b>로 일반화한다. 접근 비트를 rmap으로 하나씩 확인하는 대신 페이지 테이블을 직접 훑어 대량으로 수확한다. 런타임에는 <code>/sys/kernel/mm/lru_gen/enabled</code>로 켜고 끈다. Google이 개발했으며, Android와 ChromeOS에서 kswapd CPU 사용량과 저메모리 kill 감소를 근거로 제시했다. 근사 LRU의 "해상도"를 높이는 방향이라는 점에서 aging 알고리즘의 직계 후손이다.
+    </div>
+
+    <p>2-리스트 구조에도 빈틈이 있다. inactive 리스트가 작으면 워킹셋 페이지가 두 번째 접근 전에 쫓겨나고, 다시 읽혀 inactive에 들어갔다가 또 쫓겨나는 일이 반복된다. 이를 감지하려고 Linux는 회수한 페이지 자리에 <b>shadow entry</b>를 남기고, 다시 폴트가 났을 때 <b>refault distance</b>를 계산해 "이 페이지가 active에 있었다면 살아남았는가"를 판단한다. 이것이 다음 장의 주제인 워킹셋 추정과 스래싱 감지로 이어진다. <a href="08-thrashing-working-set.html">8장 →</a></p>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>교체는 자유 프레임이 없을 때 폴트 경로에 끼어든다. dirty 희생자는 쓰기 + 읽기 두 번의 I/O를 만든다. 실제 정책은 깨끗한 페이지를 선호하고 미리 write-back해 둔다.</li>
+    <li>교과서 참조열(3프레임)에서 FIFO 15, LRU 12, OPT 9. OPT는 구현 불가능한 하한 기준선이고, LRU는 시간 지역성에 기대어 과거로 미래를 추측한다.</li>
+    <li>정확한 LRU는 매 참조마다 갱신해야 해서 하드웨어가 지원하지 않는다. 실제로는 참조 비트 1개(x86 A 비트)로 근사한다. aging, Clock, Enhanced Clock이 그 근사들이다.</li>
+    <li>FIFO는 프레임을 늘려도 폴트가 늘 수 있다(Belady 이상: 1,2,3,4,1,2,5,1,2,3,4,5에서 9→10). 포함 성질 M(n,t) ⊆ M(n+1,t)을 만족하는 스택 알고리즘(LRU, OPT)에는 이 현상이 없다.</li>
+    <li>LRU는 순차 스캔과 루프에 약하다. 2Q, ARC, LIRS는 "두 번 이상 쓰였는가"와 ghost 기억으로 스캔 저항성을 얻는다.</li>
+    <li>Linux는 active/inactive 2-리스트 근사 LRU(+6.1부터 MGLRU)를 쓰고, shadow entry로 잘못된 회수를 감지한다(→ 8장).</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">참조열 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1에 프레임 3개를 쓸 때 FIFO, LRU, OPT의 폴트 수로 옳은 것은?</div>
+    <button class="opt">FIFO 12, LRU 15, OPT 9</button>
+    <button class="opt">FIFO 15, LRU 9, OPT 12</button>
+    <button class="opt">FIFO 15, LRU 12, OPT 9</button>
+    <button class="opt">FIFO 15, LRU 12, OPT 10</button>
+    <div class="explain">FIFO 15, LRU 12, OPT 9다. 시뮬레이터로 직접 확인할 수 있다. OPT는 어떤 알고리즘보다도 폴트가 적거나 같아야 하므로 LRU가 OPT보다 작은 선택지는 즉시 배제된다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">LRU에 Belady의 이상 현상이 일어나지 않는 근본적인 이유는?</div>
+    <button class="opt">LRU는 참조 비트를 사용하기 때문이다.</button>
+    <button class="opt">n 프레임의 메모리 내용이 항상 n+1 프레임 메모리 내용의 부분집합이기 때문이다(포함 성질).</button>
+    <button class="opt">LRU는 OPT보다 폴트가 많기 때문이다.</button>
+    <button class="opt">LRU는 dirty 페이지를 먼저 내보내지 않기 때문이다.</button>
+    <div class="explain">LRU 메모리 내용은 프레임 수와 무관한 "LRU 스택"의 위쪽 n개다. 따라서 M(n,t) ⊆ M(n+1,t)이고, n 프레임에서 히트면 n+1 프레임에서도 히트다. FIFO는 적재 순서 자체가 프레임 수에 따라 바뀌어 이 성질이 깨진다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">Enhanced Clock에서 다음 네 페이지가 모두 후보일 때 가장 먼저 교체되는 것은? (포인터 위치는 고려하지 않음)</div>
+    <button class="opt">(R,M) = (1,1)</button>
+    <button class="opt">(R,M) = (1,0)</button>
+    <button class="opt">(R,M) = (0,1)</button>
+    <button class="opt">(R,M) = (0,0)</button>
+    <div class="explain">(0,0) → (0,1) → (1,0) → (1,1) 순서다. 최근에 안 쓰였고 깨끗한 페이지는 write-back도 필요 없고 곧 다시 쓰일 가능성도 낮다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Aging에서 페이지 A의 레지스터가 01100000, B가 00011111일 때 옳은 해석은?</div>
+    <button class="opt">A가 더 최근에 사용됐으므로 B가 먼저 교체된다.</button>
+    <button class="opt">B가 더 자주 사용됐으므로 A가 먼저 교체된다.</button>
+    <button class="opt">두 페이지의 1의 개수가 같아야 비교할 수 있다.</button>
+    <button class="opt">A는 2틱 동안 연속으로 안 쓰였으므로 A가 먼저 교체된다.</button>
+    <div class="explain">레지스터를 부호 없는 정수로 비교한다. A=96, B=31. A는 2·3번째 이전 틱에 쓰였고, B는 최근 3틱 동안 한 번도 쓰이지 않았다(4~8번째 이전 틱에만 쓰임). 최근 틱에 높은 가중치를 주므로 B가 더 오래된 페이지로 간주되어 먼저 교체된다. B의 참조 횟수가 많아도 마찬가지다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">대용량 파일을 한 번 순차적으로 읽는 백업 작업이 돈 뒤 웹 서버 응답이 느려졌다. 순수 LRU 페이지 캐시에서 가장 그럴듯한 원인과, 이를 완화하는 구조는?</div>
+    <button class="opt">Belady 이상 현상 — FIFO로 바꾼다.</button>
+    <button class="opt">dirty 페이지 증가 — Enhanced Clock으로 바꾼다.</button>
+    <button class="opt">한 번만 쓰인 스캔 페이지가 워킹셋을 밀어냄 — 2Q/ARC 또는 active/inactive 2-리스트로 두 번 이상 쓰인 페이지만 보호한다.</button>
+    <button class="opt">TLB 미스 증가 — huge page를 쓴다.</button>
+    <div class="explain">순차 스캔 페이지는 전부 "최근 사용"이 되어 LRU 상위를 점령한다. 2Q·ARC·Linux 2-리스트는 첫 접근 페이지를 별도 영역(A1in/T1/inactive)에 두어, 재참조된 페이지만 보호 영역으로 승격한다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">x86-64 PTE에서 하드웨어가 자동으로 세우는 참조 비트와 dirty 비트의 위치는?</div>
+    <button class="opt">비트 0 (P), 비트 1 (R/W)</button>
+    <button class="opt">비트 5 (A), 비트 6 (D)</button>
+    <button class="opt">비트 2 (U/S), 비트 63 (XD)</button>
+    <button class="opt">비트 7 (PS), 비트 8 (G)</button>
+    <div class="explain">Accessed는 비트 5, Dirty는 비트 6이다. 하드웨어는 세우기만 하고 지우는 것은 OS의 몫이다. 이 두 비트가 Clock/Enhanced Clock 계열 근사의 하드웨어 기반이다.</div>
+  </div>
+</main>
+
+<script>
+/*CORE-BEGIN*/
+function parseRefs(s) {
+  const out = [];
+  for (const tok of String(s).split(/[\s,]+/)) {
+    if (!tok) continue;
+    const m = /^(\d{1,3})([wW*])?$/.exec(tok);
+    if (m) out.push({ p: +m[1], w: !!m[2] });
+  }
+  return out;
+}
+const ALGO_NAME = { FIFO: "FIFO", OPT: "OPT", LRU: "LRU", CLOCK: "Clock", ECLOCK: "Enhanced Clock", LFU: "LFU", MFU: "MFU" };
+function simulate(refs, nf, algo) {
+  const fr = new Array(nf).fill(null);
+  let ptr = 0, faults = 0, wb = 0;
+  const steps = [];
+  const nextUse = (p, t) => { for (let k = t + 1; k < refs.length; k++) if (refs[k].p === p) return k; return Infinity; };
+  refs.forEach((r, t) => {
+    const ptrBefore = ptr, scan = [];
+    let idx = fr.findIndex(f => f && f.p === r.p);
+    const hit = idx >= 0;
+    let victim = null, vdirty = false, why = "";
+    if (hit) {
+      const f = fr[idx];
+      f.last = t; f.cnt++; f.R = 1; if (r.w) f.M = 1;
+    } else {
+      faults++;
+      if (algo === "CLOCK") {
+        for (;;) {
+          const f = fr[ptr];
+          if (!f || !f.R) break;
+          f.R = 0; scan.push({ pos: ptr, act: "clear" });
+          ptr = (ptr + 1) % nf;
+        }
+        idx = ptr;
+        if (fr[idx]) why = (scan.length ? "R=1인 " + scan.map(s => fr[s.pos].p).join(", ") + "의 R을 0으로 지우고 지나감 → " : "") + "R=0인 " + fr[idx].p + " 교체";
+      } else if (algo === "ECLOCK") {
+        idx = -1;
+        outer: for (let round = 1; round <= 2; round++) {
+          for (let k = 0; k < nf; k++) {
+            const i = (ptr + k) % nf, f = fr[i];
+            scan.push({ pos: i, act: "look", round, pass: 1 });
+            if (!f || (!f.R && !f.M)) { idx = i; break outer; }
+          }
+          for (let k = 0; k < nf; k++) {
+            const i = (ptr + k) % nf, f = fr[i];
+            if (!f.R && f.M) { scan.push({ pos: i, act: "look", round, pass: 2 }); idx = i; break outer; }
+            f.R = 0; scan.push({ pos: i, act: "clear", round, pass: 2 });
+          }
+        }
+        if (fr[idx]) {
+          const last = scan[scan.length - 1];
+          why = "라운드 " + last.round + ", " + (last.pass === 1 ? "1차 탐색에서 (R,M)=(0,0)" : "2차 탐색에서 (R,M)=(0,1)") + "인 " + fr[idx].p + " 선택";
+        }
+      } else {
+        idx = fr.indexOf(null);
+        if (idx < 0) {
+          const key = f => {
+            switch (algo) {
+              case "FIFO": return [f.load];
+              case "LRU": return [f.last];
+              case "OPT": return [-nextUse(f.p, t), f.load];
+              case "LFU": return [f.cnt, f.load];
+              case "MFU": return [-f.cnt, f.load];
+            }
+          };
+          let best = 0, bk = key(fr[0]);
+          for (let i = 1; i < nf; i++) {
+            const k = key(fr[i]);
+            for (let j = 0; j < k.length; j++) { if (k[j] < bk[j]) { best = i; bk = k; break; } if (k[j] > bk[j]) break; }
+          }
+          idx = best;
+          const v = fr[idx];
+          if (algo === "FIFO") why = "가장 먼저 적재된 " + v.p + " (적재 t=" + (v.load + 1) + ")";
+          if (algo === "LRU") why = "가장 오래전에 사용된 " + v.p + " (마지막 사용 t=" + (v.last + 1) + ")";
+          if (algo === "OPT") { const nu = nextUse(v.p, t); why = "다음 사용이 가장 먼 " + v.p + (nu === Infinity ? " (다시 쓰이지 않음)" : " (다음 사용 t=" + (nu + 1) + ")"); }
+          if (algo === "LFU") why = "참조 횟수가 가장 적은 " + v.p + " (cnt=" + v.cnt + ", 동률이면 먼저 적재된 쪽)";
+          if (algo === "MFU") why = "참조 횟수가 가장 많은 " + v.p + " (cnt=" + v.cnt + ", 동률이면 먼저 적재된 쪽)";
+        }
+      }
+      if (fr[idx]) { victim = fr[idx].p; vdirty = !!fr[idx].M; if (vdirty) wb++; }
+      else why = "빈 프레임 " + idx + "에 적재";
+      fr[idx] = { p: r.p, load: t, last: t, cnt: 1, R: 1, M: r.w ? 1 : 0 };
+      if (algo === "CLOCK" || algo === "ECLOCK") ptr = (idx + 1) % nf;
+    }
+    steps.push({ t, p: r.p, w: r.w, hit, idx, victim, vdirty, why, ptrBefore, ptr, scan,
+      faults, wb, frames: fr.map(f => f && { p: f.p, R: f.R, M: f.M, cnt: f.cnt }) });
+  });
+  return { steps, faults, wb, hits: refs.length - faults };
+}
+function faultCurve(refs, algo, maxF) {
+  const out = [];
+  for (let n = 1; n <= maxF; n++) out.push(simulate(refs, n, algo).faults);
+  return out;
+}
+/*CORE-END*/
+
+(function () {
+  const $ = id => document.getElementById(id);
+  const ALGOS = ["FIFO", "OPT", "LRU", "CLOCK", "ECLOCK", "LFU", "MFU"];
+  const randRefs = (n, P) => {
+    const a = [];
+    while (a.length < n) { const p = Math.floor(Math.random() * P); if (a.length && a[a.length - 1] === p) continue; a.push(p); }
+    return a.map(p => p + (Math.random() < .2 ? "w" : "")).join(",");
+  };
+  const refsText = refs => refs.map(r => r.p + (r.w ? "w" : "")).join(",");
+
+  /* ---------- EAT 계산기 ---------- */
+  (function () {
+    const ids = ["eat-mem", "eat-tf", "eat-tw", "eat-p", "eat-d"];
+    const fmt = ns => ns >= 1e6 ? (ns / 1e6).toFixed(2) + " ms" : ns >= 1e3 ? (ns / 1e3).toFixed(2) + " µs" : ns.toFixed(1) + " ns";
+    function calc() {
+      const mem = Math.max(1, +$("eat-mem").value), tf = Math.max(1, +$("eat-tf").value) * 1000, tw = Math.max(0, +$("eat-tw").value) * 1000;
+      const inv = Math.pow(10, +$("eat-p").value), p = 1 / inv, d = +$("eat-d").value / 100;
+      $("eat-pv").textContent = Math.round(inv).toLocaleString();
+      $("eat-dv").textContent = Math.round(d * 100) + "%";
+      const e1 = (1 - p) * mem + p * tf, e2 = (1 - p) * mem + p * (tf + d * tw);
+      $("eat-o1").textContent = fmt(e1);
+      $("eat-o2").textContent = fmt(e2);
+      $("eat-o3").textContent = "×" + (e2 / mem).toFixed(e2 / mem < 10 ? 2 : 0);
+      const pmax = 0.1 * mem / (tf + d * tw - mem);
+      $("eat-o4").textContent = "1 / " + Math.round(1 / pmax).toLocaleString();
+      $("eat-msg").innerHTML = `dirty 반영 시 폴트 1회 평균 비용은 <b>${fmt(tf + d * tw)}</b>로, 메모리 접근 <b>${Math.round((tf + d * tw) / mem).toLocaleString()}</b>번에 해당한다. ` +
+        `10% 저하 이내를 유지하려면 접근 약 ${Math.round(1 / pmax).toLocaleString()}번에 폴트가 1번 미만이어야 한다.`;
+    }
+    ids.forEach(i => $(i).addEventListener("input", calc));
+    document.querySelectorAll("#eat [data-dev]").forEach(b => b.onclick = () => {
+      const dv = { tb: [200, 8000, 8000], hdd: [100, 10000, 10000], nvme: [100, 100, 60] }[b.dataset.dev];
+      $("eat-mem").value = dv[0]; $("eat-tf").value = dv[1]; $("eat-tw").value = dv[2]; calc();
+    });
+    calc();
+  })();
+
+  /* ---------- 공용 격자 렌더러 ---------- */
+  function gridHTML(res, nf, algo, upto, opts) {
+    opts = opts || {};
+    const st = res.steps, N = st.length;
+    let h = '<table class="rgrid"><tr><th class="rowh">t</th>';
+    for (let j = 0; j < N; j++) h += `<th class="${j > upto ? "fut" : ""}${j === upto && opts.cur ? " cur" : ""}" style="font-weight:500;font-size:11px">${j + 1}</th>`;
+    h += '</tr><tr><th class="rowh">참조</th>';
+    for (let j = 0; j < N; j++) h += `<th class="${st[j].w ? "w " : ""}${j > upto ? "fut" : ""}${j === upto && opts.cur ? " cur" : ""}">${st[j].p}${st[j].w ? "<span class='aux'>w</span>" : ""}</th>`;
+    h += "</tr>";
+    for (let k = 0; k < nf; k++) {
+      h += `<tr><th class="rowh">F${k}</th>`;
+      for (let j = 0; j < N; j++) {
+        if (j > upto) { h += '<td class="fut"></td>'; continue; }
+        const s = st[j], f = s.frames[k];
+        let cls = s.idx === k ? (s.hit ? "hitc" : "fault") : "";
+        if (j === upto && opts.cur) cls += " cur";
+        let aux = "";
+        if (f) {
+          if (algo === "CLOCK") aux = "R" + f.R + (s.ptr === k ? "◂" : "");
+          else if (algo === "ECLOCK") aux = "" + f.R + f.M + (s.ptr === k ? "◂" : "");
+          else if (algo === "LFU" || algo === "MFU") aux = "c" + f.cnt;
+          else if (opts.dirty && f.M) aux = "M";
+        }
+        h += `<td class="${cls}">${f ? f.p : ""}${aux ? `<span class="aux">${aux}</span>` : ""}</td>`;
+      }
+      h += "</tr>";
+    }
+    h += '<tr class="res"><th class="rowh">결과</th>';
+    for (let j = 0; j < N; j++) h += j > upto ? "<td></td>" : `<td class="${st[j].hit ? "c-ok" : "c-bad"}">${st[j].hit ? "H" : "F"}</td>`;
+    h += '</tr><tr class="res"><th class="rowh">교체</th>';
+    for (let j = 0; j < N; j++) {
+      const s = st[j];
+      h += j > upto || s.victim == null ? "<td></td>" : `<td class="ev${s.vdirty ? " dirty" : ""}">${s.victim}${s.vdirty ? "*" : ""}</td>`;
+    }
+    h += "</tr>";
+    if (opts.extraRow) h += opts.extraRow;
+    return h + "</table>";
+  }
+
+  /* ---------- 시뮬레이터 ---------- */
+  (function () {
+    const nfSel = $("sim-nf");
+    for (let i = 1; i <= 10; i++) nfSel.add(new Option(i, i, i === 3, i === 3));
+    let res = null, refs = [], nf = 3, algo = "LRU", stepper = null;
+    let dialTimers = [], dialCum = 0, lastI = -1;
+
+    $("sim-preset").onchange = () => {
+      const v = $("sim-preset").value;
+      $("sim-refs").value = v === "random" ? randRefs(20, 7) : v;
+      run();
+    };
+    $("sim-run").onclick = run;
+    $("sim-end").onclick = () => { if (stepper) stepper.go(refs.length - 1); };
+    ["sim-nf", "sim-algo", "sim-speed"].forEach(i => $(i).onchange = run);
+
+    function run() {
+      if (stepper) stepper.go(0);
+      refs = parseRefs($("sim-refs").value);
+      if (!refs.length) { $("sim-err").textContent = "참조열이 비어 있거나 형식이 잘못됐다. 예: 7,0,1,2w"; return; }
+      if (refs.length > 60) { refs = refs.slice(0, 60); $("sim-err").textContent = "앞의 60개만 사용한다."; } else $("sim-err").textContent = "";
+      nf = +nfSel.value; algo = $("sim-algo").value;
+      res = simulate(refs, nf, algo);
+      const isClock = algo === "CLOCK" || algo === "ECLOCK";
+      $("sim-dial").hidden = !isClock;
+      dialTimers.forEach(clearTimeout); dialTimers = []; lastI = -1; dialCum = 0;
+      if (isClock) buildDial();
+      const host = $("sim-step"); host.innerHTML = "";
+      stepper = MM.stepper(host, { steps: refs.length, interval: +$("sim-speed").value, render });
+    }
+
+    function render(i) {
+      const s = res.steps[i];
+      $("sim-grid").innerHTML = gridHTML(res, nf, algo, i, { cur: true, dirty: true });
+      $("sim-f").textContent = s.faults;
+      $("sim-h").textContent = i + 1 - s.faults;
+      $("sim-r").textContent = Math.round(s.faults / (i + 1) * 100) + "%";
+      $("sim-wb").textContent = s.wb;
+      if (algo === "CLOCK" || algo === "ECLOCK") animateDial(i);
+      lastI = i;
+      let cap = `<b>t=${i + 1}</b> · 참조 <b>${s.p}</b>${s.w ? " (쓰기)" : ""} → `;
+      if (s.hit) {
+        cap += `<span class="c-ok"><b>히트</b></span> (프레임 F${s.idx})`;
+        if (algo === "CLOCK" || algo === "ECLOCK") cap += " · 하드웨어가 R=1로 설정, 포인터는 그대로";
+        if (algo === "LRU") cap += " · 이 페이지가 가장 최근 사용(MRU)이 됨";
+        if (algo === "LFU" || algo === "MFU") cap += ` · 참조 횟수 ${s.frames[s.idx].cnt}`;
+        if (s.w) cap += " · M=1(dirty)";
+      } else {
+        cap += `<span class="c-bad"><b>폴트</b></span> · `;
+        cap += s.victim == null ? s.why : `${ALGO_NAME[algo]}: ${s.why} → F${s.idx}`;
+        if (s.victim != null) cap += s.vdirty ? ` · <span class="c-warn"><b>희생자 ${s.victim}이(가) dirty → write-back 필요</b></span>` : " · 희생자는 깨끗함(버리면 됨)";
+      }
+      if (i === refs.length - 1) cap += `<br>최종: 폴트 <b>${res.faults}</b> / ${refs.length}, write-back <b>${res.wb}</b>`;
+      return cap;
+    }
+
+    /* Clock 다이얼 */
+    const C = 120, RAD = 82;
+    const pos = k => { const a = (-90 + 360 * k / nf) * Math.PI / 180; return [C + RAD * Math.cos(a), C + RAD * Math.sin(a)]; };
+    function buildDial() {
+      const svg = $("dial-svg");
+      let h = `<circle cx="${C}" cy="${C}" r="${RAD}" style="fill:none;stroke:var(--border);stroke-dasharray:3 4"/>`;
+      h += `<g class="ptr-g nojump" id="dial-ptr" style="transform-origin:${C}px ${C}px;transform:rotate(0deg)"><line x1="${C}" y1="${C}" x2="${C}" y2="${C - RAD + 30}" style="stroke:var(--accent);stroke-width:3;stroke-linecap:round"/><path d="M${C - 7},${C - RAD + 36} L${C},${C - RAD + 24} L${C + 7},${C - RAD + 36} z" style="fill:var(--accent)"/></g>`;
+      h += `<circle cx="${C}" cy="${C}" r="6" style="fill:var(--accent)"/>`;
+      for (let k = 0; k < nf; k++) {
+        const [x, y] = pos(k), r = nf > 7 ? 17 : 21;
+        h += `<g id="dn${k}"><circle cx="${x}" cy="${y}" r="${r}" style="fill:var(--surface-2);stroke:var(--border);stroke-width:2"/>` +
+          `<text x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="middle" style="font-size:${nf > 7 ? 13 : 15}px;font-weight:700;fill:var(--text)"></text>` +
+          `<text x="${x}" y="${y + r + 11}" text-anchor="middle" style="font-size:10px;fill:var(--muted)"></text></g>`;
+      }
+      svg.innerHTML = h;
+    }
+    function drawDial(frames, ptr, mark, animate) {
+      for (let k = 0; k < nf; k++) {
+        const g = $("dn" + k); if (!g) return;
+        const [c, t1, t2] = [g.querySelector("circle"), g.querySelectorAll("text")[0], g.querySelectorAll("text")[1]];
+        const f = frames[k];
+        t1.textContent = f ? f.p : "–";
+        t2.textContent = f ? (algo === "ECLOCK" ? `R${f.R} M${f.M}` : `R=${f.R}`) : "빈칸";
+        let sty = "fill:var(--surface-2);stroke:var(--border)";
+        if (f && f.R) sty = "fill:var(--warn-soft);stroke:var(--warn)";
+        if (mark && mark.k === k) sty = mark.type === "hit" ? "fill:var(--ok-soft);stroke:var(--ok)" : mark.type === "new" ? "fill:var(--bad-soft);stroke:var(--bad)" : "fill:var(--accent-soft);stroke:var(--accent)";
+        c.setAttribute("style", sty + ";stroke-width:2;transition:fill .2s");
+      }
+      const g = $("dial-ptr");
+      const target = ((ptr - dialCum) % nf + nf) % nf;
+      if (animate) { g.classList.remove("nojump"); dialCum += target; }
+      else { g.classList.add("nojump"); dialCum = ptr; }
+      g.style.transform = `rotate(${dialCum * 360 / nf}deg)`;
+    }
+    function animateDial(i) {
+      dialTimers.forEach(clearTimeout); dialTimers = [];
+      const s = res.steps[i];
+      const seq = i === lastI + 1;
+      const prev = i > 0 ? res.steps[i - 1].frames.map(f => f && { ...f }) : new Array(nf).fill(null);
+      if (!seq) { drawDial(s.frames, s.ptr, { k: s.idx, type: s.hit ? "hit" : "new" }, false); note(s); return; }
+      drawDial(prev, s.ptrBefore, null, false);
+      const dt = Math.min(320, Math.max(90, (+$("sim-speed").value - 250) / (s.scan.length + 2)));
+      let tm = 0;
+      if (!s.hit) {
+        s.scan.forEach(sc => {
+          tm += dt;
+          dialTimers.push(setTimeout(() => {
+            if (sc.act === "clear" && prev[sc.pos]) prev[sc.pos].R = 0;
+            drawDial(prev, sc.pos, { k: sc.pos, type: "look" }, true);
+            $("dial-note").textContent = algo === "ECLOCK" ? `라운드 ${sc.round} · ${sc.pass}차 탐색: ${sc.pass === 1 ? "(0,0) 찾는 중" : "(0,1) 찾는 중, 지나가며 R=0"}` : `F${sc.pos}: R=1 → 0 (두 번째 기회)`;
+          }, tm));
+        });
+      }
+      tm += dt;
+      dialTimers.push(setTimeout(() => { drawDial(s.frames, s.ptr, { k: s.idx, type: s.hit ? "hit" : "new" }, true); note(s); }, tm));
+    }
+    function note(s) {
+      $("dial-note").textContent = s.hit ? `히트: F${s.idx}의 R=1` : (s.victim == null ? `빈 프레임 F${s.idx}에 적재` : `F${s.idx}의 ${s.victim} 교체 → ${s.p}`) + " · 포인터 = 다음 검사 위치";
+    }
+
+    $("sim-refs").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+    run();
+  })();
+
+  /* ---------- 비교 그래프 ---------- */
+  (function () {
+    const on = { FIFO: true, OPT: true, LRU: true, CLOCK: true, ECLOCK: false, LFU: false, MFU: false };
+    const lg = $("cmp-legend");
+    ALGOS.forEach(a => {
+      const l = MM.el("label", {}, `<input type="checkbox" ${on[a] ? "checked" : ""}><span class="sw s-${a}"></span>${ALGO_NAME[a]}`);
+      l.querySelector("input").onchange = e => { on[a] = e.target.checked; draw(); };
+      lg.append(l);
+    });
+    $("cmp-preset").onchange = () => { const v = $("cmp-preset").value; $("cmp-refs").value = v === "random" ? randRefs(24, 6) : v; draw(); };
+    $("cmp-refs").addEventListener("input", draw);
+    $("cmp-find").onclick = () => {
+      for (let tries = 0; tries < 60000; tries++) {
+        const s = randRefs(12 + Math.floor(Math.random() * 8), 5).replace(/w/g, "");
+        const c = faultCurve(parseRefs(s), "FIFO", 10);
+        if (c.some((v, k) => k > 0 && v > c[k - 1])) { $("cmp-refs").value = s; draw(); $("cmp-msg").innerHTML += ` <span class="c-accent">(무작위 참조열 ${tries + 1}개째에서 발견)</span>`; return; }
+      }
+      $("cmp-msg").textContent = "60,000개를 시도했지만 찾지 못했다. 다시 눌러 보라.";
+    };
+    function draw() {
+      const refs = parseRefs($("cmp-refs").value).slice(0, 80);
+      const svg = $("cmp-svg");
+      if (!refs.length) { svg.innerHTML = ""; return; }
+      const W = 640, H = 300, L = 46, R = 16, T = 14, B = 40, MAXF = 10;
+      const curves = {}; ALGOS.forEach(a => curves[a] = faultCurve(refs, a, MAXF));
+      const ymax = Math.max(1, refs.length);
+      const X = n => L + (n - 1) * (W - L - R) / (MAXF - 1), Y = v => T + (H - T - B) * (1 - v / ymax);
+      let h = "";
+      const tstep = Math.max(1, Math.ceil(ymax / 5));
+      for (let v = 0; v <= ymax; v += tstep) {
+        const y = Y(v);
+        h += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${y + 4}" text-anchor="end" style="fill:var(--muted)">${v}</text>`;
+      }
+      for (let n = 1; n <= MAXF; n++) h += `<text x="${X(n)}" y="${H - B + 18}" text-anchor="middle" style="fill:var(--muted)">${n}</text>`;
+      h += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle" style="fill:var(--text)">프레임 수</text>`;
+      h += `<text x="12" y="${T + (H - T - B) / 2}" text-anchor="middle" transform="rotate(-90 12 ${T + (H - T - B) / 2})" style="fill:var(--text)">폴트 수</text>`;
+      const anomalies = [];
+      ALGOS.forEach((a, ai) => {
+        if (!on[a]) return;
+        const c = curves[a], off = (ai - 3) * 0.9; // 겹침 완화를 위한 미세 오프셋
+        h += `<path class="series s-${a}" d="${c.map((v, k) => (k ? "L" : "M") + X(k + 1).toFixed(1) + "," + (Y(v) + off).toFixed(1)).join(" ")}"/>`;
+        c.forEach((v, k) => {
+          h += `<circle class="s-${a}" cx="${X(k + 1)}" cy="${Y(v) + off}" r="3"><title>${ALGO_NAME[a]} ${k + 1}프레임: ${v}폴트</title></circle>`;
+          if (k > 0 && v > c[k - 1]) { h += `<circle class="anom" cx="${X(k + 1)}" cy="${Y(v) + off}" r="9"/>`; anomalies.push(`${ALGO_NAME[a]} ${k}→${k + 1}프레임: ${c[k - 1]}→${v}`); }
+        });
+      });
+      svg.innerHTML = h;
+      $("cmp-msg").innerHTML = anomalies.length ? `<span class="c-bad"><b>Belady 이상 발견:</b></span> ${anomalies.join(", ")}` : "표시된 알고리즘에서 이상 현상 없음 (폴트 수가 프레임 수에 대해 단조 감소).";
+      let t = "<table><tr><th>알고리즘</th>" + Array.from({ length: MAXF }, (_, k) => `<th>${k + 1}</th>`).join("") + "</tr>";
+      ALGOS.forEach(a => { if (on[a]) t += `<tr><td>${ALGO_NAME[a]}</td>` + curves[a].map((v, k) => `<td class="${k > 0 && v > curves[a][k - 1] ? "c-bad" : ""}" style="font-variant-numeric:tabular-nums">${v}</td>`).join("") + "</tr>"; });
+      $("cmp-tbl").innerHTML = t + "</table>";
+    }
+    draw();
+  })();
+
+  /* ---------- 포함 성질 검사기 ---------- */
+  (function () {
+    for (let i = 1; i <= 8; i++) { $("incl-a").add(new Option(i, i, i === 3, i === 3)); $("incl-b").add(new Option(i, i, i === 4, i === 4)); }
+    ["incl-algo", "incl-a", "incl-b"].forEach(i => $(i).onchange = draw);
+    $("incl-refs").addEventListener("input", draw);
+    function draw() {
+      const refs = parseRefs($("incl-refs").value).slice(0, 40), algo = $("incl-algo").value;
+      let a = +$("incl-a").value, b = +$("incl-b").value;
+      if (!refs.length) return;
+      if (a > b) [a, b] = [b, a];
+      const ra = simulate(refs, a, algo), rb = simulate(refs, b, algo);
+      let viol = 0, row = '<tr class="res"><th class="rowh">⊆?</th>';
+      ra.steps.forEach((s, t) => {
+        const sb = new Set(rb.steps[t].frames.filter(Boolean).map(f => f.p));
+        const ok = s.frames.filter(Boolean).every(f => sb.has(f.p));
+        if (!ok) viol++;
+        row += `<td class="${ok ? "incl-yes" : "incl-no"}">${ok ? "✓" : "✗"}</td>`;
+      });
+      row += "</tr>";
+      $("incl-out").innerHTML = `<p class="small" style="margin:4px 0"><b>${a}프레임</b> · 폴트 ${ra.faults}</p>` + gridHTML(ra, a, algo, refs.length - 1, { extraRow: row }) +
+        `<p class="small" style="margin:10px 0 4px"><b>${b}프레임</b> · 폴트 ${rb.faults}</p>` + gridHTML(rb, b, algo, refs.length - 1, {});
+      $("incl-msg").innerHTML = (viol ? `<span class="c-bad"><b>포함 성질 위반 ${viol}곳.</b></span> ` : `<span class="c-ok"><b>모든 시각에서 포함 성질 성립.</b></span> `) +
+        (rb.faults > ra.faults ? `<span class="c-bad">프레임을 늘렸더니 폴트가 ${ra.faults} → ${rb.faults}로 증가 (Belady 이상)</span>` : `폴트 ${ra.faults} → ${rb.faults}`);
+    }
+    draw();
+  })();
+
+  /* ---------- Aging ---------- */
+  (function () {
+    const NP = 6, PAT = ["101011", "110010", "110101", "100010", "011000"];
+    let reg, R, tick, hist, demoToken = 0;
+    const btns = [];
+    for (let k = 0; k < NP; k++) {
+      const b = MM.el("button", { class: "btn rbtn", type: "button" }, `페이지 ${k} R=0`);
+      b.onclick = () => { R[k] ^= 1; paint(); };
+      btns.push(b); $("aging-btns").append(b);
+    }
+    function reset() { reg = new Array(NP).fill(0); R = new Array(NP).fill(0); tick = 0; hist = []; demoToken++; paint(); }
+    function doTick() {
+      hist.push(R.join(""));
+      reg = reg.map((v, k) => (v >> 1) | (R[k] << 7));
+      R = new Array(NP).fill(0); tick++; paint();
+    }
+    function paint() {
+      btns.forEach((b, k) => { b.classList.toggle("on", !!R[k]); b.textContent = `페이지 ${k} R=${R[k]}`; });
+      $("aging-t").textContent = "틱 " + tick;
+      const min = Math.min(...reg), victims = reg.map((v, k) => v === min ? k : -1).filter(k => k >= 0);
+      let h = "<tr><th>페이지</th><th>현재 R</th><th>레지스터 (MSB→LSB)</th><th>값</th><th>R 이력 (최근→과거)</th></tr>";
+      for (let k = 0; k < NP; k++) {
+        const v = victims[0] === k;
+        const histK = hist.slice().reverse().map(p => p[k]).join("") || "-";
+        h += `<tr><td class="${v ? "victim" : ""}">${k}${v ? " ← 희생자" : ""}</td><td>${R[k]}</td><td class="bits ${v ? "victim" : ""}">${MM.bin(reg[k], 8).replace(/^(.)/, "<b>$1</b>")}</td><td>${reg[k]}</td><td class="bits">${histK}</td></tr>`;
+      }
+      $("aging-tbl").innerHTML = h;
+      $("aging-msg").innerHTML = tick === 0 ? "아직 틱이 없다. 모든 레지스터가 0이면 누구를 골라도 같다." :
+        victims.length > 1 ? `최솟값 ${min}이 페이지 ${victims.join(", ")}로 동률이다. aging은 동률을 구분하지 못한다. 보통 FIFO 등으로 깬다(여기서는 번호가 작은 쪽).` :
+          `최솟값 ${min}인 페이지 ${victims[0]}이(가) 희생자다. 가장 최근에 1이 들어온 틱이 가장 오래된 페이지다.`;
+    }
+    $("aging-tick").onclick = () => { demoToken++; doTick(); };
+    $("aging-reset").onclick = reset;
+    $("aging-demo").onclick = () => {
+      reset(); const my = demoToken;
+      PAT.forEach((p, k) => {
+        setTimeout(() => { if (my === demoToken) { R = p.split("").map(Number); paint(); } }, k * 1400);
+        setTimeout(() => { if (my === demoToken) doTick(); }, k * 1400 + 700);
+      });
+    };
+    reset();
+  })();
+})();
+</script>
+</body></html>

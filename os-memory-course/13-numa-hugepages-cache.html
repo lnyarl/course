@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>캐시·NUMA·Huge Page</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .addr-bits { font-family: var(--mono); font-size: 13.5px; word-break: break-all; line-height: 1.9; }
+  .addr-bits span { padding: 1px 0; }
+  .addr-bits .b-tag { background: var(--violet-soft); color: var(--violet); }
+  .addr-bits .b-idx { background: var(--accent-soft); color: var(--accent); }
+  .addr-bits .b-off { background: var(--teal-soft); color: var(--teal); }
+  .legend-chips { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; margin: 6px 0; }
+  .legend-chips span { padding: 1px 8px; border-radius: 999px; }
+  .setmap { display: grid; grid-template-columns: repeat(32, minmax(6px, 1fr)); gap: 2px; margin: 8px 0; }
+  .setmap div { height: 14px; border-radius: 3px; background: var(--surface-2); border: 1px solid var(--border); position: relative; overflow: hidden; }
+  .setmap div i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--accent-soft); border-top: 1px solid var(--accent); }
+  .setmap div.cur { outline: 2px solid var(--warn); outline-offset: 1px; }
+  .ways { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; margin: 6px 0; }
+  .way { border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px; font-family: var(--mono); font-size: 12px; background: var(--surface-2); text-align: center; }
+  .way small { display: block; color: var(--muted); font-family: var(--sans); font-size: 11px; }
+  .way.hit { background: var(--ok-soft); border-color: var(--ok); }
+  .way.miss { background: var(--bad-soft); border-color: var(--bad); }
+  .core-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 10px 0; }
+  .core-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--surface-2); text-align: center; transition: background .25s, border-color .25s; }
+  .core-card .nm { font-size: 13px; color: var(--muted); }
+  .core-card .st { font: 700 30px/1.2 var(--mono); }
+  .core-card .val { font-size: 12.5px; font-family: var(--mono); color: var(--muted); margin-bottom: 6px; }
+  .core-card .btn { padding: 4px 9px; font-size: 13px; margin: 2px; }
+  .st-M { background: var(--bad-soft); border-color: var(--bad); } .st-M .st { color: var(--bad); }
+  .st-E { background: var(--teal-soft); border-color: var(--teal); } .st-E .st { color: var(--teal); }
+  .st-S { background: var(--ok-soft); border-color: var(--ok); } .st-S .st { color: var(--ok); }
+  .st-I .st { color: var(--muted); }
+  .busline { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 12px; font-size: 14px; min-height: 2.4em; background: var(--bg); }
+  .busline b { font-family: var(--mono); color: var(--warn); }
+  .linemap { display: grid; grid-template-columns: 64px repeat(8, 1fr); gap: 3px; font-size: 12px; margin: 4px 0; align-items: center; }
+  .linemap .slot { height: 30px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); display: flex; align-items: center; justify-content: center; font-family: var(--mono); }
+  .linemap .slot.a { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+  .linemap .slot.b { background: var(--violet-soft); border-color: var(--violet); color: var(--violet); font-weight: 700; }
+  .linemap .lbl { color: var(--muted); font-family: var(--mono); }
+  .outcomes { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .outcome { font-family: var(--mono); font-size: 13.5px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); }
+  .outcome.ok { background: var(--ok-soft); border-color: var(--ok); }
+  .outcome.no { background: var(--surface-2); color: var(--muted); text-decoration: line-through; }
+  .outcome.star { box-shadow: 0 0 0 2px var(--warn); }
+  .litmus-prog { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .litmus-prog pre { margin: 0; font-size: 13px; }
+  .pages { display: grid; grid-template-columns: repeat(16, minmax(14px, 1fr)); gap: 3px; margin: 6px 0; }
+  .pages div { height: 22px; border-radius: 4px; border: 1px solid var(--border); font-size: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--mono); }
+  .pages .n0 { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .pages .n1 { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+  .pages .remote { box-shadow: inset 0 0 0 2px var(--bad); }
+  .bar { height: 14px; border-radius: 4px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--border); }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .bar.n1 i { background: var(--warn); }
+  .hp-grid { display: grid; grid-template-columns: repeat(16, minmax(14px, 1fr)); gap: 3px; margin: 6px 0; }
+  .hp-grid div { height: 22px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-2); position: relative; overflow: hidden; }
+  .hp-grid div i { position: absolute; left: 0; bottom: 0; width: 100%; background: var(--ok); }
+  .hp-grid div.on { border-color: var(--warn); background: var(--warn-soft); }
+  .note { font-size: 13px; color: var(--muted); }
+  svg.diagram .mono { font-family: var(--mono); }
+</style>
+</head>
+<body data-chapter="13">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">심화 · Chapter 13</span>
+    <h1>NUMA, Huge Page, 캐시와 메모리 모델</h1>
+    <p class="lead">페이지 테이블 아래에는 하드웨어 층이 하나 더 있습니다. 메모리는 64바이트 라인 단위로 오가고, 코어들은 일관성 프로토콜로 라인 소유권을 주고받습니다. 메모리 컨트롤러까지의 거리는 소켓마다 다르고, TLB는 생각보다 적은 범위만 덮습니다. 원인 모를 성능 저하나 특정 아키텍처에서만 터지는 동시성 버그는 대개 이 층에서 시작됩니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>주소를 tag | index | offset으로 나눠 어느 set에 들어갈지 계산하고, 충돌 미스가 생기는 접근 패턴을 알아본다.</li>
+      <li>MESI 상태 전이와 버스 트랜잭션을 추적하고, false sharing이 왜 비싼지 트랜잭션 수로 설명한다.</li>
+      <li>x86-TSO와 ARMv8의 메모리 순서 차이를 litmus test로 설명하고, 알맞은 배리어나 acquire/release를 고른다.</li>
+      <li>NUMA first-touch 정책의 결과를 예측하고 <code>numactl</code>, <code>numastat</code>, 자동 NUMA 밸런싱으로 진단하고 조정한다.</li>
+      <li>TLB reach를 계산해 huge page가 필요한 시점을 판단하고, THP의 지연 스파이크와 메모리 블로트를 설명한다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">캐시 구조: 라인, set, tag | index | offset</a></li>
+    <li><a href="#s2">캐시 일관성과 MESI 프로토콜</a></li>
+    <li><a href="#s3">False sharing: 공유하지 않는데 공유되는 라인</a></li>
+    <li><a href="#s4">메모리 순서와 메모리 모델: x86-TSO vs ARM</a></li>
+    <li><a href="#s5">NUMA: 거리가 있는 메모리</a></li>
+    <li><a href="#s6">NUMA 정책, 자동 밸런싱, 진단 도구</a></li>
+    <li><a href="#s7">Huge page와 TLB reach</a></li>
+    <li><a href="#s8">hugetlbfs vs THP, 그리고 THP의 함정</a></li>
+    <li><a href="#s9">folio: 커널이 페이지를 묶어 다루는 방식</a></li>
+  </ol></nav>
+
+  <!-- ===================== S1 ===================== -->
+  <section id="s1">
+    <h2>1. 캐시 구조: 라인, set, tag | index | offset</h2>
+    <p>CPU 캐시는 바이트 단위로 데이터를 가져오지 않습니다. 전송과 저장의 단위는 <b>캐시 라인</b>이고, x86-64와 대부분의 ARM64 코어에서 64바이트입니다. 1바이트를 읽어도 그 바이트가 속한 64바이트 정렬 블록 전체가 올라옵니다. 순차 접근이 빠른 것(공간 지역성), 구조체 필드 배치가 성능에 영향을 주는 것, false sharing이 생기는 것 모두 이 사실에서 나옵니다. Apple M 계열처럼 128바이트 라인을 보고하는 CPU도 있으므로 하드코딩하기 전에 확인하세요.</p>
+<pre># Linux: 캐시 기하 정보 확인
+getconf LEVEL1_DCACHE_LINESIZE
+lscpu --caches
+cat /sys/devices/system/cpu/cpu0/cache/index0/{level,type,size,ways_of_associativity,number_of_sets,coherency_line_size}
+# macOS
+sysctl hw.cachelinesize hw.l1dcachesize</pre>
+
+    <h3>연관도(associativity)와 주소 분할</h3>
+    <p>어떤 라인을 캐시의 어디에 둘지 정하는 방식은 세 가지입니다. <b>직접 사상</b>(1-way)은 위치가 한 곳뿐이라 하드웨어가 단순하지만 충돌이 잦습니다. <b>완전 연관</b>은 어디든 둘 수 있지만 모든 엔트리의 태그를 동시에 비교해야 해서 크게 만들 수 없습니다(그래서 소형 TLB에 주로 씁니다). 실제 데이터 캐시는 그 중간인 <b>N-way set-associative</b>입니다. 캐시를 <i>S</i>개의 set으로 나누고, 각 set에 라인을 N개(way)까지 담습니다.</p>
+    <ul>
+      <li><b>offset</b> = 하위 log₂(라인 크기) 비트. 라인 안의 바이트 위치입니다. 64B라면 6비트입니다.</li>
+      <li><b>index</b> = 그다음 log₂(S) 비트. 어느 set인지 고릅니다. S = 캐시 크기 ÷ (라인 크기 × way 수).</li>
+      <li><b>tag</b> = 나머지 상위 비트. set 안의 N개 way에 저장된 tag와 동시에 비교해 히트를 판정합니다.</li>
+    </ul>
+    <p>예를 들어 32KiB, 8-way, 64B 라인이면 S = 32768 ÷ (64×8) = 64 set이므로 offset 6비트, index 6비트이고 나머지가 tag입니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 340" role="img" aria-label="set-associative 캐시의 주소 분할과 조회 과정">
+        <defs><marker id="c13a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker></defs>
+        <text x="20" y="22" font-weight="700">주소 (예: 32KiB · 8-way · 64B 라인)</text>
+        <rect x="20" y="32" width="380" height="36" rx="4" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <rect x="400" y="32" width="120" height="36" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <rect x="520" y="32" width="120" height="36" rx="4" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <text x="210" y="55" text-anchor="middle">tag (상위 비트 전부)</text>
+        <text x="460" y="55" text-anchor="middle">index 6비트</text>
+        <text x="580" y="55" text-anchor="middle">offset 6비트</text>
+        <text x="400" y="90" text-anchor="middle" class="muted" font-size="11">bit 12</text>
+        <text x="520" y="90" text-anchor="middle" class="muted" font-size="11">bit 6</text>
+        <path d="M460,70 L460,104 L190,104 L190,128" class="line" style="stroke:var(--accent);stroke-width:1.6" marker-end="url(#c13a)"/>
+        <text x="205" y="98" class="muted" font-size="12">set 선택 (64개 중 하나)</text>
+        <!-- sets table -->
+        <g font-size="11">
+          <text x="20" y="150" class="muted">set 0</text>
+          <text x="20" y="176" class="muted">set 1</text>
+          <text x="20" y="202" font-weight="700" style="fill:var(--accent)">set k</text>
+          <text x="20" y="228" class="muted">⋮</text>
+          <text x="20" y="254" class="muted">set 63</text>
+        </g>
+        <g>
+          <rect x="62" y="136" width="300" height="20" class="box"/>
+          <rect x="62" y="162" width="300" height="20" class="box"/>
+          <rect x="62" y="188" width="300" height="20" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="62" y="240" width="300" height="20" class="box"/>
+          <path d="M99.5,136 v20 M137,136 v20 M174.5,136 v20 M212,136 v20 M249.5,136 v20 M287,136 v20 M324.5,136 v20
+                   M99.5,162 v20 M137,162 v20 M174.5,162 v20 M212,162 v20 M249.5,162 v20 M287,162 v20 M324.5,162 v20
+                   M99.5,188 v20 M137,188 v20 M174.5,188 v20 M212,188 v20 M249.5,188 v20 M287,188 v20 M324.5,188 v20
+                   M99.5,240 v20 M137,240 v20 M174.5,240 v20 M212,240 v20 M249.5,240 v20 M287,240 v20 M324.5,240 v20" class="line"/>
+          <text x="212" y="280" text-anchor="middle" class="muted" font-size="12">way 0 … way 7 (각 칸 = tag + 상태 비트 + 64B 데이터)</text>
+        </g>
+        <path d="M210,68 L210,76 L660,76 L660,205 L624,205" class="line" style="stroke:var(--violet);stroke-dasharray:4 3" marker-end="url(#c13a)"/>
+        <path d="M364,198 L416,198" class="line" style="stroke:var(--accent);stroke-width:1.6" marker-end="url(#c13a)"/>
+        <rect x="420" y="178" width="200" height="54" rx="8" class="box"/>
+        <text x="520" y="200" text-anchor="middle" font-size="12">8개 way의 tag를 동시에 비교</text>
+        <text x="520" y="220" text-anchor="middle" font-size="12">일치 → <tspan style="fill:var(--ok);font-weight:700">히트</tspan>, 없음 → <tspan style="fill:var(--bad);font-weight:700">미스</tspan></text>
+        <rect x="420" y="250" width="200" height="54" rx="8" class="box"/>
+        <text x="520" y="272" text-anchor="middle" font-size="12">미스: LRU 근사로 희생 way 선택</text>
+        <text x="520" y="292" text-anchor="middle" font-size="12">offset으로 라인 내 바이트 추출</text>
+        <text x="20" y="325" class="muted" font-size="12">index+offset = 12비트 = 4KiB 페이지 오프셋 → VIPT로 인덱싱해도 별칭 없음</text>
+      </svg>
+      <figcaption>그림 13-1. set-associative 캐시 조회. index가 set을 고르고, 그 set 안의 모든 way와 tag를 병렬로 비교합니다.</figcaption>
+    </figure>
+
+    <div class="callout deep"><span class="title">왜 L1은 "set을 늘리지 않고 way를 늘리는가"</span>
+      <p>L1 데이터 캐시는 주소 변환(TLB 조회)과 병렬로 시작해야 빠릅니다. 그래서 대부분 <b>VIPT</b>(Virtually Indexed, Physically Tagged)로 만듭니다. 가상 주소로 set을 고르면서 동시에 TLB로 물리 주소를 얻고, 물리 tag로 비교합니다. index+offset 비트가 페이지 오프셋(4KiB면 12비트) 안에 들어오면 가상 주소와 물리 주소의 해당 비트가 같으므로 별칭(aliasing) 문제가 생기지 않습니다. 64 set × 64B = 4KiB가 상한이므로 용량을 늘리려면 way를 늘려야 합니다. 많은 x86 코어가 오랫동안 32KiB 8-way였다가 최근 코어 일부가 48KiB 12-way로 간 이유가 이것입니다(48K ÷ 12 = 4K).</p>
+    </div>
+
+    <h3>미스의 분류 (3C + 1)</h3>
+    <ul>
+      <li><b>강제(compulsory) 미스</b>: 처음 접근하는 라인입니다. 프리페처가 줄여 줍니다.</li>
+      <li><b>용량(capacity) 미스</b>: 작업 집합이 캐시보다 큽니다. 블로킹(타일링)으로 줄입니다.</li>
+      <li><b>충돌(conflict) 미스</b>: 캐시 전체에는 여유가 있지만 특정 set에 라인이 몰립니다. 2의 거듭제곱 stride 접근이 전형적인 원인입니다. 32KiB 8-way에서는 4KiB 간격 주소가 모두 같은 set으로 가므로 9번째 라인부터 서로를 밀어냅니다. 행렬의 행 길이를 4096바이트 대신 4096+64바이트로 패딩하는 관행이 이것을 피하려는 것입니다.</li>
+      <li><b>일관성(coherence) 미스</b>: 다른 코어의 쓰기로 내 사본이 무효화된 경우입니다. 2절과 3절에서 다룹니다.</li>
+    </ul>
+
+    <div class="widget" id="w-cache">
+      <div class="w-title">캐시 시뮬레이터: 주소 → set 계산과 히트/미스</div>
+      <div class="w-desc">캐시 기하를 정하고 16진수 주소를 입력하세요. 주소가 tag | index | offset으로 나뉘고 해당 set의 way 상태가 표시됩니다. 교체 정책은 정확한 LRU입니다(실제 하드웨어는 tree-PLRU 같은 근사를 씁니다). 프리셋으로 공간 지역성과 충돌 미스를 확인해 보세요.</div>
+      <div class="controls">
+        <label>크기 <select id="cs-size"><option value="4096">4 KiB</option><option value="8192">8 KiB</option><option value="32768" selected>32 KiB</option><option value="49152">48 KiB</option><option value="65536">64 KiB</option></select></label>
+        <label>연관도 <select id="cs-ways"><option>1</option><option>2</option><option>4</option><option selected>8</option><option>12</option><option>16</option></select></label>
+        <label>라인 <select id="cs-line"><option>32</option><option selected>64</option><option>128</option></select> B</label>
+      </div>
+      <div id="cs-geom" class="note"></div>
+      <div class="controls">
+        <label>주소 0x<input type="text" id="cs-addr" value="7ffd1234a5c8" size="14" spellcheck="false"></label>
+        <button class="btn primary" id="cs-go">접근</button>
+        <button class="btn" id="cs-seq">순차 8B ×16</button>
+        <button class="btn" id="cs-conf">같은 set (ways+1)개 ×2바퀴</button>
+        <button class="btn" id="cs-fit">같은 set ways개 ×2바퀴</button>
+        <button class="btn" id="cs-rand">무작위 12개</button>
+        <button class="btn" id="cs-reset">초기화</button>
+      </div>
+      <div class="legend-chips"><span class="bg-violet c-violet">tag</span><span class="bg-accent c-accent">index</span><span class="bg-teal c-teal">offset</span></div>
+      <div class="addr-bits" id="cs-bits"></div>
+      <div id="cs-split" class="note"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">접근</div><div class="v" id="cs-n">0</div></div>
+        <div class="stat"><div class="k">히트</div><div class="v c-ok" id="cs-h">0</div></div>
+        <div class="stat"><div class="k">미스</div><div class="v c-bad" id="cs-m">0</div></div>
+        <div class="stat"><div class="k">히트율</div><div class="v" id="cs-r">–</div></div>
+      </div>
+      <div class="note">현재 set의 way (작은 글씨는 LRU 순위, 0이 가장 최근)</div>
+      <div class="ways" id="cs-ways-view"></div>
+      <div class="note">전체 set 점유도 (주황 테두리 = 방금 접근한 set)</div>
+      <div class="setmap" id="cs-map"></div>
+      <div class="log" id="cs-log"></div>
+    </div>
+  </section>
+
+  <!-- ===================== S2 ===================== -->
+  <section id="s2">
+    <h2>2. 캐시 일관성과 MESI 프로토콜</h2>
+    <p>코어마다 L1/L2가 따로 있으므로 같은 라인의 사본이 여러 캐시에 생깁니다. 한 코어가 쓴 값을 다른 코어가 영원히 못 보면 공유 메모리 프로그래밍이 성립하지 않습니다. <b>캐시 일관성(coherence)</b>은 <i>한 주소</i>에 대해 두 가지 불변식을 지킵니다.</p>
+    <ul>
+      <li><b>SWMR</b>(Single-Writer, Multiple-Reader): 어느 시점이든 한 라인은 쓰기 가능한 사본 하나만 있거나, 읽기 전용 사본만 여러 개 있다.</li>
+      <li><b>데이터 값 불변식</b>: 읽기는 그 라인에 마지막으로 쓰인 값을 본다.</li>
+    </ul>
+    <p>일관성은 <i>한 주소</i>의 문제이고, 여러 주소 사이의 순서는 <b>메모리 일관성 모델</b>(4절)이 다룹니다. 두 개념을 섞으면 "캐시가 일관되니 순서도 보장된다"는 흔한 오해에 빠집니다.</p>
+
+    <h3>MESI의 네 상태</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>상태</th><th>의미</th><th>메모리와 일치?</th><th>다른 캐시에 사본?</th><th>쓰기 시 필요한 일</th></tr>
+      <tr><td><b class="c-bad">M</b> Modified</td><td>내가 수정한 유일한 사본</td><td>아니오(dirty)</td><td>없음</td><td>없음 (바로 쓰기)</td></tr>
+      <tr><td><b class="c-teal">E</b> Exclusive</td><td>깨끗한 유일한 사본</td><td>예</td><td>없음</td><td>버스 없이 조용히 M으로</td></tr>
+      <tr><td><b class="c-ok">S</b> Shared</td><td>깨끗한 공유 사본</td><td>예</td><td>있을 수 있음</td><td>무효화 요청(BusUpgr) 후 M</td></tr>
+      <tr><td><b>I</b> Invalid</td><td>사본 없음</td><td>–</td><td>–</td><td>소유권 읽기(BusRdX, RFO) 후 M</td></tr>
+    </table></div>
+    <p><b>E 상태가 있는 이유</b>: 단일 스레드 프로그램은 "읽고 나서 쓰기"를 자주 합니다. E가 없으면(MSI) 읽기로 S가 된 라인에 쓸 때마다 버스에 무효화 요청을 보내야 합니다. 아무도 안 가진 라인을 읽으면 E로 받아 두고, 나중의 쓰기를 버스 없이 처리합니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 640 430" role="img" aria-label="MESI 상태 전이도">
+        <defs>
+          <marker id="m13s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+          <marker id="m13d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--warn)"/></marker>
+        </defs>
+        <g style="stroke:var(--accent);stroke-width:1.8">
+          <line x1="151" y1="185" x2="286" y2="78" marker-end="url(#m13s)"/>
+          <line x1="489" y1="185" x2="354" y2="78" marker-end="url(#m13s)"/>
+          <line x1="290" y1="337" x2="156" y2="238" marker-end="url(#m13s)"/>
+          <line x1="350" y1="337" x2="484" y2="238" marker-end="url(#m13s)"/>
+          <line x1="327" y1="318" x2="327" y2="98" marker-end="url(#m13s)"/>
+        </g>
+        <g style="stroke:var(--warn);stroke-width:1.5;stroke-dasharray:5 4">
+          <line x1="341" y1="85" x2="476" y2="192" marker-end="url(#m13d)"/>
+          <line x1="160" y1="223" x2="294" y2="322" marker-end="url(#m13d)"/>
+          <line x1="480" y1="223" x2="346" y2="322" marker-end="url(#m13d)"/>
+          <line x1="313" y1="92" x2="313" y2="312" marker-end="url(#m13d)"/>
+          <line x1="162" y1="210" x2="472" y2="210" marker-end="url(#m13d)"/>
+        </g>
+        <g text-anchor="middle">
+          <circle cx="320" cy="60" r="32" style="fill:var(--bad-soft);stroke:var(--bad);stroke-width:2"/>
+          <text x="320" y="62" font-size="22" font-weight="700" style="fill:var(--bad)">M</text><text x="320" y="78" font-size="10" class="muted">Modified</text>
+          <circle cx="130" cy="210" r="32" style="fill:var(--teal-soft);stroke:var(--teal);stroke-width:2"/>
+          <text x="130" y="212" font-size="22" font-weight="700" style="fill:var(--teal)">E</text><text x="130" y="228" font-size="10" class="muted">Exclusive</text>
+          <circle cx="510" cy="210" r="32" style="fill:var(--ok-soft);stroke:var(--ok);stroke-width:2"/>
+          <text x="510" y="212" font-size="22" font-weight="700" style="fill:var(--ok)">S</text><text x="510" y="228" font-size="10" class="muted">Shared</text>
+          <circle cx="320" cy="350" r="32" class="box" style="stroke-width:2"/>
+          <text x="320" y="352" font-size="22" font-weight="700">I</text><text x="320" y="368" font-size="10" class="muted">Invalid</text>
+        </g>
+        <g font-size="11">
+          <text transform="translate(214.8,126.8) rotate(-38.4)" text-anchor="middle" style="fill:var(--accent)">PrWr (버스 없음)</text>
+          <text transform="translate(425.2,126.8) rotate(38.4)" text-anchor="middle" style="fill:var(--accent)">PrWr / BusUpgr</text>
+          <text transform="translate(213.5,300.4) rotate(36.5)" text-anchor="middle" style="fill:var(--accent)">PrRd / BusRd (공유자 없음)</text>
+          <text transform="translate(426.5,300.4) rotate(-36.5)" text-anchor="middle" style="fill:var(--accent)">PrRd / BusRd (공유자 있음)</text>
+          <text transform="translate(341,262) rotate(-90)" text-anchor="middle" style="fill:var(--accent)">PrWr / BusRdX</text>
+          <text transform="translate(309,150) rotate(-90)" text-anchor="middle" style="fill:var(--warn)">BusRdX 감지 / Flush</text>
+          <text transform="translate(399.2,150.3) rotate(38.4)" text-anchor="middle" style="fill:var(--warn)">BusRd 감지 / Flush</text>
+          <text x="232" y="203" text-anchor="middle" style="fill:var(--warn)">BusRd 감지</text>
+          <text transform="translate(230.0,268.5) rotate(36.5)" text-anchor="middle" style="fill:var(--warn)">BusRdX·Upgr 감지</text>
+          <text transform="translate(410.0,268.5) rotate(-36.5)" text-anchor="middle" style="fill:var(--warn)">BusRdX·Upgr 감지</text>
+        </g>
+        <g font-size="12">
+          <line x1="20" y1="402" x2="56" y2="402" style="stroke:var(--accent);stroke-width:1.8"/><text x="62" y="406">자기 코어의 요청 (PrRd/PrWr)</text>
+          <line x1="300" y1="402" x2="336" y2="402" style="stroke:var(--warn);stroke-width:1.5;stroke-dasharray:5 4"/><text x="342" y="406">다른 코어의 버스 요청을 감지(snoop)</text>
+          <text x="20" y="424" class="muted">축출: M→I는 write-back 필요, E·S→I는 조용히 버림. 히트(M·E·S에서 읽기, M에서 쓰기)는 상태 유지.</text>
+        </g>
+      </svg>
+      <figcaption>그림 13-2. MESI 상태 전이. 실선은 내 코어의 읽기/쓰기, 점선은 다른 코어가 버스에 낸 요청에 대한 반응입니다.</figcaption>
+    </figure>
+
+    <div class="widget" id="w-mesi">
+      <div class="w-title">MESI 시뮬레이터: 한 캐시 라인 X를 둘러싼 코어들</div>
+      <div class="w-desc">각 코어에서 읽기·쓰기·축출을 눌러 보세요. 상태 전이, 버스 트랜잭션, 값의 흐름이 표시됩니다. 쓰기는 라인 값을 1 증가시킵니다. 메모리 값이 최신값과 다를 때(누군가 M일 때)를 눈여겨보세요.</div>
+      <div class="controls">
+        <label>코어 수 <select id="me-n"><option>2</option><option>3</option><option selected>4</option></select></label>
+        <button class="btn" id="me-reset">초기화</button>
+        <button class="btn" id="me-demo">데모 시퀀스 재생</button>
+      </div>
+      <div class="core-grid" id="me-cores"></div>
+      <div class="busline" id="me-bus">버스: 대기 중</div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">메모리의 X 값</div><div class="v" id="me-mem">0</div></div>
+        <div class="stat"><div class="k">최신 값</div><div class="v" id="me-latest">0</div></div>
+        <div class="stat"><div class="k">버스 트랜잭션</div><div class="v c-warn" id="me-tx">0</div></div>
+        <div class="stat"><div class="k">무효화된 사본</div><div class="v c-bad" id="me-inv">0</div></div>
+      </div>
+      <div class="log" id="me-log"></div>
+    </div>
+
+    <div class="callout"><span class="title">교과서 MESI와 실제 칩의 차이</span>
+      <ul>
+        <li><b>버스 대신 디렉터리/스눕 필터</b>: 코어가 수십 개면 모든 요청을 브로드캐스트할 수 없습니다. L3 슬라이스나 홈 에이전트가 "누가 이 라인을 가졌는가"를 추적해 필요한 코어에만 메시지를 보냅니다. 상태 기계의 의미는 같습니다.</li>
+        <li><b>MOESI</b>(AMD 등): O(Owned) 상태가 있어 M인 라인을 다른 코어가 읽을 때 메모리에 쓰지 않고 dirty인 채로 공유합니다. 위 시뮬레이터의 "Flush 후 S"가 만드는 메모리 쓰기를 줄입니다.</li>
+        <li><b>MESIF</b>(Intel): F(Forward) 상태의 사본 하나만 읽기 요청에 응답해 중복 응답을 막습니다.</li>
+        <li>성능 카운터에서 쓰기 미스는 흔히 <b>RFO</b>(Read For Ownership)로 표시됩니다. 다른 코어가 수정한 라인을 가져오는 경우는 <b>HITM</b>(Hit Modified)으로 보이며 가장 비싼 축에 속합니다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== S3 ===================== -->
+  <section id="s3">
+    <h2>3. False sharing: 공유하지 않는데 공유되는 라인</h2>
+    <p>스레드 A는 <code>a</code>만, 스레드 B는 <code>b</code>만 씁니다. 논리적으로 공유하는 데이터가 없는데도 두 변수가 <b>같은 64바이트 라인</b>에 있으면 일관성 프로토콜은 라인 단위로 동작하므로 쓰기마다 라인 소유권이 코어 사이를 오갑니다(ping-pong). 각 쓰기가 L1 히트(수 사이클)에서 코어 간 라인 이전(수십~수백 사이클)으로 바뀝니다. 코드에 버그가 없고 프로파일러에서는 "그냥 느린 store"로만 보이기 때문에 찾기 어렵습니다.</p>
+
+    <div class="widget" id="w-fs">
+      <div class="w-title">False sharing 시뮬레이터: 같은 라인 vs alignas(64)</div>
+      <div class="w-desc">코어 0은 <code>a++</code>, 코어 1은 <code>b++</code>를 번갈아 N번 실행합니다. 위 MESI 시뮬레이터와 같은 상태 기계로 각 라인을 추적합니다. 비용은 개념용 가정입니다: L1 히트 1단위, 버스 트랜잭션(라인 이전) 50단위.</div>
+      <div class="controls">
+        <label><input type="radio" name="fs-lay" value="0" checked> <code>struct { long a; long b; }</code> (같은 라인)</label>
+        <label><input type="radio" name="fs-lay" value="1"> <code>alignas(64)</code> 패딩 (라인 분리)</label>
+      </div>
+      <div class="controls">
+        <label>반복 N <input type="range" id="fs-n" min="1" max="1000" value="100"> <b id="fs-nv">100</b></label>
+        <button class="btn primary" id="fs-run">실행</button>
+      </div>
+      <div id="fs-map"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">쓰기 횟수</div><div class="v" id="fs-w">–</div></div>
+        <div class="stat"><div class="k">L1 히트</div><div class="v c-ok" id="fs-h">–</div></div>
+        <div class="stat"><div class="k">버스 트랜잭션</div><div class="v c-warn" id="fs-tx">–</div></div>
+        <div class="stat"><div class="k">무효화</div><div class="v c-bad" id="fs-inv">–</div></div>
+        <div class="stat"><div class="k">상대 비용</div><div class="v" id="fs-cost">–</div></div>
+      </div>
+      <div class="log" id="fs-log"></div>
+    </div>
+
+    <h3>해결: 라인을 분리하거나, 공유를 없애거나</h3>
+<pre>// C++17: 스레드별 카운터를 각각 다른 캐시 라인에
+struct alignas(64) PaddedCounter {          // 또는 alignas(std::hardware_destructive_interference_size)
+    std::atomic&lt;long&gt; value{0};
+};                                          // sizeof == 64, 배열 원소마다 라인 하나
+PaddedCounter per_thread[NTHREADS];
+
+// C: GCC/Clang 속성
+struct counter { long v; } __attribute__((aligned(64)));
+
+// Linux 커널: 자주 쓰는 필드를 라인 경계로
+struct foo { spinlock_t lock; /* ... */ } ____cacheline_aligned_in_smp;</pre>
+    <ul>
+      <li><b>정렬 + 크기</b>: <code>alignas(64)</code>는 시작 주소만 맞춥니다. 구조체 크기도 64의 배수여야 배열의 다음 원소가 같은 라인을 침범하지 않습니다. C++에서는 <code>alignas</code>가 sizeof를 정렬 단위로 올려 주지만, 수동 패딩(<code>char pad[56]</code>)을 할 때는 직접 계산해야 합니다.</li>
+      <li><b>64가 아니라 128을 쓰는 라이브러리</b>: Intel 코어의 인접 라인 프리페처는 128바이트 쌍 단위로 라인을 가져옵니다. 그래서 Rust crossbeam의 <code>CachePadded</code>, Folly 등은 x86-64에서 128바이트로 패딩합니다. Apple M 계열은 라인 자체가 128바이트입니다.</li>
+      <li><b>가장 좋은 해결은 공유 자체를 없애기</b>: 스레드 로컬에 누적하고 마지막에 합치기(sharding), 커널의 per-CPU 변수가 이 방식입니다. 패딩은 메모리를 낭비하고 캐시 밀도를 떨어뜨립니다. 작은 객체 수백만 개를 전부 패딩하면 오히려 느려집니다.</li>
+      <li><b>언어별 도구</b>: Java <code>@Contended</code>(JDK 내부 어노테이션, 사용자 코드에서는 <code>-XX:-RestrictContended</code> 필요), Go <code>golang.org/x/sys/cpu.CacheLinePad</code>.</li>
+    </ul>
+    <div class="callout tip"><span class="title">현업 진단: perf c2c</span>
+      <p><code>perf c2c record -- ./app</code> 다음 <code>perf c2c report</code>를 실행하면 HITM이 많이 일어난 캐시 라인과 그 라인 안에서 접근된 오프셋, 접근한 코드 위치를 보여 줍니다. 한 라인에서 서로 다른 오프셋을 서로 다른 스레드가 쓰고 있다면 false sharing입니다. 같은 오프셋이라면 <i>true sharing</i>이므로 설계(락 분할, 배치 처리)를 바꿔야 합니다.</p>
+    </div>
+  </section>
+
+  <!-- ===================== S4 ===================== -->
+  <section id="s4">
+    <h2>4. 메모리 순서와 메모리 모델: x86-TSO vs ARM</h2>
+    <p>캐시가 완벽하게 일관되어도 한 스레드가 프로그램 순서대로 실행한 메모리 연산이 다른 스레드에게 <b>다른 순서로 보일</b> 수 있습니다. 재배열은 세 곳에서 생깁니다.</p>
+    <ol>
+      <li><b>컴파일러</b>: 의존성이 없는 load/store를 옮기거나, 레지스터에 캐싱하거나, 아예 없애기도 합니다. 일반 변수에 대한 데이터 레이스는 C/C++에서 미정의 동작입니다.</li>
+      <li><b>스토어 버퍼</b>: 코어는 store를 일단 자기 스토어 버퍼에 넣고 다음 명령으로 넘어갑니다. 버퍼가 캐시에 반영(drain)되기 전까지 다른 코어는 그 값을 볼 수 없습니다. 자기 자신은 버퍼에서 값을 바로 읽습니다(store-to-load forwarding).</li>
+      <li><b>비순차 실행과 무효화 큐</b>: 약한 모델의 코어는 독립적인 load끼리, load와 store 사이도 순서를 바꿔 완료할 수 있습니다.</li>
+    </ol>
+
+    <h3>대표 모델 비교</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>재배열 (앞 → 뒤 연산)</th><th>SC (순차 일관성)</th><th>x86-64 (TSO)</th><th>ARMv8 (약한 순서)</th></tr>
+      <tr><td>Load → Load</td><td>금지</td><td>금지</td><td>허용</td></tr>
+      <tr><td>Load → Store</td><td>금지</td><td>금지</td><td>허용</td></tr>
+      <tr><td>Store → Store</td><td>금지</td><td>금지</td><td>허용</td></tr>
+      <tr><td>Store → Load (다른 주소)</td><td>금지</td><td><b>허용</b> (스토어 버퍼)</td><td>허용</td></tr>
+      <tr><td>전체 배리어</td><td>–</td><td><code>mfence</code>, <code>lock</code> 접두 명령, <code>xchg</code></td><td><code>dmb ish</code></td></tr>
+      <tr><td>acquire / release</td><td>–</td><td>일반 <code>mov</code>로 충분 (TSO가 이미 보장)</td><td><code>ldar</code> / <code>stlr</code> (8.3+: <code>ldapr</code>)</td></tr>
+    </table></div>
+    <p>ARMv8에서도 주소·데이터 의존성이 있는 연산(예: 읽은 포인터로 다시 읽기)은 순서가 유지되고, ARMv8은 2017년 개정 이후 <i>other-multi-copy-atomic</i>이라 store가 다른 모든 코어에 동시에 보이게 됩니다. 아래 위젯의 ARM 모델은 이 성질을 전제로 독립 연산의 재배열만 허용하는 단순화 모델입니다.</p>
+
+    <div class="widget" id="w-sb">
+      <div class="w-title">스텝 애니메이션: 스토어 버퍼가 만드는 Store→Load 재배열 (SB 테스트)</div>
+      <div class="w-desc">초기값 x = y = 0. 코어 0은 <code>x = 1; r1 = y;</code>, 코어 1은 <code>y = 1; r2 = x;</code>를 실행합니다. 어떤 인터리빙으로도 SC에서는 r1 = r2 = 0이 불가능하지만 x86에서는 실제로 관측됩니다. <code>mfence</code>를 넣고 다시 재생해 보세요.</div>
+      <div class="controls"><label><input type="checkbox" id="sb-fence"> 두 스레드에 <code>mfence</code> 삽입</label></div>
+      <div id="sb-svg" class="stage"></div>
+      <div id="sb-ctl"></div>
+    </div>
+
+    <div class="widget" id="w-litmus">
+      <div class="w-title">Litmus test 탐색기: 모델별로 가능한 결과 전부 나열</div>
+      <div class="w-desc">작은 병렬 프로그램에서 나올 수 있는 모든 최종 레지스터 값을 열거합니다. SC는 모든 인터리빙을, TSO는 스레드별 FIFO 스토어 버퍼 모델을, ARM은 배리어·acquire/release·같은 주소 제약을 지키는 범위에서 각 스레드 연산을 재배열한 뒤 인터리빙을 열거합니다. 주황 테두리는 문제의 "놀라운 결과"입니다.</div>
+      <div class="controls">
+        <label>테스트 <select id="lt-test"></select></label>
+        <label>모델 <select id="lt-model"><option value="SC">SC (순차 일관성)</option><option value="TSO" selected>x86-TSO</option><option value="WEAK">ARMv8 (약한 순서, 단순화)</option></select></label>
+      </div>
+      <div class="litmus-prog" id="lt-prog"></div>
+      <div class="outcomes" id="lt-out"></div>
+      <div id="lt-note" class="note"></div>
+    </div>
+
+    <h3>언어 수준 메모리 모델로 사고하기</h3>
+    <p>하드웨어 모델을 직접 다루는 대신 C/C++11, Rust, Java의 메모리 모델로 의도를 표현하면 컴파일러가 아키텍처별로 맞는 명령을 고릅니다.</p>
+<pre>std::atomic&lt;int&gt; flag{0}; int data = 0;
+// 생산자
+data = 42;
+flag.store(1, std::memory_order_release);   // x86: mov, ARM64: stlr
+// 소비자
+while (flag.load(std::memory_order_acquire) == 0) {}   // x86: mov, ARM64: ldar
+assert(data == 42);                         // release-acquire 쌍이 보장
+
+// seq_cst store는 x86에서 xchg(또는 mov+mfence)로 컴파일된다. SB 패턴을 막으려면 seq_cst가 필요하다.</pre>
+    <p>Linux 커널은 자체 메모리 모델(LKMM, <code>tools/memory-model/</code>)과 <code>READ_ONCE()</code>/<code>WRITE_ONCE()</code>, <code>smp_mb()</code>, <code>smp_rmb()</code>/<code>smp_wmb()</code>, <code>smp_load_acquire()</code>/<code>smp_store_release()</code>를 씁니다. x86에서는 <code>smp_rmb()</code>와 <code>smp_wmb()</code>가 컴파일러 배리어로만 컴파일됩니다. TSO가 이미 그 순서를 보장하기 때문입니다.</p>
+    <div class="callout warn"><span class="title">"x86에서는 잘 되던 코드"가 ARM에서 터지는 이유</span>
+      <p>메시지 전달(MP) 패턴을 일반 변수나 <code>relaxed</code> 원자 연산으로 짜면 x86에서는 TSO 덕분에 우연히 동작합니다. 같은 코드를 AWS Graviton이나 Apple Silicon으로 옮기면 소비자가 <code>flag == 1</code>을 보고도 오래된 <code>data</code>를 읽을 수 있습니다. 아키텍처 이전 시 데이터 레이스 검사(ThreadSanitizer)와 메모리 순서 검토를 함께 하는 이유입니다. 거꾸로, x86에서도 컴파일러 재배열은 일어나므로 "x86이니 배리어가 필요 없다"는 결론은 틀렸습니다.</p>
+    </div>
+  </section>
+
+  <!-- ===================== S5 ===================== -->
+  <section id="s5">
+    <h2>5. NUMA: 거리가 있는 메모리</h2>
+    <p>메모리 컨트롤러가 CPU 패키지 안으로 들어오면서(AMD Opteron, Intel Nehalem 이후) 멀티 소켓 서버의 각 소켓은 자기 DRAM을 직접 가집니다. 다른 소켓의 메모리는 소켓 간 링크(Intel UPI, AMD Infinity Fabric)를 거쳐야 하므로 느립니다. 이것이 <b>NUMA</b>(Non-Uniform Memory Access)입니다. 소켓 하나 안에서도 AMD EPYC의 NPS 설정이나 Intel의 SNC(Sub-NUMA Clustering)를 켜면 여러 NUMA 노드로 나뉩니다. CXL로 붙인 메모리는 CPU가 없는 별도 노드로 보입니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 320" role="img" aria-label="2소켓 NUMA 토폴로지와 로컬/원격 접근 경로">
+        <defs>
+          <marker id="n13ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ok)"/></marker>
+          <marker id="n13bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--bad)"/></marker>
+        </defs>
+        <!-- node 0 -->
+        <rect x="20" y="20" width="270" height="200" rx="12" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="34" y="42" font-weight="700" style="fill:var(--accent)">노드 0 (소켓 0)</text>
+        <g>
+          <rect x="36" y="54" width="54" height="36" rx="6" class="box"/><text x="63" y="77" text-anchor="middle" font-size="12">코어0</text>
+          <rect x="98" y="54" width="54" height="36" rx="6" class="box"/><text x="125" y="77" text-anchor="middle" font-size="12">코어1</text>
+          <rect x="160" y="54" width="54" height="36" rx="6" class="box"/><text x="187" y="77" text-anchor="middle" font-size="12">코어2</text>
+          <rect x="222" y="54" width="54" height="36" rx="6" class="box"/><text x="249" y="77" text-anchor="middle" font-size="12">코어3</text>
+          <rect x="36" y="100" width="240" height="30" rx="6" class="box"/><text x="156" y="120" text-anchor="middle" font-size="12">공유 L3 + 홈 에이전트(디렉터리)</text>
+          <rect x="36" y="140" width="240" height="30" rx="6" class="box"/><text x="156" y="160" text-anchor="middle" font-size="12">메모리 컨트롤러 (IMC)</text>
+        </g>
+        <rect x="36" y="240" width="240" height="56" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+        <text x="156" y="264" text-anchor="middle">DRAM (노드 0 로컬 메모리)</text>
+        <text x="156" y="284" text-anchor="middle" font-size="11" class="muted">ZONE_DMA32 · ZONE_NORMAL, 노드별 LRU · kswapd0</text>
+        <!-- node 1 -->
+        <rect x="390" y="20" width="270" height="200" rx="12" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="404" y="42" font-weight="700" style="fill:var(--warn)">노드 1 (소켓 1)</text>
+        <g>
+          <rect x="406" y="54" width="54" height="36" rx="6" class="box"/><text x="433" y="77" text-anchor="middle" font-size="12">코어4</text>
+          <rect x="468" y="54" width="54" height="36" rx="6" class="box"/><text x="495" y="77" text-anchor="middle" font-size="12">코어5</text>
+          <rect x="530" y="54" width="54" height="36" rx="6" class="box"/><text x="557" y="77" text-anchor="middle" font-size="12">코어6</text>
+          <rect x="592" y="54" width="54" height="36" rx="6" class="box"/><text x="619" y="77" text-anchor="middle" font-size="12">코어7</text>
+          <rect x="406" y="100" width="240" height="30" rx="6" class="box"/><text x="526" y="120" text-anchor="middle" font-size="12">공유 L3 + 홈 에이전트(디렉터리)</text>
+          <rect x="406" y="140" width="240" height="30" rx="6" class="box"/><text x="526" y="160" text-anchor="middle" font-size="12">메모리 컨트롤러 (IMC)</text>
+        </g>
+        <rect x="406" y="240" width="240" height="56" rx="8" style="fill:var(--surface);stroke:var(--warn)"/>
+        <text x="526" y="264" text-anchor="middle">DRAM (노드 1 로컬 메모리)</text>
+        <text x="526" y="284" text-anchor="middle" font-size="11" class="muted">kswapd1, 노드별 free list</text>
+        <!-- interconnect -->
+        <rect x="296" y="105" width="88" height="40" rx="6" style="fill:var(--surface-2);stroke:var(--violet)"/>
+        <text x="340" y="122" text-anchor="middle" font-size="11" style="fill:var(--violet)">UPI /</text>
+        <text x="340" y="137" text-anchor="middle" font-size="11" style="fill:var(--violet)">Infinity Fabric</text>
+        <!-- local path -->
+        <path d="M63,90 L63,236" style="stroke:var(--ok);stroke-width:2.5;fill:none" marker-end="url(#n13ok)"/>
+        <text x="72" y="198" font-size="11.5" style="fill:var(--ok);font-weight:700">로컬 ≈ 1×</text>
+        <!-- remote path -->
+        <path d="M249,90 L249,96 Q 300,96 300,125 L 380,125 Q 395,125 395,180 L 395,200 Q395,232 420,236" style="stroke:var(--bad);stroke-width:2.5;fill:none;stroke-dasharray:6 4" marker-end="url(#n13bad)"/>
+        <text x="340" y="196" text-anchor="middle" font-size="11.5" style="fill:var(--bad);font-weight:700">원격 ≈ 1.3~2×</text>
+        <text x="340" y="212" text-anchor="middle" font-size="11" class="muted">링크 대역폭 제한</text>
+      </svg>
+      <figcaption>그림 13-3. 2소켓 NUMA. 코어3이 노드 1의 메모리를 읽으려면 소켓 간 링크와 원격 메모리 컨트롤러를 거쳐야 합니다. 정확한 배율은 플랫폼마다 다르므로 직접 측정하세요.</figcaption>
+    </figure>
+
+<pre>$ numactl --hardware
+available: 2 nodes (0-1)
+node 0 cpus: 0 1 2 3 ...
+node 0 size: 257579 MB
+node 1 cpus: 4 5 6 7 ...
+node distances:
+node   0   1
+  0:  10  21
+  1:  21  10</pre>
+    <p><code>node distances</code>는 펌웨어(ACPI SLIT)가 알려 주는 <b>상대값</b>입니다. 로컬을 10으로 놓고 21이면 "대략 2.1배"를 뜻하지만 실측과 꼭 맞지는 않습니다. 실제 지연과 대역폭은 Intel MLC(Memory Latency Checker) 같은 도구로 측정합니다. 대략적인 감각으로는 로컬 DRAM 접근이 수십~100ns 남짓이고, 원격은 그보다 1.3~2배 느립니다. 원격 노드로의 <b>대역폭</b>이 부족해지는 경우가 지연 증가보다 더 큰 문제가 되기도 합니다.</p>
+
+    <h3>first-touch: 페이지는 처음 건드린 CPU의 노드에 놓인다</h3>
+    <p>Linux의 기본 정책(<code>MPOL_DEFAULT</code>, 로컬 할당)에서 <code>malloc</code>이나 <code>mmap</code>은 가상 주소만 예약합니다. 물리 페이지는 <b>처음 접근해서 페이지 폴트가 난 순간</b>, 그 폴트를 처리하는 CPU가 속한 노드에서 할당됩니다. 그래서 할당한 스레드가 아니라 <b>처음 쓴 스레드</b>가 위치를 정합니다. 흔한 실수는 메인 스레드가 큰 배열을 <code>memset</code>이나 초기화 루프로 0으로 채운 뒤 워커 스레드 수십 개에 나눠 주는 것입니다. 모든 페이지가 노드 0에 몰려 절반의 워커가 원격 접근을 하고, 노드 0 메모리 컨트롤러에 대역폭이 몰립니다.</p>
+
+    <div class="widget" id="w-numa">
+      <div class="w-title">NUMA first-touch 시뮬레이터</div>
+      <div class="w-desc">배열 32페이지를 워커 8개(노드 0에 W0~W3, 노드 1에 W4~W7)가 4페이지씩 나눠 처리합니다. 초기화 방식에 따라 페이지가 어느 노드에 놓이는지, 계산 단계에서 원격 접근 비율과 평균 지연, 노드별 메모리 컨트롤러 부하가 어떻게 달라지는지 보세요. 자동 NUMA 밸런싱 스캔은 잘못 놓인 페이지를 회당 최대 4개씩 접근 노드로 옮깁니다.</div>
+      <div class="controls">
+        <label>초기화 <select id="nu-st">
+          <option value="main">메인 스레드(노드 0)가 전부 초기화</option>
+          <option value="parallel">각 워커가 자기 구간 초기화 (병렬 first-touch)</option>
+          <option value="interleave">numactl --interleave=all</option>
+          <option value="bind1">numactl --membind=1</option>
+        </select></label>
+      </div>
+      <div class="controls">
+        <label>로컬 지연 <input type="number" id="nu-l" value="90" min="10" max="1000" style="width:70px"> ns</label>
+        <label>원격 지연 <input type="number" id="nu-r" value="150" min="10" max="2000" style="width:70px"> ns</label>
+        <button class="btn" id="nu-bal">자동 NUMA 밸런싱 스캔 1회</button>
+        <button class="btn" id="nu-reset">다시 배치</button>
+      </div>
+      <div class="note">페이지 색 = 물리 위치 (<span class="c-accent">파랑 노드 0</span>, <span class="c-warn">주황 노드 1</span>), 빨간 테두리 = 담당 워커에게 원격. 칸 아래 숫자는 담당 워커 번호.</div>
+      <div class="pages" id="nu-pages"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">원격 접근 비율</div><div class="v c-bad" id="nu-rem">–</div></div>
+        <div class="stat"><div class="k">평균 지연</div><div class="v" id="nu-avg">–</div></div>
+        <div class="stat"><div class="k">마이그레이션 누계</div><div class="v" id="nu-mig">0</div></div>
+      </div>
+      <div class="note">노드별 메모리 컨트롤러가 처리하는 접근 비율</div>
+      <div style="display:grid;grid-template-columns:60px 1fr 48px;gap:6px;align-items:center;font-size:13px;margin-top:4px">
+        <span>노드 0</span><div class="bar"><i id="nu-b0"></i></div><span id="nu-p0"></span>
+        <span>노드 1</span><div class="bar n1"><i id="nu-b1"></i></div><span id="nu-p1"></span>
+      </div>
+      <div class="log" id="nu-log" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ===================== S6 ===================== -->
+  <section id="s6">
+    <h2>6. NUMA 정책, 자동 밸런싱, 진단 도구</h2>
+    <h3>메모리 정책(mempolicy)</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>정책</th><th>동작</th><th>설정 방법</th><th>언제</th></tr>
+      <tr><td><code>MPOL_DEFAULT</code> / <code>MPOL_LOCAL</code></td><td>폴트 낸 CPU의 노드에 할당(first-touch). 부족하면 다른 노드로 폴백</td><td>기본값, <code>numactl --localalloc</code></td><td>스레드와 데이터가 같이 움직이는 대부분의 경우</td></tr>
+      <tr><td><code>MPOL_BIND</code></td><td>지정 노드에서만 할당. 부족하면 회수 후 OOM까지 갈 수 있음</td><td><code>numactl --membind=0</code>, <code>mbind(2)</code></td><td>격리가 중요하고 용량을 확실히 아는 경우</td></tr>
+      <tr><td><code>MPOL_PREFERRED</code></td><td>지정 노드 우선, 부족하면 다른 노드</td><td><code>numactl --preferred=1</code></td><td>가급적 로컬, 그래도 OOM은 피하고 싶을 때</td></tr>
+      <tr><td><code>MPOL_INTERLEAVE</code></td><td>페이지 단위로 노드를 돌아가며 할당</td><td><code>numactl --interleave=all</code></td><td>모든 스레드가 공유하는 큰 데이터(DB 버퍼 풀, 해시 테이블). 지연은 평균화되고 대역폭은 분산됨</td></tr>
+    </table></div>
+<pre># 프로세스를 노드 0의 CPU와 메모리에 묶기
+numactl --cpunodebind=0 --membind=0 ./server
+# 공유 버퍼 풀을 노드 전체에 고르게 분산
+numactl --interleave=all ./database
+# 실행 중 프로세스의 노드별 메모리 사용량
+numastat -p $(pidof server)
+# 시스템 전체 노드별 meminfo
+numastat -m
+# 매핑별 정책과 노드별 페이지 수 (N0=..., N1=...)
+cat /proc/$(pidof server)/numa_maps</pre>
+    <p>프로그램 안에서는 <code>set_mempolicy(2)</code>(스레드 단위), <code>mbind(2)</code>(주소 범위 단위)로 정책을 정하고, <code>move_pages(2)</code>와 <code>migrate_pages(2)</code>로 이미 할당된 페이지를 옮깁니다. libnuma(<code>numa_alloc_onnode()</code> 등)가 이것들을 감싼 래퍼입니다.</p>
+
+    <h3><code>numastat</code> 카운터 읽는 법</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>카운터</th><th>의미</th></tr>
+      <tr><td><code>numa_hit</code></td><td>이 노드에 할당하려 했고 실제로 이 노드에 할당됨</td></tr>
+      <tr><td><code>numa_miss</code></td><td>다른 노드를 원했지만 그쪽이 부족해 이 노드에 할당됨</td></tr>
+      <tr><td><code>numa_foreign</code></td><td>이 노드를 원했지만 부족해 다른 노드에 할당됨 (상대 노드의 numa_miss와 짝)</td></tr>
+      <tr><td><code>interleave_hit</code></td><td>interleave 정책으로 의도한 노드에 할당됨</td></tr>
+      <tr><td><code>local_node</code> / <code>other_node</code></td><td>할당을 요청한 프로세스가 이 노드에서 실행 중이었는가 / 다른 노드에서 실행 중이었는가</td></tr>
+    </table></div>
+    <p><code>numa_miss</code>와 <code>numa_foreign</code>이 계속 늘면 한 노드의 메모리가 부족해 할당이 넘치고 있다는 뜻입니다. 이 카운터는 <b>할당 위치</b>만 셉니다. 원격 <i>접근</i> 횟수는 <code>perf</code>의 메모리 이벤트(예: <code>perf mem</code>, 오프코어 응답 이벤트)로 봐야 합니다.</p>
+
+    <h3>자동 NUMA 밸런싱</h3>
+    <p><code>/proc/sys/kernel/numa_balancing</code>(sysctl <code>kernel.numa_balancing</code>)을 켜면 커널이 접근 패턴을 보고 페이지나 태스크를 옮깁니다.</p>
+    <ol>
+      <li>스케줄러 틱마다 태스크 주소 공간의 일부 범위를 골라 PTE를 일부러 접근 불가(<code>PROT_NONE</code> 성격)로 바꿉니다(<code>task_numa_work()</code> → <code>change_prot_numa()</code>).</li>
+      <li>다음 접근에서 <b>NUMA hinting fault</b>가 나면 어느 노드의 CPU가 어느 노드의 페이지를 만졌는지 기록하고 PTE를 복구합니다.</li>
+      <li>통계가 쌓이면 페이지를 접근 노드로 <b>마이그레이션</b>하거나, 태스크를 메모리가 많은 노드로 옮깁니다.</li>
+    </ol>
+    <p>대가로 추가 폴트, TLB 플러시, 페이지 복사 비용이 생깁니다. <code>/proc/vmstat</code>의 <code>numa_hint_faults</code>, <code>numa_hint_faults_local</code>, <code>numa_pages_migrated</code>, <code>numa_pte_updates</code>로 그 양을 볼 수 있습니다. CPU와 메모리를 이미 <code>numactl</code>이나 cgroup cpuset으로 고정한 지연 민감 워크로드에서는 끄는 경우가 많습니다.</p>
+
+    <div class="callout danger"><span class="title">현업 사례: MySQL "swap insanity"와 zone_reclaim_mode</span>
+      <p>대형 InnoDB 버퍼 풀을 쓰는 서버에서 메모리가 넉넉한데도 swap이 일어나는 현상이 보고됐습니다. 버퍼 풀이 first-touch로 노드 하나에 몰리고, 그 노드가 꽉 차자 커널이 원격 노드에서 할당하는 대신 로컬 노드에서 회수(swap 포함)를 택했기 때문입니다. 당시 일부 시스템에서 기본으로 켜지던 <code>vm.zone_reclaim_mode</code>가 이 동작을 부추겼습니다. 대응은 <code>numactl --interleave=all</code>로 기동하는 것이었고, 이후 MySQL에 <code>innodb_numa_interleave</code> 옵션이 생겼습니다. 오늘날 <code>zone_reclaim_mode</code>는 기본 0이며, DB와 파일 서버에서는 0을 권장합니다.</p>
+    </div>
+  </section>
+
+  <!-- ===================== S7 ===================== -->
+  <section id="s7">
+    <h2>7. Huge page와 TLB reach</h2>
+    <p>4장에서 TLB 미스 한 번이 페이지 워크(x86-64 4단계면 메모리 참조 최대 4번)를 부른다는 것을 봤습니다. <b>TLB reach</b>는 TLB가 미스 없이 덮을 수 있는 메모리 양입니다.</p>
+    <p style="text-align:center"><b>TLB reach = 엔트리 수 × 페이지 크기</b></p>
+    <p>엔트리가 1,536개인 2단계 TLB(STLB)라면 4KiB 페이지로는 6MiB밖에 덮지 못합니다. 수십 GiB를 무작위로 다루는 DB, JVM 힙, 인메모리 캐시, 그래프 처리에서는 거의 모든 접근이 TLB 미스이고 페이지 워크가 L1/L2를 오염시킵니다. 같은 엔트리 수로 2MiB 페이지를 쓰면 reach는 3GiB가 되어 512배 늘어납니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 300" role="img" aria-label="x86-64에서 4KiB, 2MiB, 1GiB 페이지의 페이지 워크 단계 비교">
+        <defs><marker id="h13a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <g font-size="12">
+          <!-- row 1 -->
+          <text x="10" y="34" font-weight="700">4 KiB</text>
+          <rect x="70" y="16" width="70" height="28" rx="5" class="box"/><text x="105" y="35" text-anchor="middle">CR3</text>
+          <rect x="160" y="16" width="80" height="28" rx="5" class="box"/><text x="200" y="35" text-anchor="middle">PML4</text>
+          <rect x="260" y="16" width="80" height="28" rx="5" class="box"/><text x="300" y="35" text-anchor="middle">PDPT</text>
+          <rect x="360" y="16" width="80" height="28" rx="5" class="box"/><text x="400" y="35" text-anchor="middle">PD</text>
+          <rect x="460" y="16" width="80" height="28" rx="5" class="box"/><text x="500" y="35" text-anchor="middle">PT</text>
+          <rect x="560" y="16" width="100" height="28" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="610" y="35" text-anchor="middle">4KiB 프레임</text>
+          <line x1="140" y1="30" x2="156" y2="30" class="line" marker-end="url(#h13a)"/>
+          <line x1="240" y1="30" x2="256" y2="30" class="line" marker-end="url(#h13a)"/>
+          <line x1="340" y1="30" x2="356" y2="30" class="line" marker-end="url(#h13a)"/>
+          <line x1="440" y1="30" x2="456" y2="30" class="line" marker-end="url(#h13a)"/>
+          <line x1="540" y1="30" x2="556" y2="30" class="line" marker-end="url(#h13a)"/>
+          <text x="70" y="62" class="muted" font-size="11.5">VA 분할 9 | 9 | 9 | 9 | 12 — 엔트리 참조 4회, 최하위 테이블(PT) 한 장이 2MiB를 덮음</text>
+          <!-- row 2 -->
+          <text x="10" y="114" font-weight="700">2 MiB</text>
+          <rect x="70" y="96" width="70" height="28" rx="5" class="box"/><text x="105" y="115" text-anchor="middle">CR3</text>
+          <rect x="160" y="96" width="80" height="28" rx="5" class="box"/><text x="200" y="115" text-anchor="middle">PML4</text>
+          <rect x="260" y="96" width="80" height="28" rx="5" class="box"/><text x="300" y="115" text-anchor="middle">PDPT</text>
+          <rect x="360" y="96" width="80" height="28" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="400" y="115" text-anchor="middle">PD (PS=1)</text>
+          <rect x="460" y="96" width="200" height="28" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="560" y="115" text-anchor="middle">2MiB 프레임 (2MiB 정렬)</text>
+          <line x1="140" y1="110" x2="156" y2="110" class="line" marker-end="url(#h13a)"/>
+          <line x1="240" y1="110" x2="256" y2="110" class="line" marker-end="url(#h13a)"/>
+          <line x1="340" y1="110" x2="356" y2="110" class="line" marker-end="url(#h13a)"/>
+          <line x1="440" y1="110" x2="456" y2="110" class="line" marker-end="url(#h13a)"/>
+          <text x="70" y="142" class="muted" font-size="11.5">VA 분할 9 | 9 | 9 | 21 — 참조 3회, Linux에서는 PMD 레벨 매핑</text>
+          <!-- row 3 -->
+          <text x="10" y="194" font-weight="700">1 GiB</text>
+          <rect x="70" y="176" width="70" height="28" rx="5" class="box"/><text x="105" y="195" text-anchor="middle">CR3</text>
+          <rect x="160" y="176" width="80" height="28" rx="5" class="box"/><text x="200" y="195" text-anchor="middle">PML4</text>
+          <rect x="260" y="176" width="80" height="28" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="300" y="195" text-anchor="middle">PDPT (PS=1)</text>
+          <rect x="360" y="176" width="300" height="28" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="510" y="195" text-anchor="middle">1GiB 프레임 (1GiB 정렬)</text>
+          <line x1="140" y1="190" x2="156" y2="190" class="line" marker-end="url(#h13a)"/>
+          <line x1="240" y1="190" x2="256" y2="190" class="line" marker-end="url(#h13a)"/>
+          <line x1="340" y1="190" x2="356" y2="190" class="line" marker-end="url(#h13a)"/>
+          <text x="70" y="222" class="muted" font-size="11.5">VA 분할 9 | 9 | 30 — 참조 2회, Linux에서는 PUD 레벨 매핑</text>
+          <text x="10" y="262" font-size="12">PS(Page Size) 비트 = 엔트리의 bit 7. 켜져 있으면 그 단계에서 워크가 끝나고 엔트리가 바로 큰 프레임을 가리킨다.</text>
+          <text x="10" y="284" font-size="12" class="muted">이점: TLB 엔트리당 커버 범위 증가 + 워크 단축 + 페이지 테이블 메모리 절약 + 폴트 횟수 감소</text>
+        </g>
+      </svg>
+      <figcaption>그림 13-4. 페이지 크기별 x86-64 4단계 페이지 워크. huge page는 워크 중간 단계를 리프로 만듭니다.</figcaption>
+    </figure>
+
+    <div class="widget" id="w-tlb">
+      <div class="w-title">TLB reach 계산기</div>
+      <div class="w-desc">TLB 엔트리 수와 작업 집합 크기(WSS)를 넣으면 페이지 크기별 reach, WSS 대비 커버율, WSS를 매핑하는 데 필요한 리프 엔트리 수와 그 페이지 테이블 메모리를 계산합니다. 실제 CPU는 크기별로 엔트리 수가 다르고(1GiB 전용 엔트리는 보통 매우 적음) 레벨도 여러 개이므로, 프리셋 값은 예시입니다.</div>
+      <div class="controls">
+        <label>엔트리 수 <input type="number" id="tl-e" value="1536" min="1" max="65536" style="width:90px"></label>
+        <button class="btn" data-e="64">L1 dTLB 64</button>
+        <button class="btn" data-e="1536">STLB 1536</button>
+        <button class="btn" data-e="2048">STLB 2048</button>
+        <label>WSS <input type="number" id="tl-w" value="16" min="0.001" step="any" style="width:80px"> GiB</label>
+      </div>
+      <div class="tbl-wrap"><table id="tl-tbl"></table></div>
+      <div id="tl-note" class="note"></div>
+    </div>
+
+    <h3>huge page의 비용</h3>
+    <ul>
+      <li><b>물리적으로 연속된 2MiB(정렬 포함)가 필요</b>합니다. 오래 돈 시스템은 단편화되어 있어 compaction(페이지 이동으로 빈 공간 모으기) 없이는 확보하기 어렵습니다.</li>
+      <li><b>관리 단위가 커집니다.</b> COW, swap, NUMA 마이그레이션, 부분 <code>munmap</code>/<code>mprotect</code>를 2MiB 단위로 처리하거나 매핑을 4KiB로 쪼개야(split) 합니다.</li>
+      <li><b>내부 단편화</b>: 조금만 쓰는 영역에 2MiB를 통째로 주면 RSS가 부풉니다(8절 위젯).</li>
+    </ul>
+  </section>
+
+  <!-- ===================== S8 ===================== -->
+  <section id="s8">
+    <h2>8. hugetlbfs vs THP, 그리고 THP의 함정</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>hugetlbfs (명시적 HugePages)</th><th>THP (Transparent Huge Pages)</th></tr>
+      <tr><td>확보 방식</td><td>부팅 시나 런타임에 <b>풀을 미리 예약</b>. 예약분은 다른 용도로 못 씀</td><td>폴트 시점이나 khugepaged가 <b>필요할 때 자동으로</b> 시도</td></tr>
+      <tr><td>애플리케이션 변경</td><td>필요: <code>MAP_HUGETLB</code>, <code>SHM_HUGETLB</code>, hugetlbfs 파일 mmap</td><td>불필요(always) 또는 <code>madvise(MADV_HUGEPAGE)</code></td></tr>
+      <tr><td>크기</td><td>2MiB, 1GiB(부팅 시 예약이 안전)</td><td>PMD 크기(x86-64 2MiB) + 최근 커널의 mTHP</td></tr>
+      <tr><td>swap / 회수</td><td>swap 안 됨. 예측 가능</td><td>분할 후 회수·swap 가능</td></tr>
+      <tr><td>실패 시</td><td>풀이 없으면 mmap 실패 또는 SIGBUS</td><td>조용히 4KiB로 폴백</td></tr>
+      <tr><td>대표 사용처</td><td>Oracle DB SGA, PostgreSQL <code>huge_pages=on</code>, DPDK, KVM 게스트 메모리</td><td>범용 애플리케이션, JVM(<code>-XX:+UseTransparentHugePages</code>)</td></tr>
+    </table></div>
+<pre># hugetlbfs: 2MiB 페이지 512개(1GiB) 예약
+echo 512 | sudo tee /proc/sys/vm/nr_hugepages
+cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+grep -i huge /proc/meminfo          # HugePages_Total/Free/Rsvd/Surp, Hugepagesize, AnonHugePages
+sudo mount -t hugetlbfs none /mnt/huge
+# 1GiB 페이지는 단편화 전에, 부팅 파라미터로 예약
+#   default_hugepagesz=1G hugepagesz=1G hugepages=16
+
+# THP 모드 확인과 변경 ([ ]가 현재 값)
+cat /sys/kernel/mm/transparent_hugepage/enabled   # always [madvise] never
+cat /sys/kernel/mm/transparent_hugepage/defrag    # always defer defer+madvise [madvise] never
+echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+grep AnonHugePages /proc/$(pidof app)/smaps_rollup</pre>
+
+    <h3>THP 모드</h3>
+    <ul>
+      <li><code>enabled=always</code>: 정렬된 2MiB 범위가 들어가는 익명 매핑이면 폴트 시 huge page를 시도합니다.</li>
+      <li><code>enabled=madvise</code>: <code>madvise(addr, len, MADV_HUGEPAGE)</code>로 표시한 영역에서만 씁니다. 원하는 프로그램만 혜택을 받습니다.</li>
+      <li><code>enabled=never</code>: THP를 쓰지 않습니다.</li>
+      <li><code>defrag</code>는 폴트 시점에 2MiB를 못 구할 때의 행동입니다. <code>always</code>는 폴트 경로에서 <b>직접 compaction/회수</b>까지 하므로 지연이 튑니다. <code>defer</code>는 kcompactd를 깨우고 일단 4KiB로 진행합니다. <code>madvise</code>(흔한 기본값)는 madvise한 영역만 직접 compaction합니다.</li>
+    </ul>
+    <h3>khugepaged</h3>
+    <p>커널 스레드 <code>khugepaged</code>가 주기적으로 주소 공간을 훑어 4KiB 페이지들로 채워진 2MiB 정렬 범위를 하나의 huge page로 <b>합칩니다(collapse)</b>. 튜닝 값은 <code>/sys/kernel/mm/transparent_hugepage/khugepaged/</code> 아래 <code>pages_to_scan</code>, <code>scan_sleep_millisecs</code>, <code>alloc_sleep_millisecs</code>, <code>max_ptes_none</code>에 있습니다. <code>max_ptes_none</code>은 범위 안에서 비어 있어도 되는 PTE 수의 상한이고 기본값은 511입니다. 512칸 중 하나만 채워져 있어도 합칠 수 있다는 뜻이며, 이것이 블로트의 원인이 됩니다.</p>
+
+    <div class="widget" id="w-thp">
+      <div class="w-title">THP 메모리 블로트 계산기</div>
+      <div class="w-desc">64MiB 익명 영역(2MiB × 32칸)에서 4KiB 페이지 K개를 무작위로 건드립니다. 4KiB 매핑이면 건드린 페이지만 RSS가 되고, THP(always, 또는 max_ptes_none=511로 collapse된 경우)면 한 번이라도 건드린 2MiB 칸 전체가 RSS가 됩니다.</div>
+      <div class="controls">
+        <label>건드린 페이지 K <input type="range" id="th-k" min="1" max="4096" value="64"> <b id="th-kv">64</b></label>
+        <button class="btn" id="th-re">다시 뽑기</button>
+      </div>
+      <div class="hp-grid" id="th-grid"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">실제로 쓴 데이터</div><div class="v" id="th-a">–</div></div>
+        <div class="stat"><div class="k">RSS (4KiB)</div><div class="v c-ok" id="th-b">–</div></div>
+        <div class="stat"><div class="k">RSS (THP)</div><div class="v c-warn" id="th-c">–</div></div>
+        <div class="stat"><div class="k">블로트 배수</div><div class="v c-bad" id="th-d">–</div></div>
+      </div>
+      <div class="note">초록 막대 = 그 2MiB 칸 안에서 실제로 건드린 4KiB 페이지 비율, 주황 칸 = THP라면 통째로 상주하는 칸.</div>
+    </div>
+
+    <h3>THP의 함정과 DB들이 "끄라"고 권하는 이유</h3>
+    <ol>
+      <li><b>지연 스파이크</b>: <code>defrag=always</code>이거나 madvise된 영역에서 폴트가 나면, 2MiB를 구하려고 그 자리에서 compaction이나 회수를 합니다. 평균 처리량은 좋아져도 p99 지연에 수~수십 ms 스파이크가 섞입니다. 지연 민감 서비스에서 THP를 의심해야 하는 대표 증상입니다(<code>/proc/vmstat</code>의 <code>compact_stall</code>, <code>thp_fault_fallback</code> 확인).</li>
+      <li><b>메모리 블로트</b>: 위 위젯처럼 듬성듬성 쓰는 힙에서 RSS가 크게 부풉니다. 할당자가 <code>MADV_DONTNEED</code>로 4KiB 단위 반환을 해도 huge page를 쪼개야(split) 해서 반환 효과가 늦거나 줄어듭니다.</li>
+      <li><b>fork와 COW</b>: Redis는 스냅샷(BGSAVE)을 위해 fork합니다. THP가 켜져 있으면 부모가 쓸 때 생기는 COW 비용과 메모리 증가가 커질 수 있어서, Redis는 기동 시 THP 경고를 출력하고 <code>never</code>를 권합니다.</li>
+      <li><b>예측 불가능성</b>: 같은 프로그램이라도 그날의 메모리 단편화 상태에 따라 huge page를 받을 수도, 못 받을 수도 있습니다. 성능 재현성이 떨어집니다.</li>
+    </ol>
+    <div class="callout"><span class="title">권장의 변화도 함께 기억할 것</span>
+      <p>Oracle은 THP를 끄고 hugetlbfs(HugePages)를 쓰라고 권하고, PostgreSQL도 공유 버퍼에 <code>huge_pages</code> 설정으로 hugetlbfs를 씁니다. 반면 MongoDB는 오래 "THP를 끄라"고 권하다가 8.0에서 새 TCMalloc과 함께 켜라는 쪽으로 바꿨습니다. 정답은 고정되어 있지 않습니다. 무난한 출발점은 <code>enabled=madvise</code>, <code>defrag=defer+madvise</code>이고, 이를 기준으로 워크로드에서 p99 지연과 RSS를 측정해 결정하세요.</p>
+    </div>
+  </section>
+
+  <!-- ===================== S9 ===================== -->
+  <section id="s9">
+    <h2>9. folio: 커널이 페이지를 묶어 다루는 방식</h2>
+    <p>Linux는 물리 프레임마다 <code>struct page</code>(대개 64바이트, RAM의 약 1.6%)를 둡니다. huge page나 order&gt;0 할당은 <b>compound page</b>로 표현했습니다. 첫 <code>struct page</code>가 head, 나머지가 tail입니다. 문제는 <code>struct page *</code>를 받은 함수가 그게 head인지 tail인지 알 수 없다는 점입니다. 그래서 곳곳에서 <code>compound_head()</code>를 반복 호출했고, tail을 head처럼 다루는 버그도 생겼습니다.</p>
+    <p><b><code>struct folio</code></b>(Linux 5.16에 도입)는 "절대 tail이 아닌 페이지", 즉 2<sup>n</sup>개의 연속 페이지 묶음 전체를 가리키는 타입입니다. 타입 시스템으로 head와 tail의 혼동을 막고, 페이지 캐시·LRU·회수 코드가 "페이지 하나"가 아니라 "folio 하나" 단위로 일하게 바꿨습니다.</p>
+    <ul>
+      <li><b>대형 folio 페이지 캐시</b>: 파일시스템이 지원하면 페이지 캐시가 4KiB보다 큰 folio를 쓸 수 있습니다. LRU 항목 수, 참조 카운트 연산, radix/xarray 엔트리가 줄어듭니다.</li>
+      <li><b>mTHP</b>(multi-size THP, 익명 메모리는 6.8부터): 2MiB만이 아니라 16KiB, 64KiB 같은 중간 크기 folio를 씁니다. <code>/sys/kernel/mm/transparent_hugepage/hugepages-64kB/enabled</code>처럼 크기별로 켭니다. ARM64의 contiguous PTE 비트(연속된 16개 4KiB 엔트리를 TLB 엔트리 하나로)와 결합하면 2MiB 연속 메모리를 구하지 못해도 TLB 이득을 얻고, 블로트도 작습니다.</li>
+    </ul>
+    <p>정리하면 huge page 논쟁이 "4KiB냐 2MiB냐"에서 "그 사이의 적절한 크기를 상황에 맞게"로 옮겨 가고 있고, folio가 그 기반입니다.</p>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>캐시는 64B 라인 단위로 동작하고, 주소는 tag | index | offset으로 나뉩니다. set 수 = 크기 ÷ (라인 × way). 2의 거듭제곱 stride는 한 set에 몰려 충돌 미스를 냅니다.</li>
+    <li>VIPT L1은 index+offset을 페이지 오프셋 안에 두려고 용량을 way로 늘립니다(32K/8-way, 48K/12-way).</li>
+    <li>MESI는 SWMR을 지킵니다. E는 "읽고 쓰기"를 버스 없이 하게 하고, S→M은 무효화, I→M은 RFO가 필요합니다. 실제 칩은 디렉터리, MOESI, MESIF를 씁니다.</li>
+    <li>False sharing은 라인 단위 일관성의 부작용입니다. <code>alignas(64)</code>(x86에서는 종종 128)로 분리하거나 스레드별 누적으로 공유 자체를 없앱니다. 진단은 <code>perf c2c</code>로 합니다.</li>
+    <li>일관성(한 주소)과 메모리 모델(여러 주소의 순서)은 다릅니다. x86-TSO는 Store→Load 재배열만 허용하고, ARMv8은 독립 연산의 재배열을 거의 다 허용합니다. 언어의 acquire/release/seq_cst로 의도를 표현하세요.</li>
+    <li>NUMA에서 페이지는 처음 건드린 CPU의 노드에 놓입니다(first-touch). 병렬 초기화, <code>--interleave</code>, <code>--membind</code>, 자동 NUMA 밸런싱으로 조정하고 <code>numastat</code>, <code>numa_maps</code>로 확인합니다.</li>
+    <li>TLB reach = 엔트리 × 페이지 크기. 2MiB 페이지는 reach를 512배로 늘리고 워크를 한 단계 줄입니다. hugetlbfs는 예측 가능하지만 미리 예약해야 하고, THP는 자동이지만 지연 스파이크와 블로트라는 대가가 있습니다.</li>
+    <li>folio는 head/tail 혼동을 타입으로 없앤 묶음 단위이며, 대형 folio 페이지 캐시와 mTHP의 기반입니다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">48KiB, 12-way, 64B 라인 L1D 캐시의 index 비트 수는?</div>
+    <button class="opt">4비트</button><button class="opt">5비트</button><button class="opt">6비트</button><button class="opt">10비트</button>
+    <div class="explain">set 수 = 49152 ÷ (64 × 12) = 64 = 2⁶이므로 index는 6비트, offset도 6비트입니다. index+offset = 12비트로 4KiB 페이지 오프셋 안에 들어가므로 VIPT로 만들어도 별칭 문제가 없습니다. 32KiB에서 48KiB로 갈 때 set 대신 way를 늘린 이유입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">MESI에서 코어 0이 라인 X를 E 상태로 갖고 있고 다른 코어는 모두 I입니다. 코어 0이 X에 쓰면 버스에는 무엇이 나가나요?</div>
+    <button class="opt">아무것도 나가지 않는다. E→M은 조용히 전이한다</button>
+    <button class="opt">BusUpgr로 다른 코어를 무효화한다</button>
+    <button class="opt">BusRdX로 소유권을 다시 얻는다</button>
+    <button class="opt">메모리에 write-back(Flush)한다</button>
+    <div class="explain">E는 "깨끗하고 유일한 사본"이므로 무효화할 대상이 없습니다. 버스 없이 M으로 바뀝니다. E 상태가 존재하는 이유가 바로 이 경우를 싸게 만들기 위해서입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">두 스레드가 <code>struct { long a; long b; } s;</code>의 a와 b를 각각 쉬지 않고 증가시켜 느립니다. 다음 중 false sharing을 <b>해결하지 못하는</b> 것은?</div>
+    <button class="opt">a와 b를 <code>alignas(64)</code> 구조체로 감싸 서로 다른 라인에 둔다</button>
+    <button class="opt">각 스레드가 지역 변수에 누적하고 마지막에 한 번만 s에 쓴다</button>
+    <button class="opt">a와 b 사이에 충분한 패딩을 넣어 라인을 분리한다</button>
+    <button class="opt">a와 b를 <code>std::atomic&lt;long&gt;</code>으로 바꾼다</button>
+    <div class="explain">atomic은 각 변수의 연산을 원자적으로 만들 뿐 라인 배치를 바꾸지 않습니다. 두 atomic이 같은 라인에 있으면 ping-pong은 그대로이고, lock 접두 명령이 더해져 오히려 더 느려질 수 있습니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">SB 테스트(<code>x=1; r1=y</code> ∥ <code>y=1; r2=x</code>, 초기값 0)에서 x86-64가 r1=r2=0을 허용하는 직접적인 원인과 해결책은?</div>
+    <button class="opt">캐시 일관성 위반, 해결책은 <code>clflush</code></button>
+    <button class="opt">스토어 버퍼에 의한 Store→Load 재배열, 해결책은 <code>mfence</code>(또는 seq_cst 원자 연산)</button>
+    <button class="opt">Load→Load 재배열, 해결책은 <code>lfence</code></button>
+    <button class="opt">컴파일러 최적화만이 원인이므로 <code>volatile</code>이면 충분</button>
+    <div class="explain">각 코어의 store가 스토어 버퍼에 머무는 동안 뒤의 load가 메모리(캐시)의 옛 값을 읽습니다. 일관성은 위반되지 않았고, 순서(모델)의 문제입니다. 뒤의 load가 앞의 store를 기다리게 하려면 전체 배리어(mfence, lock 명령, xchg)가 필요하며, C++에서는 seq_cst가 이를 생성합니다. volatile은 하드웨어 재배열을 막지 못합니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">2소켓 서버에서 메인 스레드가 40GiB 배열을 <code>memset</code>으로 0 초기화한 뒤 워커 64개(양 소켓에 반씩)에게 구간을 나눠 줬습니다. 예상되는 현상은?</div>
+    <button class="opt">페이지가 64개 워커의 노드에 고르게 분산된다</button>
+    <button class="opt">커널이 할당 시점에 워커 위치를 알고 미리 배치한다</button>
+    <button class="opt">대부분의 페이지가 메인 스레드의 노드에 놓여 절반의 워커가 원격 접근을 하고, 그 노드의 메모리 대역폭이 병목이 된다</button>
+    <button class="opt">memset은 페이지를 실제로 할당하지 않으므로 아무 영향이 없다</button>
+    <div class="explain">first-touch 정책 때문에 memset을 실행한 CPU의 노드에 물리 페이지가 할당됩니다(그 노드가 꽉 차면 넘칩니다). 해결책은 워커가 자기 구간을 직접 초기화하는 병렬 first-touch, 공유 데이터라면 interleave입니다. 자동 NUMA 밸런싱이 나중에 일부를 옮겨 줄 수는 있지만 비용이 따릅니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">STLB 1,536엔트리 × 2MiB = 3GiB의 TLB reach를 노리고 huge page 도입을 검토 중입니다. 다음 설명 중 <b>틀린</b> 것은?</div>
+    <button class="opt"><code>defrag=always</code>는 폴트 경로에서 compaction을 해 지연 스파이크를 낼 수 있다</button>
+    <button class="opt"><code>max_ptes_none=511</code>이면 khugepaged가 거의 빈 범위도 합쳐 RSS가 늘 수 있다</button>
+    <button class="opt">hugetlbfs 페이지는 미리 예약되며 swap되지 않는다</button>
+    <button class="opt">THP는 2MiB를 못 구하면 mmap이 실패하므로 애플리케이션이 재시도해야 한다</button>
+    <div class="explain">1536 × 2MiB = 3GiB입니다. THP는 huge page를 못 구하면 조용히 4KiB로 폴백합니다(<code>thp_fault_fallback</code> 카운터 증가). 실패가 드러나는 것은 hugetlbfs 쪽입니다. 풀이 비면 mmap이 실패하거나 폴트 시 SIGBUS가 납니다.</div>
+  </div>
+</main>
+
+<script>
+// ==LOGIC== 순수 함수: node로 검증 가능 (DOM 비의존)
+function log2i(n) { let b = 0; while ((1 << b) < n) b++; return (1 << b) === n ? b : -1; }
+function cacheGeom(size, ways, line) {
+  const lines = size / line, sets = lines / ways;
+  if (!Number.isInteger(lines) || !Number.isInteger(sets) || sets < 1) return null;
+  const idxBits = log2i(sets), offBits = log2i(line);
+  if (idxBits < 0 || offBits < 0) return null;
+  return { size, ways, line, sets, idxBits, offBits };
+}
+function splitAddr(addr, g) {
+  const offset = addr % g.line;
+  const block = Math.floor(addr / g.line);
+  return { offset, index: block % g.sets, tag: Math.floor(block / g.sets) };
+}
+// set: [{tag,last}] / 정확한 LRU
+function cacheAccess(set, tag, ways, now) {
+  const w = set.findIndex(e => e.tag === tag);
+  if (w >= 0) { set[w].last = now; return { hit: true, way: w, evicted: null }; }
+  if (set.length < ways) { set.push({ tag, last: now }); return { hit: false, way: set.length - 1, evicted: null }; }
+  let v = 0; for (let i = 1; i < set.length; i++) if (set[i].last < set[v].last) v = i;
+  const evicted = set[v].tag; set[v] = { tag, last: now };
+  return { hit: false, way: v, evicted };
+}
+// MESI: st = {s:[..'M'|'E'|'S'|'I'], v:[값|null], mem}
+function mesiStep(st, c, op) {
+  const s = st.s.slice(), v = st.v.slice(); let mem = st.mem;
+  const bus = [], others = s.map((_, j) => j).filter(j => j !== c);
+  let note = "", inv = 0;
+  if (op === "R") {
+    if (s[c] !== "I") note = `읽기 히트 (${s[c]} 유지)`;
+    else {
+      bus.push("BusRd");
+      const m = others.find(j => s[j] === "M");
+      if (m !== undefined) {
+        bus.push(`Flush(C${m})`); mem = v[m]; s[m] = "S"; s[c] = "S"; v[c] = v[m];
+        note = `C${m}이(가) M 라인을 공급하고 메모리에 write-back, 둘 다 S`;
+      } else {
+        const holders = others.filter(j => s[j] !== "I");
+        if (holders.length) { holders.forEach(j => { if (s[j] === "E") s[j] = "S"; }); s[c] = "S"; v[c] = mem; note = "다른 사본이 있으므로 S로 받음"; }
+        else { s[c] = "E"; v[c] = mem; note = "아무도 없으므로 E(배타적)로 받음"; }
+      }
+    }
+  } else if (op === "W") {
+    if (s[c] === "M") { v[c]++; note = "쓰기 히트 (M 유지)"; }
+    else if (s[c] === "E") { s[c] = "M"; v[c]++; note = "E→M 조용한 전이 (버스 없음)"; }
+    else if (s[c] === "S") {
+      bus.push("BusUpgr");
+      others.forEach(j => { if (s[j] !== "I") { s[j] = "I"; v[j] = null; inv++; } });
+      s[c] = "M"; v[c]++; note = `다른 사본 ${inv}개 무효화 후 M`;
+    } else {
+      bus.push("BusRdX");
+      const m = others.find(j => s[j] === "M");
+      let data = mem;
+      if (m !== undefined) { bus.push(`Flush(C${m})`); data = v[m]; mem = v[m]; }
+      others.forEach(j => { if (s[j] !== "I") { s[j] = "I"; v[j] = null; inv++; } });
+      s[c] = "M"; v[c] = data + 1; note = `소유권 획득(RFO), 사본 ${inv}개 무효화 후 M`;
+    }
+  } else if (op === "X") {
+    if (s[c] === "M") { bus.push(`WriteBack(C${c})`); mem = v[c]; note = "M 축출: 메모리에 write-back"; }
+    else if (s[c] === "I") note = "이미 I";
+    else note = `${s[c]} 축출: 깨끗하므로 조용히 버림`;
+    s[c] = "I"; v[c] = null;
+  }
+  return { st: { s, v, mem }, bus, note, inv };
+}
+function mesiInit(n) { return { s: Array(n).fill("I"), v: Array(n).fill(null), mem: 0 }; }
+// false sharing: 코어0이 a, 코어1이 b를 번갈아 n번씩 증가
+function falseSharing(n, padded) {
+  const lines = padded ? [mesiInit(2), mesiInit(2)] : [mesiInit(2)];
+  const lineOf = k => (padded ? k : 0);
+  let hits = 0, tx = 0, inv = 0, writes = 0; const trace = [];
+  for (let i = 0; i < n; i++) for (const c of [0, 1]) {
+    const L = lineOf(c), r = mesiStep(lines[L], c, "W");
+    lines[L] = r.st; writes++; inv += r.inv;
+    if (r.bus.length) tx++; else hits++;
+    if (trace.length < 8) trace.push({ c, line: L, bus: r.bus.slice(), s: lines.map(l => l.s.join("")) });
+  }
+  return { writes, hits, tx, inv, cost: hits + tx * 50, trace };
+}
+// Litmus
+function opSt(a, v, o) { return Object.assign({ t: "st", a, v }, o || {}); }
+function opLd(a, r, o) { return Object.assign({ t: "ld", a, r }, o || {}); }
+const opF = { t: "f" };
+const LITMUS = {
+  SB: { name: "SB: Store Buffering", th: [[opSt("x", 1), opLd("y", "r1")], [opSt("y", 1), opLd("x", "r2")]], star: "r1=0 r2=0" },
+  SBF: { name: "SB + 전체 배리어", th: [[opSt("x", 1), opF, opLd("y", "r1")], [opSt("y", 1), opF, opLd("x", "r2")]], star: "r1=0 r2=0" },
+  MP: { name: "MP: Message Passing", th: [[opSt("data", 1), opSt("flag", 1)], [opLd("flag", "r1"), opLd("data", "r2")]], star: "r1=1 r2=0" },
+  MPRA: { name: "MP + release/acquire", th: [[opSt("data", 1), opSt("flag", 1, { rel: true })], [opLd("flag", "r1", { acq: true }), opLd("data", "r2")]], star: "r1=1 r2=0" },
+  LB: { name: "LB: Load Buffering", th: [[opLd("x", "r1"), opSt("y", 1)], [opLd("y", "r2"), opSt("x", 1)]], star: "r1=1 r2=1" },
+};
+function regKey(regs) { return Object.keys(regs).sort().map(k => `${k}=${regs[k]}`).join(" "); }
+function interleaveSC(threads) {
+  const out = new Set();
+  (function go(pcs, mem, regs) {
+    let done = true;
+    threads.forEach((ops, i) => {
+      if (pcs[i] >= ops.length) return;
+      done = false;
+      const op = ops[pcs[i]], m2 = Object.assign({}, mem), r2 = Object.assign({}, regs), p2 = pcs.slice(); p2[i]++;
+      if (op.t === "st") m2[op.a] = op.v; else if (op.t === "ld") r2[op.r] = mem[op.a] || 0;
+      go(p2, m2, r2);
+    });
+    if (done) out.add(regKey(regs));
+  })(threads.map(() => 0), {}, {});
+  return out;
+}
+function enumTSO(threads) {
+  const out = new Set(), seen = new Set();
+  (function go(pcs, bufs, mem, regs) {
+    const key = JSON.stringify([pcs, bufs, mem, regs]);
+    if (seen.has(key)) return; seen.add(key);
+    let done = true;
+    threads.forEach((ops, i) => {
+      if (bufs[i].length) { // 버퍼 머리를 메모리로 drain
+        done = false;
+        const b2 = bufs.map(b => b.slice()), [a, v] = b2[i].shift(), m2 = Object.assign({}, mem); m2[a] = v;
+        go(pcs, b2, m2, regs);
+      }
+      if (pcs[i] >= ops.length) return;
+      const op = ops[pcs[i]];
+      if (op.t === "f" && bufs[i].length) { done = false; return; } // mfence: 버퍼가 빌 때까지 대기
+      done = false;
+      const p2 = pcs.slice(); p2[i]++;
+      const b2 = bufs.map(b => b.slice()), r2 = Object.assign({}, regs);
+      if (op.t === "st") b2[i].push([op.a, op.v]);
+      else if (op.t === "ld") {
+        let val = mem[op.a] || 0;
+        for (let k = bufs[i].length - 1; k >= 0; k--) if (bufs[i][k][0] === op.a) { val = bufs[i][k][1]; break; }
+        r2[op.r] = val;
+      }
+      go(p2, b2, mem, r2);
+    });
+    if (done) out.add(regKey(regs));
+  })(threads.map(() => 0), threads.map(() => []), {}, {});
+  return out;
+}
+// ARMv8 단순화: 순서 제약을 지키는 스레드 내 재배열 + 인터리빙
+function mustOrder(ops, i, j) { // i<j
+  const a = ops[i], b = ops[j];
+  if (a.t === "f" || b.t === "f") return true;
+  if (a.t !== "f" && b.t !== "f" && a.a === b.a) return true;
+  if (a.t === "ld" && a.acq) return true;
+  if (b.t === "st" && b.rel) return true;
+  return false;
+}
+function linearExtensions(ops) {
+  const res = [], n = ops.length;
+  (function go(used, seq) {
+    if (seq.length === n) { res.push(seq.map(k => ops[k])); return; }
+    for (let j = 0; j < n; j++) {
+      if (used[j]) continue;
+      let ok = true;
+      for (let i = 0; i < j; i++) if (!used[i] && mustOrder(ops, i, j)) { ok = false; break; }
+      if (!ok) continue;
+      used[j] = true; seq.push(j); go(used, seq); seq.pop(); used[j] = false;
+    }
+  })(Array(n).fill(false), []);
+  return res;
+}
+function enumWeak(threads) {
+  const out = new Set(), per = threads.map(linearExtensions);
+  (function pick(k, chosen) {
+    if (k === threads.length) { interleaveSC(chosen).forEach(x => out.add(x)); return; }
+    per[k].forEach(p => pick(k + 1, chosen.concat([p])));
+  })(0, []);
+  return out;
+}
+function litmusOutcomes(test, model) {
+  const th = test.th;
+  return model === "SC" ? interleaveSC(th) : model === "TSO" ? enumTSO(th) : enumWeak(th);
+}
+// NUMA
+function numaPlace(strategy, pages, workers, nodes) {
+  const per = pages / workers, wNode = w => Math.floor(w / (workers / nodes));
+  return Array.from({ length: pages }, (_, p) =>
+    strategy === "main" ? 0 : strategy === "parallel" ? wNode(Math.floor(p / per)) :
+    strategy === "interleave" ? p % nodes : 1);
+}
+function numaStats(place, workers, nodes, lat, rlat) {
+  const per = place.length / workers, wNode = w => Math.floor(w / (workers / nodes));
+  let remote = 0; const load = Array(nodes).fill(0);
+  place.forEach((n, p) => { const w = Math.floor(p / per); if (n !== wNode(w)) remote++; load[n]++; });
+  const N = place.length;
+  return { remote, frac: remote / N, avg: ((N - remote) * lat + remote * rlat) / N, load: load.map(x => x / N) };
+}
+function numaBalance(place, workers, nodes, maxMig) {
+  const per = place.length / workers, wNode = w => Math.floor(w / (workers / nodes));
+  const p2 = place.slice(); let moved = 0;
+  for (let p = 0; p < p2.length && moved < maxMig; p++) {
+    const want = wNode(Math.floor(p / per));
+    if (p2[p] !== want) { p2[p] = want; moved++; }
+  }
+  return { place: p2, moved };
+}
+// TLB reach
+const PAGE_SIZES = [{ n: "4 KiB", b: 4096, walk: 4 }, { n: "2 MiB", b: 2097152, walk: 3 }, { n: "1 GiB", b: 1073741824, walk: 2 }];
+function tlbReach(entries, wssBytes) {
+  return PAGE_SIZES.map(p => {
+    const reach = entries * p.b, leaves = Math.ceil(wssBytes / p.b);
+    return { name: p.n, reach, coverage: Math.min(1, reach / wssBytes), leaves, leafTableBytes: leaves * 8, walk: p.walk };
+  });
+}
+// THP bloat
+function thpBloat(touched, regionPages, hugeFactor) {
+  const set4k = new Set(touched), huge = new Set(touched.map(p => Math.floor(p / hugeFactor)));
+  return { rss4k: set4k.size * 4096, rssThp: huge.size * hugeFactor * 4096, hugeTouched: huge };
+}
+// ==/LOGIC==
+
+(function () {
+  const $ = id => document.getElementById(id);
+
+  /* ---------- 캐시 시뮬레이터 ---------- */
+  let g, sets, now = 0, hits = 0, misses = 0, busy = false;
+  const MAXA = 2 ** 48;
+  function setupCache() {
+    g = cacheGeom(+$("cs-size").value, +$("cs-ways").value, +$("cs-line").value);
+    if (!g) { $("cs-geom").innerHTML = `<span class="c-bad">이 조합은 set 수가 2의 거듭제곱이 아닙니다. 다른 연관도를 고르세요.</span>`; sets = null; drawCache(null); return; }
+    sets = Array.from({ length: g.sets }, () => []); now = hits = misses = 0;
+    $("cs-geom").innerHTML = `set 수 = ${g.size} ÷ (${g.line} × ${g.ways}) = <b>${g.sets}</b> → offset ${g.offBits}비트, index ${g.idxBits}비트, 나머지가 tag. way 하나의 크기(같은 set으로 가는 주소 간격) = <b>${MM.bytes(g.sets * g.line)}</b>`;
+    $("cs-log").textContent = "";
+    drawCache(null);
+  }
+  function parseAddr(s) {
+    s = s.trim().replace(/^0x/i, "");
+    if (!/^[0-9a-f]{1,12}$/i.test(s)) return null;
+    return parseInt(s, 16);
+  }
+  function bitsHTML(addr, sp) {
+    const width = addr >= 2 ** 32 ? 48 : 32;
+    let bin = ""; let a = addr;
+    for (let i = 0; i < width; i++) { bin = (a % 2) + bin; a = Math.floor(a / 2); }
+    const o = g.offBits, ix = g.idxBits, tlen = width - o - ix;
+    return `<span class="b-tag">${bin.slice(0, tlen)}</span><span class="b-idx">${bin.slice(tlen, tlen + ix)}</span><span class="b-off">${bin.slice(tlen + ix)}</span>`;
+  }
+  function drawCache(cur) {
+    const map = $("cs-map"), wv = $("cs-ways-view");
+    if (!sets) { map.innerHTML = ""; wv.innerHTML = ""; return; }
+    map.innerHTML = sets.map((s, i) => `<div class="${cur && cur.index === i ? "cur" : ""}" title="set ${i}: ${s.length}/${g.ways}"><i style="height:${(s.length / g.ways) * 100}%"></i></div>`).join("");
+    $("cs-n").textContent = hits + misses; $("cs-h").textContent = hits; $("cs-m").textContent = misses;
+    $("cs-r").textContent = hits + misses ? ((hits / (hits + misses)) * 100).toFixed(1) + "%" : "–";
+    if (!cur) { wv.innerHTML = `<span class="note">접근하면 해당 set의 way가 여기 표시됩니다.</span>`; return; }
+    const s = sets[cur.index], order = s.map(e => e.last).sort((a, b) => b - a);
+    let html = "";
+    for (let w = 0; w < g.ways; w++) {
+      const e = s[w];
+      if (!e) { html += `<div class="way"><small>way ${w}</small>—</div>`; continue; }
+      const cls = w === cur.res.way ? (cur.res.hit ? "hit" : "miss") : "";
+      html += `<div class="way ${cls}"><small>way ${w} · LRU ${order.indexOf(e.last)}</small>${MM.hex(e.tag)}</div>`;
+    }
+    wv.innerHTML = html;
+  }
+  function access(addr, quiet) {
+    if (!sets) return;
+    const sp = splitAddr(addr, g), res = cacheAccess(sets[sp.index], sp.tag, g.ways, ++now);
+    res.hit ? hits++ : misses++;
+    $("cs-bits").innerHTML = bitsHTML(addr, sp);
+    $("cs-split").innerHTML = `tag = <b class="c-violet">${MM.hex(sp.tag)}</b>, index = <b class="c-accent">${sp.index}</b>, offset = <b class="c-teal">${sp.offset}</b> (라인 시작 주소 ${MM.hex(addr - sp.offset)})`;
+    const line = `${MM.hex(addr, 8).padEnd(16)} set ${String(sp.index).padStart(4)}  ${res.hit ? "HIT " : "MISS"}${res.evicted !== null ? `  (tag ${MM.hex(res.evicted)} 축출)` : ""}`;
+    const lg = $("cs-log"); lg.textContent += line + "\n"; lg.scrollTop = lg.scrollHeight;
+    drawCache({ index: sp.index, res });
+  }
+  function runSeq(list) {
+    if (busy || !sets) return; busy = true;
+    let k = 0;
+    const t = setInterval(() => { if (k >= list.length) { clearInterval(t); busy = false; return; } access(list[k++]); }, 160);
+  }
+  ["cs-size", "cs-ways", "cs-line"].forEach(id => $(id).onchange = setupCache);
+  $("cs-go").onclick = () => {
+    const a = parseAddr($("cs-addr").value);
+    if (a === null || a >= MAXA) { $("cs-split").innerHTML = `<span class="c-bad">0~12자리 16진수(48비트 이하)를 입력하세요.</span>`; return; }
+    access(a);
+  };
+  $("cs-addr").onkeydown = e => { if (e.key === "Enter") $("cs-go").click(); };
+  $("cs-seq").onclick = () => runSeq(Array.from({ length: 16 }, (_, i) => 0x10000 + i * 8));
+  const stride = () => g.sets * g.line;
+  $("cs-conf").onclick = () => { if (!g) return; const l = []; for (let r = 0; r < 2; r++) for (let k = 0; k <= g.ways; k++) l.push(0x200000 + k * stride()); runSeq(l); };
+  $("cs-fit").onclick = () => { if (!g) return; const l = []; for (let r = 0; r < 2; r++) for (let k = 0; k < g.ways; k++) l.push(0x400000 + k * stride()); runSeq(l); };
+  $("cs-rand").onclick = () => runSeq(Array.from({ length: 12 }, () => Math.floor(Math.random() * 0x100000) * 8));
+  $("cs-reset").onclick = setupCache;
+  setupCache();
+
+  /* ---------- MESI ---------- */
+  let ms, latest = 0, tx = 0, invs = 0, demoT = null;
+  function meReset() {
+    clearInterval(demoT); demoT = null;
+    ms = mesiInit(+$("me-n").value); latest = 0; tx = 0; invs = 0;
+    $("me-log").textContent = ""; $("me-bus").innerHTML = "버스: 대기 중";
+    meDraw(-1);
+  }
+  function meDraw(last) {
+    $("me-cores").innerHTML = ms.s.map((s, i) => `<div class="core-card st-${s}">
+      <div class="nm">코어 ${i}${i === last ? " ◀" : ""}</div><div class="st">${s}</div>
+      <div class="val">X = ${ms.v[i] === null ? "—" : ms.v[i]}</div>
+      <button class="btn" data-c="${i}" data-o="R">읽기</button><button class="btn" data-c="${i}" data-o="W">쓰기</button><button class="btn" data-c="${i}" data-o="X">축출</button></div>`).join("");
+    $("me-mem").textContent = ms.mem; $("me-latest").textContent = latest;
+    $("me-mem").className = "v " + (ms.mem === latest ? "" : "c-bad");
+    $("me-tx").textContent = tx; $("me-inv").textContent = invs;
+  }
+  function meDo(c, op) {
+    const before = ms.s.join("");
+    const r = mesiStep(ms, c, op); ms = r.st;
+    if (op === "W") latest++;
+    if (r.bus.length) tx++;
+    invs += r.inv;
+    const opn = { R: "읽기", W: "쓰기", X: "축출" }[op];
+    $("me-bus").innerHTML = r.bus.length ? `버스: <b>${r.bus.join(" → ")}</b> — ${r.note}` : `버스: (트랜잭션 없음) — ${r.note}`;
+    const lg = $("me-log");
+    lg.textContent += `C${c} ${opn}: ${before} → ${ms.s.join("")}  ${r.bus.length ? "[" + r.bus.join(", ") + "]" : "[버스 없음]"}  ${r.note}\n`;
+    lg.scrollTop = lg.scrollHeight;
+    meDraw(c);
+  }
+  $("me-cores").onclick = e => { const b = e.target.closest("button"); if (!b) return; clearInterval(demoT); demoT = null; meDo(+b.dataset.c, b.dataset.o); };
+  $("me-n").onchange = meReset; $("me-reset").onclick = meReset;
+  $("me-demo").onclick = () => {
+    meReset();
+    const n = ms.s.length, seq = [[0, "R"], [0, "W"], [1, "R"], [1, "W"], [0, "R"]];
+    if (n > 2) seq.push([2, "R"]); seq.push([2 % n, "W"], [1, "X"], [0, "X"]);
+    let k = 0;
+    demoT = setInterval(() => { if (k >= seq.length) { clearInterval(demoT); demoT = null; return; } meDo(...seq[k++]); }, 900);
+  };
+  meReset();
+
+  /* ---------- False sharing ---------- */
+  function fsLayout(padded) {
+    const row = (lbl, slots) => `<span class="lbl">${lbl}</span>` + slots.map(s => `<div class="slot ${s}">${s || "·"}</div>`).join("");
+    const empty = Array(8).fill("");
+    return `<div class="note">캐시 라인 배치 (칸 = 8바이트)</div><div class="linemap">` +
+      (padded ? row("라인 0", ["a"].concat(empty.slice(1))) + row("라인 1", ["b"].concat(empty.slice(1)))
+              : row("라인 0", ["a", "b"].concat(empty.slice(2)))) + `</div>`;
+  }
+  function fsRun() {
+    const padded = document.querySelector('input[name="fs-lay"]:checked').value === "1";
+    const n = +$("fs-n").value, r = falseSharing(n, padded);
+    $("fs-map").innerHTML = fsLayout(padded);
+    $("fs-w").textContent = r.writes; $("fs-h").textContent = r.hits; $("fs-tx").textContent = r.tx;
+    $("fs-inv").textContent = r.inv; $("fs-cost").textContent = r.cost.toLocaleString();
+    $("fs-log").textContent = "처음 8번의 쓰기 (라인별 상태: 코어0 코어1)\n" + r.trace.map(t =>
+      `C${t.c} ${t.c ? "b" : "a"}++ → 라인${t.line} ${t.bus.length ? "[" + t.bus.join(", ") + "]" : "[히트]"}  상태 ${t.s.map((x, i) => "L" + i + "=" + x).join(" ")}`).join("\n") +
+      `\n…\n${padded ? "라인이 분리되어 첫 미스 이후로는 각자 M 상태에서 히트만 한다." : "쓰기마다 라인 소유권이 상대 코어로 넘어간다(ping-pong)."}`;
+  }
+  $("fs-n").oninput = () => { $("fs-nv").textContent = $("fs-n").value; fsRun(); };
+  document.querySelectorAll('input[name="fs-lay"]').forEach(r => r.onchange = fsRun);
+  $("fs-run").onclick = fsRun;
+  fsRun();
+
+  /* ---------- SB 스텝 애니메이션 ---------- */
+  function sbSteps(fence) {
+    const S = (pc0, pc1, sb0, sb1, x, y, r1, r2, hl, cap) => ({ pc0, pc1, sb0, sb1, x, y, r1, r2, hl, cap });
+    if (!fence) return [
+      S(0, 0, [], [], 0, 0, "?", "?", "", "초기 상태. x = y = 0, 두 스토어 버퍼는 비어 있다."),
+      S(1, 0, ["x=1"], [], 0, 0, "?", "?", "sb0", "코어 0: <code>x = 1</code>은 스토어 버퍼에 들어가고 코어는 바로 다음 명령으로 간다. 메모리의 x는 아직 0."),
+      S(1, 1, ["x=1"], ["y=1"], 0, 0, "?", "?", "sb1", "코어 1: <code>y = 1</code>도 자기 스토어 버퍼에 들어간다."),
+      S(2, 1, ["x=1"], ["y=1"], 0, 0, 0, "?", "r1", "코어 0: <code>r1 = y</code>. 자기 버퍼에 y가 없으므로 캐시/메모리에서 읽는다 → <b>r1 = 0</b>."),
+      S(2, 2, ["x=1"], ["y=1"], 0, 0, 0, 0, "r2", "코어 1: <code>r2 = x</code>. 코어 0의 버퍼 속 x=1은 보이지 않는다 → <b>r2 = 0</b>."),
+      S(2, 2, [], ["y=1"], 1, 0, 0, 0, "mx", "스토어 버퍼 0이 drain되어 x = 1이 메모리에 반영된다. 이미 늦었다."),
+      S(2, 2, [], [], 1, 1, 0, 0, "my", "스토어 버퍼 1도 drain되어 y = 1."),
+      S(2, 2, [], [], 1, 1, 0, 0, "res", "<b class='c-bad'>결과 r1 = 0, r2 = 0</b>. 각 코어의 store가 자신의 뒤 load보다 늦게 보였다(Store→Load 재배열). x86-TSO가 허용하는 유일한 재배열이다."),
+    ];
+    return [
+      S(0, 0, [], [], 0, 0, "?", "?", "", "초기 상태. 이번에는 store와 load 사이에 <code>mfence</code>가 있다."),
+      S(1, 0, ["x=1"], [], 0, 0, "?", "?", "sb0", "코어 0: <code>x = 1</code> → 스토어 버퍼."),
+      S(1, 1, ["x=1"], ["y=1"], 0, 0, "?", "?", "sb1", "코어 1: <code>y = 1</code> → 스토어 버퍼."),
+      S(2, 1, [], ["y=1"], 1, 0, "?", "?", "mx", "코어 0: <code>mfence</code>. 자기 스토어 버퍼가 빌 때까지 뒤의 load를 막는다 → x = 1이 메모리에 반영."),
+      S(2, 2, [], [], 1, 1, "?", "?", "my", "코어 1: <code>mfence</code> → y = 1 반영."),
+      S(3, 2, [], [], 1, 1, 1, "?", "r1", "코어 0: <code>r1 = y</code> → <b>r1 = 1</b>."),
+      S(3, 3, [], [], 1, 1, 1, 1, "r2", "코어 1: <code>r2 = x</code> → <b>r2 = 1</b>."),
+      S(3, 3, [], [], 1, 1, 1, 1, "res", "<b class='c-ok'>r1 = r2 = 0은 더 이상 불가능</b>. 배리어가 store의 전역 가시화를 load보다 먼저 일어나게 강제했다. 대가는 버퍼 drain을 기다리는 수십 사이클 이상의 정지다."),
+    ];
+  }
+  function sbSVG(st, fence) {
+    const prog0 = fence ? ["x = 1", "mfence", "r1 = y"] : ["x = 1", "r1 = y"];
+    const prog1 = fence ? ["y = 1", "mfence", "r2 = x"] : ["y = 1", "r2 = x"];
+    const hi = k => st.hl === k ? "stroke:var(--accent);stroke-width:2.5" : "";
+    const instr = (prog, pc, x0) => prog.map((t, i) => `<text x="${x0}" y="${52 + i * 18}" class="mono" font-size="13" style="fill:${i < pc ? "var(--muted)" : "var(--text)"}">${i < pc ? "✓ " : "  "}${t}</text>`).join("");
+    const sbBox = (x, items, k) => `<rect x="${x}" y="140" width="200" height="40" rx="6" class="box" style="${hi(k)}"/>
+      <text x="${x + 8}" y="133" font-size="11" class="muted">스토어 버퍼</text>
+      <text x="${x + 100}" y="165" text-anchor="middle" class="mono" font-size="13" style="fill:var(--warn)">${items.length ? items.join(", ") : "(비어 있음)"}</text>`;
+    return `<svg class="diagram" viewBox="0 0 600 300" style="min-width:420px">
+      <rect x="20" y="20" width="240" height="100" rx="10" class="box"/>
+      <text x="32" y="38" font-weight="700">코어 0</text>${instr(prog0, st.pc0, 40)}
+      <text x="250" y="38" text-anchor="end" class="mono" style="${st.hl === "r1" ? "fill:var(--accent);font-weight:700" : ""}">r1 = ${st.r1}</text>
+      <rect x="340" y="20" width="240" height="100" rx="10" class="box"/>
+      <text x="352" y="38" font-weight="700">코어 1</text>${instr(prog1, st.pc1, 360)}
+      <text x="570" y="38" text-anchor="end" class="mono" style="${st.hl === "r2" ? "fill:var(--accent);font-weight:700" : ""}">r2 = ${st.r2}</text>
+      ${sbBox(40, st.sb0, "sb0")}${sbBox(360, st.sb1, "sb1")}
+      <path d="M140,180 L140,210 M460,180 L460,210" class="line" style="stroke-dasharray:4 3"/>
+      <text x="300" y="200" text-anchor="middle" font-size="11" class="muted">drain (비동기)</text>
+      <rect x="120" y="212" width="360" height="66" rx="10" style="fill:var(--surface-2);stroke:${st.hl === "res" ? "var(--accent)" : "var(--border)"}"/>
+      <text x="300" y="232" text-anchor="middle" font-size="12" class="muted">일관된 캐시/메모리 (모든 코어가 보는 값)</text>
+      <text x="230" y="262" text-anchor="middle" class="mono" font-size="16" style="${st.hl === "mx" ? "fill:var(--accent);font-weight:700" : ""}">x = ${st.x}</text>
+      <text x="370" y="262" text-anchor="middle" class="mono" font-size="16" style="${st.hl === "my" ? "fill:var(--accent);font-weight:700" : ""}">y = ${st.y}</text>
+    </svg>`;
+  }
+  let sbFence = false;
+  const sbStepper = MM.stepper($("sb-ctl"), {
+    steps: 8, interval: 1600,
+    render(i) { const st = sbSteps(sbFence)[i]; $("sb-svg").innerHTML = sbSVG(st, sbFence); return st.cap; },
+  });
+  $("sb-fence").onchange = e => { sbFence = e.target.checked; sbStepper.go(0); };
+
+  /* ---------- Litmus ---------- */
+  const fmtOp = (op, model) => {
+    if (op.t === "f") return model === "WEAK" ? "dmb ish" : model === "TSO" ? "mfence" : "fence";
+    if (op.t === "st") return `${op.a} = ${op.v}${op.rel ? (model === "WEAK" ? "   // stlr (release)" : "   // release") : ""}`;
+    return `${op.r} = ${op.a}${op.acq ? (model === "WEAK" ? "   // ldar (acquire)" : "   // acquire") : ""}`;
+  };
+  const NOTES = {
+    SB: "x86와 ARM 모두 r1=r2=0을 허용합니다. 각 store가 자기 뒤의 load보다 늦게 보일 수 있기 때문입니다. Dekker/Peterson 알고리즘이 배리어 없이는 깨지는 이유입니다.",
+    SBF: "전체 배리어(x86 mfence, ARM dmb ish)가 store→load 순서를 강제하므로 어떤 모델에서도 r1=r2=0이 사라집니다.",
+    MP: "TSO는 store끼리, load끼리 순서를 지키므로 flag=1을 보면 data=1도 봅니다. ARM에서는 store→store나 load→load가 재배열되어 flag=1인데 data=0을 볼 수 있습니다.",
+    MPRA: "release store 앞의 연산은 그 뒤로 못 가고, acquire load 뒤의 연산은 그 앞으로 못 옵니다. ARM에서도 r1=1, r2=0이 금지됩니다. 락 구현의 기본 패턴입니다.",
+    LB: "load 뒤의 독립 store가 먼저 보이면 r1=r2=1이 됩니다. ARM 아키텍처는 이를 허용합니다(실제 칩에서는 드물게 관측됨). TSO는 load→store 재배열을 금지합니다.",
+  };
+  const ltSel = $("lt-test");
+  ltSel.innerHTML = Object.keys(LITMUS).map(k => `<option value="${k}">${LITMUS[k].name}</option>`).join("");
+  function ltDraw() {
+    const t = LITMUS[ltSel.value], model = $("lt-model").value;
+    $("lt-prog").innerHTML = t.th.map((ops, i) => `<pre><b>스레드 ${i}</b>\n${ops.map(o => fmtOp(o, model)).join("\n")}</pre>`).join("");
+    const all = new Set(); ["SC", "TSO", "WEAK"].forEach(m => litmusOutcomes(t, m).forEach(x => all.add(x)));
+    // 가능한 모든 레지스터 조합 표시 (0/1)
+    const regs = [...new Set(t.th.flat().filter(o => o.t === "ld").map(o => o.r))].sort();
+    const combos = [];
+    (function gen(i, acc) { if (i === regs.length) { combos.push(acc.join(" ")); return; } [0, 1].forEach(v => gen(i + 1, acc.concat(`${regs[i]}=${v}`))); })(0, []);
+    const got = litmusOutcomes(t, model);
+    $("lt-out").innerHTML = combos.map(c => `<span class="outcome ${got.has(c) ? "ok" : "no"} ${c === t.star ? "star" : ""}" title="${got.has(c) ? "가능" : "불가능"}">${c}</span>`).join("");
+    $("lt-note").innerHTML = `초록 = 이 모델에서 가능, 취소선 = 불가능. "${t.star}"는 <b class="${got.has(t.star) ? "c-bad" : "c-ok"}">${got.has(t.star) ? "가능" : "불가능"}</b>. ${NOTES[ltSel.value]}`;
+  }
+  ltSel.onchange = ltDraw; $("lt-model").onchange = ltDraw; ltDraw();
+
+  /* ---------- NUMA ---------- */
+  const W = 8, P = 32, NN = 2;
+  let place, migTotal = 0;
+  function nuReset() { place = numaPlace($("nu-st").value, P, W, NN); migTotal = 0; $("nu-log").textContent = ""; nuDraw(); }
+  function nuDraw() {
+    const per = P / W, wNode = w => Math.floor(w / (W / NN));
+    $("nu-pages").innerHTML = place.map((n, p) => { const w = Math.floor(p / per); return `<div class="n${n} ${n !== wNode(w) ? "remote" : ""}" title="페이지 ${p}: 노드 ${n}, 담당 W${w}">${w}</div>`; }).join("");
+    const st = numaStats(place, W, NN, +$("nu-l").value || 0, +$("nu-r").value || 0);
+    $("nu-rem").textContent = (st.frac * 100).toFixed(0) + "%";
+    $("nu-avg").textContent = st.avg.toFixed(0) + " ns";
+    $("nu-mig").textContent = migTotal;
+    $("nu-b0").style.width = st.load[0] * 100 + "%"; $("nu-b1").style.width = st.load[1] * 100 + "%";
+    $("nu-p0").textContent = (st.load[0] * 100).toFixed(0) + "%"; $("nu-p1").textContent = (st.load[1] * 100).toFixed(0) + "%";
+  }
+  $("nu-st").onchange = nuReset; $("nu-reset").onclick = nuReset;
+  $("nu-l").oninput = nuDraw; $("nu-r").oninput = nuDraw;
+  $("nu-bal").onclick = () => {
+    const r = numaBalance(place, W, NN, 4); place = r.place; migTotal += r.moved;
+    const lg = $("nu-log");
+    lg.textContent += r.moved ? `스캔: hinting fault로 원격 접근 감지 → 페이지 ${r.moved}개 마이그레이션 (복사 + TLB shootdown 비용)\n` : "스캔: 잘못 놓인 페이지 없음 (hinting fault만 발생, 이동 없음)\n";
+    lg.scrollTop = lg.scrollHeight; nuDraw();
+  };
+  nuReset();
+
+  /* ---------- TLB reach ---------- */
+  function tlDraw() {
+    const e = Math.max(1, Math.floor(+$("tl-e").value || 1)), wss = Math.max(1, (+$("tl-w").value || 0) * 2 ** 30);
+    const rows = tlbReach(e, wss);
+    $("tl-tbl").innerHTML = `<tr><th>페이지</th><th>TLB reach</th><th>WSS 커버율</th><th>WSS 매핑 리프 엔트리</th><th>리프 테이블 메모리</th><th>워크 참조</th></tr>` +
+      rows.map(r => `<tr><td><b>${r.name}</b></td><td>${MM.bytes(r.reach)}</td><td class="${r.coverage >= 1 ? "c-ok" : r.coverage < 0.05 ? "c-bad" : "c-warn"}">${(r.coverage * 100).toFixed(r.coverage < 0.01 ? 3 : 1)}%</td><td>${r.leaves.toLocaleString()}</td><td>${MM.bytes(r.leafTableBytes)}</td><td>${r.walk}회</td></tr>`).join("");
+    $("tl-note").innerHTML = `4KiB → 2MiB로 reach가 <b>${(rows[1].reach / rows[0].reach)}배</b>. 리프 테이블 메모리는 엔트리당 8바이트로 계산했습니다(상위 단계 테이블 제외). 커버율이 낮아도 접근이 국소적이면 미스율은 낮을 수 있습니다. reach는 "무작위 접근 시의 상한"으로 읽으세요.`;
+  }
+  $("tl-e").oninput = tlDraw; $("tl-w").oninput = tlDraw;
+  document.querySelectorAll("#w-tlb [data-e]").forEach(b => b.onclick = () => { $("tl-e").value = b.dataset.e; tlDraw(); });
+  tlDraw();
+
+  /* ---------- THP 블로트 ---------- */
+  const REGION = 16384, HF = 512; // 64MiB / 4KiB, 2MiB / 4KiB
+  let touched = [];
+  function thSample() {
+    const k = +$("th-k").value, s = new Set();
+    while (s.size < k) s.add(Math.floor(Math.random() * REGION));
+    touched = [...s]; thDraw();
+  }
+  function thDraw() {
+    const r = thpBloat(touched, REGION, HF), cnt = Array(REGION / HF).fill(0);
+    touched.forEach(p => cnt[Math.floor(p / HF)]++);
+    $("th-grid").innerHTML = cnt.map((c, i) => `<div class="${c ? "on" : ""}" title="2MiB 칸 ${i}: 4KiB ${c}개 사용"><i style="height:${Math.max(c ? 6 : 0, (c / HF) * 100)}%"></i></div>`).join("");
+    $("th-a").textContent = MM.bytes(touched.length * 4096);
+    $("th-b").textContent = MM.bytes(r.rss4k); $("th-c").textContent = MM.bytes(r.rssThp);
+    $("th-d").textContent = (r.rssThp / r.rss4k).toFixed(1) + "×";
+  }
+  $("th-k").oninput = () => { $("th-kv").textContent = $("th-k").value; thSample(); };
+  $("th-re").onclick = thSample;
+  thSample();
+})();
+</script>
+</body></html>

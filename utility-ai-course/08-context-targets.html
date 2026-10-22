@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>컨텍스트와 타깃 평가</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 08장 전용 */
+svg.map { display: block; width: 100%; height: auto; touch-action: none; user-select: none; -webkit-user-select: none; font-family: var(--sans); }
+svg.map text { fill: var(--text); font-size: 12px; pointer-events: none; }
+svg.map .lbl { font-size: 11px; fill: var(--muted); }
+svg.map .sc { font-size: 11.5px; font-weight: 700; font-family: var(--mono); }
+svg.map .grab { cursor: grab; }
+svg.map .grab:active { cursor: grabbing; }
+svg.map .clk { cursor: pointer; }
+.w-grid { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 14px; align-items: start; }
+@media (max-width: 760px) { .w-grid { grid-template-columns: minmax(0, 1fr); } }
+.sliders { display: grid; grid-template-columns: auto 1fr 3.2em; gap: 4px 10px; align-items: center; font-size: 13.5px; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.readout { font-size: 13.5px; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; line-height: 1.6; }
+.readout b { font-family: var(--mono); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+table.ctx td, table.ctx th { font-size: 13px; padding: 5px 8px; }
+table.ctx td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+table.ctx tr.best td { background: var(--accent-soft); font-weight: 700; }
+table.ctx tr.zero td { color: var(--muted); }
+.part { display: block; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.part .mini { display: inline-block; width: 40px; height: 6px; border-radius: 3px; background: var(--surface-2); border: 1px solid var(--border); vertical-align: middle; margin-left: 4px; overflow: hidden; }
+.part .mini i { display: block; height: 100%; background: var(--accent); }
+.part.skip { color: var(--muted); font-style: italic; }
+.cost-tbl td.num { font-family: var(--mono); text-align: right; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 18px; height: 4px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+svg.diagram .hl { fill: var(--accent-soft); stroke: var(--accent); }
+svg.diagram .okb { fill: var(--ok-soft); stroke: var(--ok); }
+svg.diagram .badb { fill: var(--bad-soft); stroke: var(--bad); }
+svg.diagram .warnb { fill: var(--warn-soft); stroke: var(--warn); }
+svg.diagram .vb { fill: var(--violet-soft); stroke: var(--violet); }
+svg.diagram .tb { fill: var(--teal-soft); stroke: var(--teal); }
+svg.diagram .arrow { stroke: var(--muted); fill: none; marker-end: url(#ah); }
+svg.diagram .small { font-size: 11.5px; }
+#dai-svg .en { transition: opacity .25s; }
+#dai-svg .en.dim { opacity: .35; }
+</style>
+</head>
+<body data-chapter="08">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">엔진 · Chapter 08</span>
+    <h1>컨텍스트와 타깃 평가</h1>
+    <p class="lead">07장까지의 주민은 "무엇을 할까"만 고민했다. 그런데 "빵집에 간다"와 "밭에 간다"는 같은 '먹기'여도 전혀 다른 선택이다. 이 장에서는 행동과 대상을 한 쌍으로 묶은 <b>컨텍스트(decision context)</b>를 평가 단위로 삼는다. 거리·방향 같은 공간 consideration을 설계하는 법, 행동 × 대상 × consideration 조합이 폭발하는 비용, 여러 주민이 한 대상에 몰리는 문제도 함께 다룬다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>행동과 대상을 따로 고르면 왜 틀리는지 설명하고, (행동, 대상) 쌍 단위로 평가하는 구조를 만든다.</li>
+      <li><code>action.targets(ctx)</code>가 Reasoner의 평가 루프에 어떻게 들어가는지 읽고, Dragon Age: Inquisition의 Target Selector 노드와 비교한다.</li>
+      <li>거리 커브를 단조 감소로 할지 역 U자로 할지 정하고, 공간 utility field로 결과를 눈으로 확인한다.</li>
+      <li>내적으로 방향 consideration을 만들고, 같은 입력에 다른 커브를 붙여 성격이 다른 행동을 만든다.</li>
+      <li>A×T×C 평가 비용을 추정하고 사전 필터, early-out, 평가 순서로 줄인다.</li>
+      <li>여러 주민이 같은 대상을 고르는 문제를 혼잡 consideration, 예약(capacity), 주변 밀도 프록시로 다룬다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>action.targets(ctx)</code> <code>Reasoner.evaluate()</code> <code>ctx = { agent, world, target }</code> <code>UAI.hamletActions()</code>의 <code>use</code>·<code>chat</code> — 행동마다 후보 대상을 열거하고 (행동, 대상) 쌍마다 consideration을 평가한다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">"무엇을"과 "누구에게"는 분리할 수 없다</a></li>
+    <li><a href="#s2">엔진에서: action.targets와 컨텍스트 지도</a></li>
+    <li><a href="#s3">Dragon Age: Inquisition의 Target Selector</a></li>
+    <li><a href="#s4">거리 커브의 형태와 공간 utility field</a></li>
+    <li><a href="#s5">방향 consideration: 내적 하나로 옆·뒤 공격</a></li>
+    <li><a href="#s6">조합 폭발: A × T × C</a></li>
+    <li><a href="#s7">모두가 같은 대상을 고를 때</a></li>
+    <li><a href="#s8">에이전트도 대상이다: 수다 떨기</a></li>
+    <li><a href="#s9">설계 체크리스트와 함정</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. "무엇을"과 "누구에게"는 분리할 수 없다</h2>
+    <p>지금까지 행동의 점수는 "배고프니 먹는 게 좋다" 같은 <b>행동 자체</b>의 점수처럼 보였다. 하지만 실제로 실행되는 것은 언제나 <b>무언가에 대한</b> 행동이다. 주민은 그냥 '먹지' 않고 <i>빵집에서</i> 또는 <i>밭에서</i> 먹는다. 마법사는 그냥 'Immolate를 쓰지' 않고 <i>특정 적에게</i> 쓴다. 점수를 정하는 정보의 상당수, 곧 거리·혼잡·면역·방향은 행동이 아니라 <b>대상</b>에 붙어 있다.</p>
+    <p>그래서 평가 단위를 바꾼다. 행동 하나와 대상 하나를 묶은 쌍을 <b>컨텍스트(decision context)</b>라 부르고, 점수는 컨텍스트마다 매긴다. 대상이 없는 행동(산책, 도망치기)은 대상 자리에 <code>null</code>이 하나 들어간 컨텍스트로 취급한다.</p>
+
+    <div class="formula">컨텍스트 = (행동 a, 대상 t)　·　score(a, t) = combine( c₁(a,t), c₂(a,t), … ) × weight(a)</div>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 250" role="img" aria-label="행동 × 대상 = 컨텍스트 행렬">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="10" y="22" class="muted small">행동 a</text>
+        <text x="150" y="22" class="muted small">targets(ctx)가 돌려준 후보 대상 t → 칸 하나 = 컨텍스트 하나</text>
+        <rect x="10" y="36" width="110" height="34" rx="6" class="box"/><text x="65" y="58" text-anchor="middle">이용하기 (use)</text>
+        <g id="mx-use"></g>
+        <rect x="10" y="84" width="110" height="34" rx="6" class="box"/><text x="65" y="106" text-anchor="middle">수다 떨기 (chat)</text>
+        <g id="mx-chat"></g>
+        <rect x="10" y="132" width="110" height="34" rx="6" class="box"/><text x="65" y="154" text-anchor="middle">산책 (wander)</text>
+        <rect x="150" y="134" width="30" height="30" rx="4" class="tb"/><text x="165" y="154" text-anchor="middle" class="small">null</text>
+        <rect x="10" y="180" width="110" height="34" rx="6" class="box"/><text x="65" y="202" text-anchor="middle">도망치기 (flee)</text>
+        <rect x="150" y="182" width="30" height="30" rx="4" class="tb"/><text x="165" y="202" text-anchor="middle" class="small">null</text>
+        <line x1="470" y1="125" x2="510" y2="125" class="arrow"/>
+        <rect x="515" y="88" width="155" height="74" rx="8" class="hl"/>
+        <text x="592" y="112" text-anchor="middle">8 + 5 + 1 + 1</text>
+        <text x="592" y="132" text-anchor="middle" style="font-weight:700">= 15개 컨텍스트</text>
+        <text x="592" y="151" text-anchor="middle" class="muted small">전부 같은 점수 표에 올라감</text>
+        <text x="10" y="240" class="muted small">Hamlet 6명 마을에서 한 주민이 한 번 생각할 때. 오브젝트 8개, 자기 자신을 뺀 주민 5명.</text>
+      </svg>
+      <figcaption>그림 1. 행동마다 후보 대상을 펼치면 행동 목록이 컨텍스트 목록이 된다. 선택(05장)은 이 표 전체에서 이루어진다.</figcaption>
+    </figure>
+
+    <h3>두 단계로 나눠 고르면 무엇이 틀리나</h3>
+    <p>직관적인 구현은 두 단계다. ① 행동 점수로 "먹기"를 고르고, ② 먹을 곳 중 하나를 고른다. 문제는 ①에서 쓸 행동 점수가 이미 대상에 달려 있다는 점이다. 아래는 엔진 <code>UAI.makeHamlet()</code> 마을에서 아리가 집(21,13) 옆 (20,12)에 있고, 배고픔 25·기력 35·재미 70·사교 70일 때 <code>Reasoner.evaluate()</code>가 실제로 낸 값이다.</p>
+    <div class="tbl-wrap"><table class="ctx">
+      <tr><th>컨텍스트</th><th>광고 가치</th><th>거리 (맨해튼)</th><th>거리 점수</th><th>최종 점수</th></tr>
+      <tr><td>이용하기 @빵집 (4,3)</td><td class="num">0.53</td><td class="num">25칸</td><td class="num">0.31</td><td class="num">0.309</td></tr>
+      <tr><td>이용하기 @밭 (2,12)</td><td class="num">0.21</td><td class="num">18칸</td><td class="num">0.64</td><td class="num">0.255</td></tr>
+      <tr class="best"><td>이용하기 @집 (21,13)</td><td class="num">0.22</td><td class="num">2칸</td><td class="num">1.00</td><td class="num">0.336</td></tr>
+    </table></div>
+    <p>대상을 보지 않고 행동부터 고르면 "가장 큰 광고 가치"인 빵집의 0.53 때문에 '먹기'가 이긴다. 그다음 "가까운 먹을 곳"을 고르면 밭(0.255)으로 간다. 두 단계 모두 그럴듯했는데 결과는 세 후보 중 꼴찌다. 컨텍스트 단위로 한 번에 평가하면 바로 옆 집에서 쉬는 쪽(0.336)이 이긴다. 행동의 가치는 대상이 정해져야 비로소 정해진다.</p>
+    <div class="callout"><span class="title">왜 이렇게 설계하나</span>행동 점수를 "모든 대상 중 최고값"으로 미리 요약해 두면 두 단계 구조도 쓸 수 있다. 하지만 그 요약을 계산하려면 결국 모든 대상을 평가해야 한다. 그렇다면 처음부터 (행동, 대상) 쌍을 표의 행으로 두는 편이 단순하고, 디버그 표에서 "왜 저 대상인가"도 바로 보인다.</div>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. 엔진에서: action.targets와 컨텍스트 지도</h2>
+    <p><code>uai.js</code>에서 대상 열거는 행동 정의의 <code>targets</code> 함수 하나가 맡는다. Reasoner는 행동마다 이 함수를 불러 후보 목록을 얻고, 후보마다 <code>ctx = { agent, world, target }</code>를 만들어 consideration을 평가한다. <code>targets</code>가 없는 행동은 <code>[null]</code> 하나로 취급하므로 같은 루프를 그대로 탄다.</p>
+<pre class="engine"><code>    evaluate(agent, world) {
+      const rows = [];
+      const now = world ? world.time : 0;
+      for (const a of this.actions) {
+        const targets = a.targets ? a.targets({ agent, world }) : [null];
+        for (const target of targets) {
+          const ctx = { agent, world, target };
+          const parts = [];
+          let alive = true;
+          const cdLeft = a.cooldown &amp;&amp; agent.lastUsed &amp;&amp; agent.lastUsed[a.id] != null
+            ? a.cooldown - (now - agent.lastUsed[a.id]) : 0;
+          if (cdLeft &gt; 0) alive = false;
+          for (const c of a.considerations) {
+            if (!alive) { parts.push({ name: c.name, raw: null, x: null, y: null, skipped: true }); continue; }
+            const raw = c.input(ctx);
+            const x = UAI.normalize(raw, c.lo, c.hi);
+            const y = c.fn(x);
+            parts.push({ name: c.name, raw, x, y });
+            if (y &lt;= 0) alive = false;
+          }</code></pre>
+    <p>Hamlet의 <code>use</code>(이용하기) 행동은 마을의 오브젝트를 대상으로 삼는다. consideration 세 개 중 광고 가치는 07장의 <code>UAI.adValue</code>이고, 나머지 둘은 대상에 따라 값이 달라지는 거리와 혼잡이다.</p>
+<pre class="engine"><code>      id: "use", label: "이용하기", rank: 0,
+      targets: ({ world }) =&gt; world.objects.filter(o =&gt; o.users &lt; o.capacity || false),
+      considerations: [
+        // 광고된 욕구 충족량 × 그 욕구의 긴급도 합 → 0~1 (07장)
+        { name: "광고 가치", input: ({ agent, target }) =&gt; UAI.adValue(agent, target), lo: 0, hi: 1, curve: "선형 증가" },
+        // 거리: 가까울수록 좋다. 너무 멀면 0 근처 (08장)
+        { name: "거리", input: ({ agent, target }) =&gt; Math.abs(agent.x - target.x) + Math.abs(agent.y - target.y), lo: 0, hi: 30, curve: { type: "poly", m: -1, k: 2, b: 1 } },
+        // 이미 사용 중이면 붐빔 감점
+        { name: "혼잡", input: ({ target }) =&gt; target.users / target.capacity, lo: 0, hi: 1, curve: { type: "linear", m: -0.7, b: 1 } },
+      ],</code></pre>
+    <p>눈여겨볼 점이 두 가지 있다. 첫째, 만석인 오브젝트는 <code>targets</code> 단계에서 아예 빠진다. 점수 0으로 떨어뜨리는 대신 후보에서 지우는 <b>하드 필터</b>다. 그래서 혼잡 consideration의 입력은 실제로는 (capacity−1)/capacity까지만 올라간다. 둘째, 거리는 격자 세계에 맞춰 맨해튼 거리 |dx|+|dy|이고, bookend 30칸 이상이면 1−x² 커브가 0이 되어 그 컨텍스트는 early-out된다.</p>
+
+    <div class="widget" id="w1">
+      <div class="w-title">컨텍스트 지도: 아리를 끌어 보자</div>
+      <div class="w-desc">아리(파란 원)를 드래그하면 (이용하기, 오브젝트) 컨텍스트마다 <code>world.reasoner.evaluate()</code>를 다시 돌린다. 선 굵기와 후광 크기가 점수이고, 파란 굵은 선이 전체 1위 컨텍스트다. 오브젝트를 클릭하면 사용자 수가 0 → … → 만석 순으로 바뀐다(혼잡·만석 필터 확인용). "다른 주민도 대상으로"를 켜면 보람·찬이 수다 떨기(chat)의 대상으로 나타난다(8절).</div>
+      <div class="w-grid">
+        <div class="stage"><svg id="m1" class="map" viewBox="0 0 720 480" aria-label="Hamlet 컨텍스트 지도"></svg></div>
+        <div>
+          <div class="sliders" id="w1-needs"></div>
+          <div class="controls"><label><input type="checkbox" id="w1-others"> 다른 주민도 대상으로 (chat)</label></div>
+          <div class="controls"><button class="btn" id="w1-reset">초기화</button></div>
+          <div class="readout" id="w1-best"></div>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table class="ctx" id="w1-tbl"></table></div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>전체 1위</span><span><i style="background:var(--muted)"></i>이용하기 컨텍스트</span><span><i style="background:var(--violet)"></i>수다 떨기 컨텍스트</span><span>점선 원 = 만석이라 후보에서 제외됨</span></div>
+    </div>
+    <div class="callout tip"><span class="title">해 볼 것</span>① 아리를 빵집 쪽으로 끌면 빵집 선이 굵어지다가, 배고픔 슬라이더를 올리면(덜 배고프게) 다시 가늘어진다. 광고 가치와 거리가 <b>곱으로</b> 묶여 있기 때문이다. ② 빵집을 두 번 클릭해 만석(2/2)으로 만들면 빵집 컨텍스트가 표에서 사라진다. ③ 표의 도망치기 행은 첫 consideration "위협 존재"가 0이라 나머지가 "생략(early-out)"으로 표시된다.</div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. Dragon Age: Inquisition의 Target Selector</h2>
+    <p>BioWare의 Dragon Age: Inquisition(DA:I)은 같은 문제를 행동 트리 안에서 풀었다(Hanlon &amp; Watts, Game AI Pro 3, 31장). DA:I에서 AI가 평가하는 단위는 어빌리티를 "특정 방식으로" 쓰는 <b>behavior snippet</b>이고, 각 snippet은 점수를 내는 <b>evaluation tree</b>를 가진다. 트리는 점수 0에서 출발해 scoring 노드를 지날 때마다 점수를 더한다. 저자들의 설명은 이렇다. 대부분의 어빌리티는 대상이 있어야 동작하고(그냥 "Immolate를 쓴다"가 아니라 특정 적에게 쓴다), 화염에 약한 적에게 쓰면 큰 피해를 주지만 화염 면역인 적에게 쓰면 마나만 버린다. 그래서 대상 선택이 평가 단계의 일부여야 하고, evaluation tree는 <b>점수와 함께 대상도</b> 돌려준다.</p>
+    <p>이를 위해 도입한 것이 <b>Target Selector 노드</b>다. 문헌에 실린 알고리즘은 다음과 같다.</p>
+    <ol>
+      <li>평가 컨텍스트의 현재 점수를 "초기 점수"로 기록한다.</li>
+      <li>iterator가 지정한 대상마다: (a) 점수를 초기 점수로 되돌리고, (b) "behavior target iterator" 슬롯에 그 대상을 넣고, (c) 자식 노드를 평가해서, (d) 자식이 true를 돌려주면 그 대상의 점수를 기록한다.</li>
+      <li>기록된 대상이 하나라도 있으면 최고점 대상을 Behavior Target으로 정하고, 점수를 그 대상의 점수로 맞춘 뒤 true를 돌려준다.</li>
+      <li>기록된 대상이 없으면 false를 돌려준다.</li>
+    </ol>
+    <p>문헌의 예시 트리(그림 31.2)는 "나로부터 10m 이내의 적 각각을 대상으로 평가" → "화염 면역이 아닌가?" 필터 → +5 → "화염에 약한가?" 필터 → +5 이다. 아래 애니메이션은 이 트리를 적 넷에 돌린다. 적의 배치와 앞 노드에서 쌓인 초기 점수 20점(DA:I 점수 관례에서 Offensive가 20–40)은 설명을 위해 정한 가정이다.</p>
+
+    <div class="widget" id="w-dai">
+      <div class="w-title">Target Selector 단계별 실행 (Immolate 예)</div>
+      <div class="w-desc">대상마다 점수를 초기값으로 되돌리고, 자식 트리가 true일 때만 기록한다. 마지막에 최고점 대상 하나만 snippet의 결과로 올라간다.</div>
+      <div class="stage"><svg id="dai-svg" class="diagram" viewBox="0 0 640 270" style="min-width:480px" aria-label="Target Selector 실행"></svg></div>
+      <div class="tbl-wrap"><table class="ctx" id="dai-tbl"></table></div>
+      <div id="dai-step"></div>
+    </div>
+
+    <h3>uai.js와 무엇이 같고 무엇이 다른가</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>DA:I Target Selector</th><th>uai.js <code>targets</code> + <code>evaluate</code></th></tr>
+      <tr><td>후보 열거</td><td>iterator 데이터 ("10m 이내의 적")</td><td><code>targets(ctx)</code> 함수의 반환 배열</td></tr>
+      <tr><td>자격 박탈</td><td>Filter 노드가 false → 그 대상은 기록 안 됨</td><td>consideration이 0 → early-out, 점수 0</td></tr>
+      <tr><td>점수 결합</td><td>scoring 노드 점수의 <b>합</b> (디자이너 점수 관례)</td><td>0~1 커브 값의 <b>곱</b> (보정 곱, 04장)</td></tr>
+      <tr><td>결과 형태</td><td>snippet마다 <b>최고점 대상 하나</b>로 접힘</td><td>(행동, 대상) 쌍이 <b>전부 행으로</b> 펼쳐짐</td></tr>
+      <tr><td>최종 선택</td><td>점수 내림차순 정렬 후 첫 번째 (Listing 31.1)</td><td><code>UAI.select</code>: best / weighted / dual 등 (05장)</td></tr>
+    </table></div>
+    <p>마지막 두 줄의 차이가 생각보다 크다. 최고점만 고르는 선택(best)이라면 펼치든 접든 결과가 같다. 하지만 가중 랜덤을 쓰면 <b>후보 대상이 많은 행동일수록 추첨권을 더 많이 쥔다</b>. 이 함정은 8절에서 숫자로 확인한다. DA:I는 평가 결과를 디버그 표로 남겨 두면 디버깅과 반복 작업에 큰 도움이 된다고 했다. uai.js의 <code>evaluate</code>가 모든 행을 돌려주는 것도 같은 이유다(11장).</p>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 거리 커브의 형태와 공간 utility field</h2>
+    <p>거리는 대상 평가에서 가장 흔한 consideration이다. Mike Lewis는 Guild Wars 2: Heart of Thorns의 consideration 설계를 정리하면서(Game AI Pro 3, 13장) 응답 커브를 고르는 체크리스트를 제시했다.</p>
+    <ol>
+      <li><b>입력과 bookend</b>: 무엇을 점수화하나? 어떤 입력값이 x=0이고 어떤 값이 x=1인가? (예: 0–100m를 0–1로, 최댓값 이상은 1)</li>
+      <li><b>증가인가 감소인가</b>: 소매치기에게 대상의 재산은 증가 커브, 대상까지의 거리는 감소 커브.</li>
+      <li><b>단조성</b>: 대개 단조 커브가 이해하기 쉽다. 특별한 행동이 필요할 때만 중간에 봉우리나 골짜기를 둔다.</li>
+      <li><b>끝점</b>: 완벽한 입력이면 점수 1을 주는 것이 보통 가장 단순하다. 끝점에서 0으로 무효화할지, 우선순위만 낮출지 정한다.</li>
+    </ol>
+    <p>3번의 대표적인 예외가 거리다. Lewis는 거리 consideration에 <b>뒤집힌 U자</b> 커브를 쓰면 적이 너무 가깝지도 멀지도 않을 때만 접근하게 만들어 "팔 길이만큼 거리를 유지"할 수 있다고 했다. 실제 Heart of Thorns의 돌진 공격(Charge Attack) DSE도 거리 consideration에 <b>중거리에서 높은</b> 특수 커브를 쓴다. 이미 공격 범위 안에 있는 대상에게 돌진 기술을 쓰는 것도, 돌진해도 닿지 않는 대상에게 쓰는 것도 말이 되지 않기 때문이다.</p>
+    <p>Hamlet에서는 광장 무대 구경이 이런 예다. 무대에 바짝 붙으면 목이 아프고, 너무 멀면 보이지 않는다. 아래 위젯은 <b>공간 utility field</b>, 곧 "주민이 이 칸에 있다면 점수가 몇인가"를 격자 전체에 칠한다. 칸마다 Reasoner를 실제로 돌린 결과다.</p>
+
+    <div class="widget" id="w2">
+      <div class="w-title">공간 utility field: 칸마다 점수를 칠한다</div>
+      <div class="w-desc">지도 위로 마우스를 움직이거나(터치는 탭) 칸을 가리키면 그 위치의 점수와 커브 위 위치가 표시된다. 진할수록 점수가 높다. 주황 선은 0.25 / 0.5 / 0.75 등고선이다. "엔진 use 전체" 모드는 칸마다 8개 오브젝트 컨텍스트 중 최고점을 칠하고, 1위 대상이 바뀌는 경계를 검은 선으로 그린다.</div>
+      <div class="controls">
+        <label>모드 <select id="w2-mode"><option value="single">무대 구경 (거리 consideration 1개)</option><option value="best">엔진 use 전체 (칸별 최고점 대상)</option></select></label>
+      </div>
+      <div class="controls" id="w2-single-ctl">
+        <label>거리 커브 <select id="w2-curve"></select></label>
+        <label>bookend hi <input type="range" id="w2-hi" min="8" max="30" value="16"> <span class="mono" id="w2-hi-v"></span></label>
+        <label id="w2-peak-l">적정 거리 <input type="range" id="w2-peak" min="2" max="12" value="5"> <span class="mono" id="w2-peak-v"></span></label>
+      </div>
+      <div class="w-grid">
+        <div class="stage"><svg id="m2" class="map" viewBox="0 0 720 480" aria-label="공간 utility field"></svg></div>
+        <div>
+          <svg id="p2" viewBox="0 0 240 210"></svg>
+          <div class="readout" id="w2-read">지도를 가리켜 보자.</div>
+        </div>
+      </div>
+    </div>
+    <p>몇 가지가 눈에 띈다. 등고선이 원이 아니라 <b>마름모</b>다. 엔진이 맨해튼 거리를 쓰기 때문이며, 유클리드 거리였다면 원이 된다. 거리 지표를 무엇으로 정하느냐가 "주민이 어디까지를 가깝다고 느끼는가"의 모양을 정한다. 역 U자 커브를 고르면 무대 둘레에 <b>도넛 모양 띠</b>가 생긴다. 이 띠 위의 주민은 무대로 다가가지 않고 그 자리에서 구경하는 것이 최선이다. 이것이 "적정 거리 유지"가 공간에서 나타나는 모습이다.</p>
+    <p>"엔진 use 전체" 모드에서 1위 대상의 경계선은 일종의 보로노이 영역이다. 다만 순수한 거리 영역이 아니라 욕구에 따라 경계가 움직인다. 배고픈 주민에게는 빵집의 영역이 지도 대부분을 덮는다. 주민의 욕구가 변하면 이 영역도 매 순간 다시 그려지고, 그것이 마을의 동선이 된다.</p>
+    <div class="callout warn"><span class="title">함정: 끝점이 0인 감소 커브</span>엔진의 거리 커브 1−x²는 bookend(30칸)에서 정확히 0이다. 30칸 너머의 대상은 자격이 박탈되어 early-out된다. 계산을 아끼는 데는 좋지만 "멀어도 다른 대안이 없으면 간다"는 행동은 불가능해진다. 넓은 맵에서 주민이 굶어 죽는 버그가 이렇게 생긴다. 끝점을 0으로 둘지 작은 양수로 둘지는 Lewis 체크리스트 4번의 질문이다.</div>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 방향 consideration: 내적 하나로 옆·뒤 공격</h2>
+    <p>Heart of Thorns의 일부 캐릭터는 대상이 등을 돌렸을 때 주로 공격한다. 이 측면/후방 공격(Side and Rear Attacks) DSE의 두 번째 consideration은 대상의 정규화된 facing 벡터와, <b>대상에서 AI로 향하는</b> 정규화 벡터의 내적을 입력으로 쓴다. 내적이 1에 가까울수록 대상이 AI를 정면으로 보고 있다는 뜻이다. 그래서 응답 커브는 내적이 1에 다가갈수록 줄어들고, 결과적으로 대상이 옆(수직)이나 반대쪽을 보고 있을수록 점수가 높다(Lewis, Game AI Pro 3 13장).</p>
+    <div class="formula">d = f̂<sub>target</sub> · normalize(p<sub>AI</sub> − p<sub>target</sub>) ∈ [−1, 1]　→　x = normalize(d, −1, 1) = (d+1)/2　→　y = curve(x)</div>
+    <p>내적은 bookend [−1, 1]로 정규화하면 일반 consideration과 똑같이 다룰 수 있다. 같은 입력에 <b>증가</b> 커브를 붙이면 정반대 성격이 된다. Hamlet 주민이 말을 걸 때는 상대가 자기를 보고 있을수록 좋다. 같은 Heart of Thorns DSE 안에도 방향 검사가 하나 더 있다. 이번에는 AI 자신의 facing과 AI→대상 벡터를 비교해서, AI가 대상에게서 고개를 돌릴수록 점수가 0으로 떨어진다(시야 콘 안의 대상 우선). 돌진 공격에서도 대상이 대체로 AI 앞에 있을 때를 선호하게 해서 애니메이션이 휙 돌아가거나 방향이 오락가락하는 것을 막았다.</p>
+
+    <div class="widget" id="w3">
+      <div class="w-title">방향 consideration 실험대</div>
+      <div class="w-desc">가운데 원이 대상, 대상에서 뻗은 파란 화살표 끝의 손잡이를 돌려 대상이 바라보는 방향을 바꾼다. 초록 원(AI)을 끌어 위치를 바꾼다. 배경은 "AI가 그 칸에 있다면" 받을 점수의 field다.</div>
+      <div class="controls">
+        <label>커브 <select id="w3-curve"></select></label>
+        <label><input type="checkbox" id="w3-dist"> 거리 consideration 추가 (선형 감소, hi=260px)</label>
+      </div>
+      <div class="w-grid">
+        <div class="stage"><svg id="m3" class="map" viewBox="0 0 480 320" aria-label="방향 consideration"></svg></div>
+        <div>
+          <svg id="p3" viewBox="0 0 240 210"></svg>
+          <div class="readout" id="w3-read"></div>
+        </div>
+      </div>
+    </div>
+    <p>field를 보면 "뒤·옆 선호" 커브는 대상의 시선 방향에 좁은 그늘(낮은 점수)을 만들고 나머지를 거의 1로 둔다. 1−x⁴ 커브는 x가 0.5(수직)일 때 0.94, 0.75(내적 0.5)일 때 0.68, 1(정면)일 때 0이다. 입력과 커브를 분리해 두었기 때문에 커브만 바꿔서 "등 뒤를 노리는 암살자"와 "눈을 맞추고 말을 거는 이웃"을 같은 입력으로 만들 수 있다. Heart of Thorns 팀이 100개가 넘는 사전 정의 패턴을 만들어 새 생물을 몇 분 만에 조립했다고 한 것도 이런 재사용 덕분이다.</p>
+    <div class="callout deep"><span class="title">하드코딩하지 않은 스위치의 가치</span>이 측면/후방 공격 DSE에는 거의 모든 이동 DSE에 들어가는 "속박 상태면 금지" 스위치가 <b>없다</b>. 제자리에서 칼을 휘두르는 기술이라 묶여 있어도 쓸 수 있기 때문이다. 스위치를 엔진에 박아 넣었다면 이 예외를 위해 "하드코딩을 우회하는 하드코딩"이 필요했을 것이다. Heart of Thorns는 새 DSE에 흔한 스위치를 미리 채워 두고, 필요 없으면 빼는 방식을 택했다.</div>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 조합 폭발: A × T × C</h2>
+    <p>컨텍스트 평가의 대가는 비용이다. 에이전트 한 명이 한 번 생각할 때 consideration 계산 횟수의 상한은 다음과 같다.</p>
+    <div class="formula">비용 ≤ Σ<sub>a</sub> |targets(a)| × |considerations(a)|　≈　A × T × C　　(N명이 초당 f번 생각하면 × N × f)</div>
+    <p>Hamlet은 작다. 행동 4개, 대상 최대 8개, consideration 3개 정도다. 그런데 주민 300명이 오브젝트 200개 중에서 고른다면 한 번 생각할 때마다 수만 번, 마을 전체로는 수백만 번의 계산이 된다. 게다가 시야(LOS) 레이캐스트처럼 비싼 consideration이 끼면 단가 자체가 수십 배 뛴다. 줄이는 방법은 크게 네 가지다.</p>
+    <ol>
+      <li><b>후보 대상 사전 필터</b>: 반경 쿼리로 T를 줄인다. 반경을 거리 consideration의 bookend와 같게 잡으면 어차피 0점이 될 대상만 빼는 것이라 <b>결과가 바뀌지 않는다</b>.</li>
+      <li><b>early-out</b>: consideration 하나가 0이면 나머지를 계산하지 않는다. 곱셈 결합에서는 하나가 0이면 전체가 0이기 때문에 가능하다(Lewis: 이 특성 덕분에 "절대 쓰면 안 되는 때"를 쉽게 표현하고, 평가 자체도 최적화할 수 있다).</li>
+      <li><b>싼 것 먼저, 비싼 것은 맨 끝</b>: early-out이 있으니 순서가 비용을 바꾼다. Heart of Thorns의 측면/후방 공격 DSE는 꽤 비싼 LOS 레이캐스트를 일부러 맨 마지막에 둔다. Lewis는 이런 최적화가 Heart of Thorns AI가 충분히 빠르게 동작한 이유의 큰 부분이라고 했다. 돌진 공격에서는 비용 때문에 내비메시 경로 검사까지는 하지 않고 LOS만 봤다. 모든 대상에 대해 항상 경로를 계산하기엔 너무 비쌌고, 차이가 눈에 띄는 경우는 드물었기 때문이다.</li>
+      <li><b>평가 주기 분산</b>: 모두가 매 tick 생각할 필요는 없다. 언제, 누가, 얼마나 자주 생각할지는 <a class="xref" href="09-engine-architecture.html">09장 엔진 아키텍처</a>에서 다룬다.</li>
+    </ol>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 690 180" role="img" aria-label="평가 깔때기">
+        <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <polygon points="10,20 140,20 140,150 10,150" class="box"/>
+        <text x="75" y="80" text-anchor="middle">오브젝트</text><text x="75" y="100" text-anchor="middle" style="font-weight:700">T개 전부</text>
+        <polygon points="160,30 290,40 290,130 160,140" class="tb"/>
+        <text x="225" y="78" text-anchor="middle">반경 쿼리</text><text x="225" y="97" text-anchor="middle" class="small">d ≤ bookend</text>
+        <polygon points="310,40 440,52 440,118 310,130" class="okb"/>
+        <text x="375" y="75" text-anchor="middle" class="small">싼 consideration</text><text x="375" y="92" text-anchor="middle" class="small">광고·거리·혼잡</text><text x="375" y="108" text-anchor="middle" class="small">0이면 early-out</text>
+        <polygon points="460,52 590,62 590,108 460,118" class="warnb"/>
+        <text x="525" y="82" text-anchor="middle" class="small">비싼 LOS</text><text x="525" y="98" text-anchor="middle" class="small">레이캐스트</text>
+        <line x1="595" y1="85" x2="625" y2="85" style="stroke:var(--muted);marker-end:url(#ah2)"/>
+        <rect x="630" y="68" width="52" height="34" rx="6" class="hl"/><text x="656" y="90" text-anchor="middle" class="small">점수 행</text>
+        <text x="10" y="172" class="muted small">단계마다 살아남는 컨텍스트가 줄어든다. 비싼 단계일수록 뒤에 둬야 적은 수만 그 값을 치른다.</text>
+      </svg>
+      <figcaption>그림 2. 컨텍스트 평가 깔때기. 각 단계는 다음 단계로 넘어갈 후보 수를 줄인다.</figcaption>
+    </figure>
+
+    <div class="widget" id="w4">
+      <div class="w-title">평가 비용 측정기 (엔진 실측)</div>
+      <div class="w-desc">64×64 격자에 벽을 뿌리고 주민 N명, 오브젝트 T개를 시드 고정으로 뿌리고 모든 주민에 대해 <code>Reasoner.evaluate()</code>를 한 번씩 실제로 돌린다. consideration은 엔진 <code>use</code>의 세 개에 Bresenham 레이캐스트 LOS 스위치를 더한 4개다. consideration 호출을 세어 비용을 계산한다(싼 consideration 1단위, LOS는 지나간 칸 수만큼). 비교 기준은 "전체 대상 · LOS 먼저"다. 선택 전략은 결과 비교를 위해 best로 고정했다.</div>
+      <div class="sliders" style="max-width:520px">
+        <label for="w4-n">주민 N</label><input type="range" id="w4-n" min="10" max="300" step="10" value="100"><output id="w4-n-v"></output>
+        <label for="w4-t">오브젝트 T</label><input type="range" id="w4-t" min="8" max="200" step="4" value="80"><output id="w4-t-v"></output>
+        <label for="w4-w">벽 밀도</label><input type="range" id="w4-w" min="0" max="30" step="1" value="3"><output id="w4-w-v"></output>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="w4-rad" checked> 반경 쿼리 사전 필터 (d ≤ 30 = 거리 bookend)</label>
+        <label><input type="checkbox" id="w4-last" checked> LOS를 맨 끝에</label>
+      </div>
+      <div class="tbl-wrap"><table class="cost-tbl" id="w4-tbl"></table></div>
+      <div class="stat-row" id="w4-stats"></div>
+    </div>
+    <p>두 최적화를 켜고 끄면서 "결정 일치"를 확인해 보자. 반경 필터의 반경이 거리 bookend와 같고 consideration 순서는 곱의 값을 바꾸지 않으므로, 모든 주민의 선택이 기준과 똑같다. 그러면서 비용은 크게 줄어든다(N=100, T=80, 벽 3%에서 172,813 → 34,366단위). 반경을 bookend보다 작게 잡으면 그때부터는 결과가 바뀌는 <b>근사</b>가 된다. 그때는 "빨라졌다"가 아니라 "행동이 바뀌었다"로 다뤄야 한다.</p>
+    <p>이번에는 반경 필터를 켠 채 벽 밀도를 12% 이상으로 올리고 "LOS를 맨 끝에"를 꺼 보자. 오히려 LOS를 <b>앞에</b> 둘 때 더 싸진다(벽 12%: 23,729 → 20,024단위). 반경 필터가 거리 0점짜리를 이미 걸러 냈으므로 남은 싼 consideration은 거의 0을 내지 않는다. 반면 벽이 많으면 LOS 통과율이 30% 아래로 떨어져 LOS 자체가 가장 강한 필터가 된다. "싼 것 먼저"의 정확한 의미는 <b>0을 낼 확률 대비 비용이 낮은 것 먼저</b>다. Lewis의 배치가 맞는 것은 앞쪽의 싼 consideration이 실제로 후보를 많이 떨어뜨릴 때다. 평가 순서는 감으로 정하지 말고 이런 계측으로 정해야 한다.</p>
+    <div class="callout"><span class="title">반경 쿼리도 공짜는 아니다</span>위 측정기의 반경 필터는 오브젝트 배열을 한 번 훑는 단순 구현이라 필터 자체에 O(T) 비교가 든다. 단가가 consideration보다 훨씬 싸서 이득이지만, 대상이 수천 개라면 격자 버킷이나 공간 해시로 후보를 꺼내야 한다. 이런 공간 인덱스도 09장의 엔진 구조에서 다룬다.</div>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 모두가 같은 대상을 고를 때</h2>
+    <p>컨텍스트 평가는 에이전트마다 따로 이루어진다. 비슷한 상태의 주민 여섯이 같은 순간에 생각하면 여섯 모두 같은 최고점 대상을 고른다. 아침 6시에 모두 배가 고프면 모두 빵집으로 뛴다. 빵집의 capacity는 2다. 넷은 헛걸음을 하고 밭으로 다시 걸어간다. 개별적으로는 합리적인 선택이 모이면 비합리적인 마을이 된다.</p>
+    <p>엔진에는 이미 <b>혼잡 consideration</b>(users / capacity)이 있는데 왜 이런 일이 생길까? <code>users</code>는 주민이 <b>도착해서 사용을 시작할 때</b> 올라가기 때문이다. 같은 tick에 결정하는 주민들은 모두 users = 0을 본다. 정보가 행동보다 늦게 갱신되는 것이다. 해결책은 결정 시점에 자리를 잡아 두는 <b>예약(reservation)</b>이다. 결정하는 순간 대상의 점유 수에 자기를 더하면, 다음 주민은 그 결정을 반영한 혼잡도와 만석 필터를 본다.</p>
+    <p>예약은 엔진에 없는 기능이라 이 장 안에 교육용 변형으로 두었다. <code>use</code>의 <code>targets</code>와 혼잡 입력이 <code>users + reserved</code>를 보고(자기 예약은 뺀다), 도착하면 예약을 실제 사용으로 바꾸며, 다른 행동으로 갈아타면 예약을 돌려준다.</p>
+<pre><code>// 08장 변형: 점유 = 사용 중 + 예약 (자기 예약은 제외)
+const occ = (agent, o) =&gt; o.users + (o.reserved || 0)
+  - (agent.current &amp;&amp; agent.current.target === o &amp;&amp; agent.current.reserved ? 1 : 0);
+use.targets = ({ agent, world }) =&gt; world.objects.filter(o =&gt; occ(agent, o) &lt; o.capacity);
+use.considerations[2] = { name: "혼잡", input: ({ agent, target }) =&gt; occ(agent, target) / target.capacity,
+                          lo: 0, hi: 1, curve: { type: "linear", m: -0.7, b: 1 } };</code></pre>
+
+    <div class="widget" id="w5">
+      <div class="w-title">빵집 러시: 엔진 기본 vs 예약</div>
+      <div class="w-desc">엔진 <code>UAI.makeHamlet({ seed: 11 })</code> 마을의 주민 6명을 지도 곳곳에 두고 배고픔 12·나머지 85로 맞춘 뒤 <code>world.tick()</code>을 실제로 돌린다(1 tick = 게임 1분). 헛걸음은 도착했는데 만석이라 행동이 취소된 횟수다. 실선은 사용 중, 점선은 이동 중인 대상이다.</div>
+      <div class="controls">
+        <label><input type="radio" name="w5-mode" value="engine" checked> 엔진 기본 (users만 봄)</label>
+        <label><input type="radio" name="w5-mode" value="reserve"> 08장 변형: 예약</label>
+      </div>
+      <div class="controls"><button class="btn primary" id="w5-play">▶ 실행</button><button class="btn" id="w5-step">1분 진행</button><button class="btn" id="w5-reset">↺ 처음부터</button></div>
+      <div class="stat-row" id="w5-stats"></div>
+      <div class="stage"><svg id="m5" class="map" viewBox="0 0 720 480" aria-label="빵집 러시 시뮬레이션"></svg></div>
+      <div class="log" id="w5-log"></div>
+    </div>
+    <p>60분을 돌리면 엔진 기본은 헛걸음 6번, 예약 변형은 0번이고, 60분 뒤 배고픔 충족도 평균도 49.5 대 57.2로 차이가 난다(이 시드 기준). 엔진 기본의 로그를 보면 6시 1분에 여섯 명이 모두 빵집을 고른다. 예약 변형에서는 둘이 빵집을 잡은 뒤 나머지는 밭과 선술집으로 흩어진다. 셋째 주민부터는 빵집이 만석 필터에 걸려 후보에서 사라지기 때문이다.</p>
+
+    <h3>세 가지 도구: 혼잡, 예약, 주변 밀도</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>도구</th><th>무엇을 보나</th><th>잘 맞는 상황</th><th>약점</th></tr>
+      <tr><td>혼잡 consideration</td><td>지금 사용 중인 수 / capacity</td><td>붐비는 곳을 <b>부드럽게</b> 피하기 (만석이 아니어도 감점)</td><td>결정과 도착 사이의 공백을 못 본다</td></tr>
+      <tr><td>예약 (capacity 하드 필터)</td><td>사용 중 + 예약 수</td><td>자리가 정해진 오브젝트 (의자, 침대, 작업대)</td><td>예약 누수 관리 필요 (취소·사망·인터럽트 시 반환)</td></tr>
+      <tr><td>주변 밀도 (영향맵 프록시)</td><td>대상 주변 반경 안의 아군 수</td><td>정원이 없는 대상 (플레이어, 늑대, 광장)</td><td>이동 중인 아군은 가까이 와야 잡힌다</td></tr>
+    </table></div>
+    <p>세 번째는 Lewis의 돌진 공격 DSE에 나온다. 이 DSE에는 영향맵을 조회해 <b>대상 주변에 이미 아군이 적당히 있는지</b> 보는 consideration이 있다. 이미 적 둘과 싸우고 있는 플레이어가 셋째 적이 갑자기 돌진해 와 몰매를 맞을까 걱정할 필요가 없게 하려는 것이다. Lewis는 이를 utility AI와 모듈식 AI 정보 시스템으로 쉽게 표현할 수 있는 설계 제약의 좋은 예로 꼽았다. 플레이어에게는 capacity가 없으니 "몇 명까지"를 예약표 대신 공간 정보로 대신 잰 셈이다. Hamlet에서는 이렇게 옮길 수 있다.</p>
+<pre><code>// 대상 주변 r칸 안의 다른 주민 수 → 많을수록 감점 (영향맵 조회의 단순 대용)
+{ name: "주변 주민", input: ({ agent, world, target }) =&gt;
+    world.agents.filter(b =&gt; b !== agent &amp;&amp; b !== target &amp;&amp;
+      Math.abs(b.x - target.x) + Math.abs(b.y - target.y) &lt;= 3).length,
+  lo: 0, hi: 4, curve: "선형 감소" }</code></pre>
+    <div class="callout warn"><span class="title">주의: 이 consideration은 비싸다</span>위 구현은 컨텍스트마다 주민 전체를 훑으므로 비용이 A × T × C에 N이 하나 더 곱해진다. Heart of Thorns가 영향맵을 몇 프레임마다 한 번 채워 두고 조회만 한 이유가 여기에 있다. 공유 정보를 미리 만들어 두고 consideration은 읽기만 하게 하는 구조는 09장에서 다시 나온다.</div>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 에이전트도 대상이다: 수다 떨기</h2>
+    <p>대상이 꼭 오브젝트일 필요는 없다. Hamlet의 <code>chat</code>(수다 떨기)은 다른 주민을 대상으로 삼는다.</p>
+<pre class="engine"><code>      id: "chat", label: "수다 떨기", rank: 0,
+      targets: ({ agent, world }) =&gt; world.agents.filter(b =&gt; b !== agent),
+      considerations: [
+        { name: "사교 결핍", input: ({ agent }) =&gt; 100 - agent.needs.social, lo: 0, hi: 100, curve: { type: "poly", m: 1, k: 2 } },
+        { name: "상대와 거리", input: ({ agent, target }) =&gt; Math.abs(agent.x - target.x) + Math.abs(agent.y - target.y), lo: 0, hi: 12, curve: "선형 감소" },
+        { name: "상대 한가함", input: ({ target }) =&gt; (target.current &amp;&amp; target.current.action === "flee" ? 0 : 1), curve: "스위치 (≥0.5)" },
+      ],</code></pre>
+    <p>구조는 <code>use</code>와 같지만 에이전트를 대상으로 삼으면 오브젝트에는 없던 문제가 생긴다.</p>
+    <ul>
+      <li><b>자기 자신 제외</b>: <code>b !== agent</code>가 없으면 거리 0인 자기 자신이 늘 최고점 대화 상대가 된다. 대상 목록이 에이전트 목록과 같은 배열에서 나오면 반드시 확인해야 할 조건이다.</li>
+      <li><b>움직이는 대상</b>: 오브젝트는 제자리에 있지만 주민은 움직인다. 결정할 때 3칸이던 상대가 걸어가는 동안 10칸이 될 수 있다. 실행 중 재평가(06장 인터럽트, DA:I도 실행 중 평가를 계속한다)와 실행 쪽 종료 조건이 필요하다.</li>
+      <li><b>상대의 동의</b>: A가 B를 골랐다고 B가 A를 고르는 것은 아니다. 엔진의 "상대 한가함"은 상대가 도망치는 중인지만 보는 최소한의 스위치다. 상대가 다른 일을 하는 중인지, 상대도 사교 욕구가 있는지를 볼수록 대화가 자연스러워진다.</li>
+      <li><b>예약 대상이 되는 에이전트</b>: 인기 있는 주민 한 명에게 다섯이 몰리는 것은 7절의 빵집 러시와 같은 문제다. 에이전트에도 "대화 정원"을 두거나 주변 밀도 consideration을 쓸 수 있다.</li>
+    </ul>
+    <h3>함정: 대상이 많은 행동은 추첨권도 많다</h3>
+    <p>3절에서 짚었듯 uai.js는 (행동, 대상) 쌍을 모두 펼친 채 선택한다. Hamlet World의 기본 선택 전략은 dual이며 최고점의 85% 이상(<code>pct: 0.15</code>)을 가중 랜덤으로 뽑는다. 이용하기@빵집 0.50 하나와 수다 떨기 컨텍스트 다섯 개(각 0.45)가 경쟁한다고 하자. 모두 0.425 이상이라 추첨에 남는다.</p>
+    <div class="tbl-wrap"><table class="ctx">
+      <tr><th>선택 방식</th><th>P(이용하기@빵집)</th><th>P(수다 떨기, 합계)</th></tr>
+      <tr><td>펼친 채 가중 랜덤 (uai.js 기본 구조)</td><td class="num">0.50 / (0.50 + 5×0.45) = 0.182</td><td class="num">0.818</td></tr>
+      <tr><td>행동마다 최고 대상으로 접은 뒤 (DA:I 방식)</td><td class="num">0.50 / (0.50 + 0.45) = 0.526</td><td class="num">0.474</td></tr>
+    </table></div>
+    <p>두 값 모두 <code>UAI.select(rows, { strategy: "topPct", pct: 0.15 })</code>가 돌려준 <code>pool</code>의 확률이다. 점수는 빵집이 더 높은데도 마을 사람이 늘수록 주민들은 점점 수다만 떨게 된다. 이 효과를 원하지 않는다면 Target Selector처럼 행동마다 최고점 대상 하나로 접은 다음 행동끼리 추첨하면 된다. 반대로 "아는 사람이 많을수록 수다를 더 떤다"를 의도했다면 지금 구조가 맞다. 어느 쪽이든 의도해서 고르는 것이 중요하다.</p>
+    <p>위의 <a href="#w1">컨텍스트 지도</a>에서 "다른 주민도 대상으로"를 켜고 사교 슬라이더를 낮춰 보자. 보람·찬을 아리 가까이 끌면 보라색 수다 떨기 선이 굵어진다. 상대와 거리 bookend가 12칸이라 멀리 있는 친구는 금세 0점이 된다.</p>
+  </section>
+
+  <!-- ============================== S9 ============================== -->
+  <section id="s9">
+    <h2>9. 설계 체크리스트와 함정</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>질문</th><th>권장</th><th>틀렸을 때 게임에서 보이는 증상</th></tr>
+      <tr><td>후보에서 뺄까, 0점을 줄까?</td><td>"절대 불가"는 targets 필터 또는 맨 앞 스위치. "덜 좋음"은 커브.</td><td>만석 의자에 계속 걸어감 / 반대로 디버그 표에서 이유가 안 보임</td></tr>
+      <tr><td>거리 지표는?</td><td>격자 이동이면 맨해튼, 자유 이동이면 유클리드, 장애물이 많으면 경로 거리(비쌈)</td><td>벽 너머 가까운 대상을 고르고 한참 돌아감</td></tr>
+      <tr><td>거리 커브 모양은?</td><td>기본은 단조 감소. 적정 거리가 필요하면 역 U자.</td><td>돌진 기술을 코앞의 적에게 씀 / 원거리 유닛이 근접전으로 파고듦</td></tr>
+      <tr><td>끝점이 0인가?</td><td>대안이 없을 때도 가야 하면 작은 양수</td><td>넓은 맵에서 아무것도 안 하고 굶음</td></tr>
+      <tr><td>비싼 consideration은 어디에?</td><td>맨 끝 (early-out 뒤)</td><td>프레임 드랍, 에이전트 수를 늘리자마자 성능 붕괴</td></tr>
+      <tr><td>동시에 같은 대상을 고르나?</td><td>정원이 있으면 예약, 없으면 주변 밀도 consideration</td><td>빵집 앞 줄서기·헛걸음, 플레이어 몰매</td></tr>
+      <tr><td>대상 수가 선택 확률을 왜곡하나?</td><td>가중 랜덤이면 행동별로 접을지 결정</td><td>사람 많은 마을에서 특정 행동만 과하게 나옴</td></tr>
+      <tr><td>대상이 움직이나?</td><td>실행 중 재평가 + 실행 쪽 종료 조건</td><td>도망가는 친구를 끝없이 쫓아감</td></tr>
+    </table></div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>평가 단위는 행동이 아니라 <b>(행동, 대상) 컨텍스트</b>다. 행동부터 고르고 대상을 나중에 고르면 둘 다 그럴듯한데 결과는 틀릴 수 있다.</li>
+    <li>uai.js에서는 <code>action.targets(ctx)</code>가 후보를 열거하고, Reasoner가 후보마다 <code>{ agent, world, target }</code>로 consideration을 평가해 행을 하나씩 만든다.</li>
+    <li>DA:I의 Target Selector는 대상마다 점수를 초기화하고 자식 트리를 평가한 뒤, 최고점 대상 하나를 snippet의 결과로 돌려준다. 펼치기 대 접기의 차이는 가중 랜덤에서 확률 왜곡으로 나타난다.</li>
+    <li>거리 커브는 대개 단조 감소지만, 적정 거리 유지에는 역 U자(Lewis의 돌진 공격, 체크리스트의 단조성 예외)를 쓴다. 공간 utility field로 그려 보면 의도대로인지 바로 보인다.</li>
+    <li>방향은 내적을 [−1, 1] bookend로 정규화해 consideration으로 만든다. 같은 입력에 커브만 바꿔 "등 뒤 공격"과 "정면 대화"를 만든다.</li>
+    <li>비용은 A × T × C (× N × 빈도)다. bookend와 같은 반경 필터는 결과를 바꾸지 않고 비용만 줄이며, early-out이 있으므로 0을 낼 확률 대비 비용이 낮은 consideration을 앞에 둔다. 보통은 비싼 LOS가 맨 끝이다.</li>
+    <li>혼잡 consideration만으로는 동시 결정의 쏠림을 못 막는다. 결정 시점에 자리를 잡는 예약, 정원 없는 대상에는 주변 밀도 프록시를 쓴다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">1절의 예에서 "행동 먼저(가장 큰 광고 가치), 대상은 나중(가장 가까운 곳)" 방식이 나쁜 결과를 낸 근본 원인은?</div>
+    <button class="opt">곱셈 결합 대신 평균 결합을 썼기 때문</button>
+    <button class="opt">거리 커브가 단조 감소이기 때문</button>
+    <button class="opt">행동의 가치가 대상(거리·혼잡 등)에 달려 있는데, 대상을 보기 전에 행동 점수를 확정했기 때문</button>
+    <button class="opt">빵집의 capacity가 작기 때문</button>
+    <div class="explain">행동 점수를 매기는 데 필요한 정보의 상당 부분이 대상에 붙어 있다. 대상을 보지 않은 행동 점수는 근거 없는 요약이 되고, 두 단계 각각은 합리적이어도 조합은 틀린다. 그래서 (행동, 대상) 쌍을 한 번에 평가한다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">DA:I Target Selector 노드가 각 대상을 평가하기 직전에 점수를 "초기 점수"로 되돌리는 이유는?</div>
+    <button class="opt">점수가 음수가 되지 않게 하려고</button>
+    <button class="opt">앞 대상에서 더해진 점수가 다음 대상의 점수에 섞이지 않게, 모든 대상이 같은 출발점에서 비교되도록</button>
+    <button class="opt">점수를 0~1로 정규화하려고</button>
+    <button class="opt">자식 노드가 false를 돌려줄 때 트리를 중단하려고</button>
+    <div class="explain">evaluation tree는 scoring 노드를 지날 때마다 점수를 <b>더한다</b>. 되돌리지 않으면 대상 A에서 받은 +10이 대상 B에 누적된다. 초기 점수를 기록해 두고 대상마다 복원해야 대상끼리 공정하게 비교된다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">측면/후방 공격 consideration에서 AI가 대상의 정확히 등 뒤에 있다. 대상의 facing과 (대상→AI) 단위 벡터의 내적 d와, 1−x⁴ 커브(x=(d+1)/2)의 점수는?</div>
+    <button class="opt">d = 1, 점수 0</button>
+    <button class="opt">d = 0, 점수 0.94</button>
+    <button class="opt">d = 0.5, 점수 0.68</button>
+    <button class="opt">d = −1, 점수 1</button>
+    <div class="explain">등 뒤에 있으면 대상→AI 벡터가 facing의 정반대라 d = −1, x = 0, 1−0⁴ = 1이다. 대상이 AI를 정면으로 보면 d = 1이고 점수 0, 옆이면 d = 0이고 0.94다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">consideration이 [광고 가치, 거리, 혼잡, LOS 레이캐스트]인 행동이 있다. 사전 필터가 없어 후보 대부분이 멀리 있고(거리 점수 0), LOS는 대체로 통과한다. 점수가 같게 나오면서 평가 비용을 가장 줄이는 배치는?</div>
+    <button class="opt">LOS를 맨 끝에 둔다. 앞의 싼 consideration이 0이면 early-out되어 레이캐스트를 건너뛴다.</button>
+    <button class="opt">LOS를 맨 앞에 둔다. 가장 중요한 조건이기 때문이다.</button>
+    <button class="opt">순서는 비용에 영향이 없다. 곱셈은 교환법칙이 성립하기 때문이다.</button>
+    <button class="opt">LOS를 빼고 거리로 대신한다. 결과는 항상 같다.</button>
+    <div class="explain">곱의 <b>값</b>은 순서와 무관하지만 early-out 때문에 <b>비용</b>은 순서에 좌우된다. 앞의 싼 거리 consideration이 대부분의 후보를 0으로 떨어뜨리므로, 비싼 레이캐스트는 살아남은 소수에게만 쓰인다. Lewis는 측면/후방 공격 DSE에서 꽤 비싼 LOS 레이캐스트를 일부러 맨 끝에 두었고, 이런 최적화가 Heart of Thorns AI 성능의 큰 부분이라고 했다. 반대로 LOS가 가장 자주 0을 낸다면 6절 측정기처럼 앞에 두는 편이 쌀 수도 있다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">엔진 기본 Hamlet에서 혼잡 consideration이 있는데도 6명이 동시에 빵집으로 몰리는 이유는?</div>
+    <button class="opt">혼잡 커브의 기울기(−0.7)가 너무 완만해서</button>
+    <button class="opt">빵집의 광고 가치가 다른 오브젝트보다 커서</button>
+    <button class="opt"><code>users</code>는 도착해서 사용을 시작할 때 올라가므로, 같은 tick에 결정한 주민들이 모두 users = 0을 보기 때문</button>
+    <button class="opt">dual 선택 전략이 무작위성을 넣어서</button>
+    <div class="explain">혼잡 정보가 결정보다 늦게 갱신된다. 결정 시점에 점유를 올리는 예약을 쓰면 다음 주민은 이미 반영된 혼잡도와 만석 필터를 본다. 위젯에서 헛걸음이 6 → 0으로 줄어든다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">이용하기@빵집(0.50) 1개와 수다 떨기 컨텍스트 5개(각 0.45)가 pct 0.15 가중 랜덤으로 경쟁한다. (행동, 대상) 쌍을 펼친 채 뽑을 때 빵집이 뽑힐 확률은?</div>
+    <button class="opt">약 0.53</button>
+    <button class="opt">약 0.18</button>
+    <button class="opt">0.50</button>
+    <button class="opt">1.0 (최고점이므로)</button>
+    <div class="explain">0.50 / (0.50 + 5×0.45) = 0.182. 행동마다 최고 대상으로 접으면 0.50 / 0.95 = 0.526이다. 대상이 많은 행동이 추첨권을 더 많이 쥐는 효과다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b>이 장에서 한 명이 한 번 생각하는 데 드는 일을 다뤘다. 마을에는 수십·수백 명이 있고 시간은 계속 흐른다. 09장에서는 <code>World.tick</code> 루프, <code>thinkEvery</code>·<code>thinkOffset</code>으로 평가를 tick에 나눠 싣는 time-slicing, 시드 고정으로 재현 가능한 시뮬레이션까지, 이 모든 평가를 언제 어떻게 돌릴지 정하는 엔진 구조를 짠다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>Mike Lewis, "Choosing Effective Utility-Based Considerations," <i>Game AI Pro 3</i>, ch. 13, CRC Press, 2017. (Guild Wars 2: Heart of Thorns의 DSE: Charge Attack, Side and Rear Attacks, 곡선 선택 체크리스트, early-out과 LOS 배치)</li>
+    <li>Sebastian Hanlon, Cody Watts, "Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture," <i>Game AI Pro 3</i>, ch. 31, CRC Press, 2017. (behavior snippet, evaluation tree, Target Selector 노드, Listing 31.1)</li>
+    <li>Dave Mark, "Architecture Tricks: Managing Behaviors in Time, Space, and Depth," GDC AI Summit, 2013. (IAUS)</li>
+    <li>Mike Lewis, Dave Mark, "Building a Better Centaur: AI at Massive Scale," GDC, 2015.</li>
+    <li>Mike Lewis, "Escaping the Grid: Infinite-Resolution Influence Mapping," <i>Game AI Pro 2</i>, CRC Press, 2015.</li>
+    <li>Dave Mark, "Modular Tactical Influence Maps," <i>Game AI Pro 2</i>, CRC Press, 2015.</li>
+    <li>Kevin Dill, "Dual-Utility Reasoning," <i>Game AI Pro 2</i>, ch. 3, CRC Press, 2015.</li>
+    <li>David "Rez" Graham, "An Introduction to Utility Theory," <i>Game AI Pro</i>, ch. 9, CRC Press, 2014.</li>
+  </ul></div>
+</main>
+
+<script id="ch08-core">
+/* 08장 위젯의 계산 로직 (DOM 없음). 엔진 함수만 호출한다. */
+const CH8 = (function () {
+  "use strict";
+  const md = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+  // ── 위젯 1: 컨텍스트 지도 ──
+  const MAP_POS = [[8, 9], [10, 11], [18, 6]];
+  const MAP_NEEDS = { hunger: 30, energy: 60, fun: 50, social: 50 };
+  function makeMapWorld() {
+    const w = UAI.makeHamlet({ seed: 7, names: ["아리", "보람", "찬"] });
+    w.agents.forEach((a, i) => { a.x = MAP_POS[i][0]; a.y = MAP_POS[i][1]; });
+    w.agents[0].needs = Object.assign({}, MAP_NEEDS);
+    return w;
+  }
+  // withOthers=false면 chat의 대상 후보(다른 주민)를 잠시 숨기고 평가한다
+  function evalMap(w, withOthers) {
+    const all = w.agents;
+    if (!withOthers) w.agents = [all[0]];
+    try { return w.reasoner.evaluate(all[0], w); } finally { w.agents = all; }
+  }
+
+  // ── 위젯 2: 공간 utility field ──
+  const FIELD_CURVES = {
+    mono: { label: "단조 감소 1−x² (엔진 use의 거리 커브)", spec: () => ({ type: "poly", m: -1, k: 2, b: 1 }) },
+    linear: { label: "단조 감소: 선형", spec: () => "선형 감소" },
+    bell: { label: "역 U자: 종형 (적정 거리 유지)", spec: (peak, hi) => ({ type: "normal", m: 1, k: 0.12, c: peak / hi }) },
+  };
+  function watchReasoner(spec, hi) {
+    return new UAI.Reasoner([{
+      id: "watch", label: "무대 구경",
+      targets: ({ world }) => world.objects.filter(o => o.type === "stage"),
+      considerations: [{ name: "거리", input: ({ agent, target }) => md(agent, target), lo: 0, hi, curve: spec }],
+    }], { combine: "compensated", strategy: "best" });
+  }
+  function probeAgent(needs) {
+    return { id: "probe", name: "탐침", x: 0, y: 0, needs: Object.assign({}, needs),
+      traits: { hunger: 1, energy: 1, fun: 1, social: 1 }, current: null, lastUsed: {} };
+  }
+  function fieldSingle(w, curveKey, peak, hi) {
+    const R = watchReasoner(FIELD_CURVES[curveKey].spec(peak, hi), hi);
+    const p = probeAgent(MAP_NEEDS), out = [];
+    for (let y = 0; y < w.h; y++) for (let x = 0; x < w.w; x++) {
+      p.x = x; p.y = y;
+      const r = R.evaluate(p, w)[0];
+      out.push({ score: r.score, target: r.target, raw: r.parts[0].raw, nx: r.parts[0].x });
+    }
+    return out;
+  }
+  function fieldBest(w, needs) {
+    const p = probeAgent(needs), saved = w.agents, out = [];
+    w.agents = [];
+    try {
+      for (let y = 0; y < w.h; y++) for (let x = 0; x < w.w; x++) {
+        p.x = x; p.y = y;
+        let best = null;
+        for (const r of w.reasoner.evaluate(p, w)) if (r.action.id === "use" && (!best || r.score > best.score)) best = r;
+        out.push({ score: best ? best.score : 0, target: best ? best.target : null, row: best });
+      }
+    } finally { w.agents = saved; }
+    return out;
+  }
+
+  // ── 위젯 3: 방향 consideration ──
+  // 대상 facing 단위벡터 · (대상→AI) 단위벡터
+  function facingDot(target, ai) {
+    const fx = Math.cos(target.th), fy = Math.sin(target.th);
+    const vx = ai.x - target.x, vy = ai.y - target.y, L = Math.hypot(vx, vy) || 1;
+    return (fx * vx + fy * vy) / L;
+  }
+  const DIR_CURVES = {
+    back: { label: "뒤·옆 선호 (Side/Rear): 1−x⁴", spec: { type: "poly", m: -1, k: 4, b: 1 } },
+    lin: { label: "뒤 선호: 선형 감소", spec: "선형 감소" },
+    front: { label: "정면 선호 (말 걸기): 선형 증가", spec: "선형 증가" },
+  };
+  function dirReasoner(key, useDist) {
+    const cs = [{ name: "방향(내적)", input: ({ agent, target }) => facingDot(target, agent), lo: -1, hi: 1, curve: DIR_CURVES[key].spec }];
+    if (useDist) cs.push({ name: "거리", input: ({ agent, target }) => Math.hypot(agent.x - target.x, agent.y - target.y), lo: 0, hi: 260, curve: "선형 감소" });
+    return new UAI.Reasoner([{ id: "flank", label: "옆·뒤로 접근", targets: ({ world }) => world.targets, considerations: cs }],
+      { combine: "product", strategy: "best" });
+  }
+  function dirEval(R, target, ai) {
+    return R.evaluate({ x: ai.x, y: ai.y, current: null, lastUsed: {} }, { time: 0, targets: [target] })[0];
+  }
+
+  // ── 위젯 4: 평가 비용 측정 ──
+  function costExperiment(o) {
+    const N = o.N, T = o.T, seed = o.seed || 3, W = 64, H = 64, BOOK = 30;
+    const rng = UAI.rng(seed);
+    const wall = new Uint8Array(W * H);
+    const dens = o.wall == null ? 0.12 : o.wall;
+    for (let i = 0; i < W * H; i++) wall[i] = rng.next() < dens ? 1 : 0;
+    const world = new UAI.World({ w: W, h: H, seed });
+    const types = Object.keys(UAI.OBJECT_TYPES);
+    for (let i = 0; i < T; i++) { const x = rng.int(W), y = rng.int(H); wall[y * W + x] = 0; world.addObject(rng.pick(types), x, y); }
+    for (let i = 0; i < N; i++) { const x = rng.int(W), y = rng.int(H); wall[y * W + x] = 0; world.addAgent("주민" + i, x, y); }
+    const cnt = { rows: 0, calls: 0, rays: 0, rayCells: 0, losPass: 0 };
+    function los(a, b) { // Bresenham 레이캐스트: 벽을 만나면 0
+      cnt.rays++;
+      let x0 = a.x, y0 = a.y;
+      const x1 = b.x, y1 = b.y, dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let err = dx + dy;
+      for (;;) {
+        cnt.rayCells++;
+        if (wall[y0 * W + x0]) return 0;
+        if (x0 === x1 && y0 === y1) { cnt.losPass++; return 1; }
+        const e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+      }
+    }
+    const base = UAI.hamletActions().find(a => a.id === "use");
+    const cheap = base.considerations.map(c => Object.assign({}, c, { input: ctx => { cnt.calls++; return c.input(ctx); } }));
+    const losC = { name: "시야(LOS)", input: ({ agent, target }) => { cnt.calls++; return los(agent, target); }, curve: "스위치 (≥0.5)" };
+    const use = {
+      id: "use", label: "이용하기",
+      targets: ({ agent, world }) => {
+        const ts = world.objects.filter(t => t.users < t.capacity && (!o.radius || md(agent, t) <= BOOK));
+        cnt.rows += ts.length; return ts;
+      },
+      considerations: o.losLast ? cheap.concat([losC]) : [losC].concat(cheap),
+    };
+    const idle = { id: "wander", label: "산책", weight: 0.12, considerations: [{ name: "기본값", input: () => { cnt.calls++; return 1; }, curve: "선형 증가" }] };
+    const reasoner = new UAI.Reasoner([use, idle], { combine: "compensated", strategy: "best" });
+    const choices = [];
+    for (const a of world.agents) {
+      const ch = UAI.select(reasoner.evaluate(a, world), { strategy: "best" }).chosen;
+      choices.push(ch ? ch.action.id + ":" + (ch.target ? ch.target.id : "-") + ":" + ch.score.toFixed(6) : "none");
+    }
+    cnt.cost = (cnt.calls - cnt.rays) + cnt.rayCells; // 싼 consideration 1단위, LOS는 지나간 칸 수
+    cnt.upper = N * (T * 4 + 1);
+    return { cnt, choices };
+  }
+
+  // ── 위젯 5: 빵집 러시 ──
+  const HERD_START = [[2, 6], [7, 1], [9, 13], [17, 5], [12, 2], [6, 9]];
+  const occ = (agent, o) => o.users + (o.reserved || 0) - (agent.current && agent.current.target === o && agent.current.reserved ? 1 : 0);
+  // 08장 교육용 변형: 엔진 use를 복제해 예약을 반영 (엔진은 수정하지 않는다)
+  function reservingActions() {
+    const acts = UAI.hamletActions();
+    const use = acts.find(a => a.id === "use");
+    use.targets = ({ agent, world }) => world.objects.filter(o => occ(agent, o) < o.capacity);
+    use.considerations[2] = { name: "혼잡", input: ({ agent, target }) => occ(agent, target) / target.capacity, lo: 0, hi: 1, curve: { type: "linear", m: -0.7, b: 1 } };
+    const run0 = use.run;
+    use.run = function (world, a, cur) {
+      const o = cur.target;
+      if (cur.reserved && a.x === o.x && a.y === o.y) { o.reserved--; cur.reserved = false; } // 도착: 예약 → 사용
+      return run0(world, a, cur);
+    };
+    return acts;
+  }
+  function buildHerd(mode) {
+    const w = UAI.makeHamlet({ seed: 11 });
+    w.agents.forEach((a, i) => { a.x = HERD_START[i][0]; a.y = HERD_START[i][1]; a.needs = { hunger: 12, energy: 85, fun: 85, social: 85 }; });
+    w.objects.forEach(o => { o.reserved = 0; });
+    if (mode === "reserve") {
+      w.reasoner = new UAI.Reasoner(reservingActions(), Object.assign({}, w.reasoner.opt));
+      const think0 = UAI.World.prototype.think;
+      w.think = function (a, interruptOnly) {
+        const old = a.current;
+        think0.call(this, a, interruptOnly);
+        if (a.current !== old) {
+          if (old && old.reserved) { old.target.reserved--; old.reserved = false; } // 갈아타면 예약 반환
+          const c = a.current;
+          if (c && c.action === "use" && !c.using) { c.target.reserved++; c.reserved = true; } // 결정 즉시 예약
+        }
+      };
+    }
+    w.bounces = 0;
+    return w;
+  }
+  // 1 tick 진행. 도착했는데 만석이라 취소된 "헛걸음"을 돌려준다
+  function tickHerd(w) {
+    const before = w.agents.map(a => a.current && { action: a.current.action, using: a.current.using, target: a.current.target });
+    w.tick();
+    const ev = [];
+    w.agents.forEach((a, i) => {
+      const b = before[i];
+      if (b && b.action === "use" && !b.using && a.current === null && a.x === b.target.x && a.y === b.target.y) { w.bounces++; ev.push({ agent: a, target: b.target }); }
+    });
+    return ev;
+  }
+
+  return { md, MAP_NEEDS, MAP_POS, makeMapWorld, evalMap, FIELD_CURVES, fieldSingle, fieldBest, facingDot, DIR_CURVES, dirReasoner, dirEval, costExperiment, buildHerd, tickHerd };
+})();
+if (typeof module !== "undefined") module.exports = CH8;
+</script>
+
+<script>
+/* 08장 위젯 UI */
+(function () {
+  "use strict";
+  const S = 30;
+  const $ = id => document.getElementById(id);
+  const C = v => v * S + S / 2;
+  const f2 = v => MM.fmt(v, 2);
+  function svgPt(svg, e) {
+    const p = svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY;
+    return p.matrixTransform(svg.getScreenCTM().inverse());
+  }
+  function gridBg(w, h) {
+    let s = `<rect x="0" y="0" width="${w * S}" height="${h * S}" style="fill:var(--surface-2)"/>`;
+    for (let x = 1; x < w; x++) s += `<line x1="${x * S}" y1="0" x2="${x * S}" y2="${h * S}" style="stroke:var(--border);stroke-width:.6"/>`;
+    for (let y = 1; y < h; y++) s += `<line x1="0" y1="${y * S}" x2="${w * S}" y2="${y * S}" style="stroke:var(--border);stroke-width:.6"/>`;
+    return s;
+  }
+  const tLabel = t => (t ? (t.label || t.name) : "—");
+  function partHTML(p) {
+    if (!p) return "";
+    if (p.skipped) return `<span class="part skip">${p.name}: 생략(early-out)</span>`;
+    const raw = typeof p.raw === "number" ? (Number.isInteger(p.raw) ? p.raw : f2(p.raw)) : p.raw;
+    return `<span class="part">${p.name}: ${raw} → ${f2(p.y)}<span class="mini"><i style="width:${Math.round(p.y * 100)}%"></i></span></span>`;
+  }
+
+  // ── 그림 1: 컨텍스트 행렬 칸 ──
+  (function () {
+    const icons = ["bakery", "farm", "house", "house", "bench", "tavern", "well", "stage"].map(t => UAI.OBJECT_TYPES[t].icon);
+    $("mx-use").innerHTML = icons.map((ic, i) => `<rect x="${150 + i * 38}" y="38" width="30" height="30" rx="4" class="hl"/><text x="${165 + i * 38}" y="59" text-anchor="middle">${ic}</text>`).join("");
+    $("mx-chat").innerHTML = ["보", "찬", "두", "은", "파"].map((n, i) => `<rect x="${150 + i * 38}" y="86" width="30" height="30" rx="4" class="vb"/><text x="${165 + i * 38}" y="106" text-anchor="middle" class="small">${n}</text>`).join("");
+  })();
+
+  // ══════════ 위젯 1: 컨텍스트 지도 ══════════
+  const w1 = CH8.makeMapWorld();
+  const m1 = $("m1");
+  let others1 = false, drag1 = null, down1 = null;
+  const NEEDS_UI = ["hunger", "energy", "fun", "social"];
+  $("w1-needs").innerHTML = NEEDS_UI.map(n => `<label for="w1-${n}">${UAI.NEED_LABEL[n]}</label><input type="range" id="w1-${n}" min="0" max="100" value="${w1.agents[0].needs[n]}"><output id="w1-${n}-v"></output>`).join("");
+  NEEDS_UI.forEach(n => $("w1-" + n).addEventListener("input", e => { w1.agents[0].needs[n] = +e.target.value; r1(); }));
+  $("w1-others").addEventListener("change", e => { others1 = e.target.checked; r1(); });
+  $("w1-reset").addEventListener("click", () => {
+    w1.agents.forEach((a, i) => { a.x = CH8.MAP_POS[i][0]; a.y = CH8.MAP_POS[i][1]; });
+    w1.agents[0].needs = Object.assign({}, CH8.MAP_NEEDS);
+    w1.objects.forEach(o => { o.users = 0; });
+    NEEDS_UI.forEach(n => { $("w1-" + n).value = w1.agents[0].needs[n]; });
+    r1();
+  });
+  function r1() {
+    const ari = w1.agents[0];
+    const rows = CH8.evalMap(w1, others1);
+    const best = rows.reduce((b, r) => (r.score > (b ? b.score : 0) ? r : b), null);
+    NEEDS_UI.forEach(n => { $("w1-" + n + "-v").textContent = ari.needs[n]; });
+    let h = gridBg(w1.w, w1.h);
+    const ctxRows = rows.filter(r => r.target);
+    for (const r of ctxRows) {
+      const t = r.target, isB = r === best;
+      const col = isB ? "--accent" : r.action.id === "chat" ? "--violet" : "--muted";
+      h += `<line x1="${C(ari.x)}" y1="${C(ari.y)}" x2="${C(t.x)}" y2="${C(t.y)}" style="stroke:var(${col});stroke-width:${(1 + 12 * r.score).toFixed(1)};stroke-opacity:${isB ? 0.9 : 0.4};stroke-linecap:round"/>`;
+    }
+    for (const o of w1.objects) {
+      const r = rows.find(x => x.target === o);
+      const s = r ? r.score : 0, isB = r && r === best;
+      if (r) h += `<circle cx="${C(o.x)}" cy="${C(o.y)}" r="${(14 + 26 * s).toFixed(1)}" style="fill:var(--accent);fill-opacity:${(0.08 + 0.3 * s).toFixed(2)}"/>`;
+      h += `<g class="clk" data-ob="${o.id}"><circle cx="${C(o.x)}" cy="${C(o.y)}" r="14" style="fill:var(--surface);stroke:var(${isB ? "--accent" : "--border"});stroke-width:${isB ? 3 : 1.2}${r ? "" : ";stroke-dasharray:3 3"}"/>`;
+      h += `<text x="${C(o.x)}" y="${C(o.y) + 5}" text-anchor="middle" style="font-size:15px">${o.icon}</text></g>`;
+      h += `<text x="${C(o.x)}" y="${C(o.y) + 28}" text-anchor="middle" class="lbl">${o.label} ${o.users}/${o.capacity}</text>`;
+      h += `<text x="${C(o.x)}" y="${C(o.y) - 19}" text-anchor="middle" class="sc" style="fill:var(${isB ? "--accent" : "--text"})">${r ? f2(s) : "만석"}</text>`;
+    }
+    w1.agents.forEach((a, i) => {
+      if (i > 0 && !others1) return;
+      const r = rows.find(x => x.target === a);
+      h += `<g class="grab" data-ag="${i}"><circle cx="${C(a.x)}" cy="${C(a.y)}" r="12" style="fill:var(${i ? "--violet" : "--accent"});stroke:var(--surface);stroke-width:2"/>`;
+      h += `<text x="${C(a.x)}" y="${C(a.y) + 4}" text-anchor="middle" style="fill:var(--surface);font-size:11px;font-weight:700">${a.name[0]}</text></g>`;
+      h += `<text x="${C(a.x)}" y="${C(a.y) + 25}" text-anchor="middle" class="lbl">${a.name}${r ? " " + f2(r.score) : ""}</text>`;
+    });
+    m1.innerHTML = h;
+    const sorted = rows.slice().sort((a, b) => b.score - a.score);
+    let t = `<tr><th>#</th><th>컨텍스트 (행동 @대상)</th><th>consideration 1</th><th>consideration 2</th><th>consideration 3</th><th>점수</th></tr>`;
+    sorted.forEach((r, i) => {
+      t += `<tr class="${r === best ? "best" : r.score <= 0 ? "zero" : ""}"><td class="num">${i + 1}</td><td>${r.action.label}${r.target ? " @" + tLabel(r.target) : ""}</td>` +
+        [0, 1, 2].map(k => `<td>${partHTML(r.parts[k])}</td>`).join("") + `<td class="num">${MM.fmt(r.score, 3)}</td></tr>`;
+    });
+    $("w1-tbl").innerHTML = t;
+    const nCtx = rows.length;
+    $("w1-best").innerHTML = best
+      ? `전체 1위: <b>${best.action.label}${best.target ? " @" + tLabel(best.target) : ""}</b> (${MM.fmt(best.score, 3)})<br>평가한 컨텍스트 ${nCtx}개 · 결합 <code>${w1.reasoner.opt.combine}</code><br>아리 위치 (${ari.x}, ${ari.y})`
+      : "점수가 0보다 큰 컨텍스트가 없다.";
+  }
+  m1.addEventListener("pointerdown", e => {
+    const ag = e.target.closest("[data-ag]"), ob = e.target.closest("[data-ob]");
+    if (ag) { drag1 = +ag.dataset.ag; m1.setPointerCapture(e.pointerId); e.preventDefault(); }
+    else if (ob) down1 = ob.dataset.ob;
+  });
+  m1.addEventListener("pointermove", e => {
+    if (drag1 == null) return;
+    const p = svgPt(m1, e), a = w1.agents[drag1];
+    const nx = Math.max(0, Math.min(w1.w - 1, Math.floor(p.x / S))), ny = Math.max(0, Math.min(w1.h - 1, Math.floor(p.y / S)));
+    if (nx !== a.x || ny !== a.y) { a.x = nx; a.y = ny; r1(); }
+  });
+  const end1 = e => {
+    if (drag1 == null && down1) {
+      const ob = e.target.closest && e.target.closest("[data-ob]");
+      if (ob && ob.dataset.ob === down1) { const o = w1.objects.find(x => x.id === down1); o.users = (o.users + 1) % (o.capacity + 1); r1(); }
+    }
+    drag1 = null; down1 = null;
+  };
+  m1.addEventListener("pointerup", end1);
+  m1.addEventListener("pointercancel", () => { drag1 = null; down1 = null; });
+  r1();
+
+  // ══════════ DA:I Target Selector 스텝 ══════════
+  (function () {
+    const PX = 10; // 1m = 10px
+    const caster = { x: 150, y: 135 };
+    const EN = [
+      { id: "A", d: 6, ang: -40, immune: false, weak: false },
+      { id: "B", d: 4, ang: 70, immune: true, weak: false },
+      { id: "C", d: 8, ang: 170, immune: false, weak: true },
+      { id: "D", d: 14, ang: 15, immune: false, weak: false },
+    ];
+    EN.forEach(e => { const r = e.ang * Math.PI / 180; e.x = caster.x + Math.cos(r) * e.d * PX; e.y = caster.y + Math.sin(r) * e.d * PX; e.inRange = e.d <= 10; });
+    const INIT = 20;
+    // 각 단계의 상태: cur = 지금 보는 적, rec = 기록표
+    function stateAt(i) {
+      const inR = EN.filter(e => e.inRange);
+      const rec = {}; let cur = null, score = INIT, note = "";
+      for (let k = 0; k < Math.min(i, inR.length); k++) {
+        const e = inR[k];
+        cur = e; score = INIT;
+        if (e.immune) { note = `대상 ${e.id}: 점수 ${INIT}으로 되돌림 → "화염 면역이 아닌가?" 실패 → 자식이 false → <b>기록하지 않음</b>`; continue; }
+        score += 5;
+        if (e.weak) score += 5;
+        rec[e.id] = score;
+        note = `대상 ${e.id}: 점수 ${INIT}으로 되돌림 → 면역 아님 +5${e.weak ? " → 화염 약점 +5" : " → 약점 아님(+0)"} → true → <b>${e.id} = ${score}</b> 기록`;
+      }
+      return { inR, rec, cur: i >= 1 && i <= inR.length ? cur : null, score, note };
+    }
+    const svg = $("dai-svg");
+    function draw(i) {
+      const st = stateAt(i), done = i === 4;
+      const bestId = done ? Object.keys(st.rec).sort((a, b) => st.rec[b] - st.rec[a])[0] : null;
+      let h = `<circle cx="${caster.x}" cy="${caster.y}" r="${10 * PX}" style="fill:var(--accent-soft);fill-opacity:.5;stroke:var(--accent);stroke-dasharray:5 4"/>`;
+      h += `<text x="${caster.x}" y="${caster.y - 10 * PX - 6}" text-anchor="middle" class="muted small">10m (iterator 범위)</text>`;
+      h += `<circle cx="${caster.x}" cy="${caster.y}" r="13" style="fill:var(--accent)"/><text x="${caster.x}" y="${caster.y + 4}" text-anchor="middle" style="fill:var(--surface);font-size:11px;font-weight:700">나</text>`;
+      for (const e of EN) {
+        const isCur = st.cur === e, isBest = bestId === e.id;
+        const cls = !e.inRange ? "box" : e.immune ? "badb" : e.weak ? "warnb" : "okb";
+        if (isCur || isBest) h += `<line x1="${caster.x}" y1="${caster.y}" x2="${e.x}" y2="${e.y}" style="stroke:var(${isBest ? "--accent" : "--warn"});stroke-width:${isBest ? 3 : 2}"/>`;
+        h += `<g class="en${!e.inRange ? " dim" : ""}"><circle cx="${e.x}" cy="${e.y}" r="${isCur || isBest ? 15 : 12}" class="${cls}" style="stroke-width:${isCur || isBest ? 3 : 1}"/>`;
+        h += `<text x="${e.x}" y="${e.y + 4}" text-anchor="middle" style="font-weight:700">${e.id}</text>`;
+        h += `<text x="${e.x}" y="${e.y + 28}" text-anchor="middle" class="muted small">${e.d}m${e.immune ? " · 면역" : e.weak ? " · 약점" : ""}</text></g>`;
+      }
+      // 오른쪽: evaluation tree
+      const node = (x, y, w, t1, t2, cls) => `<rect x="${x}" y="${y}" width="${w}" height="44" rx="6" class="${cls}"/><text x="${x + w / 2}" y="${y + 18}" text-anchor="middle" class="small" style="font-weight:700">${t1}</text><text x="${x + w / 2}" y="${y + 35}" text-anchor="middle" class="small">${t2}</text>`;
+      const act = st.cur;
+      h += node(320, 20, 140, "Target Selector", "10m 이내의 적 각각", i >= 1 ? "hl" : "box");
+      h += node(320, 90, 140, "Filter", "화염 면역이 아닌가?", act ? (act.immune ? "badb" : "okb") : "box");
+      h += node(480, 90, 70, "Scoring", "+5", act && !act.immune ? "okb" : "box");
+      h += node(320, 160, 140, "Filter", "화염에 약한가?", act && !act.immune ? (act.weak ? "okb" : "badb") : "box");
+      h += node(480, 160, 70, "Scoring", "+5", act && act.weak ? "okb" : "box");
+      h += `<line x1="390" y1="64" x2="390" y2="90" class="line"/><line x1="460" y1="112" x2="480" y2="112" class="line"/><line x1="390" y1="134" x2="390" y2="160" class="line"/><line x1="460" y1="182" x2="480" y2="182" class="line"/>`;
+      h += `<text x="565" y="40" class="small">컨텍스트 점수</text><text x="565" y="64" style="font-size:22px;font-weight:700;fill:var(--accent)">${done ? st.rec[bestId] : act ? st.score : INIT}</text>`;
+      h += `<text x="565" y="90" class="small muted">초기 점수</text><text x="565" y="108" class="small">${INIT}</text>`;
+      if (done) h += `<text x="320" y="240" class="small" style="font-weight:700;fill:var(--accent)">Behavior Target = ${bestId}, 점수 ${st.rec[bestId]}, return true</text>`;
+      svg.innerHTML = h;
+      let t = `<tr><th>대상</th><th>거리</th><th>화염 면역</th><th>화염 약점</th><th>기록 점수</th></tr>`;
+      for (const e of EN) {
+        const v = !e.inRange ? "iterator 범위 밖" : st.rec[e.id] != null ? st.rec[e.id] : (st.inR.indexOf(e) < i ? "기록 안 됨 (false)" : "…");
+        t += `<tr class="${bestId === e.id ? "best" : ""}"><td>${e.id}</td><td class="num">${e.d}m</td><td>${e.immune ? "예" : "아니오"}</td><td>${e.weak ? "예" : "아니오"}</td><td class="num">${v}</td></tr>`;
+      }
+      $("dai-tbl").innerHTML = t;
+      return st;
+    }
+    MM.stepper($("dai-step"), {
+      steps: 5, interval: 1800,
+      render(i) {
+        const st = draw(i);
+        if (i === 0) return `① 현재 점수 <b>${INIT}</b>를 "초기 점수"로 기록한다. D는 14m라 iterator 목록("10m 이내의 적")에 들어오지 않는다.`;
+        if (i < 4) return `② ${st.note}`;
+        return `③ 기록된 대상 중 최고점 <b>C(30)</b>를 Behavior Target으로 정하고 컨텍스트 점수를 30으로 맞춘 뒤 true를 돌려준다. 이 snippet은 이제 (Immolate, C, 30) 한 줄로 BDS 평가 표에 올라간다.`;
+      },
+    });
+  })();
+
+  // ══════════ 위젯 2: 공간 utility field ══════════
+  const w2 = UAI.makeHamlet({ seed: 7, names: ["아리"] });
+  const m2 = $("m2");
+  const st2 = { mode: "single", curve: "bell", hi: 16, peak: 5, field: null, hover: null };
+  $("w2-curve").innerHTML = Object.keys(CH8.FIELD_CURVES).map(k => `<option value="${k}"${k === st2.curve ? " selected" : ""}>${CH8.FIELD_CURVES[k].label}</option>`).join("");
+  const plot2 = MM.plotCurve($("p2"), x => 0, { xLabel: "x = 거리 / hi", yLabel: "점수", color: "--accent" });
+  function curFn2() {
+    if (st2.mode === "best") return UAI.curve({ type: "poly", m: -1, k: 2, b: 1 });
+    return UAI.curve(CH8.FIELD_CURVES[st2.curve].spec(st2.peak, st2.hi));
+  }
+  function compute2() {
+    st2.field = st2.mode === "single" ? CH8.fieldSingle(w2, st2.curve, st2.peak, st2.hi) : CH8.fieldBest(w2, CH8.MAP_NEEDS);
+    st2.max = Math.max(1e-6, ...st2.field.map(c => c.score));
+  }
+  function edges(test) { // 이웃 칸과 test 결과가 다르면 공유 변을 긋는다
+    const W = w2.w, H = w2.h, F = st2.field;
+    let s = "";
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (x + 1 < W && test(F[i], F[i + 1])) s += `M${(x + 1) * S},${y * S}V${(y + 1) * S}`;
+      if (y + 1 < H && test(F[i], F[i + W])) s += `M${x * S},${(y + 1) * S}H${(x + 1) * S}`;
+    }
+    return s;
+  }
+  function r2() {
+    const W = w2.w, F = st2.field;
+    $("w2-hi-v").textContent = st2.hi + "칸";
+    $("w2-peak-v").textContent = st2.peak + "칸";
+    $("w2-single-ctl").style.display = st2.mode === "single" ? "" : "none";
+    $("w2-peak-l").style.display = st2.curve === "bell" ? "" : "none";
+    let h = `<rect x="0" y="0" width="${W * S}" height="${w2.h * S}" style="fill:var(--surface-2)"/>`;
+    F.forEach((c, i) => {
+      const a = st2.mode === "single" ? c.score : c.score / st2.max;
+      if (a > 0.004) h += `<rect x="${(i % W) * S}" y="${Math.floor(i / W) * S}" width="${S}" height="${S}" style="fill:var(--accent);fill-opacity:${(a * 0.85).toFixed(3)}"/>`;
+    });
+    if (st2.mode === "single") {
+      for (const t of [0.25, 0.5, 0.75]) h += `<path d="${edges((p, q) => (p.score >= t) !== (q.score >= t))}" style="fill:none;stroke:var(--warn);stroke-width:${t === 0.5 ? 2.5 : 1.4}"/>`;
+    } else {
+      h += `<path d="${edges((p, q) => p.target !== q.target)}" style="fill:none;stroke:var(--text);stroke-width:2"/>`;
+    }
+    for (const o of w2.objects) {
+      const on = st2.mode === "best" || o.type === "stage";
+      h += `<circle cx="${C(o.x)}" cy="${C(o.y)}" r="12" style="fill:var(--surface);stroke:var(${on ? "--text" : "--border"});opacity:${on ? 1 : 0.5}"/><text x="${C(o.x)}" y="${C(o.y) + 5}" text-anchor="middle" style="font-size:13px;opacity:${on ? 1 : 0.5}">${o.icon}</text>`;
+    }
+    const hv = st2.hover;
+    if (hv) {
+      h += `<rect x="${hv.x * S}" y="${hv.y * S}" width="${S}" height="${S}" style="fill:none;stroke:var(--bad);stroke-width:3"/>`;
+      const c = F[hv.y * W + hv.x];
+      if (c.target) h += `<line x1="${C(hv.x)}" y1="${C(hv.y)}" x2="${C(c.target.x)}" y2="${C(c.target.y)}" style="stroke:var(--bad);stroke-dasharray:4 3;stroke-width:1.5"/>`;
+    }
+    m2.innerHTML = h;
+    read2();
+  }
+  function read2() {
+    const hv = st2.hover, fn = curFn2();
+    if (!hv) { plot2.update(fn, null); return; }
+    const c = st2.field[hv.y * w2.w + hv.x];
+    if (st2.mode === "single") {
+      plot2.update(fn, c.nx);
+      $("w2-read").innerHTML = `칸 (${hv.x}, ${hv.y}) → 무대 (13, 13)<br>맨해튼 거리 <b>${c.raw}</b>칸 · x = <b>${f2(c.nx)}</b><br>점수 <b>${MM.fmt(c.score, 3)}</b>`;
+    } else {
+      const r = c.row, d = r ? r.parts[1] : null;
+      plot2.update(fn, d && !d.skipped ? d.x : null);
+      $("w2-read").innerHTML = r
+        ? `칸 (${hv.x}, ${hv.y}) 1위: <b>${tLabel(r.target)}</b> (${MM.fmt(r.score, 3)})<br>${r.parts.map(partHTML).join("")}<small>욕구: 배고픔 30·기력 60·재미 50·사교 50 / 진하기는 최고값 대비</small>`
+        : `칸 (${hv.x}, ${hv.y}): 점수 0`;
+    }
+  }
+  const hov2 = e => {
+    const p = svgPt(m2, e);
+    const x = Math.floor(p.x / S), y = Math.floor(p.y / S);
+    if (x < 0 || y < 0 || x >= w2.w || y >= w2.h) return;
+    if (!st2.hover || st2.hover.x !== x || st2.hover.y !== y) { st2.hover = { x, y }; r2(); }
+  };
+  m2.addEventListener("pointermove", hov2);
+  m2.addEventListener("pointerdown", hov2);
+  $("w2-mode").addEventListener("change", e => { st2.mode = e.target.value; compute2(); r2(); });
+  $("w2-curve").addEventListener("change", e => { st2.curve = e.target.value; compute2(); r2(); });
+  $("w2-hi").addEventListener("input", e => { st2.hi = +e.target.value; compute2(); r2(); });
+  $("w2-peak").addEventListener("input", e => { st2.peak = +e.target.value; compute2(); r2(); });
+  st2.hover = { x: 13, y: 7 };
+  compute2(); r2();
+
+  // ══════════ 위젯 3: 방향 consideration ══════════
+  const m3 = $("m3");
+  const tgt = { x: 240, y: 160, th: -Math.PI / 2 }, atk = { x: 360, y: 250 };
+  const st3 = { curve: "back", dist: false, drag: null };
+  const KR = 62;
+  $("w3-curve").innerHTML = Object.keys(CH8.DIR_CURVES).map(k => `<option value="${k}">${CH8.DIR_CURVES[k].label}</option>`).join("");
+  const plot3 = MM.plotCurve($("p3"), x => 0, { xLabel: "x = (내적 + 1) / 2", yLabel: "방향 점수", color: "--ok" });
+  function r3() {
+    const R = CH8.dirReasoner(st3.curve, st3.dist);
+    let h = `<rect x="0" y="0" width="480" height="320" style="fill:var(--surface-2)"/>`;
+    const G = 20;
+    for (let y = 0; y < 320 / G; y++) for (let x = 0; x < 480 / G; x++) {
+      const s = CH8.dirEval(R, tgt, { x: x * G + G / 2, y: y * G + G / 2 }).score;
+      if (s > 0.004) h += `<rect x="${x * G}" y="${y * G}" width="${G}" height="${G}" style="fill:var(--ok);fill-opacity:${(s * 0.7).toFixed(3)}"/>`;
+    }
+    const kx = tgt.x + Math.cos(tgt.th) * KR, ky = tgt.y + Math.sin(tgt.th) * KR;
+    h += `<line x1="${tgt.x}" y1="${tgt.y}" x2="${atk.x}" y2="${atk.y}" style="stroke:var(--warn);stroke-width:2;stroke-dasharray:5 4"/>`;
+    h += `<line x1="${tgt.x}" y1="${tgt.y}" x2="${kx}" y2="${ky}" style="stroke:var(--accent);stroke-width:3"/>`;
+    h += `<circle cx="${tgt.x}" cy="${tgt.y}" r="16" style="fill:var(--surface);stroke:var(--text);stroke-width:2"/><text x="${tgt.x}" y="${tgt.y + 4}" text-anchor="middle" style="font-weight:700">대상</text>`;
+    h += `<g class="grab" data-h="knob"><circle cx="${kx}" cy="${ky}" r="11" style="fill:var(--accent);stroke:var(--surface);stroke-width:2"/></g>`;
+    h += `<text x="${kx}" y="${ky - 15}" text-anchor="middle" class="lbl">facing</text>`;
+    h += `<g class="grab" data-h="atk"><circle cx="${atk.x}" cy="${atk.y}" r="13" style="fill:var(--ok);stroke:var(--surface);stroke-width:2"/><text x="${atk.x}" y="${atk.y + 4}" text-anchor="middle" style="fill:var(--surface);font-size:11px;font-weight:700">AI</text></g>`;
+    m3.innerHTML = h;
+    const row = CH8.dirEval(R, tgt, atk), p0 = row.parts[0];
+    plot3.update(UAI.curve(CH8.DIR_CURVES[st3.curve].spec), p0.x);
+    const ang = Math.acos(Math.max(-1, Math.min(1, p0.raw))) * 180 / Math.PI;
+    $("w3-read").innerHTML = `내적 d = <b>${f2(p0.raw)}</b> (사이각 ${ang.toFixed(0)}°)<br>x = (d+1)/2 = <b>${f2(p0.x)}</b> → 방향 점수 <b>${f2(p0.y)}</b>` +
+      (row.parts[1] ? `<br>거리 ${row.parts[1].skipped ? "생략(early-out)" : Math.round(row.parts[1].raw) + "px → " + f2(row.parts[1].y)}` : "") +
+      `<br>최종 점수 (곱) <b>${MM.fmt(row.score, 3)}</b><br><small>${p0.raw > 0.7 ? "대상이 AI를 거의 정면으로 보고 있다" : p0.raw < -0.7 ? "AI가 대상의 등 뒤에 있다" : "AI가 대상의 옆쪽에 있다"}</small>`;
+  }
+  m3.addEventListener("pointerdown", e => {
+    const g = e.target.closest("[data-h]");
+    if (!g) return;
+    st3.drag = g.dataset.h; m3.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  m3.addEventListener("pointermove", e => {
+    if (!st3.drag) return;
+    const p = svgPt(m3, e);
+    if (st3.drag === "knob") tgt.th = Math.atan2(p.y - tgt.y, p.x - tgt.x);
+    else { atk.x = Math.max(10, Math.min(470, p.x)); atk.y = Math.max(10, Math.min(310, p.y)); }
+    r3();
+  });
+  m3.addEventListener("pointerup", () => { st3.drag = null; });
+  m3.addEventListener("pointercancel", () => { st3.drag = null; });
+  $("w3-curve").addEventListener("change", e => { st3.curve = e.target.value; r3(); });
+  $("w3-dist").addEventListener("change", e => { st3.dist = e.target.checked; r3(); });
+  r3();
+
+  // ══════════ 위젯 4: 평가 비용 측정 ══════════
+  let t4 = null;
+  function r4() {
+    const N = +$("w4-n").value, T = +$("w4-t").value, wall = +$("w4-w").value / 100, radius = $("w4-rad").checked, losLast = $("w4-last").checked;
+    $("w4-n-v").textContent = N; $("w4-t-v").textContent = T; $("w4-w-v").textContent = MM.pct(wall);
+    const t0 = performance.now();
+    const base = CH8.costExperiment({ N, T, wall, radius: false, losLast: false });
+    const cur = CH8.costExperiment({ N, T, wall, radius, losLast });
+    const ms = performance.now() - t0;
+    const same = base.choices.filter((c, i) => c === cur.choices[i]).length;
+    const b = base.cnt, c = cur.cnt;
+    const row = (k, x, y, fmt) => `<tr><td>${k}</td><td class="num">${fmt ? fmt(x) : x.toLocaleString()}</td><td class="num">${fmt ? fmt(y) : y.toLocaleString()}</td><td class="num">${x ? MM.pct(y / x) : "—"}</td></tr>`;
+    $("w4-tbl").innerHTML = `<tr><th>지표</th><th>기준 (전체 대상 · LOS 먼저)</th><th>현재 설정</th><th>비율</th></tr>` +
+      row("평가한 (이용하기, 대상) 쌍", b.rows, c.rows) +
+      row("consideration 호출", b.calls, c.calls) +
+      row("LOS 레이캐스트", b.rays, c.rays) +
+      row("레이가 지나간 칸", b.rayCells, c.rayCells) +
+      row("총 비용 (단위)", b.cost, c.cost) +
+      `<tr><td>참고: consideration 호출 상한 N×(T×4+1)</td><td class="num" colspan="3">${b.upper.toLocaleString()}</td></tr>`;
+    $("w4-stats").innerHTML =
+      `<div class="stat"><div class="k">LOS 통과율 (현재)</div><div class="v">${c.rays ? MM.pct(c.losPass / c.rays) : "—"}</div></div>` +
+      `<div class="stat"><div class="k">비용 절감</div><div class="v c-ok">${MM.pct(1 - c.cost / b.cost)}</div></div>` +
+      `<div class="stat"><div class="k">결정 일치 (기준 대비)</div><div class="v ${same === N ? "c-ok" : "c-bad"}">${same}/${N}</div></div>` +
+      `<div class="stat"><div class="k">두 번 측정 시간</div><div class="v">${ms.toFixed(0)}ms</div></div>`;
+  }
+  const sched4 = () => { clearTimeout(t4); t4 = setTimeout(r4, 60); };
+  ["w4-n", "w4-t", "w4-w"].forEach(id => $(id).addEventListener("input", sched4));
+  ["w4-rad", "w4-last"].forEach(id => $(id).addEventListener("change", r4));
+  r4();
+
+  // ══════════ 위젯 5: 빵집 러시 ══════════
+  const m5 = $("m5");
+  let w5 = null, timer5 = null, mode5 = "engine";
+  const MAXT = 90;
+  function reset5() {
+    stop5();
+    mode5 = document.querySelector('input[name="w5-mode"]:checked').value;
+    w5 = CH8.buildHerd(mode5);
+    w5.ui = [];
+    r5();
+  }
+  function step5() {
+    if (w5.tickCount >= MAXT) return stop5();
+    for (const ev of CH8.tickHerd(w5)) w5.ui.push(`[${UAI.clock(w5.time)}] ⚠ ${ev.agent.name}: ${ev.target.label}에 도착했지만 만석 → 헛걸음`);
+    r5();
+  }
+  function stop5() { clearInterval(timer5); timer5 = null; $("w5-play").textContent = "▶ 실행"; }
+  function r5() {
+    let h = gridBg(w5.w, w5.h);
+    for (const a of w5.agents) {
+      const c = a.current;
+      if (c && c.target && c.target.x != null) h += `<line x1="${C(a.x)}" y1="${C(a.y)}" x2="${C(c.target.x)}" y2="${C(c.target.y)}" style="stroke:var(${c.using ? "--ok" : "--warn"});stroke-width:2${c.using ? "" : ";stroke-dasharray:5 4"}"/>`;
+    }
+    for (const o of w5.objects) {
+      const full = o.users + o.reserved >= o.capacity;
+      h += `<circle cx="${C(o.x)}" cy="${C(o.y)}" r="14" style="fill:var(${full ? "--bad-soft" : "--surface"});stroke:var(${full ? "--bad" : "--border"})"/><text x="${C(o.x)}" y="${C(o.y) + 5}" text-anchor="middle" style="font-size:15px">${o.icon}</text>`;
+      h += `<text x="${C(o.x)}" y="${C(o.y) + 28}" text-anchor="middle" class="lbl">${o.label} ${o.users}/${o.capacity}${mode5 === "reserve" && o.reserved ? " +예약" + o.reserved : ""}</text>`;
+    }
+    for (const a of w5.agents) {
+      h += `<circle cx="${C(a.x)}" cy="${C(a.y)}" r="11" style="fill:var(--accent);stroke:var(--surface);stroke-width:2"/><text x="${C(a.x)}" y="${C(a.y) + 4}" text-anchor="middle" style="fill:var(--surface);font-size:11px;font-weight:700">${a.name[0]}</text>`;
+      h += `<text x="${C(a.x)}" y="${C(a.y) - 15}" text-anchor="middle" class="lbl">${a.name} ${Math.round(a.needs.hunger)}</text>`;
+    }
+    m5.innerHTML = h;
+    const avg = w5.agents.reduce((s, a) => s + a.needs.hunger, 0) / w5.agents.length;
+    $("w5-stats").innerHTML =
+      `<div class="stat"><div class="k">시각</div><div class="v">${UAI.clock(w5.time)}</div></div>` +
+      `<div class="stat"><div class="k">경과</div><div class="v">${w5.tickCount}분</div></div>` +
+      `<div class="stat"><div class="k">헛걸음</div><div class="v ${w5.bounces ? "c-bad" : "c-ok"}">${w5.bounces}</div></div>` +
+      `<div class="stat"><div class="k">배고픔 충족도 평균</div><div class="v">${avg.toFixed(1)}</div></div>`;
+    const lines = w5.log.map(s => s);
+    // 엔진 결정 로그와 헛걸음 이벤트를 시각 순으로 합친다
+    const merged = lines.concat(w5.ui).sort((p, q) => p.slice(1, 6).localeCompare(q.slice(1, 6)));
+    $("w5-log").textContent = merged.length ? merged.slice(-40).join("\n") : "▶ 실행을 누르면 world.tick()이 돈다. 주민 이름 옆 숫자는 배고픔 충족도(0=굶주림).";
+    $("w5-log").scrollTop = 1e6;
+  }
+  $("w5-play").addEventListener("click", () => {
+    if (timer5) return stop5();
+    if (w5.tickCount >= MAXT) reset5();
+    $("w5-play").textContent = "⏸ 정지";
+    timer5 = setInterval(step5, 140);
+  });
+  $("w5-step").addEventListener("click", () => { stop5(); step5(); });
+  $("w5-reset").addEventListener("click", reset5);
+  document.querySelectorAll('input[name="w5-mode"]').forEach(r => r.addEventListener("change", reset5));
+  reset5();
+
+  // 테마 전환: 모두 CSS 변수를 쓰므로 다시 그리기만 하면 된다
+  document.addEventListener("themechange", () => { r1(); r2(); r3(); r5(); });
+})();
+</script>
+</body>
+</html>

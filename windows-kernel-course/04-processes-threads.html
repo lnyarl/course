@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프로세스와 스레드</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .cid-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; margin: 10px 0; }
+  @media (max-width: 720px) { .cid-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .cid-grid .slot { border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: 11px/1.4 var(--mono); background: var(--panel2); min-height: 38px; }
+  .cid-grid .slot .v { color: var(--muted); }
+  .cid-grid .slot.p { border-color: var(--kernel); background: var(--kernel-bg); }
+  .cid-grid .slot.t { border-color: var(--user); background: var(--user-bg); }
+  .cid-grid .slot.flash { outline: 2px solid var(--acc); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .82rem; color: var(--muted); }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; border: 1px solid; }
+  .legend .lp { background: var(--kernel-bg); border-color: var(--kernel); }
+  .legend .lt { background: var(--user-bg); border-color: var(--user); }
+  #pBits { gap: 18px; font-size: 13px; }
+  #pBits .bit { min-width: 28px; padding: 6px 0; }
+  #pBits .g .lbl { font-size: 11px; }
+  .prot-out { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; align-items: center; margin-top: 10px; font-size: .92rem; }
+  .prot-out .big { font: 700 1.4rem var(--mono); color: var(--hv); }
+</style>
+</head>
+<body data-chapter="04">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part II · Chapter 04</div>
+  <h1>프로세스와 스레드</h1>
+  <p class="sub">프로세스는 자원을 담는 그릇, 스레드는 실행 단위. 커널이 이 둘을 어떤 구조체로 표현하고, 어떻게 만들고, 어떻게 보호하는지 해부합니다.</p>
+  <div class="meta"><span class="pill lv-core">핵심</span><span class="pill">⏱ 약 90분</span><span class="pill">선수: 01·02장</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li><code>EPROCESS</code>/<code>KPROCESS</code>, <code>ETHREAD</code>/<code>KTHREAD</code>의 계층 관계와 핵심 필드를 설명하고 WinDbg로 직접 찾아갈 수 있다.</li>
+    <li>커널 측 구조체와 유저 측 구조체(PEB/TEB)를 구분하고, 각각을 신뢰해도 되는지 판단할 수 있다.</li>
+    <li><code>CreateProcessW</code> 한 번이 kernelbase → <code>NtCreateUserProcess</code> → csrss → 로더까지 거치는 단계를 순서대로 말할 수 있다.</li>
+    <li>CID/<code>PspCidTable</code>와 <code>ActiveProcessLinks</code>의 관계를 이해하고, 프로세스 열거가 어디에 의존하는지 설명할 수 있다.</li>
+    <li>Job, 최소/Pico 프로세스, 보호 프로세스(PP/PPL), 프로세스 생성 콜백의 역할과 한계를 안다.</li>
+  </ul>
+</div>
+
+<h2 id="concept">프로세스와 스레드의 역할 분담</h2>
+<p>
+  Windows에서 <strong>프로세스는 실행되지 않습니다.</strong> 프로세스는 실행에 필요한 자원을 묶는 <b>컨테이너</b>이고,
+  CPU 위에서 실제로 명령을 수행하는 것은 언제나 <strong>스레드</strong>입니다. 스케줄러(05장)는 프로세스가 아니라 스레드를 고릅니다.
+</p>
+<div class="grid2">
+  <div class="card kernel"><h4>프로세스가 가진 것</h4>
+    <p>가상 주소 공간(페이지 테이블 + VAD 트리), 핸들 테이블, 기본 접근 토큰, 하나 이상의 스레드, 이미지(실행 파일) 매핑, Job 소속, 프로세스 ID, 보호 수준, 완화 정책(mitigation) 설정.</p></div>
+  <div class="card user"><h4>스레드가 가진 것</h4>
+    <p>CPU 레지스터 문맥, 커널 스택과 유저 스택, 스케줄링 상태(우선순위·퀀텀·선호도), 대기 블록, APC 큐, TEB, 스레드 ID, 선택적인 가장(impersonation) 토큰.</p></div>
+</div>
+<p>
+  같은 프로세스의 스레드들은 주소 공간과 핸들을 <b>공유</b>합니다. 그래서 스레드 전환은 프로세스 전환보다 싸고(CR3를 바꿀 필요가 없음),
+  반대로 한 스레드의 메모리 손상이 같은 프로세스의 모든 스레드에 영향을 줍니다.
+</p>
+<div class="callout note">
+  <div class="callout-title">"현재 프로세스"는 두 가지 의미가 있다</div>
+  <p>커널 코드에서 <code>PsGetCurrentProcess()</code>는 현재 스레드의 <code>ApcState.Process</code>, 즉 <b>지금 매핑된 주소 공간의 프로세스</b>를 돌려줍니다.
+  드라이버가 <code>KeStackAttachProcess</code>로 다른 프로세스에 붙어(attach) 있으면 이 값은 스레드가 원래 속한 프로세스(<code>PsGetThreadProcess</code>)와 달라집니다.
+  "누가 요청했나"와 "어느 주소 공간을 보고 있나"를 혼동하면 버그가 됩니다.</p>
+</div>
+
+<h2 id="structs">커널 구조체: EPROCESS와 ETHREAD</h2>
+<p>
+  01장에서 본 Executive/Kernel 계층 분리는 구조체에도 그대로 나타납니다. Executive 계층(Ps, Ob, Mm, Se)이 쓰는 정보는 <code>EPROCESS</code>/<code>ETHREAD</code>에,
+  Kernel 계층(Ke — 스케줄링·대기·APC)이 쓰는 정보는 그 <b>첫 번째 멤버</b>로 내장된 <code>KPROCESS</code>(필드명 <code>Pcb</code>)/<code>KTHREAD</code>(필드명 <code>Tcb</code>)에 들어 있습니다.
+  첫 멤버이므로 <code>PEPROCESS</code>와 <code>PKPROCESS</code>는 <b>같은 주소</b>이며 서로 캐스팅해 씁니다.
+</p>
+<p>아래 도식의 <b>각 필드를 클릭</b>하면 의미와 실전에서의 쓰임이 표시됩니다.</p>
+
+<figure class="fig explore" id="structMap">
+  <svg class="dia" viewBox="0 0 880 610" role="img" aria-label="EPROCESS와 ETHREAD 구조">
+    <rect class="zone kernel" x="10" y="10" width="860" height="476" rx="12"/>
+    <text x="24" y="30" class="b c-kernel">커널 모드 (시스템 주소 공간)</text>
+
+    <rect class="box plain" x="30" y="40" width="390" height="434" rx="10" style="stroke:var(--kernel);stroke-width:2"/>
+    <text x="46" y="62" class="lg">EPROCESS</text><text x="410" y="62" text-anchor="end" class="sm">Executive (Ps/Ob/Mm/Se)</text>
+    <rect class="box kernel" x="40" y="72" width="370" height="132" rx="8"/>
+    <text x="52" y="90" class="b">KPROCESS Pcb</text><text x="400" y="90" text-anchor="end" class="sm mono">+0x000</text>
+    <g data-info="kp-header"><rect class="box plain" x="48" y="98" width="354" height="22" rx="5"/><text x="58" y="114" class="mono">Header</text><text x="200" y="114" class="sm">디스패처 헤더 (대기 가능)</text></g>
+    <g data-info="kp-dtb"><rect class="box plain" x="48" y="123" width="354" height="22" rx="5"/><text x="58" y="139" class="mono">DirectoryTableBase</text><text x="200" y="139" class="sm">CR3 값 · 최상위 페이지 테이블</text></g>
+    <g data-info="kp-tlh"><rect class="box plain" x="48" y="148" width="354" height="22" rx="5"/><text x="58" y="164" class="mono">ThreadListHead</text><text x="200" y="164" class="sm">KTHREAD 리스트</text></g>
+    <g data-info="kp-prio"><rect class="box plain" x="48" y="173" width="354" height="22" rx="5"/><text x="58" y="189" class="mono">BasePriority</text><text x="200" y="189" class="sm">기본 우선순위·선호도·퀀텀</text></g>
+
+    <g data-info="ep-pid"><rect class="box plain" x="48" y="213" width="354" height="22" rx="5"/><text x="58" y="229" class="mono">UniqueProcessId</text><text x="200" y="229" class="sm">PID (CID 테이블에서 할당)</text></g>
+    <g data-info="ep-apl"><rect class="box plain" x="48" y="238" width="354" height="22" rx="5"/><text x="58" y="254" class="mono">ActiveProcessLinks</text><text x="200" y="254" class="sm">전역 프로세스 리스트 링크</text></g>
+    <g data-info="ep-token"><rect class="box plain" x="48" y="263" width="354" height="22" rx="5"/><text x="58" y="279" class="mono">Token</text><text x="200" y="279" class="sm">기본 토큰 (EX_FAST_REF)</text></g>
+    <g data-info="ep-ot"><rect class="box plain" x="48" y="288" width="354" height="22" rx="5"/><text x="58" y="304" class="mono">ObjectTable</text><text x="200" y="304" class="sm">핸들 테이블</text></g>
+    <g data-info="ep-vad"><rect class="box plain" x="48" y="313" width="354" height="22" rx="5"/><text x="58" y="329" class="mono">VadRoot</text><text x="200" y="329" class="sm">VAD 트리 (유저 주소 공간)</text></g>
+    <g data-info="ep-tlh"><rect class="box plain" x="48" y="338" width="354" height="22" rx="5"/><text x="58" y="354" class="mono">ThreadListHead</text><text x="200" y="354" class="sm">ETHREAD 리스트</text></g>
+    <g data-info="ep-peb"><rect class="box plain" x="48" y="363" width="354" height="22" rx="5"/><text x="58" y="379" class="mono">Peb</text><text x="200" y="379" class="sm">유저 모드 PEB 주소</text></g>
+    <g data-info="ep-prot"><rect class="box plain" x="48" y="388" width="354" height="22" rx="5"/><text x="58" y="404" class="mono">Protection</text><text x="200" y="404" class="sm">PS_PROTECTION (PP/PPL)</text></g>
+    <g data-info="ep-name"><rect class="box plain" x="48" y="413" width="354" height="22" rx="5"/><text x="58" y="429" class="mono">ImageFileName</text><text x="200" y="429" class="sm">이미지 이름 (15바이트)</text></g>
+    <g data-info="ep-job"><rect class="box plain" x="48" y="438" width="354" height="22" rx="5"/><text x="58" y="454" class="mono">Job</text><text x="200" y="454" class="sm">소속 Job (EJOB)</text></g>
+
+    <rect class="box plain" x="460" y="40" width="390" height="434" rx="10" style="stroke:var(--kernel);stroke-width:2"/>
+    <text x="476" y="62" class="lg">ETHREAD</text><text x="840" y="62" text-anchor="end" class="sm">Executive</text>
+    <rect class="box kernel" x="470" y="72" width="370" height="282" rx="8"/>
+    <text x="482" y="90" class="b">KTHREAD Tcb</text><text x="830" y="90" text-anchor="end" class="sm mono">+0x000</text>
+    <g data-info="kt-header"><rect class="box plain" x="478" y="98" width="354" height="22" rx="5"/><text x="488" y="114" class="mono">Header</text><text x="630" y="114" class="sm">디스패처 헤더</text></g>
+    <g data-info="kt-stack"><rect class="box plain" x="478" y="123" width="354" height="22" rx="5"/><text x="488" y="139" class="mono">KernelStack</text><text x="630" y="139" class="sm">저장된 커널 RSP·스택 범위</text></g>
+    <g data-info="kt-state"><rect class="box plain" x="478" y="148" width="354" height="22" rx="5"/><text x="488" y="164" class="mono">State</text><text x="630" y="164" class="sm">스레드 상태 (05장)</text></g>
+    <g data-info="kt-prio"><rect class="box plain" x="478" y="173" width="354" height="22" rx="5"/><text x="488" y="189" class="mono">Priority</text><text x="630" y="189" class="sm">현재/기본 우선순위</text></g>
+    <g data-info="kt-aff"><rect class="box plain" x="478" y="198" width="354" height="22" rx="5"/><text x="488" y="214" class="mono">Affinity</text><text x="630" y="214" class="sm">선호도·이상 프로세서</text></g>
+    <g data-info="kt-apc"><rect class="box plain" x="478" y="223" width="354" height="22" rx="5"/><text x="488" y="239" class="mono">ApcState</text><text x="630" y="239" class="sm">APC 큐·현재 주소 공간</text></g>
+    <g data-info="kt-wait"><rect class="box plain" x="478" y="248" width="354" height="22" rx="5"/><text x="488" y="264" class="mono">WaitBlock</text><text x="630" y="264" class="sm">대기 블록·WaitReason</text></g>
+    <g data-info="kt-trap"><rect class="box plain" x="478" y="273" width="354" height="22" rx="5"/><text x="488" y="289" class="mono">TrapFrame</text><text x="630" y="289" class="sm">유저 레지스터 저장소</text></g>
+    <g data-info="kt-teb"><rect class="box plain" x="478" y="298" width="354" height="22" rx="5"/><text x="488" y="314" class="mono">Teb</text><text x="630" y="314" class="sm">유저 모드 TEB 주소</text></g>
+    <g data-info="kt-proc"><rect class="box plain" x="478" y="323" width="354" height="22" rx="5"/><text x="488" y="339" class="mono">Process</text><text x="630" y="339" class="sm">소속 KPROCESS</text></g>
+
+    <g data-info="et-cid"><rect class="box plain" x="478" y="366" width="354" height="22" rx="5"/><text x="488" y="382" class="mono">Cid</text><text x="630" y="382" class="sm">CLIENT_ID (PID, TID)</text></g>
+    <g data-info="et-start"><rect class="box plain" x="478" y="391" width="354" height="22" rx="5"/><text x="488" y="407" class="mono">Win32StartAddress</text><text x="630" y="407" class="sm">스레드 시작 함수</text></g>
+    <g data-info="et-tle"><rect class="box plain" x="478" y="416" width="354" height="22" rx="5"/><text x="488" y="432" class="mono">ThreadListEntry</text><text x="630" y="432" class="sm">EPROCESS 리스트 링크</text></g>
+    <g data-info="et-irp"><rect class="box plain" x="478" y="441" width="354" height="22" rx="5"/><text x="488" y="457" class="mono">IrpList</text><text x="630" y="457" class="sm">스레드가 낸 대기 중 IRP</text></g>
+
+    <path class="ln kernel" d="M478 334 H444 V140 H406"/>
+    <path class="ln acc" d="M402 349 H428 V427 H474"/>
+    <line class="sep" x1="10" y1="496" x2="870" y2="496"/>
+    <rect x="360" y="486" width="160" height="20" rx="10" style="fill:var(--panel)"/>
+    <text x="440" y="501" text-anchor="middle" class="sm b" style="fill:var(--acc)">▼ 유저 주소 공간 ▼</text>
+    <rect class="zone user" x="10" y="512" width="860" height="90" rx="12"/>
+    <g data-info="peb"><rect class="box user" x="118" y="530" width="220" height="56" rx="8"/><text x="228" y="553" text-anchor="middle" class="b">PEB</text><text x="228" y="572" text-anchor="middle" class="sm">프로세스당 1개 · 로더/힙/인자</text></g>
+    <g data-info="teb"><rect class="box user" x="542" y="530" width="220" height="56" rx="8"/><text x="652" y="553" text-anchor="middle" class="b">TEB</text><text x="652" y="572" text-anchor="middle" class="sm">스레드당 1개 · gs:[0x30]</text></g>
+    <path class="ln user dash" d="M48 374 H22 V558 H114"/>
+    <path class="ln user dash" d="M832 309 H862 V558 H766"/>
+    <path class="ln user" d="M542 558 H342"/>
+    <text x="440" y="550" text-anchor="middle" class="sm">ProcessEnvironmentBlock</text>
+  </svg>
+
+  <template data-key="kp-header"><h4>KPROCESS.Header — <code>DISPATCHER_HEADER</code></h4>
+    <p>프로세스는 <b>대기 가능한(디스패처) 객체</b>입니다. 이 헤더 덕분에 <code>WaitForSingleObject(hProcess)</code>가 가능하고, 프로세스가 종료되면 시그널 상태가 되어 대기 중인 스레드가 깨어납니다. 이벤트·뮤텍스·스레드·타이머도 같은 헤더로 시작합니다. → 07장</p></template>
+  <template data-key="kp-dtb"><h4>KPROCESS.DirectoryTableBase</h4>
+    <p>이 프로세스의 최상위 페이지 테이블의 물리 주소, 즉 <b>CR3에 로드되는 값</b>입니다. 다른 프로세스의 스레드로 컨텍스트 스위치할 때 커널이 이 값을 CR3에 씁니다(05장).</p>
+    <p>KVA Shadow(Meltdown 완화)가 켜져 있으면 유저 모드 실행용으로 커널 매핑을 최소화한 별도 테이블(<code>UserDirectoryTableBase</code>)도 있습니다. → 08·16장</p></template>
+  <template data-key="kp-tlh"><h4>KPROCESS.ThreadListHead</h4>
+    <p>이 프로세스의 모든 <code>KTHREAD</code>를 <code>KTHREAD.ThreadListEntry</code>로 연결하는 리스트 헤드입니다. Executive 쪽에도 <code>EPROCESS.ThreadListHead</code>(ETHREAD 리스트)가 따로 있어, 한 스레드는 <b>두 개의 리스트</b>에 동시에 연결됩니다.</p></template>
+  <template data-key="kp-prio"><h4>KPROCESS.BasePriority · Affinity · QuantumReset</h4>
+    <p>프로세스의 <b>기본 우선순위</b>(우선순위 클래스에서 유도: Normal=8, High=13 …), 프로세스 선호도(<code>KAFFINITY_EX</code> — 프로세서 그룹 지원), 스레드 퀀텀 초기값(<code>QuantumReset</code>)이 들어 있습니다. 스레드의 기본 우선순위는 이 값 + 상대 우선순위로 정해집니다. → 05장</p></template>
+  <template data-key="ep-pid"><h4>EPROCESS.UniqueProcessId</h4>
+    <p>PID. 타입은 <code>HANDLE</code>이며 실제로 <b>커널 전역 핸들 테이블 <code>PspCidTable</code>의 핸들 값</b>입니다. 그래서 PID는 4의 배수이고, 같은 테이블에서 TID도 할당되므로 <b>동시에 살아 있는 PID와 TID는 겹치지 않습니다.</b></p>
+    <p>종료된 프로세스의 PID는 금방 재사용됩니다. PID만 저장해 두었다가 나중에 다시 여는 코드는 엉뚱한 프로세스를 열 수 있습니다(생성 시각을 함께 비교하거나 핸들을 유지할 것).</p></template>
+  <template data-key="ep-apl"><h4>EPROCESS.ActiveProcessLinks</h4>
+    <p>모든 활성 프로세스를 잇는 이중 연결 리스트(<code>LIST_ENTRY</code>)의 링크입니다. 리스트 헤드는 <code>nt!PsActiveProcessHead</code>. <code>NtQuerySystemInformation(SystemProcessInformation)</code>, 작업 관리자, WinDbg의 <code>!process 0 0</code>이 이 리스트를 따라갑니다.</p>
+    <p>링크는 EPROCESS의 <b>중간</b>을 가리키므로 <code>CONTAINING_RECORD</code>로 구조체 시작 주소를 복원해야 합니다. 리스트 조작은 내부 락으로 보호되며, 드라이버가 직접 걷는 것은 문서화되지 않은(빌드 의존) 동작입니다.</p></template>
+  <template data-key="ep-token"><h4>EPROCESS.Token — <code>EX_FAST_REF</code></h4>
+    <p>프로세스의 기본 접근 토큰 포인터입니다. <code>EX_FAST_REF</code>는 포인터의 하위 비트(x64에서 4비트)를 빠른 참조 카운트로 재활용하므로, 실제 포인터는 <b>하위 4비트를 마스킹</b>해야 얻습니다(<code>&amp; ~0xF</code>).</p>
+    <p>드라이버는 이 필드를 직접 읽지 말고 <code>PsReferencePrimaryToken</code>/<code>PsDereferencePrimaryToken</code>을 사용합니다. → 13장</p></template>
+  <template data-key="ep-ot"><h4>EPROCESS.ObjectTable</h4>
+    <p>프로세스 핸들 테이블(<code>HANDLE_TABLE</code>). 핸들 값 → 객체 포인터 + 허용된 접근 마스크로 변환하는 다단계 테이블입니다. 프로세스 종료 시 남은 핸들이 모두 닫힙니다. → 10장</p></template>
+  <template data-key="ep-vad"><h4>EPROCESS.VadRoot</h4>
+    <p>유저 주소 공간의 예약/커밋 영역을 기술하는 <b>VAD(Virtual Address Descriptor)</b>의 균형 트리 루트입니다. <code>VirtualAlloc</code>, 이미지·파일 매핑이 모두 VAD로 기록됩니다. WinDbg <code>!vad</code>로 볼 수 있습니다. → 09장</p></template>
+  <template data-key="ep-tlh"><h4>EPROCESS.ThreadListHead</h4>
+    <p><code>ETHREAD.ThreadListEntry</code>로 연결된 이 프로세스의 스레드 리스트입니다(도식의 파란 화살표). <code>ActiveThreads</code> 카운트가 0이 되면, 즉 마지막 스레드가 종료되면 프로세스도 종료 처리됩니다.</p></template>
+  <template data-key="ep-peb"><h4>EPROCESS.Peb</h4>
+    <p>이 프로세스의 <b>유저 모드 주소</b>에 있는 PEB를 가리킵니다. 커널이 PEB를 읽으려면 그 프로세스 주소 공간에 붙어(attach) 있어야 하고, 내용은 유저 코드가 마음대로 바꿀 수 있으므로 <b>신뢰하면 안 됩니다</b>. 최소 프로세스(System, Registry 등)는 PEB가 없어 0입니다.</p></template>
+  <template data-key="ep-prot"><h4>EPROCESS.Protection — <code>PS_PROTECTION</code></h4>
+    <p>1바이트: 하위 3비트 Type(None/Light/Full), 1비트 Audit, 상위 4비트 Signer. 0이 아니면 보호 프로세스(PP) 또는 경량 보호 프로세스(PPL)이며, 비보호 프로세스는 제한된 접근 권한으로만 열 수 있습니다. 함께 쓰이는 <code>SignatureLevel</code>/<code>SectionSignatureLevel</code>은 로드 가능한 이미지의 서명 수준을 제한합니다. → 아래 보호 프로세스 절</p></template>
+  <template data-key="ep-name"><h4>EPROCESS.ImageFileName</h4>
+    <p><code>UCHAR[15]</code> — 이미지 파일 이름의 앞 15바이트(ANSI)만 저장됩니다. 긴 이름은 잘리므로 식별에 쓰기엔 부족합니다. 전체 경로는 <code>SeLocateProcessImageName</code>이나 <code>ZwQueryInformationProcess(ProcessImageFileName)</code>으로 얻습니다.</p></template>
+  <template data-key="ep-job"><h4>EPROCESS.Job</h4>
+    <p>이 프로세스가 속한 Job 객체(<code>EJOB</code>) 포인터. Job이 없으면 NULL입니다. 중첩 Job(Windows 8+)이면 가장 안쪽 Job을 가리키고, Job들은 부모 체인으로 연결됩니다. → Job 절</p></template>
+  <template data-key="kt-header"><h4>KTHREAD.Header</h4>
+    <p>스레드도 디스패처 객체입니다. 스레드가 종료되면 시그널 상태가 되므로 <code>WaitForSingleObject(hThread)</code>로 종료를 기다릴 수 있습니다.</p></template>
+  <template data-key="kt-stack"><h4>KTHREAD.KernelStack · InitialStack · StackLimit</h4>
+    <p>모든 스레드는 <b>고정 크기의 커널 스택</b>을 가집니다(x64 기본 24KB = 6페이지). <code>InitialStack</code>/<code>StackBase</code>/<code>StackLimit</code>가 범위를, <code>KernelStack</code>이 컨텍스트 스위치 때 저장된 RSP를 담습니다. 커널 스택은 작기 때문에 드라이버에서 큰 지역 변수나 깊은 재귀는 금물입니다(스택 오버플로 → 버그체크).</p>
+    <p>오래 대기하는 유저 스레드의 커널 스택은 메모리 부족 시 페이지 아웃될 수 있으며, 이때 깨어나면 <b>Transition</b> 상태를 거칩니다. → 05장</p></template>
+  <template data-key="kt-state"><h4>KTHREAD.State</h4>
+    <p><code>KTHREAD_STATE</code> 열거형: Initialized(0), Ready(1), Running(2), Standby(3), Terminated(4), Waiting(5), Transition(6), DeferredReady(7) 등. 상태 전이는 05장에서 다룹니다.</p></template>
+  <template data-key="kt-prio"><h4>KTHREAD.Priority · BasePriority</h4>
+    <p><code>Priority</code>는 현재(동적) 우선순위, <code>BasePriority</code>는 기본 우선순위입니다. 부스트를 받으면 Priority가 일시적으로 올라갔다가 퀀텀이 끝날 때마다 내려옵니다. → 05장</p></template>
+  <template data-key="kt-aff"><h4>KTHREAD.Affinity · IdealProcessor</h4>
+    <p>하드 선호도(이 스레드가 실행될 수 있는 프로세서 집합, 그룹 + 마스크)와 이상 프로세서(가능하면 실행할 프로세서), 마지막/다음 프로세서 정보. 스케줄러의 프로세서 선택에 사용됩니다. → 05장</p></template>
+  <template data-key="kt-apc"><h4>KTHREAD.ApcState — <code>KAPC_STATE</code></h4>
+    <p>커널/유저 APC 큐 두 개(<code>ApcListHead[2]</code>)와 <b><code>Process</code></b> 필드를 담습니다. <code>ApcState.Process</code>는 <b>현재 매핑된 주소 공간</b>의 프로세스로, 평소엔 <code>KTHREAD.Process</code>와 같지만 <code>KeStackAttachProcess</code> 중에는 대상 프로세스가 됩니다. 이때 원래 상태는 <code>SavedApcState</code>에 보관됩니다. → 06장</p></template>
+  <template data-key="kt-wait"><h4>KTHREAD.WaitBlock · WaitReason · WaitIrql</h4>
+    <p>스레드가 객체를 기다릴 때 각 객체와 스레드를 잇는 <code>KWAIT_BLOCK</code>입니다. 스레드에 기본으로 4개가 내장되어 있어(객체용 3 + 타임아웃 타이머용 1) 흔한 대기는 할당 없이 처리됩니다. <code>WaitReason</code>(Executive, UserRequest, WrQueue …)은 덤프 분석에서 "왜 멈췄나"의 첫 단서입니다. → 07장</p></template>
+  <template data-key="kt-trap"><h4>KTHREAD.TrapFrame</h4>
+    <p>시스템 콜·인터럽트로 커널에 들어올 때 커널 스택에 저장된 <code>KTRAP_FRAME</code>(유저 모드 RIP, RSP, RFLAGS 등)을 가리킵니다. 유저 모드로 돌아갈 때 이 값으로 복원합니다. → 02장</p></template>
+  <template data-key="kt-teb"><h4>KTHREAD.Teb</h4>
+    <p>이 스레드의 TEB(유저 주소). 컨텍스트 스위치 시 커널은 새 스레드의 TEB 주소를 유저 모드 GS 베이스로 설정해, 유저 코드가 <code>gs:[0x30]</code>으로 자기 TEB를 찾게 합니다. 시스템 스레드는 TEB가 없습니다.</p></template>
+  <template data-key="kt-proc"><h4>KTHREAD.Process</h4>
+    <p>스레드가 <b>소속된</b> 프로세스(생성 시 고정). 도식의 주황 화살표입니다. Attach 여부와 무관하게 변하지 않으며 <code>PsGetThreadProcess</code>가 이 값을 반환합니다.</p></template>
+  <template data-key="et-cid"><h4>ETHREAD.Cid — <code>CLIENT_ID</code></h4>
+    <p><code>{ UniqueProcess, UniqueThread }</code> 쌍. 스레드 ID와 소속 프로세스 ID를 함께 담습니다. ALPC 메시지 헤더, 디버그 이벤트 등 여러 곳에서 "누가"를 식별하는 데 쓰입니다.</p></template>
+  <template data-key="et-start"><h4>ETHREAD.StartAddress · Win32StartAddress</h4>
+    <p>유저 스레드의 <code>StartAddress</code>는 보통 공통 진입점 <code>ntdll!RtlUserThreadStart</code>이고, <code>Win32StartAddress</code>가 <code>CreateThread</code>에 넘긴 실제 함수입니다. Process Explorer의 스레드 탭 "Start Address"가 이 값입니다. 포렌식에서 시작 주소가 어떤 모듈에도 속하지 않는(이미지 매핑이 아닌) 스레드는 정밀 조사 대상입니다.</p></template>
+  <template data-key="et-tle"><h4>ETHREAD.ThreadListEntry</h4>
+    <p><code>EPROCESS.ThreadListHead</code>에 연결되는 링크입니다. 프로세스의 스레드를 열거할 때 이 리스트를 따라갑니다(WinDbg <code>!process &lt;addr&gt; 4</code>).</p></template>
+  <template data-key="et-irp"><h4>ETHREAD.IrpList</h4>
+    <p>이 스레드가 발행했고 아직 완료되지 않은 IRP 리스트(스레드 큐 IRP). 스레드가 종료되면 I/O 관리자는 이 IRP들을 <b>취소</b>하려 시도하고, 완료될 때까지 스레드 정리가 지연됩니다. 취소를 제대로 구현하지 않은 드라이버 때문에 "종료되지 않는 프로세스"가 생기는 원인입니다. → 11장</p></template>
+  <template data-key="peb"><h4>PEB (Process Environment Block)</h4>
+    <p>유저 모드에 있는 프로세스 정보 블록. 로더 모듈 리스트(<code>Ldr</code>), 명령줄·환경 변수(<code>ProcessParameters</code>), 기본 힙(<code>ProcessHeap</code>), <code>BeingDebugged</code> 플래그 등을 담습니다. 유저 모드에서 시스템 콜 없이 빨리 읽기 위해 존재합니다.</p></template>
+  <template data-key="teb"><h4>TEB (Thread Environment Block)</h4>
+    <p>스레드별 유저 모드 블록. 스택 범위, <code>LastErrorValue</code>(<code>GetLastError</code>의 실체), TLS 슬롯, <code>ClientId</code>, PEB 포인터 등을 담습니다. x64 유저 모드에서 GS 세그먼트 베이스가 TEB를 가리킵니다.</p></template>
+  <figcaption><b>그림 4-1.</b> EPROCESS/ETHREAD와 내장된 KPROCESS/KTHREAD. 오프셋은 빌드마다 다르므로 <code>dt nt!_EPROCESS</code>로 확인하세요(첫 멤버 <code>+0x000</code>만 고정).</figcaption>
+</figure>
+
+<div class="callout warn">
+  <div class="callout-title">오프셋을 하드코딩하지 말 것</div>
+  <p><code>EPROCESS</code>와 <code>ETHREAD</code>는 <b>불투명(opaque) 구조체</b>입니다. WDK 헤더에 정의가 없고, 필드 오프셋은 Windows 빌드마다 바뀝니다. 드라이버는 반드시 <code>PsGetProcessId</code>, <code>PsGetThreadId</code>, <code>PsGetProcessCreateTimeQuadPart</code>, <code>PsIsProtectedProcessLight</code> 같은 문서화된 접근자를 써야 합니다. 오프셋을 하드코딩한 드라이버는 다음 업데이트에서 버그체크를 일으키는 단골 원인입니다.</p>
+</div>
+
+<h2 id="pebteb">유저 측 구조체: PEB와 TEB</h2>
+<p>
+  커널 구조체는 커널 주소 공간에 있어 유저 코드가 볼 수 없습니다. 그래서 유저 모드에서 자주 필요한 정보 — 로드된 DLL 목록, 명령줄, 마지막 오류 코드, TLS — 는
+  커널이 프로세스·스레드 생성 시 <b>유저 주소 공간에 만들어 주는</b> PEB와 TEB에 들어 있습니다. ntdll과 kernelbase는 시스템 콜 없이 이 블록을 직접 읽고 씁니다.
+</p>
+<div class="tabs">
+  <div class="tab-bar"><button>PEB (x64)</button><button>TEB (x64)</button><button>접근 방법</button></div>
+  <div class="tab-panel">
+    <table class="struct">
+      <thead><tr><th>offset</th><th>field</th><th>type</th><th>설명</th></tr></thead>
+      <tbody>
+        <tr><td>+0x002</td><td>BeingDebugged</td><td>UCHAR</td><td>디버거가 붙어 있으면 1. <code>IsDebuggerPresent</code>의 실체</td></tr>
+        <tr><td>+0x010</td><td>ImageBaseAddress</td><td>PVOID</td><td>EXE가 매핑된 베이스 주소(ASLR 적용 후)</td></tr>
+        <tr><td>+0x018</td><td>Ldr</td><td>PPEB_LDR_DATA</td><td>로드된 모듈 리스트 3종(InLoadOrder / InMemoryOrder / InInitializationOrder)</td></tr>
+        <tr><td>+0x020</td><td>ProcessParameters</td><td>PRTL_USER_PROCESS_PARAMETERS</td><td>ImagePathName, CommandLine, Environment, CurrentDirectory, 표준 핸들</td></tr>
+        <tr><td>+0x030</td><td>ProcessHeap</td><td>PVOID</td><td>기본 프로세스 힙 (<code>GetProcessHeap</code>)</td></tr>
+        <tr><td>+0x0bc</td><td>NtGlobalFlag</td><td>ULONG</td><td>gflags 설정(힙 검사 등). 디버거로 시작하면 일부 힙 플래그가 켜짐</td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="font-size:.88rem">x64 PEB/TEB의 앞부분 오프셋은 오랫동안 유지되어 왔지만 공식 계약은 아닙니다. 항상 <code>dt ntdll!_PEB</code>로 확인하세요.</p>
+  </div>
+  <div class="tab-panel">
+    <table class="struct">
+      <thead><tr><th>offset</th><th>field</th><th>type</th><th>설명</th></tr></thead>
+      <tbody>
+        <tr><td>+0x000</td><td>NtTib</td><td>NT_TIB</td><td>StackBase(+0x8), StackLimit(+0x10) 등 스택 범위</td></tr>
+        <tr><td>+0x030</td><td>NtTib.Self</td><td>PNT_TIB</td><td>TEB 자신의 주소 — <code>NtCurrentTeb()</code> = <code>gs:[0x30]</code></td></tr>
+        <tr><td>+0x040</td><td>ClientId</td><td>CLIENT_ID</td><td>PID, TID (<code>GetCurrentThreadId</code>는 여기서 읽음)</td></tr>
+        <tr><td>+0x058</td><td>ThreadLocalStoragePointer</td><td>PVOID</td><td>정적 TLS(<code>__declspec(thread)</code>) 배열</td></tr>
+        <tr><td>+0x060</td><td>ProcessEnvironmentBlock</td><td>PPEB</td><td>PEB 포인터 — <code>gs:[0x60]</code></td></tr>
+        <tr><td>+0x068</td><td>LastErrorValue</td><td>ULONG</td><td><code>GetLastError</code>/<code>SetLastError</code>의 저장소</td></tr>
+        <tr><td>+0x1480</td><td>TlsSlots[64]</td><td>PVOID[64]</td><td>동적 TLS(<code>TlsAlloc</code>) 처음 64개 슬롯</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="tab-panel">
+    <pre data-title="C"><code class="lang-c">// 유저 모드: 세그먼트 레지스터로 직접 접근 (x64)
+PTEB teb = (PTEB)__readgsqword(0x30);   // NtCurrentTeb()와 동일
+PPEB peb = (PPEB)__readgsqword(0x60);   // teb-&gt;ProcessEnvironmentBlock
+// 32비트(x86) 프로세스에서는 FS 세그먼트: fs:[0x18] = TEB, fs:[0x30] = PEB
+
+// 다른 프로세스의 PEB 주소: 문서화된 경로
+PROCESS_BASIC_INFORMATION pbi;
+NtQueryInformationProcess(hProcess, ProcessBasicInformation, &amp;pbi, sizeof(pbi), NULL);
+// pbi.PebBaseAddress → ReadProcessMemory로 읽음</code></pre>
+    <p>커널 모드에서는 GS 베이스가 TEB가 아니라 <b>KPCR</b>(프로세서 제어 영역)을 가리킵니다. 시스템 콜 진입 시 <code>swapgs</code>로 두 값을 맞바꾸는 이유입니다(02장).</p>
+  </div>
+</div>
+
+<div class="callout expert">
+  <div class="callout-title">PEB/TEB는 "자기 신고"다</div>
+  <p>PEB와 TEB는 프로세스 자신이 쓸 수 있는 메모리입니다. 명령줄(<code>ProcessParameters.CommandLine</code>), 모듈 리스트(<code>Ldr</code>), <code>BeingDebugged</code>는 프로세스 코드가 언제든 바꿀 수 있습니다.
+  따라서 보안·포렌식 도구는 이 값들을 <b>참고 정보</b>로만 써야 하고, 권위 있는 정보는 커널 측(예: 프로세스 생성 콜백이 받는 <code>PS_CREATE_NOTIFY_INFO.CommandLine</code>, 이미지 섹션, VAD)에서 얻어야 합니다.
+  같은 이유로 커널 코드가 PEB를 읽을 때는 일반 유저 포인터처럼 <code>__try</code>/<code>ProbeForRead</code>로 보호해야 합니다.</p>
+</div>
+
+<h2 id="cid">CID와 PspCidTable, 프로세스 리스트</h2>
+<p>
+  PID와 TID는 별도의 카운터가 아니라 <b>하나의 커널 핸들 테이블</b> <code>nt!PspCidTable</code>에서 할당됩니다. 프로세스나 스레드가 생성될 때
+  <code>ExCreateHandle</code>로 이 테이블에 엔트리를 만들고, 그 핸들 값이 곧 ID가 됩니다. 일반 프로세스 핸들 테이블과 달리 이 테이블의 엔트리는 객체 헤더가 아닌 <b>객체 본체</b>를 가리킵니다.
+</p>
+<ul>
+  <li><b>ID → 객체</b>: <code>PsLookupProcessByProcessId</code>/<code>PsLookupThreadByThreadId</code>가 이 테이블을 조회하고 <b>참조 카운트를 올려</b> 반환합니다. 사용 후 반드시 <code>ObDereferenceObject</code>.</li>
+  <li><b>전체 열거</b>: 반면 프로세스 목록은 <code>PsActiveProcessHead</code>에서 시작하는 <code>ActiveProcessLinks</code> 리스트로 얻습니다. 같은 사실(살아 있는 프로세스 집합)이 <b>두 개의 독립된 자료구조</b>에 기록되는 셈입니다.</li>
+  <li><b>PID 0과 4</b>: PID 0은 Idle "프로세스"(CPU별 Idle 스레드의 컨테이너), PID 4는 System 프로세스입니다.</li>
+</ul>
+
+<div class="sim" id="cidSim">
+  <div class="sim-title">CID 테이블 · 프로세스 리스트 시뮬레이터</div>
+  <div class="sim-controls">
+    <button class="btn primary" data-act="create">프로세스 생성</button>
+    <button class="btn" data-act="thread">선택 프로세스에 스레드 추가</button>
+    <button class="btn" data-act="kill">선택 프로세스 종료</button>
+    <select id="cidSel" aria-label="프로세스 선택"></select>
+    <button class="btn" data-act="walk">열거 ① ActiveProcessLinks</button>
+    <button class="btn" data-act="scan">열거 ② PspCidTable</button>
+    <button class="btn" data-act="reset">리셋</button>
+  </div>
+  <svg class="dia" viewBox="0 0 880 190" id="cidSvg" role="img" aria-label="ActiveProcessLinks 리스트"></svg>
+  <div class="legend"><span><i class="lp"></i>프로세스 엔트리 (P)</span><span><i class="lt"></i>스레드 엔트리 (T)</span><span>주황 실선 = Flink · 회색 점선 = Blink</span><span>슬롯 값 = 인덱스 × 4</span></div>
+  <div class="cid-grid" id="cidGrid"></div>
+  <div class="console" id="cidLog" style="min-height:5em"></div>
+</div>
+<p class="muted" style="font-size:.88rem">
+  시뮬레이터는 단순화를 위해 "가장 낮은 빈 슬롯"을 할당합니다. 실제 핸들 테이블은 프리 리스트 기반이라 순서가 다르지만, <b>ID가 빠르게 재사용된다</b>는 점과 <b>PID·TID가 한 공간을 공유한다</b>는 점은 동일합니다.
+  두 열거 결과를 비교하는 "교차 검증(cross-view)"은 메모리 포렌식 도구(예: Volatility의 <code>pslist</code>와 <code>psscan</code> 비교)가 일관성 점검에 쓰는 기본 기법입니다.
+</p>
+
+<h2 id="create">CreateProcess 내부 흐름</h2>
+<p>
+  <code>CreateProcessW</code>는 Windows에서 가장 복잡한 API 중 하나입니다. Windows Vista 이후 핵심 작업은 단일 시스템 콜 <code>NtCreateUserProcess</code>가 커널 안에서 한 번에 처리하고,
+  유저 모드의 kernelbase는 인자 준비와 Windows 서브시스템(csrss) 등록을 맡습니다. 단계별로 따라가 봅시다.
+</p>
+
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 500" role="img" aria-label="CreateProcess 흐름">
+    <g>
+      <text x="16" y="49" class="sm b c-user">kernelbase</text>
+      <text x="16" y="105" class="sm b c-user">ntdll</text>
+      <text x="16" y="175" class="sm b c-kernel">이미지</text>
+      <text x="16" y="231" class="sm b c-kernel">프로세스</text>
+      <text x="16" y="287" class="sm b c-kernel">스레드</text>
+      <text x="16" y="355" class="sm b c-user">csrss</text>
+      <text x="16" y="411" class="sm b c-user">새 스레드</text>
+      <text x="16" y="467" class="sm b c-user">로더</text>
+    </g>
+    <g data-hl="1"><rect class="box user" x="120" y="24" width="740" height="40" rx="8"/><text x="134" y="49" class="mono">CreateProcessInternalW: 인자 검증 · 경로 변환 · 속성 리스트 · RTL_USER_PROCESS_PARAMETERS</text></g>
+    <g data-hl="2" data-on="2"><rect class="box user" x="120" y="80" width="740" height="40" rx="8"/><text x="134" y="105" class="mono">ntdll!NtCreateUserProcess  →  syscall</text></g>
+    <line class="sep" x1="60" y1="136" x2="870" y2="136"/>
+    <text x="860" y="131" text-anchor="end" class="sm">유저 → 커널</text>
+    <g data-hl="3" data-on="3"><rect class="box kernel" x="120" y="150" width="740" height="40" rx="8"/><text x="134" y="175" class="mono">이미지 파일 열기 → 이미지 섹션 생성(SEC_IMAGE) · PE 검증</text></g>
+    <g data-hl="4" data-on="4"><rect class="box kernel" x="120" y="206" width="740" height="40" rx="8"/><text x="134" y="231" class="mono">PspAllocateProcess: EPROCESS · 주소 공간 · 핸들 테이블 · 토큰 · PEB → PspInsertProcess</text></g>
+    <g data-hl="5" data-on="5"><rect class="box kernel" x="120" y="262" width="740" height="40" rx="8"/><text x="134" y="287" class="mono">PspAllocateThread / PspInsertThread: ETHREAD · 커널 스택 · TEB · TID · 콜백 (일시 정지)</text></g>
+    <line class="sep" x1="60" y1="318" x2="870" y2="318"/>
+    <text x="860" y="313" text-anchor="end" class="sm">커널 → 유저</text>
+    <g data-hl="6" data-on="6"><rect class="box user" x="120" y="330" width="740" height="40" rx="8"/><text x="134" y="355" class="mono">CsrClientCallServer → csrss: 새 프로세스/스레드 등록 (ALPC)</text></g>
+    <g data-hl="7" data-on="7"><rect class="box user" x="120" y="386" width="740" height="40" rx="8"/><text x="134" y="411" class="mono">NtResumeThread → 초기 스레드 실행 시작: ntdll!LdrInitializeThunk</text></g>
+    <g data-hl="8" data-on="8"><rect class="box user" x="120" y="442" width="740" height="40" rx="8"/><text x="134" y="467" class="mono">LdrpInitializeProcess → DLL 로드 · DllMain → RtlUserThreadStart → main</text></g>
+    <g data-at="1:0,0|2:0,56|3:0,126|4:0,182|5:0,238|6:0,306|7:0,362|8:0,418">
+      <circle class="token" cx="100" cy="44" r="9"/>
+    </g>
+  </svg>
+  <ol class="steps">
+    <li><b>kernelbase!CreateProcessInternalW</b>: 플래그와 우선순위 클래스를 검증하고, Win32 경로를 NT 경로로 바꾸고, 명령줄·환경·현재 디렉터리를 담은 <code>RTL_USER_PROCESS_PARAMETERS</code>를 만듭니다. <code>STARTUPINFOEX</code>의 속성 리스트(부모 프로세스 지정, 완화 정책, 보호 수준 등)는 커널용 <code>PS_ATTRIBUTE_LIST</code>로 변환됩니다.</li>
+    <li><b>NtCreateUserProcess</b>: 프로세스와 초기 스레드를 한 번에 만드는 시스템 콜을 호출합니다. 실패 시 반환되는 상태 코드에 따라 kernelbase가 후속 처리를 합니다(예: <code>.bat</code>/<code>.cmd</code>는 <code>cmd.exe</code>를 대신 실행).</li>
+    <li><b>이미지 열기</b>: 커널이 실행 파일을 열고 <b>이미지 섹션 객체</b>(<code>SEC_IMAGE</code>)를 만듭니다. PE 헤더를 검증하고, 서명 정책(보호 프로세스면 서명 수준)도 여기서 확인됩니다. 이미지 섹션은 여러 프로세스가 공유할 수 있어 같은 EXE를 여러 번 실행해도 코드 페이지는 하나입니다. → 09장</li>
+    <li><b>프로세스 객체 생성</b>: <code>PspAllocateProcess</code>가 <code>EPROCESS</code>를 할당하고 새 주소 공간(페이지 테이블)을 만들고, 이미지와 <b>ntdll.dll</b>을 매핑하고, 핸들 테이블(상속 핸들 복제), 토큰(부모 토큰 복사 또는 지정 토큰), PEB를 준비합니다. <code>PspInsertProcess</code>가 PID 할당과 <code>ActiveProcessLinks</code> 삽입, 호출자에게 줄 핸들 생성을 마칩니다.</li>
+    <li><b>초기 스레드</b>: <code>PspAllocateThread</code>가 <code>ETHREAD</code>, 커널 스택, TEB를 만들고 초기 문맥을 설정합니다(유저 시작 주소 = <code>ntdll!RtlUserThreadStart</code>, 실제 진입점은 인자로). <code>PspInsertThread</code>가 TID를 할당하고 스레드를 프로세스에 연결하며, 이 시점에 등록된 <b>프로세스/스레드 생성 콜백</b>이 호출됩니다. 스레드는 아직 <b>일시 정지</b> 상태입니다.</li>
+    <li><b>csrss 통지</b>: 유저 모드로 돌아온 kernelbase가 ALPC로 Windows 서브시스템 서버(csrss.exe)에 새 프로세스를 알립니다. csrss는 자신의 프로세스/스레드 목록에 등록하고 셧다운 순서 관리 등을 준비합니다. SxS 매니페스트(활성화 컨텍스트) 처리도 이 단계 전후에 이뤄집니다.</li>
+    <li><b>실행 시작</b>: <code>CREATE_SUSPENDED</code>가 아니면 초기 스레드를 재개합니다. 이 스레드가 유저 모드에서 처음 실행하는 코드는 진입점이 아니라 <code>ntdll!LdrInitializeThunk</code>입니다. 모든 유저 스레드는 이 경로를 거칩니다. 이제 <code>CreateProcessW</code>는 핸들과 ID를 채워 반환합니다.</li>
+    <li><b>로더 초기화</b>: 첫 스레드의 <code>LdrpInitializeProcess</code>가 힙, <code>PEB.Ldr</code>를 초기화하고, 임포트 테이블을 따라 kernel32/kernelbase 등 의존 DLL을 로드하고, TLS 콜백과 <code>DllMain(DLL_PROCESS_ATTACH)</code>를 호출합니다. 끝나면 <code>NtContinue</code>로 원래 문맥에 복귀해 <code>RtlUserThreadStart</code> → <code>BaseThreadInitThunk</code> → CRT 진입점 → <code>main</code>이 실행됩니다.</li>
+  </ol>
+  <figcaption><b>그림 4-2.</b> <code>CreateProcessW</code>의 내부 단계. 파랑 = 유저 모드, 주황 = 커널 모드.</figcaption>
+</figure>
+
+<div class="callout expert">
+  <div class="callout-title">"부모"와 "생성자"는 다를 수 있다</div>
+  <p><code>PROC_THREAD_ATTRIBUTE_PARENT_PROCESS</code> 속성을 쓰면 다른 프로세스를 부모로 지정할 수 있습니다(UAC의 AppInfo 서비스가 상승된 프로세스를 사용자의 explorer 아래에 두는 방식). 그래서 <code>InheritedFromUniqueProcessId</code>(부모 PID)만으로 "누가 실행했는가"를 단정할 수 없습니다.
+  프로세스 생성 콜백의 <code>PS_CREATE_NOTIFY_INFO</code>는 <code>ParentProcessId</code>와 별도로 실제 생성 스레드의 <code>CreatingThreadId</code>를 제공하므로, 보안 제품은 둘을 함께 기록합니다.</p>
+</div>
+
+<div class="callout tip">
+  <div class="callout-title">DllMain에서 하면 안 되는 일</div>
+  <p>8단계의 <code>DllMain</code>은 <b>로더 락</b>을 잡은 채 호출됩니다. 여기서 다른 DLL을 로드하거나, 스레드를 만들고 기다리거나, COM을 초기화하면 교착 상태가 생기기 쉽습니다. 프로세스 시작 시 멈추는 앱을 덤프로 보면 콜스택에 <code>LdrpInitializeProcess</code>와 로더 락 대기가 함께 보이는 경우가 많습니다.</p>
+</div>
+
+<h2 id="lifecycle">스레드 생명주기</h2>
+<p>
+  스레드는 <code>CreateThread</code>(또는 다른 프로세스 대상의 <code>CreateRemoteThread</code>) → <code>NtCreateThreadEx</code>로 만들어집니다. 생성 경로의 커널 부분은 프로세스의 초기 스레드와 같은 함수(<code>PspAllocateThread</code>/<code>PspInsertThread</code>)를 씁니다.
+  종료는 생성보다 까다롭습니다. 스레드가 커널에 걸어 둔 자원(대기 중 I/O, APC, 참조)을 모두 정리해야 하기 때문입니다.
+</p>
+
+<figure class="fig stepper" data-interval="3000">
+  <svg class="dia" viewBox="0 0 880 310" role="img" aria-label="스레드 생명주기">
+    <g data-hl="1"><rect class="box user" x="20" y="40" width="190" height="76" rx="8"/>
+      <text x="115" y="64" text-anchor="middle" class="b">스레드 생성 요청</text>
+      <text x="115" y="84" text-anchor="middle" class="sm">CreateThread</text>
+      <text x="115" y="101" text-anchor="middle" class="sm">→ NtCreateThreadEx</text></g>
+    <g data-hl="2"><rect class="box kernel" x="240" y="40" width="190" height="76" rx="8"/>
+      <text x="335" y="64" text-anchor="middle" class="b mono">PspAllocateThread</text>
+      <text x="335" y="84" text-anchor="middle" class="sm">ETHREAD · 커널 스택</text>
+      <text x="335" y="101" text-anchor="middle" class="sm">TEB · 초기 문맥</text></g>
+    <g data-hl="3"><rect class="box kernel" x="460" y="40" width="190" height="76" rx="8"/>
+      <text x="555" y="64" text-anchor="middle" class="b mono">PspInsertThread</text>
+      <text x="555" y="84" text-anchor="middle" class="sm">TID 할당 · 리스트 연결</text>
+      <text x="555" y="101" text-anchor="middle" class="sm">스레드 생성 콜백</text></g>
+    <g data-hl="4"><rect class="box user" x="680" y="40" width="190" height="76" rx="8"/>
+      <text x="775" y="64" text-anchor="middle" class="b">첫 실행</text>
+      <text x="775" y="84" text-anchor="middle" class="sm">LdrInitializeThunk</text>
+      <text x="775" y="101" text-anchor="middle" class="sm">DLL_THREAD_ATTACH</text></g>
+    <g data-hl="5"><rect class="box acc" x="680" y="220" width="190" height="76" rx="8"/>
+      <text x="775" y="244" text-anchor="middle" class="b">실행 ↔ 대기</text>
+      <text x="775" y="264" text-anchor="middle" class="sm">Ready · Running · Waiting</text>
+      <text x="775" y="281" text-anchor="middle" class="sm">(05장 스케줄링)</text></g>
+    <g data-hl="6"><rect class="box user" x="460" y="220" width="190" height="76" rx="8"/>
+      <text x="555" y="244" text-anchor="middle" class="b">종료 시작</text>
+      <text x="555" y="264" text-anchor="middle" class="sm">함수 반환 · ExitThread</text>
+      <text x="555" y="281" text-anchor="middle" class="sm">→ NtTerminateThread</text></g>
+    <g data-hl="7"><rect class="box kernel" x="240" y="220" width="190" height="76" rx="8"/>
+      <text x="335" y="244" text-anchor="middle" class="b mono">PspExitThread</text>
+      <text x="335" y="264" text-anchor="middle" class="sm">종료 콜백 · IRP 취소</text>
+      <text x="335" y="281" text-anchor="middle" class="sm">마지막이면 프로세스 종료</text></g>
+    <g data-hl="8"><rect class="box kernel" x="20" y="220" width="190" height="76" rx="8"/>
+      <text x="115" y="244" text-anchor="middle" class="b">객체 삭제</text>
+      <text x="115" y="264" text-anchor="middle" class="sm">Terminated · 시그널</text>
+      <text x="115" y="281" text-anchor="middle" class="sm">참조 0 → 메모리 해제</text></g>
+    <path class="ln" d="M210 78 H236"/><path class="ln" d="M430 78 H456"/><path class="ln" d="M650 78 H676"/>
+    <path class="ln" d="M775 116 V216"/>
+    <path class="ln" d="M680 258 H654"/><path class="ln" d="M460 258 H434"/><path class="ln" d="M240 258 H214"/>
+    <text x="440" y="168" text-anchor="middle" class="sm" data-only="2-3">이 구간에서 스레드는 아직 일시 정지(생성 직후 상태) — 콜백은 실행 전에 호출됨</text>
+    <text x="440" y="168" text-anchor="middle" class="sm" data-only="7-8">ETHREAD는 핸들·참조가 남아 있는 한 사라지지 않는다 (종료 코드 조회 가능)</text>
+    <g data-at="1:0,0|2:220,0|3:440,0|4:660,0|5:660,180|6:440,180|7:220,180|8:0,180">
+      <circle class="token" cx="115" cy="28" r="9"/>
+    </g>
+  </svg>
+  <ol class="steps">
+    <li><b>생성 요청</b>: <code>CreateThread</code>는 kernelbase에서 스택 크기 등을 정리해 <code>NtCreateThreadEx</code>를 호출합니다. 다른 프로세스에 스레드를 만들려면 대상 프로세스 핸들에 <code>PROCESS_CREATE_THREAD</code> 권한이 필요합니다.</li>
+    <li><b>할당</b>: <code>PspAllocateThread</code>가 ETHREAD 객체, 커널 스택, (유저 스레드라면) 대상 주소 공간의 TEB와 유저 스택을 만들고, <code>KeInitThread</code>가 첫 컨텍스트 스위치 때 실행될 초기 커널 스택 프레임을 준비합니다.</li>
+    <li><b>삽입</b>: <code>PspInsertThread</code>가 CID 테이블에서 TID를 받고, 프로세스의 두 스레드 리스트에 연결하고, <code>PsSetCreateThreadNotifyRoutine</code>으로 등록된 콜백을 호출합니다. 이 시점에 스레드는 아직 한 명령도 실행하지 않았습니다.</li>
+    <li><b>첫 실행</b>: 스케줄러가 스레드를 처음 고르면 커널의 시작 루틴을 거쳐 유저 모드 <code>LdrInitializeThunk</code>로 들어갑니다. 로더는 각 DLL에 <code>DLL_THREAD_ATTACH</code>를 알리고(비활성화하지 않은 경우), 이후 <code>RtlUserThreadStart</code>가 스레드 함수를 호출합니다.</li>
+    <li><b>실행과 대기</b>: 이후 스레드는 Ready, Running, Waiting 상태를 오가며 스케줄링됩니다. 이 부분이 05장의 주제입니다.</li>
+    <li><b>종료 시작</b>: 스레드 함수가 반환하면 <code>RtlUserThreadStart</code>가 종료를 호출합니다(<code>RtlExitUserThread</code> → <code>NtTerminateThread</code>). 다른 스레드가 <code>TerminateThread</code>를 부르면 대상 스레드에 커널 APC를 큐잉해, <b>대상 스레드 자신이</b> 종료 경로를 실행하게 합니다. 이 경우 <code>DLL_THREAD_DETACH</code>도, 스택 정리도 일어나지 않아 락이 잡힌 채 남을 수 있습니다.</li>
+    <li><b>PspExitThread</b>: 스레드 종료 콜백 호출, 걸려 있는 IRP 취소, APC 큐 정리, 가장 토큰 해제 등을 수행합니다. 프로세스의 마지막 스레드라면 프로세스 종료 처리(핸들 테이블 정리, 주소 공간 해제, 프로세스 종료 콜백)도 이어집니다.</li>
+    <li><b>삭제</b>: 상태가 Terminated가 되고 디스패처 헤더가 시그널되어 대기자가 깨어납니다. 그러나 ETHREAD/EPROCESS 객체 자체는 <b>모든 핸들과 참조가 해제될 때</b> 비로소 삭제됩니다. 핸들을 닫지 않는 프로그램이 "종료됐지만 사라지지 않는 프로세스"를 남기는 이유입니다.</li>
+  </ol>
+  <figcaption><b>그림 4-3.</b> 스레드 생명주기. 생성 콜백은 첫 명령 실행 전에, 종료 콜백은 정리 과정 중에 호출됩니다.</figcaption>
+</figure>
+
+<div class="callout warn">
+  <div class="callout-title">TerminateThread는 최후의 수단</div>
+  <p>강제 종료된 스레드는 자신이 잡은 크리티컬 섹션·힙 락·로더 락을 풀지 못할 수 있습니다. 그 결과 같은 프로세스의 다른 스레드가 영원히 멈추는 장애가 흔합니다. 스레드를 멈추려면 이벤트 등으로 <b>협조적 종료</b>를 설계하세요.</p>
+</div>
+
+<h2 id="job">Job 객체</h2>
+<p>
+  Job은 여러 프로세스를 하나의 단위로 묶어 <b>한도(limit)와 정책</b>을 적용하는 커널 객체입니다. 프로세스가 Job에 들어가면 그 자식 프로세스도 기본적으로 같은 Job에 들어갑니다.
+  Windows 8부터 Job은 <b>중첩</b>될 수 있어, 한 프로세스가 여러 Job의 계층에 동시에 속할 수 있습니다(제한은 가장 엄격한 쪽이 적용).
+</p>
+<div class="grid3">
+  <div class="card"><h4>자원 한도</h4><p>프로세스/Job 전체 커밋 메모리, 활성 프로세스 수, CPU 시간, CPU 사용률 상한(CPU rate control), I/O·네트워크 대역폭.</p></div>
+  <div class="card"><h4>보안·UI 제한</h4><p>다른 데스크톱 핸들 사용, 클립보드, 시스템 설정 변경 등 USER 객체 접근 제한. 브라우저 샌드박스의 구성 요소로 쓰입니다.</p></div>
+  <div class="card"><h4>수명 관리</h4><p><code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code>: 마지막 Job 핸들이 닫히면 Job 안의 모든 프로세스 종료. 자식 프로세스 누수 방지의 정석.</p></div>
+</div>
+<pre data-title="C"><code class="lang-c">HANDLE job = CreateJobObjectW(NULL, NULL);
+
+JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = { 0 };
+li.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE      // 핸들 닫히면 전부 종료
+    | JOB_OBJECT_LIMIT_PROCESS_MEMORY         // 프로세스당 커밋 한도
+    | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;        // 동시 프로세스 수
+li.ProcessMemoryLimit = 512ull * 1024 * 1024;
+li.BasicLimitInformation.ActiveProcessLimit = 4;
+SetInformationJobObject(job, JobObjectExtendedLimitInformation, &amp;li, sizeof(li));
+
+// 경쟁 없이 넣으려면: 일시 정지 상태로 만들고 → Job에 넣고 → 재개
+CreateProcessW(app, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &amp;si, &amp;pi);
+AssignProcessToJobObject(job, pi.hProcess);
+ResumeThread(pi.hThread);</code></pre>
+<div class="callout expert">
+  <div class="callout-title">사일로(Silo)와 컨테이너</div>
+  <p>Windows 컨테이너는 Job을 확장한 <b>사일로</b> 위에 구현됩니다. 서버 사일로는 자체 객체 이름 공간 루트, 레지스트리 뷰, 네트워크 구성을 가져 사실상 "가벼운 별도 OS 인스턴스"처럼 동작합니다. 커널 코드에서 <code>PsGetCurrentServerSilo</code> 같은 API가 보이면 이 메커니즘입니다. Job 알림(한도 초과, 프로세스 종료)은 I/O 완료 포트로 받을 수 있습니다(<code>JobObjectAssociateCompletionPortInformation</code>).</p>
+</div>
+
+<h2 id="minimal">최소 프로세스와 Pico 프로세스</h2>
+<div class="grid2">
+  <div class="card kernel"><h4>최소(Minimal) 프로세스</h4>
+    <p>주소 공간에 ntdll·PEB·TEB를 만들지 않는 "빈 껍데기" 프로세스입니다. 유저 모드 코드를 실행하지 않고, 커널이 메모리 컨테이너나 시스템 스레드 묶음으로 씁니다.</p>
+    <p>예: <b>Registry</b>(레지스트리 하이브 매핑), <b>Memory Compression</b>(압축된 페이지 저장소), VBS 환경의 <b>Secure System</b>. 작업 관리자에는 보이지만 모듈 목록이 비어 있습니다.</p></div>
+  <div class="card kernel"><h4>Pico 프로세스</h4>
+    <p>최소 프로세스에 <b>Pico 공급자(provider)</b> 드라이버를 결합한 형태입니다. 이 프로세스의 시스템 콜·예외·종료 등을 NT 대신 공급자가 처리합니다.</p>
+    <p>대표 사례는 <b>WSL 1</b>: <code>lxcore.sys</code>가 공급자로서 리눅스 시스템 콜을 NT 기능으로 번역합니다. 공급자 등록(<code>PsRegisterPicoProvider</code>)은 부팅 초기, Microsoft 서명 드라이버로 제한됩니다. WSL 2는 경량 VM을 쓰므로 Pico 프로세스와 무관합니다.</p></div>
+</div>
+<p>
+  System 프로세스(PID 4)도 유저 모드 부분이 없는 특수 프로세스입니다. 커널 드라이버가 <code>PsCreateSystemThread</code>로 만든 스레드(프로세스 인자 NULL)는 System 프로세스에 속하며, 이 스레드들은 시스템 주소 공간만 사용합니다.
+</p>
+
+<h2 id="protected">보호 프로세스 (PP / PPL)</h2>
+<p>
+  일반적으로 관리자(<code>SeDebugPrivilege</code>)는 어떤 프로세스든 열어 메모리를 읽고 쓸 수 있습니다. <b>보호 프로세스</b>는 이 원칙의 예외입니다.
+  Vista에서 DRM(보호된 미디어 경로)용으로 도입된 <b>PP(Protected Process)</b>를 Windows 8.1이 <b>PPL(Protected Process Light)</b>로 확장해, 안티멀웨어 서비스·LSA(<code>lsass.exe</code>, RunAsPPL 구성 시)·핵심 시스템 프로세스를 보호합니다.
+</p>
+<ul>
+  <li>비보호 프로세스는 보호 프로세스를 <b>제한된 접근 권한</b>(예: <code>PROCESS_QUERY_LIMITED_INFORMATION</code>)으로만 열 수 있습니다. <code>PROCESS_VM_READ</code>/<code>PROCESS_VM_WRITE</code>, 스레드 생성, 디버거 연결이 거부됩니다.</li>
+  <li>보호 프로세스끼리는 <b>Type과 Signer의 우위(dominance)</b>로 판단합니다. PP는 PPL보다 우위이며, Signer 간 우위는 커널 내부 테이블로 결정됩니다.</li>
+  <li>보호 프로세스가 로드하는 DLL도 해당 서명 수준을 만족해야 합니다(<code>SignatureLevel</code>/<code>SectionSignatureLevel</code>). 그래서 일반 DLL 주입이 실패합니다.</li>
+  <li>한계: 보호는 <b>커널이 강제하는 정책</b>입니다. 커널 코드(드라이버)는 이 검사 밖에 있으므로, 취약한 서명 드라이버가 로드되면 보호가 무력화될 수 있습니다. 취약 드라이버 차단 목록과 HVCI가 이를 보완합니다(16장).</li>
+</ul>
+
+<div class="sim" id="protSim">
+  <div class="sim-title">PS_PROTECTION 디코더</div>
+  <div class="sim-controls">
+    <label>Type <select id="pType"><option value="0">0 · None</option><option value="1">1 · ProtectedLight (PPL)</option><option value="2">2 · Protected (PP)</option></select></label>
+    <label>Signer <select id="pSigner"></select></label>
+    <label><input type="checkbox" id="pAudit"> Audit</label>
+  </div>
+  <div class="sim-controls">
+    <span class="muted" style="font-size:.85rem">예시 값:</span>
+    <button class="btn" data-pv="0x72">0x72</button>
+    <button class="btn" data-pv="0x61">0x61</button>
+    <button class="btn" data-pv="0x41">0x41</button>
+    <button class="btn" data-pv="0x31">0x31</button>
+    <button class="btn" data-pv="0x00">0x00</button>
+  </div>
+  <div class="bitrow" id="pBits"></div>
+  <div class="prot-out" id="pOut"></div>
+</div>
+<p class="muted" style="font-size:.88rem">
+  흔히 관찰되는 값: System = <code>0x72</code>(WinSystem, PP), csrss·smss 등 핵심 시스템 프로세스 = <code>0x61</code>(WinTcb, PPL), RunAsPPL이 켜진 lsass = <code>0x41</code>(Lsa, PPL), Microsoft Defender의 MsMpEng = <code>0x31</code>(Antimalware, PPL).
+  구성과 버전에 따라 다를 수 있으니 <code>dt nt!_EPROCESS &lt;addr&gt; Protection</code>으로 확인하세요.
+</p>
+
+<h2 id="callbacks">프로세스·스레드·이미지 콜백</h2>
+<p>
+  커널은 드라이버가 프로세스 활동을 관찰할 수 있도록 <b>문서화된 콜백</b>을 제공합니다. 보안 제품(EDR), 샌드박스, 프로파일러가 모두 이 위에 서 있습니다.
+</p>
+<table>
+  <thead><tr><th>API</th><th>호출 시점</th><th>특징</th></tr></thead>
+  <tbody>
+    <tr><td><code>PsSetCreateProcessNotifyRoutineEx</code></td><td>프로세스 생성(초기 스레드 삽입 시) / 종료</td><td><code>PS_CREATE_NOTIFY_INFO</code>로 이미지 이름·명령줄·부모·생성 스레드 제공. <code>CreationStatus</code>에 실패 코드를 넣어 <b>생성을 거부</b>할 수 있음</td></tr>
+    <tr><td><code>PsSetCreateProcessNotifyRoutineEx2</code></td><td>위와 동일</td><td>Pico 프로세스 등 하위 시스템 종류까지 받을 수 있는 확장판</td></tr>
+    <tr><td><code>PsSetCreateThreadNotifyRoutine(Ex)</code></td><td>스레드 생성 / 종료</td><td>원격 스레드 생성 관찰에 사용(생성 스레드의 프로세스 ≠ 대상 프로세스)</td></tr>
+    <tr><td><code>PsSetLoadImageNotifyRoutine(Ex)</code></td><td>이미지(EXE/DLL/드라이버) 매핑</td><td>이미지 베이스·크기·서명 정보 제공</td></tr>
+    <tr><td><code>ObRegisterCallbacks</code></td><td>프로세스/스레드 핸들 열기·복제</td><td>요청된 접근 권한을 <b>줄일</b> 수 있음 — 자기 보호에 사용(10·16장)</td></tr>
+  </tbody>
+</table>
+<pre data-title="C"><code class="lang-c">VOID OnProcessNotify(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId,
+                     _Inout_opt_ PPS_CREATE_NOTIFY_INFO Info)
+{
+    UNREFERENCED_PARAMETER(Process);
+    if (Info) {                                  // 생성 (PASSIVE_LEVEL, 생성하는 스레드 문맥)
+        DbgPrint("create pid=%p parent=%p creator=%p:%p %wZ\n",
+                 ProcessId, Info-&gt;ParentProcessId,
+                 Info-&gt;CreatingThreadId.UniqueProcess,
+                 Info-&gt;CreatingThreadId.UniqueThread,
+                 Info-&gt;ImageFileName);           // FileOpenNameAvailable이 FALSE면 NULL일 수 있음
+        // 정책상 차단하려면: Info-&gt;CreationStatus = STATUS_ACCESS_DENIED;
+    } else {                                     // 종료 (종료하는 프로세스의 마지막 스레드 문맥)
+        DbgPrint("exit pid=%p\n", ProcessId);
+    }
+}
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(RegistryPath);
+    DriverObject-&gt;DriverUnload = DriverUnload;   // Unload에서 반드시 Remove=TRUE로 해제
+    // /INTEGRITYCHECK 링커 옵션 없이 빌드하면 STATUS_ACCESS_DENIED
+    return PsSetCreateProcessNotifyRoutineEx(OnProcessNotify, FALSE);
+}</code></pre>
+<div class="callout warn">
+  <div class="callout-title">콜백 작성 규칙</div>
+  <p>콜백은 프로세스 생성 경로의 <b>동기적 일부</b>입니다. 여기서 오래 블록하면 시스템 전체의 프로세스 생성이 느려지고, 유저 모드 서비스의 응답을 기다리다 그 서비스가 프로세스를 만들려 하면 교착 상태가 됩니다.
+  등록 슬롯은 시스템 전체에서 한정되어 있으며, 언로드 시 콜백을 해제하지 않으면 해제된 코드로 호출이 들어가 버그체크가 발생합니다.</p>
+</div>
+
+<h2 id="lab">실습: WinDbg로 프로세스와 스레드 해부</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 4-1 · 프로세스 구조체 따라가기</div>
+  <p>가상 머신에서 메모장을 실행한 뒤 로컬 커널 디버깅(또는 KDNET) 세션에서 아래 명령을 차례로 실행합니다. 주소는 환경마다 다르므로 출력에 나온 값을 다음 명령에 넣으세요.</p>
+</div>
+<pre data-title="WinDbg"><code class="lang-windbg">lkd> !process 0 0 notepad.exe
+PROCESS ffffc50a`1b2e3080
+    SessionId: 1  Cid: 1a2c    Peb: 7ff6d0a3c000  ParentCid: 1388
+    DirBase: 1f3a4002  ObjectTable: ffff9b0f`7c1d2a80  HandleCount: 240.
+    Image: notepad.exe
+
+lkd> dt nt!_EPROCESS ffffc50a`1b2e3080 UniqueProcessId ImageFileName Protection Peb
+   +0x... UniqueProcessId : 0x00000000`00001a2c Void
+   +0x... Peb             : 0x00007ff6`d0a3c000 _PEB
+   +0x... ImageFileName   : [15]  "notepad.exe"
+   +0x... Protection      : _PS_PROTECTION
+
+lkd> !process ffffc50a`1b2e3080 2        $$ 2 = 스레드 목록과 대기 상태
+        THREAD ffffc50a`1c4d5080  Cid 1a2c.1a30  Teb: 7ff6d0a3d000 ... WAIT: (WrUserRequest) UserMode Non-Alertable
+
+lkd> !thread ffffc50a`1c4d5080        $$ 우선순위, 대기 이유, 커널 스택, 콜스택
+lkd> dt nt!_KTHREAD ffffc50a`1c4d5080 State Priority BasePriority WaitReason Teb Process
+
+lkd> .process /p /r ffffc50a`1b2e3080  $$ 해당 프로세스 문맥으로 전환해야 유저 주소(PEB)를 읽을 수 있음
+lkd> !peb
+lkd> dx @$cursession.Processes.Where(p => p.Name == "notepad.exe").First().Threads</code></pre>
+<ol>
+  <li><code>dt nt!_EPROCESS</code>(주소 없이)로 전체 레이아웃을 출력하고, <code>Pcb</code>가 <code>+0x000</code>인지 확인하세요.</li>
+  <li><code>!process 0 0</code>으로 smss → csrss/wininit → services → svchost의 ParentCid 체인을 추적해 보세요.</li>
+  <li>notepad 스레드의 <code>!thread</code> 출력에서 <b>Win32 Start Address</b>와 <b>Start Address</b>(<code>RtlUserThreadStart</code>)를 구분해 보세요.</li>
+  <li><code>!process 0 0 lsass.exe</code>로 주소를 얻고 <code>dt nt!_EPROCESS &lt;addr&gt; Protection</code> 값을 위 디코더에 넣어 해석하세요(RunAsPPL 설정에 따라 다름).</li>
+  <li>PID와 TID를 여러 개 적어 보고, 모두 4의 배수이며 서로 겹치지 않는지 확인하세요.</li>
+</ol>
+<div class="callout tip">
+  <div class="callout-title">dx와 데이터 모델</div>
+  <p>최신 WinDbg의 <code>dx</code>는 프로세스·스레드를 LINQ 스타일로 질의할 수 있습니다. 예: <code>dx -g @$cursession.Processes.Select(p =&gt; new { Name = p.Name, Id = p.Id, Threads = p.Threads.Count() })</code>. 오프셋을 몰라도 구조화된 정보를 얻을 수 있어 스크립트화에 유리합니다.</p>
+</div>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q"><code>PEPROCESS</code> 포인터를 <code>PKPROCESS</code>로 캐스팅해 써도 되는 이유는?</p>
+  <ol class="opts">
+    <li>두 구조체가 완전히 같은 정의이기 때문</li>
+    <li data-correct>KPROCESS가 EPROCESS의 첫 번째 멤버(<code>Pcb</code>, +0x000)로 내장되어 있기 때문</li>
+    <li>KPROCESS가 EPROCESS를 포인터로 가리키기 때문</li>
+    <li>캐스팅하면 커널이 자동으로 변환해 주기 때문</li>
+  </ol>
+  <div class="explain">Executive 구조체는 Kernel 구조체를 <b>첫 멤버로 포함</b>합니다. 따라서 주소가 같고, Ke 계층은 KPROCESS 부분만 알면 됩니다. 두 구조체는 정의가 다르며(EPROCESS가 훨씬 큼), 포인터로 연결된 관계도 아닙니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">PID와 TID에 대한 설명으로 옳은 것은?</p>
+  <ol class="opts">
+    <li>PID와 TID는 별도 카운터에서 1씩 증가하며 할당된다</li>
+    <li>한 번 쓰인 PID는 재부팅 전까지 재사용되지 않는다</li>
+    <li data-correct>둘 다 <code>PspCidTable</code> 핸들 테이블에서 할당되므로 동시에 존재하는 PID와 TID는 겹치지 않는다</li>
+    <li>TID는 프로세스 안에서만 유일하다</li>
+  </ol>
+  <div class="explain">PID/TID는 하나의 커널 핸들 테이블의 핸들 값이라 4의 배수이고 시스템 전역에서 유일합니다. 해제되면 곧 재사용되므로 PID만 저장했다가 나중에 다시 여는 패턴은 위험합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">새 프로세스의 초기 스레드가 유저 모드에서 <b>가장 먼저</b> 실행하는 코드는?</p>
+  <ol class="opts">
+    <li>EXE의 <code>main</code></li>
+    <li>EXE의 PE 진입점(<code>AddressOfEntryPoint</code>)</li>
+    <li>kernel32의 <code>BaseThreadInitThunk</code></li>
+    <li data-correct>ntdll의 <code>LdrInitializeThunk</code></li>
+  </ol>
+  <div class="explain">모든 유저 스레드는 <code>LdrInitializeThunk</code>로 시작합니다. 첫 스레드라면 여기서 프로세스 초기화(DLL 로드, DllMain)가 이뤄지고, 그 뒤 <code>RtlUserThreadStart</code> → <code>BaseThreadInitThunk</code> → 진입점 → <code>main</code> 순으로 실행됩니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">보안 도구가 프로세스의 명령줄을 판단 근거로 삼을 때 가장 신뢰할 수 있는 출처는?</p>
+  <ol class="opts">
+    <li>대상 프로세스 PEB의 <code>ProcessParameters.CommandLine</code></li>
+    <li data-correct>프로세스 생성 콜백이 받는 <code>PS_CREATE_NOTIFY_INFO.CommandLine</code></li>
+    <li>대상 TEB의 <code>ClientId</code></li>
+    <li><code>EPROCESS.ImageFileName</code></li>
+  </ol>
+  <div class="explain">PEB는 프로세스 자신이 수정할 수 있는 유저 메모리입니다. 생성 콜백은 프로세스 코드가 실행되기 <b>전에</b> 커널이 전달하는 값이라 신뢰도가 높습니다. <code>ImageFileName</code>은 15바이트로 잘린 이름일 뿐 명령줄이 아닙니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">관리자 권한 + <code>SeDebugPrivilege</code>를 가진 일반 프로세스가 PPL인 MsMpEng.exe에 <code>PROCESS_VM_READ</code>로 <code>OpenProcess</code>를 호출하면?</p>
+  <ol class="opts">
+    <li>SeDebugPrivilege가 있으므로 성공한다</li>
+    <li data-correct>보호 프로세스 검사에 걸려 접근 거부된다 (제한된 권한만 허용)</li>
+    <li>성공하지만 읽기 결과가 0으로 채워진다</li>
+    <li>시스템이 버그체크한다</li>
+  </ol>
+  <div class="explain">보호 수준 검사는 DACL·특권 검사와 별도로 적용되며, 비보호 호출자에게는 <code>PROCESS_QUERY_LIMITED_INFORMATION</code> 같은 제한된 권한만 허용됩니다. 특권으로 우회할 수 없다는 것이 PP/PPL의 핵심입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">모든 스레드가 종료된 프로세스가 작업 관리자 목록에서는 사라졌는데 핸들 누수 진단 도구에는 여전히 보입니다. 가장 그럴듯한 설명은?</p>
+  <ol class="opts">
+    <li>프로세스가 숨어서 실행 중이다</li>
+    <li>PspCidTable이 손상되었다</li>
+    <li data-correct>다른 프로세스가 그 프로세스 핸들을 닫지 않아 EPROCESS 객체가 참조로 유지되고 있다</li>
+    <li>최소 프로세스로 전환되었다</li>
+  </ol>
+  <div class="explain">종료된 프로세스는 실행되지 않지만, 핸들·참조가 남아 있는 동안 객체는 삭제되지 않습니다(종료 코드 조회 등을 위해). <code>CloseHandle</code>을 빠뜨린 프로그램이 이런 "좀비" 프로세스 객체를 쌓아 커널 메모리를 소모합니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>프로세스는 자원 컨테이너, 스레드는 실행 단위다. 스케줄러는 스레드만 본다.</li>
+    <li>EPROCESS/ETHREAD(Executive)는 첫 멤버로 KPROCESS/KTHREAD(Kernel)를 내장한다. 오프셋은 빌드마다 다르므로 문서화된 접근자를 쓴다.</li>
+    <li>PEB/TEB는 유저 모드에 있는 편의용 블록이며, 프로세스가 수정할 수 있으므로 보안 판단 근거로 신뢰하지 않는다.</li>
+    <li>PID/TID는 <code>PspCidTable</code>의 핸들 값이고, 프로세스 목록은 <code>ActiveProcessLinks</code> 리스트다. 같은 사실이 두 자료구조에 기록된다.</li>
+    <li><code>CreateProcessW</code> = kernelbase 준비 → <code>NtCreateUserProcess</code>(이미지 섹션, EPROCESS, 초기 스레드, 콜백) → csrss 통지 → 재개 → <code>LdrInitializeThunk</code> → main.</li>
+    <li>Job은 프로세스 묶음에 한도를 적용하고, 최소/Pico 프로세스는 유저 모드 런타임이 없는 특수 프로세스이며, PP/PPL은 관리자도 넘을 수 없는 접근 제한을 제공한다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+  /* ---------- CID 테이블 · 프로세스 리스트 ---------- */
+  const NSLOT = 32, MAXP = 7;
+  const NAMES = ['notepad.exe', 'calc.exe', 'cmd.exe', 'svchost.exe', 'msedge.exe', 'conhost.exe'];
+  const CRITICAL = { 'System': 'System 프로세스는 종료할 수 없습니다.', 'csrss.exe': 'csrss.exe는 Critical Process — 종료되면 CRITICAL_PROCESS_DIED(0xEF) 버그체크.' };
+  const svg = document.getElementById('cidSvg');
+  const grid = document.getElementById('cidGrid');
+  const logEl = document.getElementById('cidLog');
+  const sel = document.getElementById('cidSel');
+  let slots, procs, used, nameIdx, busy = false;
+
+  function log(html) { logEl.innerHTML += html + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+  function alloc(type, owner) {
+    for (let i = 1; i < NSLOT; i++) if (!slots[i]) { slots[i] = { type, owner }; return i * 4; }
+    return 0;
+  }
+  function create(name, nThreads, quiet) {
+    if (procs.length >= MAXP) { log('<span class="warn">시뮬레이터 표시 한도(프로세스 7개)에 도달했습니다. 먼저 하나를 종료하세요.</span>'); return null; }
+    const pid = alloc('P', null);
+    if (!pid) { log('<span class="bad">CID 테이블이 가득 찼습니다.</span>'); return null; }
+    slots[pid / 4].owner = pid;
+    const p = { pid, name, tids: [] };
+    for (let k = 0; k < nThreads; k++) { const t = alloc('T', pid); if (t) p.tids.push(t); }
+    procs.push(p);
+    if (!quiet) {
+      const reuse = used.has(pid) ? ` <span class="warn">⚠ PID ${pid} 재사용! 이전 프로세스의 PID를 저장해 둔 코드는 이제 ${esc(name)}을(를) 가리킨다</span>` : '';
+      log(`<span class="ok">+ ${esc(name)}</span> PID ${pid}, 초기 TID ${p.tids.join(', ')} → PsActiveProcessHead 꼬리에 삽입${reuse}`);
+    }
+    used.add(pid); p.tids.forEach(t => used.add(t));
+    return p;
+  }
+  function reset() {
+    slots = new Array(NSLOT).fill(null); procs = []; used = new Set(); nameIdx = 0;
+    create('System', 2, true); create('smss.exe', 1, true); create('csrss.exe', 2, true); create('explorer.exe', 3, true);
+    logEl.innerHTML = '<span class="dim">초기 상태: System, smss, csrss, explorer. 프로세스를 만들고 종료하며 PID/TID 할당을 관찰하세요.</span>\n';
+    render();
+  }
+  function render(flash) {
+    const y = 60, w = 86, step = 104, hx = 20;
+    let s = `<g><rect class="box acc" x="${hx}" y="${y}" width="${w}" height="64" rx="8"/>
+      <text x="${hx + w / 2}" y="${y + 28}" text-anchor="middle" class="sm b">PsActive</text>
+      <text x="${hx + w / 2}" y="${y + 44}" text-anchor="middle" class="sm b">ProcessHead</text></g>`;
+    procs.forEach((p, i) => {
+      const x = hx + step * (i + 1);
+      s += `<g class="node" data-pid="${p.pid}"><rect class="box kernel" x="${x}" y="${y}" width="${w}" height="64" rx="8"/>
+        <text x="${x + w / 2}" y="${y + 26}" text-anchor="middle" class="sm b">${esc(p.name.length > 12 ? p.name.slice(0, 11) + '…' : p.name)}</text>
+        <text x="${x + w / 2}" y="${y + 46}" text-anchor="middle" class="mono">PID ${p.pid}</text></g>`;
+      const px = x - step;
+      s += `<path class="ln kernel" d="M${px + w} ${y + 18} H${x - 3}"/>`;
+      s += `<path class="ln dash" d="M${x} ${y + 46} H${px + w + 3}"/>`;
+    });
+    const lx = hx + step * procs.length;
+    if (procs.length) {
+      s += `<path class="ln kernel" d="M${lx + w} ${y + 10} H${lx + w + 8} V30 H${hx + w / 2} V${y - 3}"/>`;
+      s += `<path class="ln dash" d="M${hx + w / 2} ${y + 64} V165 H${lx + w / 2} V${y + 67}"/>`;
+      s += `<text x="${hx + w / 2 + 8}" y="24" class="sm">마지막 Flink → 헤드</text>`;
+      s += `<text x="${hx + w / 2 + 8}" y="182" class="sm">헤드 Blink → 마지막</text>`;
+    }
+    svg.innerHTML = s;
+    let g = '';
+    for (let i = 0; i < NSLOT; i++) {
+      const sl = slots[i];
+      if (i === 0) { g += `<div class="slot"><span class="v">0</span><br>예약</div>`; continue; }
+      if (!sl) { g += `<div class="slot"><span class="v">${i * 4}</span><br>·</div>`; continue; }
+      const owner = procs.find(p => p.pid === sl.owner);
+      const nm = owner ? owner.name.replace('.exe', '') : '?';
+      g += `<div class="slot ${sl.type === 'P' ? 'p' : 't'}${flash === i * 4 ? ' flash' : ''}"><span class="v">${i * 4}</span> ${sl.type}<br>${esc(nm)}</div>`;
+    }
+    grid.innerHTML = g;
+    const cur = sel.value;
+    sel.innerHTML = procs.map(p => `<option value="${p.pid}">${esc(p.name)} (${p.pid})</option>`).join('');
+    if (procs.some(p => String(p.pid) === cur)) sel.value = cur;
+    else if (procs.length) sel.value = procs[procs.length - 1].pid;
+  }
+  function selected() { return procs.find(p => String(p.pid) === sel.value); }
+  function act(a) {
+    if (busy) return;
+    if (a === 'reset') return reset();
+    if (a === 'create') { const p = create(NAMES[nameIdx++ % NAMES.length], 1); render(p && p.pid); return; }
+    const p = selected();
+    if (a === 'thread') {
+      if (!p) return;
+      if (p.name === 'System') { log('<span class="dim">System 프로세스의 스레드는 드라이버의 PsCreateSystemThread로 생깁니다. 여기서는 일반 스레드처럼 추가합니다.</span>'); }
+      const t = alloc('T', p.pid);
+      if (!t) { log('<span class="bad">CID 테이블이 가득 찼습니다.</span>'); return; }
+      p.tids.push(t);
+      log(`+ 스레드 TID ${t} → ${esc(p.name)} (같은 테이블이므로 TID는 어떤 PID와도 겹치지 않음)`);
+      render(t); return;
+    }
+    if (a === 'kill') {
+      if (!p) return;
+      if (CRITICAL[p.name]) { log(`<span class="bad">✗ ${CRITICAL[p.name]}</span>`); return; }
+      p.tids.forEach(t => { slots[t / 4] = null; });
+      slots[p.pid / 4] = null;
+      procs.splice(procs.indexOf(p), 1);
+      log(`<span class="warn">− ${esc(p.name)}</span> 종료: PID ${p.pid}, TID ${p.tids.join(', ')} 슬롯 해제 · ActiveProcessLinks에서 제거(이웃의 Flink/Blink 재연결)`);
+      render(); return;
+    }
+    if (a === 'walk') {
+      busy = true;
+      log('<span class="dim">열거 ①: PsActiveProcessHead.Flink부터 헤드로 돌아올 때까지 따라감</span>');
+      const nodes = Array.from(svg.querySelectorAll('.node rect'));
+      let i = 0;
+      const stepFn = () => {
+        nodes.forEach((r, k) => r.classList.toggle('hl', k === i));
+        if (i < procs.length) { log(`  [${i + 1}] CONTAINING_RECORD(link) → EPROCESS ${esc(procs[i].name)} PID ${procs[i].pid}`); i++; setTimeout(stepFn, 260); }
+        else { nodes.forEach(r => r.classList.remove('hl')); log(`<span class="ok">헤드에 도달 — ${procs.length}개 프로세스</span>`); busy = false; }
+      };
+      stepFn(); return;
+    }
+    if (a === 'scan') {
+      const found = [];
+      for (let i = 1; i < NSLOT; i++) if (slots[i] && slots[i].type === 'P') found.push(i * 4);
+      const listed = procs.map(p => p.pid);
+      const same = found.length === listed.length && found.every(x => listed.includes(x));
+      log(`<span class="dim">열거 ②: CID 테이블에서 프로세스(P) 엔트리만 수집</span>\n  PID: ${found.join(', ')}`);
+      log(same ? `<span class="ok">✓ 교차 검증: 두 자료구조의 결과가 일치 (${found.length}개). 정상 시스템에서는 항상 일치해야 함</span>`
+               : '<span class="bad">✗ 불일치 — 커널 자료구조 손상 또는 조작을 의심해야 함</span>');
+    }
+  }
+  document.querySelectorAll('#cidSim [data-act]').forEach(b => b.addEventListener('click', () => act(b.dataset.act)));
+  reset();
+
+  /* ---------- PS_PROTECTION 디코더 ---------- */
+  const SIGNERS = ['None', 'Authenticode', 'CodeGen', 'Antimalware', 'Lsa', 'Windows', 'WinTcb', 'WinSystem', 'App'];
+  const SIGNER_DESC = {
+    0: '서명자 없음', 1: 'Authenticode 서명', 2: '.NET 네이티브 이미지 생성(CodeGen)', 3: '안티멀웨어 서비스 (ELAM 인증서 기반)',
+    4: 'LSA (lsass, RunAsPPL)', 5: 'Windows 구성요소', 6: 'Windows TCB (핵심 시스템 프로세스)', 7: 'Windows 시스템 (System 프로세스)', 8: 'Store 앱'
+  };
+  const TYPES = ['None (비보호)', 'ProtectedLight (PPL)', 'Protected (PP)'];
+  const pType = document.getElementById('pType'), pSigner = document.getElementById('pSigner'), pAudit = document.getElementById('pAudit');
+  const pBits = document.getElementById('pBits'), pOut = document.getElementById('pOut');
+  pSigner.innerHTML = SIGNERS.map((s, i) => `<option value="${i}">${i} · ${s}</option>`).join('');
+  function protRender() {
+    const t = +pType.value, sg = +pSigner.value, au = pAudit.checked ? 1 : 0;
+    const v = (sg << 4) | (au << 3) | t;
+    const bit = k => (v >> k) & 1;
+    const cells = ks => ks.map(k => `<div class="bit" style="${bit(k) ? 'background:var(--acc-bg);border-color:var(--acc);color:var(--acc);font-weight:700' : ''}">${bit(k)}</div>`).join('');
+    pBits.innerHTML =
+      `<div class="g"><div class="lbl">Signer (7–4)</div><div class="cells">${cells([7, 6, 5, 4])}</div></div>` +
+      `<div class="g"><div class="lbl">Audit (3)</div><div class="cells">${cells([3])}</div></div>` +
+      `<div class="g"><div class="lbl">Type (2–0)</div><div class="cells">${cells([2, 1, 0])}</div></div>`;
+    let kind;
+    if (t === 0) kind = sg ? '<span style="color:var(--warn)">Type이 0이면 Signer와 무관하게 비보호로 취급됩니다.</span>' : '일반(비보호) 프로세스. 접근은 토큰·DACL·특권으로만 결정됩니다.';
+    else if (t === 1) kind = `<b>PPL</b> — 비보호 호출자는 제한된 권한으로만 열 수 있고, 다른 보호 프로세스는 Signer 우위에 따라 접근이 결정됩니다.`;
+    else if (t === 2) kind = `<b>PP</b> — PPL보다 우위. 같은 수준 이상의 PP만 전체 접근이 가능합니다.`;
+    else kind = '<span style="color:var(--bad)">정의되지 않은 Type 값</span>';
+    pOut.innerHTML = `<span class="big">0x${v.toString(16).padStart(2, '0').toUpperCase()}</span>
+      <span>Type = <b>${TYPES[t] || t}</b> · Signer = <b>PsProtectedSigner${SIGNERS[sg] || '?'}</b>${SIGNER_DESC[sg] ? ' (' + SIGNER_DESC[sg] + ')' : ''}${au ? ' · Audit' : ''}</span>
+      <span></span><span>${kind}</span>`;
+  }
+  [pType, pSigner, pAudit].forEach(e => e.addEventListener('change', protRender));
+  document.querySelectorAll('#protSim [data-pv]').forEach(b => b.addEventListener('click', () => {
+    const v = parseInt(b.dataset.pv, 16);
+    pType.value = String(Math.min(v & 7, 2)); pSigner.value = String(Math.min(v >> 4, 8)); pAudit.checked = !!(v & 8);
+    protRender();
+  }));
+  pType.value = '1'; pSigner.value = '6'; protRender();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>주소 바인딩과 연속 할당</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+.bind-tbl td:first-child { white-space: nowrap; font-weight: 700; }
+.bind-cur { background: var(--accent-soft); }
+svg .stg rect { transition: fill .25s, stroke .25s; }
+svg .stg.on rect { fill: var(--accent-soft) !important; stroke: var(--accent) !important; stroke-width: 2.5; }
+svg .bl-path { transition: stroke .25s, opacity .25s; }
+svg .bl-path.on { stroke: var(--accent) !important; stroke-width: 3; }
+svg .bl-path.bad.on { stroke: var(--bad) !important; }
+svg .bl-node { transition: fill .25s; }
+.result { margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 15px; }
+.result.ok { background: var(--ok-soft); border-left: 4px solid var(--ok); }
+.result.bad { background: var(--bad-soft); border-left: 4px solid var(--bad); }
+.result.info { background: var(--surface-2); border-left: 4px solid var(--muted); }
+.mono { font-family: var(--mono); }
+textarea.seq { width: 100%; font-family: var(--mono); font-size: 13px; min-height: 64px; }
+.cmp-tbl td, .cmp-tbl th { text-align: center; font-variant-numeric: tabular-nums; }
+.cmp-tbl td.bad { color: var(--bad); font-weight: 700; }
+.cmp-tbl td.good { color: var(--ok); font-weight: 700; }
+.seg-tbl input { width: 76px; font-family: var(--mono); font-size: 13px; }
+.seg-tbl select { font-size: 13px; }
+.seg-tbl tr.on td { background: var(--accent-soft); }
+.chk { list-style: none; padding: 0; margin: 8px 0 0; font-size: 14.5px; }
+.chk li { padding: 3px 0; }
+.chk li.pass::before { content: "✔ "; color: var(--ok); font-weight: 700; }
+.chk li.fail::before { content: "✘ "; color: var(--bad); font-weight: 700; }
+.chk li.skip { color: var(--muted); }
+.chk li.skip::before { content: "· "; }
+</style>
+</head>
+<body data-chapter="02">
+<main>
+  <header class="chapter-head">
+    <span class="label">개론 · Chapter 02</span>
+    <h1>주소 바인딩과 연속 메모리 할당</h1>
+    <p class="lead">페이징이 나오기 전, 운영체제는 프로세스 하나를 물리 메모리의 연속된 한 덩어리에 넣었다. 이 단순한 방식이 어떤 문제에 부딪혔는지(재배치, 보호, 단편화) 이해하면, 페이징이 왜 그런 모양인지 저절로 납득된다. 그리고 그 문제들은 사라지지 않았다. 커널의 연속 물리 메모리 할당, malloc 힙, GPU 메모리, JVM 힙에서 지금도 같은 모습으로 나타난다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>컴파일·로드·실행 시점 바인딩을 구분하고, ELF 재배치와 PIE가 그중 어디에 해당하는지 설명한다.</li>
+      <li>base/limit(재배치) 레지스터로 보호와 동적 재배치를 동시에 얻는 하드웨어를 설명한다.</li>
+      <li>first/best/worst/next fit을 직접 돌려 보고, 외부 단편화와 50% 규칙을 수치로 확인한다.</li>
+      <li>내부/외부 단편화와 압축의 비용을 설명하고, 현대 시스템(Linux compaction, GC)에서 같은 문제가 어떻게 나타나는지 연결한다.</li>
+      <li>세그멘테이션의 변환 과정을 설명하고, x86 세그멘테이션의 역사와 지금도 남아 있는 FS/GS의 쓰임을 안다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">주소 바인딩: 주소는 언제 정해지나</a></li>
+    <li><a href="#s2">링킹, 로딩, 재배치</a></li>
+    <li><a href="#s3">base/limit 레지스터와 보호</a></li>
+    <li><a href="#s4">동적 재배치와 스와핑</a></li>
+    <li><a href="#s5">가변 분할 할당과 배치 전략</a></li>
+    <li><a href="#s6">내부 단편화 vs 외부 단편화</a></li>
+    <li><a href="#s7">압축(compaction)</a></li>
+    <li><a href="#s8">50% 규칙</a></li>
+    <li><a href="#s9">세그멘테이션과 x86의 유산</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 주소 바인딩: 주소는 언제 정해지나</h2>
+    <p>소스 코드의 변수 <code>count</code>는 이름(심볼)일 뿐이다. 이 이름이 최종적으로 DRAM의 어느 바이트를 가리키게 되는지, 곧 <b>주소 바인딩(address binding)</b>은 여러 단계를 거쳐 정해진다. 핵심 질문은 "<b>실제 물리 위치가 언제 고정되는가</b>"다.</p>
+    <div class="tbl-wrap"><table class="bind-tbl">
+      <tr><th>시점</th><th>방식</th><th>예</th><th>대가</th></tr>
+      <tr><td>컴파일(링크) 시점</td><td>프로그램이 놓일 물리 위치를 미리 알고 절대 주소 코드를 만든다.</td><td>MMU 없는 마이크로컨트롤러 펌웨어(링커 스크립트로 주소 고정), MS-DOS <code>.COM</code>(세그먼트 안 오프셋 0x100에 적재된다고 가정)</td><td>시작 위치가 바뀌면 다시 빌드해야 한다.</td></tr>
+      <tr><td>로드 시점</td><td>컴파일러는 <b>재배치 가능한(relocatable)</b> 코드를 만든다. 로더가 적재 위치를 정하고 주소를 고쳐 쓴다.</td><td>Windows DLL rebasing(선호 주소가 차 있으면 <code>.reloc</code> 정보로 패치), PIE의 <code>R_X86_64_RELATIVE</code> 재배치</td><td>적재 후에는 옮길 수 없다. 패치할 페이지가 많으면 시작이 느리고 공유도 깨진다.</td></tr>
+      <tr><td>실행 시점</td><td>CPU가 내는 주소를 <b>매 접근마다 하드웨어(MMU)</b>가 변환한다.</td><td>base 레지스터, 세그멘테이션, 페이징(현대의 모든 범용 OS)</td><td>변환 하드웨어가 필요하다. 대신 실행 중에도 옮길 수 있다(압축, 스왑, 페이지 이동).</td></tr>
+    </table></div>
+    <p>아래 애니메이션은 C 코드 <code>int count; void inc(void) { count++; }</code>의 <code>count</code>가 x86-64 Linux에서 PIE로 빌드될 때 단계마다 어떻게 표현되는지 따라간다.</p>
+
+    <div class="widget" id="w-bind">
+      <div class="w-title">한 변수의 주소가 정해지는 여정</div>
+      <div class="w-desc">재생하거나 단계를 넘겨 보라. 각 단계에서 <code>count</code>가 어떤 형태의 "주소"로 존재하는지 보여 준다.</div>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 700 120" style="min-width:520px" id="bind-svg">
+        <defs><marker id="a2-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <g class="stg" data-k="0"><rect x="6" y="30" width="112" height="56" rx="8" class="box"/><text x="62" y="54" text-anchor="middle" style="font-weight:700">소스 코드</text><text x="62" y="72" text-anchor="middle" class="muted" style="font-size:11px">심볼 이름</text></g>
+        <g class="stg" data-k="1"><rect x="150" y="30" width="112" height="56" rx="8" class="box"/><text x="206" y="54" text-anchor="middle" style="font-weight:700">컴파일·어셈블</text><text x="206" y="72" text-anchor="middle" class="muted" style="font-size:11px">inc.o + 재배치</text></g>
+        <g class="stg" data-k="2"><rect x="294" y="30" width="112" height="56" rx="8" class="box"/><text x="350" y="54" text-anchor="middle" style="font-weight:700">링커 (ld)</text><text x="350" y="72" text-anchor="middle" class="muted" style="font-size:11px">ELF 실행 파일</text></g>
+        <g class="stg" data-k="3"><rect x="438" y="30" width="112" height="56" rx="8" class="box"/><text x="494" y="54" text-anchor="middle" style="font-weight:700">로더</text><text x="494" y="72" text-anchor="middle" class="muted" style="font-size:11px">커널 + ld.so</text></g>
+        <g class="stg" data-k="4"><rect x="582" y="30" width="112" height="56" rx="8" class="box"/><text x="638" y="54" text-anchor="middle" style="font-weight:700">MMU</text><text x="638" y="72" text-anchor="middle" class="muted" style="font-size:11px">매 접근 변환</text></g>
+        <line x1="118" y1="58" x2="148" y2="58" class="line" marker-end="url(#a2-b)"/>
+        <line x1="262" y1="58" x2="292" y2="58" class="line" marker-end="url(#a2-b)"/>
+        <line x1="406" y1="58" x2="436" y2="58" class="line" marker-end="url(#a2-b)"/>
+        <line x1="550" y1="58" x2="580" y2="58" class="line" marker-end="url(#a2-b)"/>
+        <text x="62" y="108" text-anchor="middle" class="muted" style="font-size:11px">symbolic</text>
+        <text x="206" y="108" text-anchor="middle" class="muted" style="font-size:11px">relocatable</text>
+        <text x="350" y="108" text-anchor="middle" class="muted" style="font-size:11px">링크 시 오프셋 확정</text>
+        <text x="494" y="108" text-anchor="middle" class="muted" style="font-size:11px">로드 시 가상 주소</text>
+        <text x="638" y="108" text-anchor="middle" class="muted" style="font-size:11px">실행 시 물리 주소</text>
+        <text x="350" y="18" text-anchor="middle" style="font-size:12px;font-weight:700" id="bind-head"></text>
+      </svg>
+      </div>
+      <pre id="bind-code" style="margin-top:10px;font-size:12.5px;min-height:7.5em"></pre>
+      <div id="bind-player"></div>
+    </div>
+
+    <div class="callout tip"><span class="title">관찰: PIE의 코드는 로드할 때 고칠 것이 없다</span>
+      <code>count(%rip)</code>처럼 <b>PC 상대 주소</b>를 쓰면 코드와 데이터 사이 거리(0x2EDD)는 링크 시점에 고정된다. 실행 파일 전체가 어디에 놓이든 이 거리는 변하지 않으므로, 로더는 코드 페이지를 건드릴 필요가 없다. 그래서 코드 페이지를 여러 프로세스가 그대로 공유할 수 있다. 반면 데이터 안의 <b>절대 포인터</b>(함수 포인터 테이블 등)는 로드 주소에 따라 값이 달라지므로 ld.so가 <code>R_X86_64_RELATIVE</code> 재배치로 고친다. 이 페이지들은 COW로 프로세스마다 사본이 생긴다. 결국 현대 PIE는 <b>로드 시점 바인딩(일부 데이터)과 실행 시점 바인딩(MMU)</b>을 함께 쓴다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 링킹, 로딩, 재배치</h2>
+    <p>여러 <code>.o</code> 파일과 라이브러리를 하나의 실행 가능한 이미지로 묶는 과정은 두 가지 일로 나뉜다.</p>
+    <ol>
+      <li><b>심볼 해석(symbol resolution)</b>: <code>printf</code>나 <code>count</code> 같은 이름이 어느 파일의 어느 정의를 가리키는지 결정한다. 정의가 없으면 "undefined reference", 둘이면 "multiple definition" 링크 에러가 난다.</li>
+      <li><b>재배치(relocation)</b>: 섹션들을 합쳐 최종 배치를 정한 뒤, 컴파일러가 0으로 비워 둔 자리를 실제 값으로 채운다. 어느 자리를 어떤 공식으로 채울지는 <code>.rela.text</code> 같은 재배치 섹션에 적혀 있다(<code>readelf -r inc.o</code>로 확인).</li>
+    </ol>
+    <div class="tbl-wrap"><table>
+      <tr><th>x86-64 재배치 타입</th><th>채우는 값</th><th>용도</th></tr>
+      <tr><td><code>R_X86_64_64</code></td><td>S + A (64비트 절대 주소)</td><td>데이터 안의 포인터</td></tr>
+      <tr><td><code>R_X86_64_PC32</code></td><td>S + A − P (32비트 PC 상대)</td><td>RIP 상대 데이터 접근</td></tr>
+      <tr><td><code>R_X86_64_PLT32</code></td><td>L + A − P</td><td>함수 호출(<code>call</code>). 외부 함수면 PLT 엔트리 L로 간다</td></tr>
+      <tr><td><code>R_X86_64_GOTPCREL(X)</code></td><td>GOT 엔트리까지의 PC 상대 거리</td><td>다른 모듈에 정의될 수 있는 전역 변수 접근</td></tr>
+      <tr><td><code>R_X86_64_RELATIVE</code></td><td>B + A (로드 베이스 + 오프셋)</td><td>동적 재배치. ld.so가 로드 시 적용</td></tr>
+      <tr><td><code>R_X86_64_JUMP_SLOT</code> / <code>GLOB_DAT</code></td><td>심볼의 최종 주소</td><td>동적 재배치. PLT용 GOT 슬롯 / 데이터용 GOT 슬롯</td></tr>
+    </table></div>
+    <p class="muted" style="font-size:14px">S=심볼 주소, A=addend, P=재배치 대상 위치, L=PLT 엔트리 주소, B=공유 객체 로드 베이스.</p>
+
+    <h3>정적 링킹 vs 동적 링킹</h3>
+    <p><b>정적 링킹</b>은 라이브러리 코드를 실행 파일에 복사해 넣는다. 배포가 단순하고 시작이 빠르지만, 실행 파일마다 libc 사본을 갖게 되어 디스크와 메모리를 낭비한다. 보안 패치도 모든 바이너리를 다시 빌드해야 적용된다. <b>동적 링킹</b>은 실행 시 <code>ld-linux-x86-64.so.2</code>가 공유 라이브러리를 mmap하고 심볼을 연결한다. 공유 라이브러리의 코드 페이지는 물리 메모리에 한 벌만 올라와 모든 프로세스가 공유한다(01·03장).</p>
+    <p>공유가 가능하려면 라이브러리 코드가 어느 주소에 매핑되든 <b>코드 자체를 고치지 않아야</b> 한다. 이것이 <b>PIC(Position-Independent Code)</b>다. 다른 모듈의 심볼은 <b>GOT(Global Offset Table)</b>라는 데이터 테이블을 거쳐 간접 접근하고, 외부 함수 호출은 <b>PLT(Procedure Linkage Table)</b> 스텁을 거친다. 고쳐야 할 것은 데이터 페이지인 GOT뿐이다.</p>
+    <details class="deep"><summary>심화: lazy binding, RELRO, 그리고 시작 시간</summary><div>
+      <p>전통적으로 PLT는 <b>lazy binding</b>을 한다. 처음 호출할 때 ld.so의 resolver로 들어가 심볼을 찾고 GOT 슬롯을 갱신한다. 이후 호출은 바로 간다. 시작은 빠르지만 GOT가 실행 내내 쓰기 가능해야 한다는 약점이 있다. 그래서 공격자가 GOT를 덮어쓰면 제어 흐름을 빼앗을 수 있다.</p>
+      <p>최근 배포판은 <code>-z now</code>(BIND_NOW)와 <code>-z relro</code>를 함께 쓰는 <b>Full RELRO</b>를 기본으로 하는 경우가 많다. 시작할 때 모든 심볼을 해석하고, GOT를 <code>mprotect</code>로 읽기 전용으로 바꾼다. 01장 maps에서 본 r--p 줄이 이것이다. 대가는 시작 시간이다. 수천 개 심볼을 가진 거대 C++ 애플리케이션은 동적 재배치·심볼 해석만으로 수백 ms를 쓰기도 한다. <code>LD_DEBUG=statistics ./app</code>으로 재배치에 쓴 시간을 볼 수 있다. prelink, 심볼 가시성 제한(<code>-fvisibility=hidden</code>), <code>DT_RELR</code>(압축된 RELATIVE 재배치) 같은 최적화가 나온 배경이다.</p>
+    </div></details>
+    <div class="callout warn"><span class="title">현업에서: 재배치가 만드는 메모리 비용</span>
+      로드 시점에 고쳐 쓴 페이지는 COW로 프로세스 전용 사본(private dirty)이 된다. 비PIC 코드로 만든 공유 라이브러리(TEXTREL)는 코드 페이지까지 고쳐야 해서 공유 이점이 사라지고 보안상 W^X도 깨진다. 최신 툴체인이 TEXTREL에 경고를 내는 이유다. 자바·파이썬처럼 프로세스를 여러 개 띄우는 서비스에서 "프로세스당 private dirty가 왜 이렇게 크지?"라는 질문의 답이 재배치된 데이터 페이지인 경우가 많다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. base/limit 레지스터와 보호</h2>
+    <p>여러 프로세스를 동시에 메모리에 올리려면(멀티프로그래밍) 두 가지가 필요하다. 한 프로세스가 남의 영역을 건드리지 못하게 하는 <b>보호</b>, 그리고 프로세스를 아무 위치에나 놓을 수 있게 하는 <b>재배치</b>다. 가장 단순한 하드웨어는 레지스터 두 개로 둘 다 해결한다.</p>
+    <ul>
+      <li><b>재배치(relocation/base) 레지스터</b>: 프로세스가 놓인 물리 시작 주소.</li>
+      <li><b>한계(limit) 레지스터</b>: 프로세스 영역의 크기.</li>
+    </ul>
+    <p>CPU가 낸 논리 주소 <i>a</i>에 대해 하드웨어는 매 접근마다 <code>a &lt; limit</code>인지 확인한다. 위반이면 <b>트랩</b>(주소 오류 예외)을 일으켜 OS로 넘어간다. 통과하면 물리 주소 = <code>base + a</code>다. 프로그램은 자기가 0번지부터 시작한다고 믿고, 실제 위치는 base만 바꾸면 옮겨진다. 두 레지스터는 특권 명령으로만 바꿀 수 있고, OS는 문맥 교환 때 다음 프로세스의 값을 로드한다.</p>
+    <p>교과서에 따라 다른 변형도 나온다. CPU가 이미 물리 주소를 만들고(로드 시점 바인딩) 하드웨어는 <code>base ≤ addr &lt; base + limit</code>인지만 검사하는 방식이다. 보호는 되지만 재배치는 하드웨어가 해 주지 않는다. 아래 위젯에서 두 방식을 비교해 보라.</p>
+
+    <div class="widget" id="w-bl">
+      <div class="w-title">base/limit 보호 판정기</div>
+      <div class="w-desc">프로세스를 고르면(문맥 교환) 레지스터 값이 바뀐다. 주소를 입력하고 판정을 눌러라. 값은 16진수다.</div>
+      <div class="controls">
+        <label>방식 <select id="bl-mode"><option value="reloc">재배치 레지스터 (논리 주소 &lt; limit → base 더함)</option><option value="range">base/limit 범위 검사 (base ≤ 주소 &lt; base+limit)</option></select></label>
+      </div>
+      <div class="controls">
+        <label>프로세스 <select id="bl-proc"><option value="0">P1</option><option value="1">P2</option><option value="2">P3</option></select></label>
+        <label>base <input type="text" id="bl-base" size="8" class="mono"></label>
+        <label>limit <input type="text" id="bl-limit" size="8" class="mono"></label>
+      </div>
+      <div class="controls">
+        <label><span id="bl-addr-lbl">논리 주소</span> <input type="text" id="bl-addr" size="10" value="0x1F00" class="mono"></label>
+        <button class="btn primary" id="bl-go">판정</button>
+        <span style="font-size:13px;color:var(--muted)">예:</span>
+        <button class="btn" data-bl="0x0">0</button><button class="btn" data-bl="0x11FFF">limit−1</button><button class="btn" data-bl="0x12000">limit</button><button class="btn" data-bl="0x30500">0x30500</button>
+      </div>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 640 210" style="min-width:480px" id="bl-svg">
+        <defs>
+          <marker id="a2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <rect x="10" y="70" width="80" height="50" rx="8" class="box"/><text x="50" y="100" text-anchor="middle" style="font-weight:700">CPU</text>
+        <rect x="150" y="10" width="110" height="36" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="205" y="33" text-anchor="middle" class="mono" style="font-size:12px" id="bl-svg-lim">limit</text>
+        <polygon points="205,60 255,95 205,130 155,95" class="bl-node" style="fill:var(--surface-2);stroke:var(--border)"/><text x="205" y="99" text-anchor="middle" id="bl-svg-cmp">&lt; ?</text>
+        <rect x="320" y="10" width="110" height="36" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="375" y="33" text-anchor="middle" class="mono" style="font-size:12px" id="bl-svg-base">base</text>
+        <circle cx="375" cy="95" r="22" class="bl-node" style="fill:var(--surface-2);stroke:var(--border)"/><text x="375" y="100" text-anchor="middle" style="font-size:18px;font-weight:700" id="bl-svg-plus">+</text>
+        <rect x="490" y="70" width="140" height="50" rx="8" class="box"/><text x="560" y="92" text-anchor="middle" style="font-weight:700">메모리</text><text x="560" y="110" text-anchor="middle" class="mono" style="font-size:12px" id="bl-svg-pa"></text>
+        <rect x="150" y="160" width="110" height="40" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="205" y="185" text-anchor="middle" style="font-weight:700">트랩 → OS</text>
+        <line x1="205" y1="46" x2="205" y2="58" class="line" marker-end="url(#a2-k)"/>
+        <line x1="375" y1="46" x2="375" y2="71" class="line" marker-end="url(#a2-k)"/>
+        <line x1="90" y1="95" x2="153" y2="95" class="line bl-path" id="bl-p0" marker-end="url(#a2-k)"/>
+        <line x1="255" y1="95" x2="351" y2="95" class="line bl-path" id="bl-p1" marker-end="url(#a2-k)"/>
+        <line x1="397" y1="95" x2="488" y2="95" class="line bl-path" id="bl-p2" marker-end="url(#a2-k)"/>
+        <line x1="205" y1="130" x2="205" y2="158" class="line bl-path bad" id="bl-p3" marker-end="url(#a2-k)"/>
+        <text x="120" y="88" text-anchor="middle" class="mono" style="font-size:11px" id="bl-svg-la">주소</text>
+        <text x="300" y="88" text-anchor="middle" style="font-size:11px" class="muted">예</text>
+        <text x="220" y="150" style="font-size:11px" class="muted">아니오</text>
+        <text x="443" y="88" text-anchor="middle" class="mono" style="font-size:11px">물리</text>
+      </svg>
+      </div>
+      <div class="result info" id="bl-out">판정을 눌러라.</div>
+    </div>
+    <p>이 하드웨어가 주는 것은 생각보다 많다. 비교기 하나와 덧셈기 하나로 <b>보호</b>(limit), <b>동적 재배치</b>(base), <b>문맥 교환 시 공간 전환</b>(레지스터 두 개 로드)이 모두 된다. 반면 프로세스 전체가 <b>연속</b>이어야 한다는 제약이 남는다. 이 제약이 다음 절의 단편화 문제를 낳는다. 또 영역 하나에 권한이 하나뿐이라 코드는 읽기 전용, 데이터는 쓰기 가능처럼 구분할 수도 없다. 이 두 한계를 각각 푸는 것이 페이징(03장)과 세그멘테이션(9절)이다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 동적 재배치와 스와핑</h2>
+    <p>실행 시점 바인딩이 있으면 OS는 프로세스를 실행 도중에 다른 위치로 옮길 수 있다. 내용을 복사하고 base만 바꾸면 끝이다. 같은 원리로 프로세스를 통째로 디스크(<b>백킹 스토어</b>)에 내보냈다가 나중에 <b>다른 위치로</b> 다시 들여올 수도 있다. 이것이 고전적 <b>스와핑(swapping)</b>이다. 실행 중인 프로세스 메모리의 합이 물리 메모리보다 커도 되므로 멀티프로그래밍 정도를 높일 수 있다.</p>
+    <p>문제는 비용이다. 100 MB 프로세스를 50 MB/s HDD로 내보내고 다른 프로세스를 들여오면 왕복 4초가 걸린다. 2 GB/s NVMe라도 0.1초다. 스케줄러의 타임 슬라이스는 수 ms이므로, 프로세스를 통째로 옮기는 스와핑은 문맥 교환 수단으로 쓸 수 없다. 그래서 현대 OS는 <b>페이지 단위</b>로 필요한 부분만 내보내고 들여온다(06·07장). Linux에서 "swap"이라는 말은 이 페이지 단위 스왑을 뜻한다.</p>
+    <div class="callout warn"><span class="title">옮길 수 없는 메모리: I/O와 pinning</span>
+      장치가 DMA로 어떤 프로세스의 버퍼에 쓰는 중이라면 그 메모리는 옮기거나 내보낼 수 없다. 장치는 물리 주소로 쓰기 때문에, 옮기면 다른 프로세스의 메모리를 덮어쓴다. 고전적 해법은 두 가지다. ① 그 프로세스는 스왑하지 않거나, ② 장치는 항상 커널 버퍼에만 쓰게 하고 커널이 복사한다(이중 버퍼링). 이 문제는 지금도 그대로다. RDMA의 메모리 등록, GPU용 pinned host memory, Linux의 <code>pin_user_pages()</code>, <code>mlock()</code>은 모두 "이 물리 페이지는 움직이지 마라"는 약속이다. 고정된 페이지가 많아지면 압축(7절)과 회수(12장)가 막혀 시스템 전체에 문제가 생긴다.</div>
+    <p>모바일 OS는 전통적으로 디스크 스왑을 쓰지 않았다. 플래시 수명과 지연 때문이다. 대신 메모리가 부족하면 백그라운드 앱을 종료하고(Android의 lmkd, iOS의 jetsam), 메모리를 압축해 RAM 안에 보관한다(Android zram, iOS·macOS 메모리 압축). "프로세스 전체를 내보낸다"는 고전 스와핑의 발상은, 앱 하나를 통째로 정리하는 형태로 살아 있는 셈이다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. 가변 분할 할당과 배치 전략</h2>
+    <p>초기 멀티프로그래밍 시스템(IBM OS/360의 MFT)은 메모리를 <b>고정 크기 분할</b>로 미리 나눴다. 분할 하나에 프로세스 하나를 넣으니 단순하지만, 동시에 실행할 수 있는 프로세스 수가 분할 수로 묶이고 분할보다 작은 프로세스는 남는 공간을 낭비한다. 후속 MVT는 <b>가변 분할</b>을 썼다. 요청 크기만큼 잘라 주고, 비어 있는 구간(<b>hole</b>)들을 목록으로 관리한다. 새 요청이 오면 어느 hole을 고를지가 <b>배치 전략</b>이다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>전략</th><th>규칙</th><th>특징</th></tr>
+      <tr><td><b>First fit</b></td><td>낮은 주소부터 훑어 처음 맞는 hole</td><td>빠르다. 앞쪽에 작은 조각이 쌓인다.</td></tr>
+      <tr><td><b>Next fit</b></td><td>지난번 할당이 끝난 위치부터 훑는다(순환)</td><td>앞쪽 조각을 반복해서 훑지 않는다. 대신 큰 hole을 고르게 깎아 먹어 오히려 나빠지기도 한다.</td></tr>
+      <tr><td><b>Best fit</b></td><td>맞는 것 중 가장 작은 hole</td><td>큰 hole을 보존한다. 대신 쓸모없는 아주 작은 찌꺼기를 많이 남긴다. 전체를 훑어야 한다(크기순 정렬 구조가 없으면).</td></tr>
+      <tr><td><b>Worst fit</b></td><td>가장 큰 hole</td><td>남는 조각을 크게 남기려는 발상이다. 실제로는 큰 hole이 빨리 사라져 대체로 가장 나쁘다.</td></tr>
+    </table></div>
+
+    <div class="widget" id="w-alloc">
+      <div class="w-title">가변 분할 할당 시뮬레이터</div>
+      <div class="w-desc">메모리 1024 KB 중 아래 128 KB는 OS가 쓴다. 문법: <code>A=200</code>은 A에 200 KB 할당, <code>-A</code>는 A 해제. 해제된 hole은 이웃 hole과 즉시 합쳐진다(coalescing). 빨간 로그는 실패한 요청이다. "외부 단편화"는 빈 공간 합은 충분한데 연속 구간이 없어 실패한 경우다.</div>
+      <div class="controls">
+        <label>전략 <select id="al-strat"><option value="first">First fit</option><option value="next">Next fit</option><option value="best">Best fit</option><option value="worst">Worst fit</option></select></label>
+        <label>예제 <select id="al-preset">
+          <option value="0">혼합 부하</option>
+          <option value="1">First fit이 지는 경우</option>
+          <option value="2">Best fit이 지는 경우 (Knuth)</option>
+          <option value="3">외부 단편화 극단</option>
+        </select></label>
+      </div>
+      <textarea class="seq" id="al-seq" spellcheck="false"></textarea>
+      <div class="controls">
+        <button class="btn" id="al-step">한 단계</button>
+        <button class="btn primary" id="al-run">전체 실행</button>
+        <button class="btn" id="al-reset">초기화</button>
+        <button class="btn" id="al-cmp">4가지 전략 비교</button>
+        <span class="mono" style="font-size:13px" id="al-pos"></span>
+      </div>
+      <div class="stage"><svg class="diagram" id="al-svg" viewBox="0 0 680 110" style="min-width:520px"></svg></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">사용 중 (프로세스)</div><div class="v" id="al-used">0</div></div>
+        <div class="stat"><div class="k">빈 공간 합</div><div class="v c-ok" id="al-free">0</div></div>
+        <div class="stat"><div class="k">최대 hole</div><div class="v" id="al-large">0</div></div>
+        <div class="stat"><div class="k">hole 개수</div><div class="v" id="al-holes">0</div></div>
+        <div class="stat"><div class="k">외부 단편화 1−최대/합</div><div class="v c-warn" id="al-ext">0%</div></div>
+        <div class="stat"><div class="k">실패 요청</div><div class="v c-bad" id="al-fail">0</div></div>
+      </div>
+      <div class="log" id="al-log"></div>
+      <div class="tbl-wrap" id="al-cmp-out"></div>
+    </div>
+    <p>예제를 하나씩 돌려 보라. <b>"Best fit이 지는 경우"</b>는 Knuth가 제시한 고전 예를 축소한 것이다. 260 KB와 240 KB hole이 있을 때 200, 220, 50 KB를 차례로 요청하면 first fit은 60 KB와 20 KB를 남겨 마지막 50 KB를 넣는다. best fit은 40 KB 두 개를 남겨 실패한다. 어느 전략도 모든 경우에 이기지 않는다. 시뮬레이션 연구에서 first fit과 best fit은 메모리 활용도가 비슷하고 worst fit이 대체로 나쁘다고 알려져 있다. first fit은 더 빠르므로 흔히 기본 선택이 된다.</p>
+    <div class="callout deep"><span class="title">이 문제는 지금 어디에 있나</span>
+      <ul style="margin:4px 0 0">
+        <li><b>malloc</b>: 힙 안에서 가변 크기 블록을 관리하는 것이 정확히 이 문제다. glibc는 크기별 bin(사실상 크기 클래스별 best fit), jemalloc·tcmalloc은 크기 클래스(slab 방식)로 외부 단편화를 내부 단편화로 바꾼다(10장).</li>
+        <li><b>커널의 연속 물리 메모리</b>: 페이징 덕분에 대부분의 할당은 연속일 필요가 없다. 그래도 DMA 버퍼, huge page(2 MB/1 GB)는 물리적으로 연속이어야 한다. Linux buddy allocator는 2의 거듭제곱 블록으로 이를 관리한다(09장). <code>cat /proc/buddyinfo</code>에서 큰 order의 빈 블록이 0이면 물리 메모리가 단편화된 것이다.</li>
+        <li><b>GPU 메모리, 메모리 풀, 아레나</b>: 페이징이 없거나 큰 연속 블록이 필요한 곳에서 같은 전략 선택이 반복된다. "총 여유는 4 GB인데 2 GB 텐서 할당이 실패한다"는 딥러닝 프레임워크의 OOM은 외부 단편화의 교과서적 사례다.</li>
+      </ul></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. 내부 단편화 vs 외부 단편화</h2>
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 230" role="img" aria-label="내부 단편화와 외부 단편화 비교">
+        <text x="160" y="20" text-anchor="middle" style="font-weight:700">내부 단편화 (internal)</text>
+        <text x="510" y="20" text-anchor="middle" style="font-weight:700">외부 단편화 (external)</text>
+        <g>
+          <rect x="30" y="40" width="260" height="40" rx="4" class="box"/>
+          <rect x="30" y="40" width="190" height="40" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="220" y="40" width="70" height="40" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+          <text x="125" y="65" text-anchor="middle" style="font-size:12px">요청 13 KB</text>
+          <text x="255" y="65" text-anchor="middle" style="font-size:11px">3 KB 낭비</text>
+          <text x="160" y="98" text-anchor="middle" class="muted" style="font-size:12px">16 KB 고정 단위(분할·페이지·크기 클래스)</text>
+          <rect x="30" y="120" width="260" height="40" rx="4" class="box"/>
+          <rect x="30" y="120" width="65" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="95" y="120" width="65" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="160" y="120" width="65" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="225" y="120" width="20" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="245" y="120" width="45" height="40" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+          <text x="160" y="178" text-anchor="middle" class="muted" style="font-size:12px">4 KB 페이지 × 4: 13 KB 요청 → 마지막 페이지에서 3 KB 낭비</text>
+          <text x="160" y="205" text-anchor="middle" style="font-size:12px">할당 단위 <b>안쪽</b>에서 버려짐</text>
+        </g>
+        <g>
+          <rect x="370" y="40" width="290" height="40" rx="4" class="box"/>
+          <rect x="370" y="40" width="50" height="40" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+          <text x="395" y="65" text-anchor="middle" style="font-size:11px">OS</text>
+          <rect x="420" y="40" width="50" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="470" y="40" width="30" height="40" style="fill:var(--ok-soft);stroke:var(--ok);stroke-dasharray:3 2"/>
+          <rect x="500" y="40" width="60" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="560" y="40" width="35" height="40" style="fill:var(--ok-soft);stroke:var(--ok);stroke-dasharray:3 2"/>
+          <rect x="595" y="40" width="40" height="40" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <rect x="635" y="40" width="25" height="40" style="fill:var(--ok-soft);stroke:var(--ok);stroke-dasharray:3 2"/>
+          <text x="485" y="65" text-anchor="middle" style="font-size:10px">30</text>
+          <text x="577" y="65" text-anchor="middle" style="font-size:10px">35</text>
+          <text x="647" y="65" text-anchor="middle" style="font-size:10px">25</text>
+          <text x="515" y="98" text-anchor="middle" class="muted" style="font-size:12px">빈 공간 합 90 KB</text>
+          <rect x="430" y="120" width="160" height="40" rx="4" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+          <text x="510" y="145" text-anchor="middle" style="font-size:12px">50 KB 요청 → 실패</text>
+          <text x="515" y="178" text-anchor="middle" class="muted" style="font-size:12px">어느 hole도 50 KB 연속이 아니다</text>
+          <text x="515" y="205" text-anchor="middle" style="font-size:12px">할당 단위 <b>사이</b>에서 버려짐</text>
+        </g>
+      </svg>
+      <figcaption>그림 2-1. 내부 단편화는 고정 단위 할당의 숙명이고, 외부 단편화는 가변 크기·연속 할당의 숙명이다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>내부 단편화</th><th>외부 단편화</th></tr>
+      <tr><td>원인</td><td>요청보다 큰 고정 단위로 반올림</td><td>가변 크기 블록의 할당·해제가 반복되며 생긴 흩어진 hole</td></tr>
+      <tr><td>어디서</td><td>페이징(마지막 페이지), slab 크기 클래스, buddy(2의 거듭제곱 반올림), 구조체 패딩</td><td>연속 할당, 세그멘테이션, malloc 힙, 물리 연속 메모리(huge page, DMA)</td></tr>
+      <tr><td>낭비량</td><td>예측 가능. 평균 단위 크기의 절반 정도(요청당)</td><td>워크로드에 따라 크게 달라지며 예측이 어렵다</td></tr>
+      <tr><td>해결책</td><td>단위를 작게(대신 관리 비용 증가)</td><td>압축, 비연속 할당 허용(페이징), 크기 클래스</td></tr>
+    </table></div>
+    <p>메모리 관리 설계의 상당 부분은 <b>외부 단편화를 내부 단편화로 바꾸는 거래</b>다. 페이징은 모든 할당을 4 KB 단위로 만들어 외부 단편화를 없애고, 대신 프로세스당 평균 반 페이지 정도의 내부 단편화를 받아들인다. 예측할 수 있고 상한이 있는 낭비가 예측할 수 없는 실패보다 낫기 때문이다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 압축(compaction)</h2>
+    <p>외부 단편화의 직접적인 해결책은 할당된 블록들을 한쪽으로 밀어 hole들을 하나로 모으는 <b>압축</b>이다. 단, 프로세스를 옮겨도 프로그램이 계속 동작하려면 <b>실행 시점 바인딩</b>이 필요하다. base 레지스터만 바꾸면 되니까. 로드 시점에 절대 주소를 박아 넣은 프로그램은 옮기는 순간 모든 포인터가 틀어진다.</p>
+
+    <div class="widget" id="w-compact">
+      <div class="w-title">압축 애니메이션</div>
+      <div class="w-desc">각 단계에서 가장 낮은 hole 바로 뒤의 블록을 아래로 민다. 옮긴 바이트 수가 압축 비용이다(복사하는 동안 그 프로세스는 멈춘다).</div>
+      <div class="stage"><svg class="diagram" id="cp-svg" viewBox="0 0 680 110" style="min-width:520px"></svg></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">누적 이동량</div><div class="v c-warn" id="cp-moved">0 KB</div></div>
+        <div class="stat"><div class="k">hole 개수</div><div class="v" id="cp-holes">-</div></div>
+        <div class="stat"><div class="k">최대 hole</div><div class="v c-ok" id="cp-large">-</div></div>
+      </div>
+      <div id="cp-player"></div>
+    </div>
+    <p>이 예에서는 446 KB의 빈 공간을 하나로 모으려고 350 KB를 복사했다. 사실 D(140 KB) 하나만 앞쪽 hole로 옮겨도 꽤 큰 hole을 만들 수 있다. 최소 비용 압축은 그 자체로 어려운 최적화 문제다. 실제 시스템은 "필요한 크기의 hole 하나만 만든다" 같은 부분 압축을 쓴다.</p>
+    <div class="callout"><span class="title">현대의 압축: Linux memory compaction과 GC</span>
+      <p style="margin:4px 0">페이징 시스템에서도 <b>물리적으로 연속된</b> 큰 블록(2 MB huge page 등)이 필요하면 외부 단편화 문제가 돌아온다. Linux는 이동 가능한(movable) 페이지를 옮겨 연속 공간을 만드는 <b>memory compaction</b>을 한다. 페이지 테이블 항목만 고치면 되니 프로세스는 눈치채지 못한다. 페이징이 곧 실행 시점 바인딩이기 때문이다. 백그라운드 스레드 <code>kcompactd</code>가 돌고, 할당 경로에서 직접 압축하면 <code>/proc/vmstat</code>의 <code>compact_stall</code>이 증가한다. 수동으로는 <code>echo 1 &gt; /proc/sys/vm/compact_memory</code>로 실행한다. 반면 커널 객체(slab)처럼 옮길 수 없는 페이지가 곳곳에 박혀 있으면 압축이 실패한다. 그래서 Linux는 페이지를 이동 가능성별(migrate type)로 모아 두려 한다(09장).</p>
+      <p style="margin:4px 0 0">언어 런타임의 <b>compacting GC</b>(JVM G1/ZGC의 evacuation, .NET GC의 compact 단계)도 같은 일을 한다. 살아 있는 객체를 옮기고 모든 참조를 고친다. 런타임이 모든 포인터의 위치를 아는 덕분에 가능하다. C/C++ 힙은 포인터가 어디 있는지 알 수 없어 압축할 수 없다.</p></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 50% 규칙</h2>
+    <p>Knuth는 first fit을 분석해 다음 경험 법칙을 제시했다. 할당과 해제가 반복되어 평형에 이른 시스템에서 할당된 블록이 <i>N</i>개라면 hole은 평균 약 <b>0.5<i>N</i>개</b>다. 이것이 <b>50% 규칙</b>이다.</p>
+    <p>직관은 이렇다. 할당된 블록의 이웃은 대개 다른 블록이거나 hole이다. 블록이 해제되면 이웃 hole과 합쳐져 hole 수가 줄고, 할당이 hole을 정확히 채우는 일은 드물어서 hole 수가 거의 줄지 않는다. 이 흐름이 평형을 이룰 때 블록 둘에 hole 하나 꼴이 된다. hole의 평균 크기가 블록의 평균 크기와 비슷하다고 가정하면, 메모리의 <b>1/3</b>(=0.5<i>N</i> / 1.5<i>N</i>)이 hole로 존재한다. 교과서가 "메모리의 1/3이 쓸모없어질 수 있다"고 하는 근거다.</p>
+
+    <div class="widget" id="w-fifty">
+      <div class="w-title">50% 규칙 실험</div>
+      <div class="w-desc">100,000 KB 메모리에 100~2000 KB 무작위 요청을 20,000번 보낸다. 할당이 실패할 때마다 살아 있는 블록 하나를 무작위로 해제해 "메모리가 늘 가득 찬" 평형 상태를 만든다. 후반 절반 동안의 평균을 잰다.</div>
+      <div class="controls">
+        <label>시드 <input type="number" id="ff-seed" value="42" style="width:90px"></label>
+        <button class="btn primary" id="ff-go">4가지 전략 실행</button>
+        <button class="btn" id="ff-rand">새 시드로 실행</button>
+      </div>
+      <div class="tbl-wrap" id="ff-out"></div>
+    </div>
+    <p>실험해 보면 <b>hole/블록 비율은 전략과 관계없이 0.5 근처</b>로 놀랍도록 안정적이다. 그러나 빈 공간 비율은 1/3보다 훨씬 작고 전략마다 다르다. hole의 평균 크기가 블록보다 작기 때문이다. 큰 hole은 다음 요청에 금방 쪼개져 소비된다. 즉 50% 규칙의 "개수" 부분은 견고하지만 "1/3 낭비"는 크기 분포에 대한 가정이 붙은 상한에 가깝다. 수치를 인용할 때는 이 차이를 구분해야 한다. worst fit의 빈 공간 비율이 가장 높게 나오는 것도 확인해 보라.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. 세그멘테이션과 x86의 유산</h2>
+    <p>base/limit 쌍을 프로세스당 하나가 아니라 <b>논리적 단위마다</b> 하나씩 두면 어떨까. 프로그래머가 보는 프로그램은 원래 코드, 전역 데이터, 힙, 스택처럼 크기와 성격이 다른 덩어리의 모음이다. <b>세그멘테이션</b>은 주소를 <code>&lt;세그먼트 번호, 오프셋&gt;</code>으로 표현하고, 세그먼트마다 base, limit, 권한을 <b>세그먼트 테이블</b>에 둔다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 250" role="img" aria-label="세그먼트 테이블을 통한 주소 변환">
+        <defs><marker id="a2-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="10" y="20" width="70" height="34" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="45" y="42" text-anchor="middle">s</text>
+        <rect x="80" y="20" width="110" height="34" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="135" y="42" text-anchor="middle">offset d</text>
+        <text x="100" y="14" text-anchor="middle" class="muted" style="font-size:12px">논리 주소</text>
+        <rect x="230" y="70" width="210" height="150" class="box"/>
+        <text x="335" y="64" text-anchor="middle" class="muted" style="font-size:12px">세그먼트 테이블 (STBR이 가리킴)</text>
+        <text x="270" y="90" text-anchor="middle" style="font-size:11px" class="muted">limit</text><text x="345" y="90" text-anchor="middle" style="font-size:11px" class="muted">base</text><text x="410" y="90" text-anchor="middle" style="font-size:11px" class="muted">권한</text>
+        <line x1="230" y1="96" x2="440" y2="96" class="line"/>
+        <rect x="232" y="128" width="206" height="26" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="270" y="146" text-anchor="middle" class="mono" style="font-size:12px">limit</text><text x="345" y="146" text-anchor="middle" class="mono" style="font-size:12px">base</text><text x="410" y="146" text-anchor="middle" class="mono" style="font-size:12px">RW-</text>
+        <text x="335" y="118" text-anchor="middle" class="muted" style="font-size:11px">⋮</text>
+        <text x="335" y="178" text-anchor="middle" class="muted" style="font-size:11px">⋮</text>
+        <path d="M45,54 L45,141 L230,141" class="line" marker-end="url(#a2-s)"/>
+        <polygon points="530,30 570,55 530,80 490,55" style="fill:var(--surface-2);stroke:var(--border)"/><text x="530" y="59" text-anchor="middle" style="font-size:12px">d&lt;limit</text>
+        <path d="M190,37 L460,37 L495,48" class="line" marker-end="url(#a2-s)"/>
+        <path d="M300,128 L300,108 L470,108 L505,66" class="line" style="stroke-dasharray:3 3" marker-end="url(#a2-s)"/>
+        <circle cx="610" cy="140" r="20" style="fill:var(--surface-2);stroke:var(--border)"/><text x="610" y="146" text-anchor="middle" style="font-size:18px;font-weight:700">+</text>
+        <path d="M570,55 L610,55 L610,118" class="line" marker-end="url(#a2-s)"/><text x="618" y="90" style="font-size:11px" class="muted">예</text>
+        <path d="M438,141 L588,141" class="line" marker-end="url(#a2-s)"/>
+        <path d="M610,160 L610,200" class="line" marker-end="url(#a2-s)"/>
+        <text x="610" y="220" text-anchor="middle" style="font-weight:700">물리 주소</text>
+        <path d="M530,80 L530,190" class="line" style="stroke:var(--bad)" marker-end="url(#a2-s)"/>
+        <rect x="470" y="192" width="80" height="30" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="510" y="212" text-anchor="middle" style="font-size:12px">트랩</text>
+      </svg>
+      <figcaption>그림 2-2. 세그멘테이션 변환. 세그먼트 번호로 테이블을 찾고, 오프셋을 limit와 비교한 뒤 base를 더한다. 권한도 함께 검사한다.</figcaption>
+    </figure>
+    <p>장점은 분명하다. 세그먼트마다 권한을 달리할 수 있다(코드 R-X, 데이터 RW-). 공유도 세그먼트 단위로 자연스럽다. 그러나 각 세그먼트는 여전히 <b>가변 크기의 연속 블록</b>이므로 외부 단편화가 그대로 남는다. 이 한계 때문에 현대 범용 OS는 보호와 공유를 페이징으로 해결하고 세그멘테이션은 사실상 꺼 두었다.</p>
+
+    <div class="widget" id="w-seg">
+      <div class="w-title">세그먼트 테이블 변환기</div>
+      <div class="w-desc">테이블 값은 편집할 수 있다(16진수). 주소를 넣는 방법은 두 가지다. 세그먼트 번호와 오프셋을 따로 넣거나, 16비트 가상 주소 하나를 넣는다(상위 2비트 = 세그먼트, 하위 14비트 = 오프셋). 접근 종류도 고를 수 있다.</div>
+      <div class="tbl-wrap"><table class="seg-tbl" id="sg-tbl">
+        <tr><th>#</th><th>이름</th><th>base</th><th>limit</th><th>권한</th></tr>
+      </table></div>
+      <div class="controls">
+        <label>입력 <select id="sg-in"><option value="pair">세그먼트 번호 + 오프셋</option><option value="va">16비트 가상 주소</option></select></label>
+        <span id="sg-pair"><label>세그먼트 <input type="number" id="sg-s" value="1" min="0" max="7" style="width:56px"></label> <label>오프셋 <input type="text" id="sg-d" value="0x0A20" size="8" class="mono"></label></span>
+        <span id="sg-va" style="display:none"><label>VA <input type="text" id="sg-v" value="0x4A20" size="8" class="mono"></label></span>
+        <label>접근 <select id="sg-acc"><option value="R">읽기</option><option value="W">쓰기</option><option value="X">실행</option></select></label>
+        <button class="btn primary" id="sg-go">변환</button>
+      </div>
+      <div id="sg-split" class="mono" style="font-size:13px"></div>
+      <ul class="chk" id="sg-chk"></ul>
+      <div class="result info" id="sg-out">변환을 눌러라.</div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+      <div style="font-weight:700;font-size:14px">8086 실모드: 물리 주소 = 세그먼트 × 16 + 오프셋</div>
+      <div class="controls">
+        <label>세그먼트 <input type="text" id="rm-s" value="0x1234" size="7" class="mono"></label>
+        <label>오프셋 <input type="text" id="rm-o" value="0x0010" size="7" class="mono"></label>
+        <button class="btn" id="rm-go">계산</button>
+        <button class="btn" data-rm="0xFFFF:0x0010">FFFF:0010</button>
+        <button class="btn" data-rm="0x1235:0x0000">1235:0000</button>
+      </div>
+      <div class="result info" id="rm-out"></div>
+    </div>
+
+    <h3>x86 세그멘테이션의 역사</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>CPU</th><th>세그멘테이션</th><th>의미</th></tr>
+      <tr><td>8086 (1978)</td><td>실모드. 물리 = 세그먼트×16 + 오프셋 (20비트, 1 MB). CS/DS/SS/ES</td><td>16비트 레지스터로 1 MB를 주소하려는 장치. 보호 없음. 세그먼트끼리 겹치며, 같은 물리 주소를 여러 seg:off로 표현할 수 있다.</td></tr>
+      <tr><td>80286 (1982)</td><td>보호 모드. 세그먼트 레지스터에는 <b>셀렉터</b>가 들어가고, 셀렉터로 GDT/LDT의 <b>디스크립터</b>(base, limit, 권한)를 찾는다</td><td>교과서적 세그멘테이션. 세그먼트 최대 64 KB, 특권 링 도입.</td></tr>
+      <tr><td>80386 (1985)</td><td>32비트 세그먼트 + <b>페이징</b>. FS/GS 추가. 논리 →(세그먼트)→ 선형 →(페이징)→ 물리</td><td>OS들은 모든 세그먼트를 base 0, limit 4 GB로 설정한 <b>flat 모델</b>을 택했다. 세그멘테이션을 사실상 끄고 페이징만 쓴 것이다.</td></tr>
+      <tr><td>x86-64 (2003~)</td><td>long mode에서 CS/DS/ES/SS의 base는 0으로 취급하고 limit 검사도 하지 않는다. <b>FS와 GS의 base만 살아 있다</b></td><td>하드웨어 차원에서 flat 모델이 공식화되었다. FS/GS base는 MSR(<code>IA32_FS_BASE</code>, <code>IA32_GS_BASE</code>)로 설정한다.</td></tr>
+    </table></div>
+    <p>살아남은 FS/GS는 세그멘테이션의 본래 목적이 아니라 <b>"레지스터 하나로 가리키는 스레드별·CPU별 데이터"</b> 용도로 쓰인다.</p>
+    <ul>
+      <li><b>Linux x86-64 유저 공간 TLS</b>: glibc는 스레드마다 FS base를 그 스레드의 TCB(<code>struct pthread</code>)로 설정한다. <code>__thread</code> 변수는 <code>%fs:오프셋</code>으로 접근한다. 스택 보호(<code>-fstack-protector</code>)의 카나리 값은 <code>%fs:0x28</code>에 있다. 그래서 거의 모든 함수 프롤로그에 <code>mov %fs:0x28,%rax</code>가 보인다.</li>
+      <li><b>Linux 커널의 per-CPU 데이터</b>: 커널은 GS base로 현재 CPU의 per-CPU 영역을 가리킨다. 유저↔커널 전환 시 <code>swapgs</code> 명령으로 유저 GS base와 커널 GS base(<code>IA32_KERNEL_GS_BASE</code>)를 맞바꾼다. 이 명령의 투기적 실행 문제가 2019년 SWAPGS 취약점이었다.</li>
+      <li><b>Windows x64</b>: 유저 모드에서 GS가 TEB(Thread Environment Block)를, 커널 모드에서 KPCR을 가리킨다.</li>
+      <li><b>설정 방법</b>: 전통적으로 <code>arch_prctl(ARCH_SET_FS, addr)</code> 시스템 콜을 쓴다. Linux 5.9부터는 CPU가 지원하면 유저 공간에서 <code>wrfsbase</code>/<code>rdfsbase</code>(FSGSBASE 명령)를 직접 쓸 수 있다. 문맥 교환 때 커널이 스레드별 FS/GS base를 저장·복원한다.</li>
+      <li><b>ARM64</b>는 세그먼트 레지스터 없이 전용 시스템 레지스터를 쓴다. 유저 TLS는 <code>TPIDR_EL0</code>, 커널 per-CPU 오프셋은 <code>TPIDR_EL1</code>(또는 EL2)다. 용도가 같으니 설계도 결국 같아진 셈이다.</li>
+    </ul>
+    <div class="callout tip"><span class="title">왜 세그멘테이션은 졌나</span>
+      ① 가변 크기라 외부 단편화가 생긴다. ② 포인터가 <code>(세그먼트, 오프셋)</code> 쌍이 되어 C 같은 언어의 단일 포인터 모델과 맞지 않는다(16비트 시절의 near/far 포인터 지옥). ③ 이식성: 다른 아키텍처(MIPS, ARM, PowerPC)는 페이징만 제공했다. 그래서 이식 가능한 OS는 페이징만 가정하고 설계했다. 보호 단위를 논리적 의미에 맞추겠다는 세그멘테이션의 아이디어는 VMA(영역별 권한)로 살아남았다. 다만 이제는 페이지 묶음으로 구현된다.</div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>주소 바인딩은 컴파일·로드·실행 시점에 일어날 수 있다. 실행 시점 바인딩(MMU)이 있어야 실행 중 이동(압축·스왑)이 가능하다. PIE는 PC 상대 주소로 코드 수정을 피하고 데이터 포인터만 로드 시 재배치한다.</li>
+    <li>링커는 심볼 해석과 재배치를 하고, 동적 링커는 GOT/PLT를 채운다. Full RELRO는 그 뒤 GOT를 읽기 전용으로 만든다.</li>
+    <li>base/limit(재배치) 레지스터는 비교기와 덧셈기만으로 보호와 동적 재배치를 동시에 제공한다. 대신 프로세스 전체가 연속이어야 한다.</li>
+    <li>가변 분할은 외부 단편화를 낳는다. first/best fit이 비슷하고 worst fit이 대체로 나쁘다. 하지만 모든 경우에 이기는 전략은 없다.</li>
+    <li>50% 규칙: 평형 상태의 hole 수는 블록 수의 약 절반이다. "1/3 낭비"는 hole과 블록의 평균 크기가 같다는 가정이 붙은 수치다.</li>
+    <li>압축은 실행 시점 바인딩이 있어야 가능하고 비싸다. Linux memory compaction과 compacting GC가 현대판이다. 고정된(pinned) 페이지가 이를 방해한다.</li>
+    <li>세그멘테이션은 논리 단위별 base/limit/권한을 주지만 외부 단편화가 남는다. x86-64는 flat 모델로 사실상 비활성화했고, FS/GS base만 TLS와 per-CPU 데이터용으로 남았다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">재배치 레지스터 방식에서 relocation = 0x14000, limit = 0x4000이다. 논리 주소 0x4000에 접근하면?</div>
+    <button class="opt">물리 주소 0x18000에 접근한다</button>
+    <button class="opt">물리 주소 0x17FFF에 접근한다</button>
+    <button class="opt">0x4000 &lt; 0x4000이 거짓이므로 트랩이 발생한다</button>
+    <button class="opt">limit는 물리 주소와 비교하므로 0x18000 &lt; 0x14000+0x4000인지 본다</button>
+    <div class="explain">유효한 논리 주소는 0 ~ limit−1(0x3FFF)이다. 0x3FFF는 물리 0x17FFF로 변환되지만 0x4000은 경계를 벗어나 트랩이다. off-by-one을 조심하라. limit는 "크기"이므로 비교는 <code>&lt;</code>다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">hole이 1300 KB와 1200 KB 두 개 있다. 1000, 1100, 250 KB를 차례로 요청할 때 마지막 요청이 실패하는 전략은?</div>
+    <button class="opt">First fit</button>
+    <button class="opt">Best fit</button>
+    <button class="opt">Worst fit</button>
+    <button class="opt">모두 성공한다</button>
+    <div class="explain">Best fit은 1000→1200(200 남음), 1100→1300(200 남음)을 고르고, 250은 200짜리 두 개 중 어디에도 들어가지 못한다. First fit(그리고 이 경우의 worst fit)은 1000→1300(300 남음), 1100→1200(100 남음)으로 300 hole에 250을 넣는다. Knuth의 예로, best fit이 항상 최선은 아님을 보여 준다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">로드 시점 바인딩만 지원하는 시스템에서 압축을 할 수 없는 이유는?</div>
+    <button class="opt">디스크 I/O가 너무 느려서</button>
+    <button class="opt">hole 목록을 정렬할 수 없어서</button>
+    <button class="opt">limit 레지스터가 없어서</button>
+    <button class="opt">프로그램 안에 이미 절대 물리 주소가 박혀 있어, 옮기면 모든 포인터와 주소 참조가 틀어지기 때문에</button>
+    <div class="explain">압축은 실행 중인 프로세스의 위치를 바꾼다. 실행 시점 바인딩이면 base 레지스터(혹은 페이지 테이블)만 고치면 된다. 로드 시점 바인딩이면 메모리 안의 모든 주소 값을 찾아 고쳐야 하는데, 레지스터나 스택에 있는 포인터까지 찾아내는 것은 사실상 불가능하다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">first fit을 쓰는 평형 상태 시스템에서 할당된 블록이 1000개라면, 50% 규칙에 따른 hole 개수와 "1/3 규칙"의 전제는?</div>
+    <button class="opt">약 500개. hole 평균 크기가 블록 평균 크기와 같다고 가정하면 메모리의 1/3이 hole이다</button>
+    <button class="opt">약 500개. 메모리의 정확히 50%가 hole이다</button>
+    <button class="opt">약 1000개. hole과 블록은 항상 번갈아 나타난다</button>
+    <button class="opt">약 333개. 메모리의 1/3이 블록이다</button>
+    <div class="explain">hole ≈ 0.5N이다. 크기가 같다고 보면 전체 1.5N 단위 중 0.5N이 hole이므로 1/3이다. 위 실험처럼 실제 hole은 대개 더 작아서 낭비 비율은 이보다 낮게 나오는 경우가 많다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">x86-64 Linux에서 컴파일한 거의 모든 함수 앞에 <code>mov %fs:0x28, %rax</code>가 보이는 이유는?</div>
+    <button class="opt">FS 세그먼트의 limit를 검사하려고</button>
+    <button class="opt">커널의 per-CPU 데이터를 읽으려고</button>
+    <button class="opt">스레드별 TCB(FS base가 가리킴)에 저장된 스택 보호 카나리를 읽으려고</button>
+    <button class="opt">8086 호환을 위해 세그먼트 주소를 계산하려고</button>
+    <div class="explain">long mode에서 FS는 base만 의미가 있고, glibc는 이를 스레드의 TCB로 설정한다. 오프셋 0x28에는 스택 카나리가 있고, 함수 에필로그에서 이 값과 비교해 스택 버퍼 오버플로를 탐지한다. 커널 per-CPU 데이터는 GS를 쓴다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">8086 실모드에서 <code>1234:0010</code>이 가리키는 물리 주소는?</div>
+    <button class="opt">0x1244</button>
+    <button class="opt">0x12350</button>
+    <button class="opt">0x123410</button>
+    <button class="opt">0x12340010</button>
+    <div class="explain">0x1234 × 16 = 0x12340, 여기에 0x10을 더하면 0x12350이다. <code>1235:0000</code>도 같은 물리 주소다. 세그먼트가 16바이트 간격으로 겹치기 때문이다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">4 KB 페이지를 쓰는 시스템에서 프로세스가 정확히 10,000바이트의 메모리를 필요로 한다. 단편화에 대한 설명으로 맞는 것은?</div>
+    <button class="opt">외부 단편화로 2,288바이트가 낭비된다</button>
+    <button class="opt">페이지는 연속일 필요가 없으므로 단편화가 전혀 없다</button>
+    <button class="opt">내부 단편화로 6,384바이트가 낭비된다</button>
+    <button class="opt">페이지 3개(12,288바이트)가 필요하고, 마지막 페이지에서 2,288바이트의 내부 단편화가 생긴다</button>
+    <div class="explain">⌈10000/4096⌉ = 3페이지 = 12,288바이트이고, 12,288 − 10,000 = 2,288바이트가 마지막 페이지 안에서 버려진다. 고정 단위 안쪽의 낭비이므로 내부 단편화다. 페이징은 외부 단편화를 없애는 대신 이것을 받아들인다.</div>
+  </div>
+</main>
+
+<script>
+// #LOGIC-START  (DOM 비의존 로직: node로 검증)
+function createMemory(total, osSize) {
+  const blocks = [];
+  if (osSize > 0) blocks.push({ start: 0, size: osSize, owner: "OS" });
+  blocks.push({ start: osSize, size: total - osSize, owner: null });
+  return { total, osSize, blocks, rover: osSize };
+}
+function cloneMemory(m) { return { total: m.total, osSize: m.osSize, rover: m.rover, blocks: m.blocks.map(b => ({ ...b })) }; }
+// 전략별 hole 선택. 동률이면 낮은 주소 우선
+function findHole(mem, size, strategy) {
+  const fit = [];
+  mem.blocks.forEach((b, i) => { if (b.owner === null && b.size >= size) fit.push(i); });
+  if (!fit.length) return -1;
+  const B = mem.blocks;
+  if (strategy === "first") return fit[0];
+  if (strategy === "best") return fit.reduce((a, i) => B[i].size < B[a].size ? i : a);
+  if (strategy === "worst") return fit.reduce((a, i) => B[i].size > B[a].size ? i : a);
+  if (strategy === "next") {
+    // rover(지난 할당 끝) 이후에 끝나는 hole부터, 없으면 처음으로 순환
+    const after = fit.find(i => B[i].start + B[i].size > mem.rover);
+    return after !== undefined ? after : fit[0];
+  }
+  throw new Error("unknown strategy " + strategy);
+}
+function memStats(mem) {
+  let free = 0, largest = 0, holes = 0, used = 0, procs = 0;
+  for (const b of mem.blocks) {
+    if (b.owner === null) { free += b.size; holes++; largest = Math.max(largest, b.size); }
+    else if (b.owner !== "OS") { used += b.size; procs++; }
+  }
+  return { free, largest, holes, used, procs, extFrag: free ? 1 - largest / free : 0 };
+}
+function allocate(mem, name, size, strategy) {
+  if (size <= 0) return { ok: false, reason: "size" };
+  if (mem.blocks.some(b => b.owner === name)) return { ok: false, reason: "dup" };
+  const i = findHole(mem, size, strategy);
+  if (i < 0) { const s = memStats(mem); return { ok: false, reason: s.free >= size ? "frag" : "nomem" }; }
+  const h = mem.blocks[i];
+  const blk = { start: h.start, size, owner: name };
+  if (h.size === size) mem.blocks.splice(i, 1, blk);
+  else mem.blocks.splice(i, 1, blk, { start: h.start + size, size: h.size - size, owner: null });
+  mem.rover = blk.start + size;
+  return { ok: true, start: blk.start, holeSize: h.size };
+}
+function release(mem, name) {
+  let i = mem.blocks.findIndex(b => b.owner === name);
+  if (i < 0 || name === "OS") return { ok: false };
+  const B = mem.blocks, b = B[i];
+  const start = b.start, size = b.size;
+  b.owner = null;
+  if (i + 1 < B.length && B[i + 1].owner === null) { b.size += B[i + 1].size; B.splice(i + 1, 1); }
+  if (i > 0 && B[i - 1].owner === null) { B[i - 1].size += b.size; B.splice(i, 1); i--; }
+  return { ok: true, start, size, merged: { ...B[i] } };
+}
+function parseSeq(text) {
+  const ops = [], errors = [];
+  for (const tok of text.split(/[\s,;]+/).filter(Boolean)) {
+    let m;
+    if ((m = tok.match(/^([A-Za-z]\w*)=(\d+)$/))) ops.push({ type: "alloc", name: m[1], size: +m[2] });
+    else if ((m = tok.match(/^-([A-Za-z]\w*)$/))) ops.push({ type: "free", name: m[1] });
+    else errors.push(tok);
+  }
+  return { ops, errors };
+}
+function runSeq(ops, strategy, total, osSize) {
+  const mem = createMemory(total, osSize);
+  const results = [];
+  for (const op of ops) results.push({ op, r: op.type === "alloc" ? allocate(mem, op.name, op.size, strategy) : release(mem, op.name) });
+  return { mem, results, failed: results.filter(x => x.op.type === "alloc" && !x.r.ok).length };
+}
+// 압축: 가장 낮은 hole 뒤의 첫 블록을 hole 시작으로 이동하는 단계를 반복
+function compactionSteps(mem) {
+  let cur = cloneMemory(mem), moved = 0;
+  const steps = [cloneMemory(cur)], movedAt = [0], movedName = [null];
+  for (;;) {
+    const B = cur.blocks;
+    const hi = B.findIndex(b => b.owner === null);
+    if (hi < 0) break;
+    const ai = B.findIndex((b, k) => k > hi && b.owner !== null);
+    if (ai < 0) break;
+    const blk = B[ai], newStart = B[hi].start;
+    moved += blk.size;
+    const holeTotal = B.slice(hi, ai).reduce((s, b) => s + b.size, 0);
+    const nb = B.slice(0, hi).map(b => ({ ...b }));
+    nb.push({ start: newStart, size: blk.size, owner: blk.owner });
+    nb.push({ start: newStart + blk.size, size: holeTotal, owner: null });
+    const rest = B.slice(ai + 1).map(b => ({ ...b }));
+    if (rest.length && rest[0].owner === null) { nb[nb.length - 1].size += rest[0].size; rest.shift(); }
+    cur = { total: cur.total, osSize: cur.osSize, rover: cur.rover, blocks: nb.concat(rest) };
+    steps.push(cloneMemory(cur)); movedAt.push(moved); movedName.push(blk.owner);
+  }
+  return { steps, movedAt, movedName };
+}
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+// 50% 규칙 실험
+function fiftyPercent(strategy, seed, opts) {
+  const o = Object.assign({ total: 100000, minSz: 100, maxSz: 2000, steps: 20000 }, opts || {});
+  const rnd = mulberry32(seed);
+  const mem = createMemory(o.total, 0);
+  let id = 0, sumH = 0, sumN = 0, sumFree = 0, samples = 0, fails = 0;
+  const live = [];
+  for (let t = 0; t < o.steps; t++) {
+    const size = o.minSz + Math.floor(rnd() * (o.maxSz - o.minSz + 1));
+    const name = "p" + (id++);
+    if (allocate(mem, name, size, strategy).ok) live.push(name);
+    else {
+      fails++;
+      const k = Math.floor(rnd() * live.length);
+      release(mem, live[k]); live[k] = live[live.length - 1]; live.pop();
+    }
+    if (t >= o.steps / 2) {
+      const s = memStats(mem);
+      sumH += s.holes; sumN += s.procs; sumFree += s.free / o.total; samples++;
+    }
+  }
+  return { ratio: sumH / sumN, avgHoles: sumH / samples, avgBlocks: sumN / samples, freeFrac: sumFree / samples, fails };
+}
+// 재배치 레지스터 / base-limit 판정
+function checkBaseLimit(mode, base, limit, addr) {
+  if (mode === "reloc") return addr < limit ? { ok: true, pa: base + addr } : { ok: false };
+  return (addr >= base && addr < base + limit) ? { ok: true, pa: addr } : { ok: false, below: addr < base };
+}
+// 세그먼트 변환. table: [{name, base, limit, perm:"RW-"}]
+function segTranslate(table, s, d, acc) {
+  const steps = [];
+  if (s >= table.length) { steps.push({ k: "stlr", ok: false }); return { ok: false, fault: "세그먼트 번호 범위 초과", steps }; }
+  steps.push({ k: "stlr", ok: true });
+  const e = table[s];
+  if (!(d < e.limit)) { steps.push({ k: "limit", ok: false }); return { ok: false, fault: "세그먼트 한계 초과", steps, e }; }
+  steps.push({ k: "limit", ok: true });
+  if (e.perm.indexOf(acc) < 0) { steps.push({ k: "perm", ok: false }); return { ok: false, fault: "권한 위반", steps, e }; }
+  steps.push({ k: "perm", ok: true });
+  return { ok: true, pa: e.base + d, steps, e };
+}
+function splitVA16(v) { return { s: (v >> 14) & 3, d: v & 0x3FFF }; }
+function realMode(seg, off) {
+  const lin = seg * 16 + off;               // 최대 0x10FFEF
+  return { lin, wrapped: lin & 0xFFFFF, over: lin > 0xFFFFF };
+}
+function parseHex(s) {
+  s = String(s).trim().toLowerCase().replace(/_/g, "");
+  if (!/^(0x)?[0-9a-f]+$/.test(s)) return NaN;
+  return parseInt(s.replace(/^0x/, ""), 16);
+}
+// #LOGIC-END
+
+const PRESETS = [
+  "A=200 B=100 C=150 D=80 E=250 -B -D F=60 G=90 -A H=120 I=180 J=100",
+  "A=200 B=50 C=100 D=546 -A -C E=100 F=200",
+  "A=260 B=40 C=240 D=356 -A -C E=200 F=220 G=50",
+  "A=100 B=60 C=100 D=60 E=100 F=60 G=100 H=60 I=256 -B -D -F -H K=120",
+];
+const KB = v => v + " KB";
+const procColor = name => {
+  if (name === "OS") return "violet";
+  const pal = ["accent", "teal", "warn", "ok"];
+  let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return pal[h % pal.length];
+};
+// 메모리 막대 SVG
+function memBarSVG(mem, opts) {
+  opts = opts || {};
+  const W = 660, X0 = 10, Y = 22, H = 46, sc = W / mem.total;
+  let s = "";
+  for (const b of mem.blocks) {
+    const x = X0 + b.start * sc, w = Math.max(0.5, b.size * sc);
+    const hl = opts.hl && b.owner === opts.hl;
+    if (b.owner === null) {
+      s += `<rect x="${x}" y="${Y}" width="${w}" height="${H}" style="fill:var(--surface);stroke:var(--ok);stroke-dasharray:3 2"/>`;
+      if (w > 34) s += `<text x="${x + w / 2}" y="${Y + 28}" text-anchor="middle" style="font-size:10.5px;fill:var(--ok)">${b.size}</text>`;
+    } else {
+      const c = procColor(b.owner);
+      s += `<rect x="${x}" y="${Y}" width="${w}" height="${H}" style="fill:var(--${c}-soft);stroke:var(--${hl ? "text" : c});stroke-width:${hl ? 2.5 : 1}"/>`;
+      if (w > 22) s += `<text x="${x + w / 2}" y="${Y + 22}" text-anchor="middle" style="font-size:12px;font-weight:700">${b.owner}</text>`;
+      if (w > 34) s += `<text x="${x + w / 2}" y="${Y + 37}" text-anchor="middle" class="muted" style="font-size:10px">${b.size}</text>`;
+    }
+  }
+  for (let a = 0; a <= mem.total; a += 256) {
+    const x = X0 + a * sc;
+    s += `<line x1="${x}" y1="${Y + H}" x2="${x}" y2="${Y + H + 6}" class="line"/><text x="${x}" y="${Y + H + 20}" text-anchor="middle" class="muted" style="font-size:10.5px">${a}</text>`;
+  }
+  if (opts.rover != null) {
+    const x = X0 + opts.rover * sc;
+    s += `<polygon points="${x - 6},4 ${x + 6},4 ${x},16" style="fill:var(--accent)"/><text x="${x + 9}" y="14" style="font-size:10.5px;fill:var(--accent)">rover</text>`;
+  }
+  return s;
+}
+
+/* ================= 위젯 1: 바인딩 여정 ================= */
+(function () {
+  const STEPS = [
+    { head: "1. 소스: 아직 주소가 없다", code:
+`int count;              // 심볼 "count"
+void inc(void) { count++; }
+
+→ "count"는 이름일 뿐. 크기(4 B)와 종류(전역, 정의)만 안다.` ,
+      cap: "<b>심볼릭 주소</b>. 변수는 이름으로만 존재한다. 어디 놓일지는 아무도 모른다." },
+    { head: "2. 컴파일: 자리만 비워 두고 '나중에 채워 달라'고 적는다", code:
+`$ gcc -O2 -fPIE -c inc.c && objdump -dr inc.o
+0000000000000000 <inc>:
+   0:  83 05 00 00 00 00 01   addl  $0x1,0x0(%rip)
+            2: R_X86_64_PC32  count-0x5
+   7:  c3                     ret`,
+      cap: "<b>재배치 가능 주소</b>. 변위 4바이트를 0으로 비워 두고 재배치 엔트리를 남긴다. \"오프셋 2에 <code>count − 5 − (그 자리 주소)</code>를 채워라.\" −5인 이유는 RIP가 변위(4 B)와 즉시값(1 B) 뒤, 곧 다음 명령을 가리키기 때문이다." },
+    { head: "3. 링크: 섹션 배치 확정, PC 상대 거리 계산", code:
+`링커가 배치: inc → .text 0x1130,  count → .bss 0x4014
+  P (채울 자리) = 0x1132,  S = 0x4014,  A = -5
+  값 = S + A - P = 0x4014 - 5 - 0x1132 = 0x2EDD
+  1130:  83 05 dd 2e 00 00 01   addl $0x1,0x2edd(%rip)  # 4014 <count>`,
+      cap: "링커가 섹션을 합치고 거리를 확정한다. 다음 명령 주소 0x1137 + 0x2EDD = 0x4014. PIE이므로 이 주소들은 <b>로드 베이스 기준 오프셋</b>이다. 비PIE라면 여기서 0x404014 같은 절대 가상 주소가 확정된다(링크 시점 바인딩)." },
+    { head: "4. 로드: 커널과 ld.so가 베이스를 정한다", code:
+`커널 ELF 로더: PIE를 무작위 베이스에 mmap (ASLR 끈 gdb라면 0x555555554000)
+  count의 가상 주소 = 0x555555554000 + 0x4014 = 0x555555558014
+  inc 코드는 수정 없음 (PC 상대라 거리가 그대로)
+ld.so: 데이터 안의 절대 포인터만 R_X86_64_RELATIVE로 패치 (B + A)`,
+      cap: "<b>로드 시점</b>에 가상 주소가 정해진다. 코드 페이지는 손대지 않아 여러 프로세스가 공유할 수 있다." },
+    { head: "5. 실행: MMU가 매 접근마다 물리 주소로", code:
+`CPU: addl → 가상 주소 0x555555558014
+MMU: VPN 0x555555558 → (페이지 테이블) → PFN 0x1a3f2b  (예)
+     물리 주소 = 0x1a3f2b000 | 0x014 = 0x1a3f2b014
+OS가 이 페이지를 다른 프레임으로 옮기면 PTE만 바뀌고 프로그램은 모른다.`,
+      cap: "<b>실행 시점 바인딩</b>. 물리 위치는 매 접근마다 결정되며 언제든 바뀔 수 있다. 하위 12비트(페이지 오프셋 0x014)는 변환되지 않는다(03장)." },
+  ];
+  const svg = document.getElementById("bind-svg"), code = document.getElementById("bind-code"), head = document.getElementById("bind-head");
+  MM.stepper(document.getElementById("bind-player"), {
+    steps: STEPS.length, interval: 2600,
+    render(i) {
+      svg.querySelectorAll(".stg").forEach(g => g.classList.toggle("on", +g.dataset.k === i));
+      head.textContent = STEPS[i].head;
+      code.textContent = STEPS[i].code;
+      return STEPS[i].cap;
+    }
+  });
+})();
+
+/* ================= 위젯 2: base/limit ================= */
+(function () {
+  const PROCS = [{ base: 0x30000, limit: 0x12000 }, { base: 0x50000, limit: 0x8000 }, { base: 0x14000, limit: 0x0C000 }];
+  const $ = id => document.getElementById(id);
+  const hx = v => "0x" + v.toString(16).toUpperCase();
+  function loadProc() { const p = PROCS[+$("bl-proc").value]; $("bl-base").value = hx(p.base); $("bl-limit").value = hx(p.limit); }
+  function run() {
+    const mode = $("bl-mode").value, base = parseHex($("bl-base").value), limit = parseHex($("bl-limit").value), a = parseHex($("bl-addr").value);
+    $("bl-addr-lbl").textContent = mode === "reloc" ? "논리 주소" : "CPU가 낸 주소";
+    $("bl-svg-cmp").textContent = mode === "reloc" ? "a < limit ?" : "범위 안?";
+    $("bl-svg-plus").textContent = mode === "reloc" ? "+" : "=";
+    $("bl-svg-lim").textContent = "limit " + (isNaN(limit) ? "?" : hx(limit));
+    $("bl-svg-base").textContent = "base " + (isNaN(base) ? "?" : hx(base));
+    ["bl-p0", "bl-p1", "bl-p2", "bl-p3"].forEach(id => $(id).classList.remove("on"));
+    const out = $("bl-out");
+    if ([base, limit, a].some(isNaN)) { out.className = "result bad"; out.textContent = "16진수 값을 입력하라."; return; }
+    $("bl-svg-la").textContent = hx(a);
+    const r = checkBaseLimit(mode, base, limit, a);
+    $("bl-p0").classList.add("on");
+    if (r.ok) {
+      $("bl-p1").classList.add("on"); $("bl-p2").classList.add("on");
+      $("bl-svg-pa").textContent = hx(r.pa);
+      out.className = "result ok";
+      out.innerHTML = mode === "reloc"
+        ? `${hx(a)} &lt; ${hx(limit)} 통과 → 물리 주소 = ${hx(base)} + ${hx(a)} = <b class="mono">${hx(r.pa)}</b>`
+        : `${hx(base)} ≤ ${hx(a)} &lt; ${hx(base + limit)} 통과 → 그 주소 그대로 <b class="mono">${hx(r.pa)}</b>에 접근 (하드웨어는 재배치하지 않음)`;
+    } else {
+      $("bl-p3").classList.add("on");
+      $("bl-svg-pa").textContent = "";
+      out.className = "result bad";
+      out.innerHTML = mode === "reloc"
+        ? `${hx(a)} ≥ limit ${hx(limit)} → <b>트랩</b>(주소 오류). OS가 프로세스를 종료하거나 시그널을 보낸다.`
+        : `${hx(a)}는 [${hx(base)}, ${hx(base + limit)}) 밖이다(${r.below ? "base 아래" : "base+limit 이상"}) → <b>트랩</b>.`;
+    }
+  }
+  $("bl-proc").onchange = () => { loadProc(); run(); };
+  $("bl-mode").onchange = run;
+  $("bl-go").onclick = run;
+  $("bl-addr").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+  document.querySelectorAll("[data-bl]").forEach(b => b.onclick = () => {
+    const lim = parseHex($("bl-limit").value), base = parseHex($("bl-base").value), v = b.dataset.bl;
+    let a = parseHex(v);
+    if (b.textContent === "limit−1") a = lim - 1;
+    if (b.textContent === "limit") a = lim;
+    if ($("bl-mode").value === "range" && (b.textContent === "limit−1" || b.textContent === "limit" || v === "0x0")) a += base;
+    $("bl-addr").value = hx(a); run();
+  });
+  loadProc(); run();
+})();
+
+/* ================= 위젯 3: 할당 시뮬레이터 ================= */
+(function () {
+  const TOTAL = 1024, OS = 128;
+  const $ = id => document.getElementById(id);
+  let mem, ops, pos, failed, lastName;
+  const REASON = { frag: "외부 단편화(빈 공간 합은 충분하지만 연속 구간 없음)", nomem: "메모리 부족(빈 공간 합 자체가 모자람)", dup: "이미 존재하는 이름", size: "크기 오류" };
+  function reset() {
+    const p = parseSeq($("al-seq").value);
+    ops = p.ops; pos = 0; failed = 0; lastName = null;
+    mem = createMemory(TOTAL, OS);
+    $("al-log").innerHTML = p.errors.length ? `<span class="c-bad">해석 못한 토큰 무시: ${p.errors.join(" ")}</span>\n` : "";
+    $("al-cmp-out").innerHTML = "";
+    draw();
+  }
+  function draw() {
+    const strat = $("al-strat").value;
+    $("al-svg").innerHTML = memBarSVG(mem, { hl: lastName, rover: strat === "next" ? mem.rover : null });
+    const s = memStats(mem);
+    $("al-used").textContent = KB(s.used); $("al-free").textContent = KB(s.free); $("al-large").textContent = KB(s.largest);
+    $("al-holes").textContent = s.holes; $("al-ext").textContent = (s.extFrag * 100).toFixed(0) + "%"; $("al-fail").textContent = failed;
+    $("al-pos").textContent = `${pos} / ${ops.length}`;
+    $("al-step").disabled = $("al-run").disabled = pos >= ops.length;
+  }
+  function log(html) { $("al-log").innerHTML += html + "\n"; $("al-log").scrollTop = 1e9; }
+  function step() {
+    if (pos >= ops.length) return;
+    const op = ops[pos++], strat = $("al-strat").value;
+    if (op.type === "alloc") {
+      const r = allocate(mem, op.name, op.size, strat);
+      lastName = r.ok ? op.name : null;
+      if (r.ok) log(`${op.name}=${op.size}: ${r.start}~${r.start + op.size} KB에 배치 (${r.holeSize} KB hole 사용, ${r.holeSize - op.size} KB 남음)`);
+      else { failed++; log(`<span class="c-bad">${op.name}=${op.size}: 실패, ${REASON[r.reason]}</span>`); }
+    } else {
+      const r = release(mem, op.name);
+      lastName = null;
+      if (r.ok) log(`-${op.name}: ${r.start}~${r.start + r.size} KB 해제 → 합쳐진 hole ${r.merged.start}~${r.merged.start + r.merged.size} KB (${r.merged.size} KB)`);
+      else log(`<span class="c-warn">-${op.name}: 그런 블록이 없어 무시</span>`);
+    }
+    draw();
+  }
+  function compare() {
+    const names = { first: "First fit", next: "Next fit", best: "Best fit", worst: "Worst fit" };
+    const res = Object.keys(names).map(k => { const r = runSeq(ops, k, TOTAL, OS); return { k, r, s: memStats(r.mem) }; });
+    const minF = Math.min(...res.map(x => x.r.failed));
+    let h = `<table class="cmp-tbl"><tr><th>전략</th><th>실패 요청</th><th>실패한 이름</th><th>최종 hole 수</th><th>최대 hole</th><th>외부 단편화</th></tr>`;
+    for (const { k, r, s } of res) {
+      const fn = r.results.filter(x => x.op.type === "alloc" && !x.r.ok).map(x => x.op.name).join(", ") || "-";
+      h += `<tr><td>${names[k]}</td><td class="${r.failed === minF ? "good" : "bad"}">${r.failed}</td><td>${fn}</td><td>${s.holes}</td><td>${s.largest} KB</td><td>${(s.extFrag * 100).toFixed(0)}%</td></tr>`;
+    }
+    $("al-cmp-out").innerHTML = h + "</table>";
+  }
+  $("al-preset").onchange = () => { $("al-seq").value = PRESETS[+$("al-preset").value]; reset(); };
+  $("al-strat").onchange = reset;
+  $("al-seq").addEventListener("change", reset);
+  $("al-step").onclick = step;
+  $("al-run").onclick = () => { while (pos < ops.length) step(); };
+  $("al-reset").onclick = reset;
+  $("al-cmp").onclick = () => { reset(); compare(); };
+  $("al-seq").value = PRESETS[0];
+  reset();
+})();
+
+/* ================= 위젯 4: 압축 ================= */
+(function () {
+  const init = { total: 1024, osSize: 128, rover: 0, blocks: [
+    { start: 0, size: 128, owner: "OS" }, { start: 128, size: 100, owner: "A" }, { start: 228, size: 80, owner: null },
+    { start: 308, size: 150, owner: "B" }, { start: 458, size: 120, owner: null }, { start: 578, size: 60, owner: "C" },
+    { start: 638, size: 100, owner: null }, { start: 738, size: 140, owner: "D" }, { start: 878, size: 146, owner: null } ] };
+  const { steps, movedAt, movedName } = compactionSteps(init);
+  const svg = document.getElementById("cp-svg");
+  MM.stepper(document.getElementById("cp-player"), {
+    steps: steps.length, interval: 1500,
+    render(i) {
+      svg.innerHTML = memBarSVG(steps[i], { hl: movedName[i] });
+      const s = memStats(steps[i]);
+      document.getElementById("cp-moved").textContent = movedAt[i] + " KB";
+      document.getElementById("cp-holes").textContent = s.holes;
+      document.getElementById("cp-large").textContent = s.largest + " KB";
+      if (i === 0) return `초기 상태: hole ${s.holes}개, 합 ${s.free} KB, 그러나 최대 hole은 ${s.largest} KB뿐이다. 200 KB 요청은 실패한다.`;
+      const b = steps[i].blocks.find(x => x.owner === movedName[i]);
+      return `${movedName[i]}(${b.size} KB)를 ${b.start} KB로 이동 (복사 ${b.size} KB, 누적 ${movedAt[i]} KB)` + (i === steps.length - 1 ? `. <b>완료</b>: 하나의 ${s.largest} KB hole.` : "");
+    }
+  });
+})();
+
+/* ================= 위젯 5: 50% 규칙 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  function go() {
+    const seed = +$("ff-seed").value | 0;
+    const names = { first: "First fit", next: "Next fit", best: "Best fit", worst: "Worst fit" };
+    let h = `<table class="cmp-tbl"><tr><th>전략</th><th>평균 블록 수 N</th><th>평균 hole 수</th><th>hole / N</th><th>빈 공간 비율</th></tr>`;
+    for (const k of Object.keys(names)) {
+      const r = fiftyPercent(k, seed);
+      h += `<tr><td>${names[k]}</td><td>${r.avgBlocks.toFixed(1)}</td><td>${r.avgHoles.toFixed(1)}</td><td class="good">${r.ratio.toFixed(3)}</td><td>${(r.freeFrac * 100).toFixed(1)}%</td></tr>`;
+    }
+    $("ff-out").innerHTML = h + `</table><div style="font-size:13px;color:var(--muted)">시드 ${seed}. 1/3 규칙이 예측하는 빈 공간 비율은 33.3%다.</div>`;
+  }
+  $("ff-go").onclick = go;
+  $("ff-rand").onclick = () => { $("ff-seed").value = Math.floor(Math.random() * 1e6); go(); };
+})();
+
+/* ================= 위젯 6: 세그멘테이션 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  const hx = (v, w) => "0x" + v.toString(16).toUpperCase().padStart(w || 4, "0");
+  const T = [
+    { name: "code", base: 0x8000, limit: 0x0800, perm: "R-X" },
+    { name: "data", base: 0xC000, limit: 0x1000, perm: "RW-" },
+    { name: "heap", base: 0x2000, limit: 0x1800, perm: "RW-" },
+    { name: "stack", base: 0x5000, limit: 0x0800, perm: "RW-" },
+  ];
+  const tbl = $("sg-tbl");
+  T.forEach((e, i) => {
+    const tr = MM.el("tr", { "data-i": i });
+    tr.innerHTML = `<td>${i}</td><td>${e.name}</td><td><input type="text" value="${hx(e.base)}" data-f="base"></td><td><input type="text" value="${hx(e.limit)}" data-f="limit"></td>
+      <td><select data-f="perm">${["R--", "R-X", "RW-", "RWX", "---"].map(p => `<option${p === e.perm ? " selected" : ""}>${p}</option>`).join("")}</select></td>`;
+    tr.querySelectorAll("[data-f]").forEach(inp => inp.onchange = () => {
+      const f = inp.dataset.f;
+      if (f === "perm") e.perm = inp.value;
+      else { const v = parseHex(inp.value); if (!isNaN(v)) e[f] = v; }
+      run();
+    });
+    tbl.append(tr);
+  });
+  $("sg-in").onchange = () => { const va = $("sg-in").value === "va"; $("sg-pair").style.display = va ? "none" : ""; $("sg-va").style.display = va ? "" : "none"; run(); };
+  function run() {
+    let s, d;
+    const out = $("sg-out"), chk = $("sg-chk");
+    tbl.querySelectorAll("tr").forEach(tr => tr.classList.remove("on"));
+    if ($("sg-in").value === "va") {
+      const v = parseHex($("sg-v").value);
+      if (isNaN(v) || v > 0xFFFF) { out.className = "result bad"; out.textContent = "16비트 16진수(0x0000~0xFFFF)를 입력하라."; chk.innerHTML = ""; $("sg-split").textContent = ""; return; }
+      ({ s, d } = splitVA16(v));
+      const b = MM.bin(v, 16);
+      $("sg-split").innerHTML = `VA ${hx(v)} = <span class="c-violet">${b.slice(0, 2)}</span> <span class="c-accent">${b.slice(2)}</span> → 세그먼트 <b class="c-violet">${s}</b>, 오프셋 <b class="c-accent">${hx(d)}</b>`;
+    } else {
+      s = +$("sg-s").value; d = parseHex($("sg-d").value);
+      $("sg-split").textContent = "";
+      if (isNaN(d) || !(s >= 0)) { out.className = "result bad"; out.textContent = "값을 확인하라."; chk.innerHTML = ""; return; }
+    }
+    const acc = $("sg-acc").value;
+    const r = segTranslate(T, s, d, acc);
+    const tr = tbl.querySelector(`tr[data-i="${s}"]`); if (tr) tr.classList.add("on");
+    const labels = {
+      stlr: `세그먼트 번호 ${s} &lt; 테이블 길이(STLR) ${T.length}`,
+      limit: r.e ? `오프셋 ${hx(d)} &lt; limit ${hx(r.e.limit)}` : "오프셋 &lt; limit",
+      perm: r.e ? `접근 '${acc}' ∈ 권한 ${r.e.perm}` : "권한 검사",
+    };
+    const done = {}; r.steps.forEach(x => done[x.k] = x.ok);
+    chk.innerHTML = ["stlr", "limit", "perm"].map(k => `<li class="${k in done ? (done[k] ? "pass" : "fail") : "skip"}">${labels[k]}</li>`).join("");
+    if (r.ok) { out.className = "result ok"; out.innerHTML = `물리 주소 = base ${hx(r.e.base)} + 오프셋 ${hx(d)} = <b class="mono">${hx(r.pa)}</b> (${r.e.name} 세그먼트)`; }
+    else { out.className = "result bad"; out.innerHTML = `<b>트랩: ${r.fault}</b>. 고전 Unix라면 SIGSEGV("segmentation fault"라는 이름이 여기서 왔다).`; }
+  }
+  $("sg-go").onclick = run;
+  ["sg-s", "sg-d", "sg-v"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") run(); }));
+  $("sg-acc").onchange = run;
+  run();
+
+  function rm() {
+    const s = parseHex($("rm-s").value), o = parseHex($("rm-o").value), out = $("rm-out");
+    if (isNaN(s) || isNaN(o) || s > 0xFFFF || o > 0xFFFF) { out.className = "result bad"; out.textContent = "세그먼트·오프셋은 16비트(0x0000~0xFFFF) 16진수다."; return; }
+    const r = realMode(s, o);
+    out.className = "result " + (r.over ? "info" : "ok");
+    out.innerHTML = `${hx(s)} × 16 + ${hx(o)} = <b class="mono">${hx(r.lin, 5)}</b>` + (r.over
+      ? `<br>1 MB(0xFFFFF)를 넘는다. <b>8086</b>에는 주소선이 20개뿐이라 <b class="mono">${hx(r.wrapped, 5)}</b>로 감긴다(wrap-around). 286 이후 CPU에서 A20 주소선을 켜면 0x100000~0x10FFEF(약 64 KB, HMA)에 실제로 접근한다. 옛 프로그램의 감김 의존성을 지키려고 PC에 "A20 게이트"라는 기묘한 장치가 생겼다.`
+      : `<br>같은 물리 주소를 다른 seg:off 조합으로도 만들 수 있다(세그먼트는 16바이트 간격으로 겹친다).`);
+  }
+  $("rm-go").onclick = rm;
+  document.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { const [s, o] = b.dataset.rm.split(":"); $("rm-s").value = s; $("rm-o").value = o; rm(); });
+  rm();
+})();
+</script>
+</body></html>

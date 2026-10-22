@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>이벤트 루프 심층</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .ring .ph { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; transition: fill .25s, stroke .25s; }
+  .ring .ph.on { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+  .ring .ph.tick-on { fill: var(--violet-soft); stroke: var(--violet); stroke-width: 2.5; }
+  .ring text { font-size: 12.5px; pointer-events: none; }
+  .ring .lbl { font-weight: 700; }
+  .sim-grid { display: grid; grid-template-columns: 340px 1fr; gap: 14px; align-items: start; }
+  @media (max-width: 760px) { .sim-grid { grid-template-columns: 1fr; } }
+  .sim-code { width: 100%; min-height: 220px; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; resize: vertical; white-space: pre; overflow: auto; }
+  .out { font-family: var(--mono); font-size: 13px; background: var(--code-bg); border-radius: 8px; padding: 10px 12px; min-height: 60px; white-space: pre-wrap; border: 1px solid var(--border); }
+  .out .new { color: var(--ok); font-weight: 700; }
+  .qs { display: grid; gap: 6px; }
+  .qs .queue { min-height: 40px; }
+  .tl-lbl { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .lag-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .lag-row .n { min-width: 72px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .phase-detail { display: grid; grid-template-columns: 1fr; gap: 0; }
+  .ph-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 8px 0; background: var(--surface); }
+  .ph-card h4 { margin: 0 0 4px; font-size: 15px; }
+  .ph-card .k { font-size: 12.5px; color: var(--muted); font-family: var(--mono); }
+</style>
+</head>
+<body data-chapter="02">
+<main>
+  <header class="chapter-head">
+    <span class="label">런타임 내부 · Chapter 02</span>
+    <h1>이벤트 루프 심층 해부</h1>
+    <p class="lead">"싱글 스레드, 논블로킹"이라는 구호 뒤에는 libuv의 <code>uv_run</code>이 도는 여섯 개 페이즈와, Node.js가 그 위에 얹은 두 개의 특별한 큐(nextTick, 마이크로태스크)가 있습니다. 이 장에서는 그 기계를 분해해 콜백 하나가 정확히 언제 실행되는지, 그리고 그 규칙이 운영 중 어떤 장애로 나타나는지를 다룹니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>libuv <code>uv_run</code>의 6개 페이즈와 각 페이즈에서 실제로 실행되는 코드를 설명할 수 있다.</li>
+      <li><code>process.nextTick</code>·마이크로태스크·타이머·immediate·I/O 콜백의 실행 순서를 <em>임의의</em> 코드에 대해 예측할 수 있다.</li>
+      <li>poll 페이즈의 블로킹 타임아웃 계산 규칙을 알고, 왜 <code>setTimeout(0)</code>과 <code>setImmediate</code> 순서가 메인 모듈에서는 비결정적인지 설명할 수 있다.</li>
+      <li>이벤트 루프 지연(lag)을 측정하고, 스타베이션과 블로킹 패턴을 진단·해소할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 이벤트 루프인가: 스레드 모델과의 비교</a></li>
+    <li><a href="#s2">uv_run의 실제 구조: 6개 페이즈</a></li>
+    <li><a href="#s3">페이즈별 상세와 poll 타임아웃 규칙</a></li>
+    <li><a href="#s4">Node가 얹은 두 큐: nextTick과 마이크로태스크</a></li>
+    <li><a href="#s5">시뮬레이터: 코드를 넣고 큐를 관찰하기</a></li>
+    <li><a href="#s6">고전 퍼즐 6선과 해설</a></li>
+    <li><a href="#s7">루프 블로킹과 지연(lag) 측정</a></li>
+    <li><a href="#s8">스타베이션과 안티패턴</a></li>
+    <li><a href="#s9">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 왜 이벤트 루프인가</h2>
+    <p>전통적인 서버(Apache prefork, Java 서블릿 스레드풀)는 <b>연결 하나에 스레드 하나</b>를 배정합니다. 스레드는 I/O가 끝날 때까지 커널 안에서 잠들고, 그동안 스택(기본 수 MB)과 커널 스케줄링 비용을 점유합니다. 연결이 만 개가 되면 스레드도 만 개가 되는 C10K 문제가 여기서 나옵니다.</p>
+    <p>Node.js는 반대 방향을 택했습니다. <b>스레드 하나가 수천 개의 I/O를 커널에 "걸어두고"</b>(epoll/kqueue/IOCP), 완료된 것만 골라 콜백을 실행합니다. 스레드가 잠드는 곳은 단 한 곳, poll 페이즈의 <code>epoll_wait</code>뿐입니다. 그 대신 치러야 하는 대가가 있습니다. <b>콜백 하나가 오래 돌면 다른 모든 연결이 멈춘다</b>는 것입니다. 이 장의 모든 내용은 결국 이 트레이드오프를 정확히 이해하는 일입니다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 250" role="img" aria-label="스레드 모델과 이벤트 루프 비교">
+        <text x="200" y="22" text-anchor="middle" class="lbl" font-weight="700">스레드-per-연결 모델</text>
+        <g>
+          <rect x="30" y="40" width="340" height="190" rx="10" class="box"/>
+          <g>
+            <rect x="50" y="60" width="90" height="34" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="95" y="82" text-anchor="middle">T1: 대기</text>
+            <rect x="50" y="104" width="90" height="34" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="95" y="126" text-anchor="middle">T2: 대기</text>
+            <rect x="50" y="148" width="90" height="34" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="95" y="170" text-anchor="middle">T3: 실행</text>
+            <rect x="50" y="192" width="90" height="28" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="95" y="211" text-anchor="middle">T4: 대기</text>
+          </g>
+          <text x="260" y="80" text-anchor="middle" class="muted" font-size="12">스레드 N개 = 스택 N개</text>
+          <text x="260" y="100" text-anchor="middle" class="muted" font-size="12">대기 중에도 메모리·스케줄 비용</text>
+          <text x="260" y="140" text-anchor="middle" class="muted" font-size="12">블로킹 호출이 자연스러움</text>
+          <text x="260" y="160" text-anchor="middle" class="muted" font-size="12">CPU 작업도 병렬</text>
+          <text x="260" y="200" text-anchor="middle" font-size="12" style="fill:var(--bad)">컨텍스트 스위치 · 락 경합</text>
+        </g>
+        <text x="650" y="22" text-anchor="middle" font-weight="700">이벤트 루프 모델 (Node.js)</text>
+        <g>
+          <rect x="470" y="40" width="380" height="190" rx="10" class="box"/>
+          <circle cx="560" cy="135" r="55" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:2"/>
+          <text x="560" y="130" text-anchor="middle" font-weight="700">1 스레드</text>
+          <text x="560" y="148" text-anchor="middle" font-size="11" class="muted">uv_run</text>
+          <g>
+            <rect x="660" y="60" width="170" height="26" rx="5" style="fill:var(--surface);stroke:var(--border)"/><text x="745" y="78" text-anchor="middle" font-size="12">소켓 ×10,000 → epoll</text>
+            <rect x="660" y="96" width="170" height="26" rx="5" style="fill:var(--surface);stroke:var(--border)"/><text x="745" y="114" text-anchor="middle" font-size="12">완료된 것만 콜백 실행</text>
+            <rect x="660" y="132" width="170" height="26" rx="5" style="fill:var(--surface);stroke:var(--border)"/><text x="745" y="150" text-anchor="middle" font-size="12">스택 1개, 락 없음</text>
+            <rect x="660" y="180" width="170" height="30" rx="5" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="745" y="199" text-anchor="middle" font-size="12">긴 콜백 = 전체 정지</text>
+          </g>
+          <path d="M615 110 L660 73" class="line flow" marker-end="url(#arrow)"/>
+          <path d="M615 135 L660 109" class="line flow"/>
+          <path d="M615 160 L660 145" class="line flow"/>
+        </g>
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+      </svg>
+      <figcaption>스레드 모델은 "기다림"을 스레드에 맡기고, 이벤트 루프는 "기다림"을 커널(epoll)에 맡깁니다. 그 대가로 CPU 작업은 반드시 짧게 쪼개거나 다른 스레드로 보내야 합니다.</figcaption>
+    </figure>
+
+    <div class="callout tip"><span class="title">한 줄 모델</span>
+      이벤트 루프는 <b>"완료된 일의 콜백을 정해진 순서로 호출하는 무한 while 루프"</b>입니다. 비동기 작업 자체(디스크 읽기, 네트워크 수신)는 루프가 하지 않습니다. 커널이나 스레드풀이 하고, 루프는 <em>완료 통지</em>만 받습니다. (스레드풀은 <a href="03-libuv-threadpool-io.html">3장</a>에서 다룹니다.)
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2>2. uv_run의 실제 구조: 6개 페이즈</h2>
+    <p>Node.js 프로세스가 메인 모듈을 다 실행하고 나면 C++ 레이어(<code>src/api/embed_helpers.cc</code>의 <code>SpinEventLoop</code>)가 <code>uv_run(loop, UV_RUN_DEFAULT)</code>를 호출합니다. libuv의 <code>src/unix/core.c</code>에 있는 이 함수가 바로 "이벤트 루프"입니다. 핵심만 추리면 다음과 같습니다.</p>
+<pre><code>int uv_run(uv_loop_t* loop, uv_run_mode mode) {
+  r = uv__loop_alive(loop);             // 활성 핸들/요청/closing 핸들이 있는가?
+  if (!r) uv__update_time(loop);
+
+  while (r != 0 &amp;&amp; loop-&gt;stop_flag == 0) {
+    uv__update_time(loop);              // 루프 시간 캐시 갱신 (uv_now)
+    uv__run_timers(loop);               // ① timers
+    ran_pending = uv__run_pending(loop);// ② pending callbacks
+    uv__run_idle(loop);                 // ③ idle
+    uv__run_prepare(loop);              //    prepare
+    timeout = 0;
+    if ((mode == UV_RUN_ONCE &amp;&amp; !ran_pending) || mode == UV_RUN_DEFAULT)
+      timeout = uv__backend_timeout(loop);   // 얼마나 블로킹할지 계산
+    uv__io_poll(loop, timeout);         // ④ poll  (epoll_wait / kqueue)
+    uv__run_check(loop);                // ⑤ check (setImmediate)
+    uv__run_closing_handles(loop);      // ⑥ close callbacks
+    r = uv__loop_alive(loop);
+    if (mode == UV_RUN_ONCE || mode == UV_RUN_NOWAIT) break;
+  }
+  return r;
+}</code></pre>
+    <p class="muted" style="font-size:13.5px">※ libuv 1.45+ 기준으로 단순화. 실제 코드는 <code>uv__metrics_*</code> 호출과 "poll 뒤 타이머 재실행" 분기가 추가로 있습니다.</p>
+
+    <div class="widget">
+      <div class="w-title">페이즈 순환 애니메이션</div>
+      <div class="w-desc">재생을 눌러 한 회차(iteration)가 어떻게 도는지 보세요. 보라색은 Node.js가 각 콜백 사이에 끼워 넣는 nextTick/마이크로태스크 드레인입니다.</div>
+      <div class="stage"><svg class="diagram ring" id="ring1" viewBox="0 0 520 360"></svg></div>
+      <div id="ring1-step"></div>
+    </div>
+
+    <div class="callout"><span class="title">"페이즈"와 "큐"를 구분하라</span>
+      페이즈는 libuv가 도는 <em>순서</em>이고, 큐는 각 페이즈가 꺼내 쓰는 <em>자료구조</em>입니다. 타이머는 최소 힙(libuv) + 리스트(Node), immediate는 연결 리스트, I/O는 epoll이 돌려주는 준비 완료 fd 배열입니다. 그리고 <b>nextTick 큐와 마이크로태스크 큐는 libuv의 페이즈가 아닙니다</b>. Node.js가 "JS에서 C++로 돌아오는 모든 지점"에 끼워 넣은 훅입니다. 이 구분이 뒤섞이면 실행 순서 예측이 틀립니다.
+    </div>
+  </section>
+
+  <section id="s3">
+    <h2>3. 페이즈별 상세와 poll 타임아웃 규칙</h2>
+    <div class="phase-detail">
+      <div class="ph-card"><h4>① timers</h4>
+        <div class="k">uv__run_timers → Node lib/internal/timers.js processTimers()</div>
+        <p>libuv는 "타이머 하나"만 가지고 있습니다. Node.js는 같은 <code>delay</code>를 가진 타이머들을 하나의 <b>리스트</b>로 묶고, 리스트들을 만료 시각 기준 <b>우선순위 큐</b>에 넣은 뒤, 가장 가까운 만료 시각 하나만 libuv 타이머에 등록합니다. 그래서 <code>setTimeout</code> 10만 개를 만들어도 libuv 타이머는 몇 개뿐입니다.</p>
+        <ul>
+          <li>지연값은 <b>1ms 미만이면 1ms</b>, <code>2^31-1</code>(약 24.8일)을 넘으면 1ms로 바뀌며 경고(<code>TimeoutOverflowWarning</code>)가 납니다.</li>
+          <li>만료 판정은 페이즈 진입 시 캐시된 <code>now</code>로 합니다. 콜백 안에서 새로 만든 <code>setTimeout(0)</code>은 <code>_idleStart</code>가 갱신된 시각이라 <b>같은 페이즈에서 실행되지 않고 다음 회차</b>로 갑니다.</li>
+          <li>Node 11부터 타이머 콜백 <b>하나하나 사이</b>에 nextTick/마이크로태스크를 드레인합니다(<code>runNextTicks()</code>). Node 10까지는 같은 페이즈의 타이머를 모두 돌린 뒤 드레인했습니다. 브라우저 의미론과 맞추기 위한 변경이며, 아래 퍼즐 5번이 바로 그 차이입니다.</li>
+        </ul>
+      </div>
+      <div class="ph-card"><h4>② pending callbacks</h4>
+        <div class="k">uv__run_pending</div>
+        <p>이전 회차의 poll에서 "지금 바로 콜백을 부르기 곤란한" I/O 완료를 미뤄 둔 것을 실행합니다. 대표 예는 TCP <code>connect()</code>의 <code>ECONNREFUSED</code> 같은 일부 플랫폼의 에러 보고, <code>uv_write</code> 완료 콜백 일부입니다. 애플리케이션 코드가 여기에 직접 무언가를 넣을 방법은 없습니다.</p>
+      </div>
+      <div class="ph-card"><h4>③ idle / prepare</h4>
+        <div class="k">uv__run_idle, uv__run_prepare</div>
+        <p>내부용입니다. Node.js는 <b>idle 핸들</b>을 "immediate가 하나라도 대기 중"이라는 표시로 씁니다. idle 핸들이 활성이면 poll 타임아웃이 0이 되어 루프가 블로킹하지 않고 check로 직행합니다. 이것이 <code>setImmediate</code>가 "poll을 기다리지 않는" 메커니즘입니다.</p>
+      </div>
+      <div class="ph-card"><h4>④ poll</h4>
+        <div class="k">uv__io_poll(loop, timeout) → epoll_wait / kevent / GetQueuedCompletionStatusEx</div>
+        <p>루프가 유일하게 <b>잠드는</b> 곳입니다. 먼저 완료된 I/O의 콜백을 실행하고, 할 일이 없으면 커널에서 다음 이벤트를 기다립니다. 얼마나 기다릴지는 <code>uv__backend_timeout</code>이 정합니다.</p>
+        <div class="tbl-wrap"><table>
+          <tr><th>조건 (위에서부터 먼저 맞는 것)</th><th>타임아웃</th><th>의미</th></tr>
+          <tr><td>stop_flag 설정됨 / 활성 핸들·요청 없음</td><td>0</td><td>곧 루프 종료</td></tr>
+          <tr><td>idle 핸들 활성 (= setImmediate 대기 중)</td><td>0</td><td>블로킹 없이 check로</td></tr>
+          <tr><td>pending 큐 비어있지 않음</td><td>0</td><td>미룬 콜백부터 처리</td></tr>
+          <tr><td>closing 핸들 있음</td><td>0</td><td>close 콜백 처리</td></tr>
+          <tr><td>타이머 있음</td><td>가장 가까운 만료까지 ms</td><td>타이머 시각에 맞춰 깨어남</td></tr>
+          <tr><td>그 외</td><td>-1 (무한)</td><td>I/O가 올 때까지 잠듦</td></tr>
+        </table></div>
+        <p>한 번의 <code>epoll_wait</code>가 돌려주는 이벤트는 최대 1024개(libuv 내부 배열)이고, 처리 시간이 길어지면 libuv는 남은 타임아웃을 다시 계산해 반복합니다. 즉 I/O가 폭주하면 루프는 <b>poll 페이즈에 머무르며 타이머를 굶길 수 있습니다</b>(8절).</p>
+      </div>
+      <div class="ph-card"><h4>⑤ check</h4>
+        <div class="k">uv__run_check → Node lib/internal/timers.js processImmediate()</div>
+        <p><code>setImmediate</code> 콜백을 실행합니다. 페이즈 진입 시점의 리스트를 <b>통째로 떼어내</b> 실행하므로, 실행 중 새로 등록된 immediate는 다음 회차로 갑니다(무한 재귀여도 I/O를 굶기지 않는 이유). 콜백 사이마다 nextTick/마이크로태스크 드레인.</p>
+      </div>
+      <div class="ph-card"><h4>⑥ close callbacks</h4>
+        <div class="k">uv__run_closing_handles</div>
+        <p><code>uv_close()</code>된 핸들의 close 콜백. JS에서는 <code>socket.on('close')</code>, <code>server.on('close')</code> 등이 여기서 발화합니다. <code>socket.destroy()</code>를 호출해도 'close' 이벤트는 <em>동기적으로</em> 오지 않고 이 페이즈에서 온다는 점이 테스트 작성 시 자주 걸리는 부분입니다.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="s4">
+    <h2>4. Node가 얹은 두 큐: nextTick과 마이크로태스크</h2>
+    <p>libuv는 JavaScript를 모릅니다. C++ 콜백이 JS 함수를 호출하고 돌아올 때, Node.js는 <code>InternalCallbackScope</code>라는 RAII 객체의 소멸자에서 <code>tick_callback</code>(JS의 <code>processTicksAndRejections</code>)을 호출합니다. 이 함수가 두 큐를 비웁니다.</p>
+<pre><code>// lib/internal/process/task_queues.js (요지)
+function processTicksAndRejections() {
+  let tock;
+  do {
+    while ((tock = queue.shift()) !== null) {   // ① nextTick 큐를 완전히 비운다
+      // ... 실행 중 추가된 nextTick도 이 while에서 함께 소진된다
+      callback(...args);
+    }
+    runMicrotasks();                             // ② V8 마이크로태스크 큐를 완전히 비운다
+  } while (!queue.isEmpty() || processPromiseRejections());  // ③ ②에서 nextTick이 생겼으면 반복
+  setHasTickScheduled(false);
+  setHasRejectionToWarn(false);
+}</code></pre>
+    <p>이 코드에서 다섯 가지 규칙이 나옵니다.</p>
+    <ol>
+      <li><b>nextTick이 마이크로태스크보다 먼저</b>다. 같은 드레인에서 nextTick 큐가 먼저 바닥나야 <code>runMicrotasks()</code>가 호출된다.</li>
+      <li><b>nextTick 안에서 등록한 nextTick</b>은 같은 while 안에서 바로 이어 실행된다. 마이크로태스크보다도 먼저.</li>
+      <li><b>마이크로태스크 안에서 등록한 마이크로태스크</b>는 V8이 <code>runMicrotasks()</code> 안에서 다 소진한다(V8의 MicrotaskQueue는 비워질 때까지 돈다).</li>
+      <li><b>마이크로태스크 안에서 등록한 nextTick</b>은 그 마이크로태스크 큐가 다 빌 때까지 기다렸다가, do-while 두 번째 바퀴에서 실행된다.</li>
+      <li>이 드레인은 <b>모든 매크로 콜백(타이머·I/O·immediate) 하나하나 사이</b>에서 일어난다. 메인 모듈이 끝난 직후에도 한 번 일어난다.</li>
+    </ol>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 230" role="img" aria-label="콜백 사이의 드레인 흐름">
+        <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="80" width="130" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="85" y="110" text-anchor="middle">timer 콜백 A</text>
+        <g>
+          <rect x="190" y="30" width="200" height="150" rx="10" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 3"/>
+          <text x="290" y="52" text-anchor="middle" font-weight="700" style="fill:var(--violet)">드레인</text>
+          <rect x="205" y="65" width="170" height="30" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="290" y="85" text-anchor="middle" font-size="12">nextTick 큐 전부</text>
+          <rect x="205" y="105" width="170" height="30" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="290" y="125" text-anchor="middle" font-size="12">마이크로태스크 전부</text>
+          <path d="M375 120 C 400 120, 400 80, 375 80" class="line" marker-end="url(#arr2)"/>
+          <text x="290" y="165" text-anchor="middle" font-size="11" class="muted">nextTick이 또 생기면 반복</text>
+        </g>
+        <rect x="430" y="80" width="130" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="495" y="110" text-anchor="middle">timer 콜백 B</text>
+        <rect x="600" y="30" width="120" height="150" rx="10" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 3"/><text x="660" y="110" text-anchor="middle" font-weight="700" style="fill:var(--violet)">드레인</text>
+        <rect x="750" y="80" width="110" height="50" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="805" y="110" text-anchor="middle">I/O 콜백</text>
+        <path d="M150 105 H190" class="line" marker-end="url(#arr2)"/>
+        <path d="M390 105 H430" class="line" marker-end="url(#arr2)"/>
+        <path d="M560 105 H600" class="line" marker-end="url(#arr2)"/>
+        <path d="M720 105 H750" class="line" marker-end="url(#arr2)"/>
+        <text x="440" y="215" text-anchor="middle" class="muted" font-size="12.5">Node 11+: 매크로 콜백 하나마다 드레인. 페이즈 경계가 아니라 "콜백 경계"가 단위다.</text>
+      </svg>
+      <figcaption>nextTick과 마이크로태스크는 "다음 페이즈 전"이 아니라 "다음 콜백 전"에 실행됩니다.</figcaption>
+    </figure>
+
+    <details class="deep"><summary>왜 nextTick이 따로 존재하는가 (설계 배경)</summary><div>
+      <p><code>process.nextTick</code>은 Promise가 언어에 들어오기 전(2011년)부터 있었습니다. 목적은 "<b>객체를 생성한 뒤, 사용자가 이벤트 핸들러를 붙일 기회를 준 다음, 이벤트를 발화한다</b>"였습니다. 예를 들어 <code>net.createServer().listen()</code>이 동기적으로 'listening'을 emit하면 아직 <code>.on('listening')</code>을 붙이기 전이라 이벤트를 놓칩니다. 그래서 코어 API는 동기적 오류 보고를 <code>process.nextTick(() =&gt; this.emit('error', err))</code>로 미룹니다.</p>
+      <p>Promise가 들어온 후 두 큐를 합칠지 논의가 있었지만(nodejs/node#22323 등), nextTick이 마이크로태스크보다 <em>먼저</em>여야 하는 코어 코드가 많아 그대로 남았습니다. 공식 가이드는 새 코드에서는 <code>queueMicrotask</code>를 권하지만, 코어 내부는 여전히 nextTick을 광범위하게 씁니다. <b>차이가 중요해지는 경우는 거의 "순서에 의존한 버그"뿐</b>이며, 그런 코드는 재설계하는 편이 낫습니다.</p>
+    </div></details>
+  </section>
+
+  <section id="s5">
+    <h2>5. 시뮬레이터: 코드를 넣고 큐를 관찰하기</h2>
+    <p>아래 시뮬레이터는 4절의 드레인 규칙과 2~3절의 페이즈 규칙을 그대로 구현했습니다(출력 순서는 실제 <code>node</code>와 동일하게 검증됨). 지원 API: <code>console.log</code>, <code>setTimeout</code>, <code>setImmediate</code>, <code>process.nextTick</code>, <code>Promise</code>(resolve/reject/then/catch/finally/new), <code>queueMicrotask</code>, <code>fs.readFile</code>. async/await는 지원하지 않습니다(7장에서 await의 틱 수를 따로 다룹니다).</p>
+
+    <div class="widget">
+      <div class="w-title">이벤트 루프 시뮬레이터</div>
+      <div class="w-desc">프리셋을 고르거나 코드를 직접 수정한 뒤 "실행"을 누르세요. 먼저 출력 순서를 예측해 적어 보고 비교하는 것이 핵심입니다.</div>
+      <div class="controls">
+        <label>프리셋 <select id="sim-preset"></select></label>
+        <label title="메인 모듈이 실행되는 데 걸리는 가상 시간. 1ms 이상이면 setTimeout(0)이 setImmediate보다 먼저 만료된다.">메인 모듈 비용 <input type="range" id="sim-main" min="0" max="3" step="0.25" value="0.5"> <span id="sim-main-v">0.5ms</span></label>
+        <label title="fs.readFile이 완료되기까지의 가상 시간">I/O 완료 <input type="range" id="sim-io" min="1" max="10" step="1" value="3"> <span id="sim-io-v">3ms</span></label>
+        <button class="btn primary" id="sim-run">▶ 실행</button>
+      </div>
+      <div class="sim-grid">
+        <div>
+          <textarea class="sim-code" id="sim-code" spellcheck="false"></textarea>
+          <div class="tl-lbl">출력 (console.log)</div>
+          <div class="out" id="sim-out"></div>
+        </div>
+        <div>
+          <div class="stage"><svg class="diagram ring" id="ring2" viewBox="0 0 520 300"></svg></div>
+          <div class="qs">
+            <div class="queue"><span class="q-label">nextTick</span><span id="q-tick"></span></div>
+            <div class="queue"><span class="q-label">microtask</span><span id="q-micro"></span></div>
+            <div class="queue"><span class="q-label">timers</span><span id="q-timers"></span></div>
+            <div class="queue"><span class="q-label">immediate</span><span id="q-imm"></span></div>
+            <div class="queue"><span class="q-label">I/O 진행중</span><span id="q-io"></span></div>
+          </div>
+          <div class="stat-row"><div class="stat"><div class="k">가상 시각</div><div class="v" id="sim-clock">0.00 ms</div></div><div class="stat"><div class="k">현재 페이즈</div><div class="v" id="sim-phase">-</div></div></div>
+        </div>
+      </div>
+      <div id="sim-stepper"></div>
+      <div class="callout warn" id="sim-err" style="display:none"></div>
+    </div>
+  </section>
+
+  <section id="s6">
+    <h2>6. 고전 퍼즐 6선과 해설</h2>
+    <p>각 퍼즐은 시뮬레이터 프리셋에 들어 있습니다. 먼저 답을 적고 실행해 보세요.</p>
+
+    <h3>퍼즐 1. 메인 모듈에서 setTimeout(0) vs setImmediate</h3>
+<pre><code>setTimeout(() =&gt; console.log('timeout'), 0);
+setImmediate(() =&gt; console.log('immediate'));</code></pre>
+    <p><b>답: 비결정적.</b> 메인 모듈이 끝나고 루프 첫 회차의 timers 페이즈에 들어갈 때 <code>uv__update_time</code>으로 갱신된 <code>now</code>가 타이머 등록 시각 + 1ms를 넘었는지에 달려 있습니다. 부팅이 빠른 머신에서는 immediate가, 느리거나 로드가 있는 머신에서는 timeout이 먼저입니다. 시뮬레이터의 "메인 모듈 비용"을 1ms 기준으로 움직여 보세요. <b>이런 순서에 의존하는 코드는 그 자체가 버그</b>입니다.</p>
+
+    <h3>퍼즐 2. I/O 콜백 안에서는 결정적</h3>
+<pre><code>fs.readFile(__filename, () =&gt; {
+  setTimeout(() =&gt; console.log('timeout'), 0);
+  setImmediate(() =&gt; console.log('immediate'));
+});</code></pre>
+    <p><b>답: immediate → timeout, 항상.</b> I/O 콜백은 poll 페이즈에서 실행되고, 바로 다음이 check 페이즈입니다. 타이머는 다음 회차의 timers 페이즈까지 기다려야 합니다. 이것이 "I/O 콜백 안에서 뭔가를 미루려면 <code>setImmediate</code>가 항상 더 빠르고 예측 가능하다"는 공식 권고의 근거입니다.</p>
+
+    <h3>퍼즐 3. nextTick과 마이크로태스크의 교차</h3>
+<pre><code>process.nextTick(() =&gt; { console.log('tick1'); Promise.resolve().then(() =&gt; console.log('micro-in-tick')); });
+Promise.resolve().then(() =&gt; { console.log('micro1'); process.nextTick(() =&gt; console.log('tick-in-micro')); });
+Promise.resolve().then(() =&gt; console.log('micro2'));
+process.nextTick(() =&gt; console.log('tick2'));</code></pre>
+    <p><b>답: tick1, tick2, micro1, micro2, micro-in-tick, tick-in-micro.</b> 드레인 첫 바퀴: nextTick 큐 [tick1, tick2]를 비움(tick1이 등록한 micro-in-tick은 마이크로태스크 큐 끝에 붙음). 그다음 <code>runMicrotasks()</code>가 [micro1, micro2, micro-in-tick]을 비움(micro1이 등록한 tick-in-micro는 nextTick 큐로). do-while 조건에서 nextTick 큐가 비어있지 않으므로 두 번째 바퀴: tick-in-micro.</p>
+
+    <h3>퍼즐 4. then에서 Promise를 반환하면 두 틱이 더 든다</h3>
+<pre><code>Promise.resolve().then(() =&gt; { console.log('a'); return Promise.resolve('x'); }).then(v =&gt; console.log('b', v));
+Promise.resolve().then(() =&gt; console.log('1')).then(() =&gt; console.log('2')).then(() =&gt; console.log('3')).then(() =&gt; console.log('4'));</code></pre>
+    <p><b>답: a, 1, 2, 3, b x, 4.</b> 'a' 콜백이 Promise를 반환하면 반환된 Promise의 결과로 바깥 Promise를 resolve해야 합니다. ECMAScript는 이를 <code>NewPromiseResolveThenableJob</code>이라는 <em>별도 마이크로태스크</em>로 처리하고(+1틱), 그 잡이 호출한 <code>.then</code>의 콜백이 또 한 틱 뒤에 실행됩니다(+1틱). 그래서 'b'는 'a'보다 세 틱 늦고, 그 사이에 '2', '3'이 끼어듭니다. 시뮬레이터 마이크로태스크 큐에서 <code>resolveThenable</code>이라는 항목이 바로 그 잡입니다. (V8은 <code>await</code>에 한해 네이티브 Promise면 이 비용을 1틱으로 줄이는 최적화를 넣었습니다. 7장 참고.)</p>
+
+    <h3>퍼즐 5. 타이머 사이의 드레인 (Node 11 변경)</h3>
+<pre><code>setTimeout(() =&gt; { console.log('t1'); Promise.resolve().then(() =&gt; console.log('p1')); }, 0);
+setTimeout(() =&gt; { console.log('t2'); Promise.resolve().then(() =&gt; console.log('p2')); }, 0);</code></pre>
+    <p><b>답(Node 11+): t1, p1, t2, p2.</b> Node 10 이하에서는 t1, t2, p1, p2였습니다. 두 타이머는 같은 리스트(delay=1)에 있고 같은 페이즈에서 실행되지만, 콜백 사이에 <code>runNextTicks()</code>가 호출되기 때문입니다. 브라우저에서 <code>setTimeout</code> 두 개는 별개의 매크로태스크라 항상 t1, p1, t2, p2였고, Node가 이에 맞춘 것입니다.</p>
+
+    <h3>퍼즐 6. immediate 안의 immediate, nextTick</h3>
+<pre><code>setImmediate(() =&gt; { console.log('i1'); setImmediate(() =&gt; console.log('i-in-i')); process.nextTick(() =&gt; console.log('tick-in-i')); });
+setImmediate(() =&gt; console.log('i2'));</code></pre>
+    <p><b>답: i1, tick-in-i, i2, i-in-i.</b> check 페이즈는 진입 시 리스트 [i1, i2]를 떼어내 실행합니다. i1 실행 후 드레인으로 tick-in-i. i1이 등록한 i-in-i는 새 리스트에 들어가 <em>다음 회차</em>의 check에서 실행됩니다. 그 사이 timers·poll 페이즈를 한 번 더 지나므로, 만약 1ms짜리 타이머가 있었다면 i-in-i보다 먼저 실행됐을 것입니다.</p>
+  </section>
+
+  <section id="s7">
+    <h2>7. 루프 블로킹과 지연(lag) 측정</h2>
+    <p>"이벤트 루프 지연"이란 <b>타이머가 만료된 시각과 실제로 콜백이 실행된 시각의 차이</b>입니다. 콜백 하나가 50ms 돌면 그 사이 만료된 모든 타이머, 도착한 모든 요청이 최소 50ms 기다립니다. 지연은 누적되지 않고 "가장 긴 콜백" 크기로 튀는 특성이 있어서, 평균은 멀쩡한데 p99가 튀는 형태로 나타납니다.</p>
+
+    <div class="widget">
+      <div class="w-title">루프 지연 시뮬레이터</div>
+      <div class="w-desc">10ms 간격 <code>setInterval</code> 타이머가 있다고 할 때, 중간에 동기 작업(예: 큰 JSON.parse)이 끼어들면 타이머 발화 시각이 어떻게 밀리는지 봅니다. 막대 위의 숫자가 각 발화의 지연(ms)입니다.</div>
+      <div class="controls">
+        <label>동기 작업 길이 <input type="range" id="lag-work" min="0" max="80" step="5" value="35"> <span id="lag-work-v">35ms</span></label>
+        <label>발생 시각 <input type="range" id="lag-at" min="0" max="80" step="5" value="25"> <span id="lag-at-v">25ms</span></label>
+        <label>요청 도착 간격 <input type="range" id="lag-req" min="2" max="20" step="2" value="6"> <span id="lag-req-v">6ms</span></label>
+      </div>
+      <div class="stage" id="lag-stage"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">최대 타이머 지연</div><div class="v" id="lag-max">-</div></div>
+        <div class="stat"><div class="k">지연된 요청 수</div><div class="v" id="lag-req-n">-</div></div>
+        <div class="stat"><div class="k">요청 지연 p50 / 최대</div><div class="v" id="lag-req-p">-</div></div>
+      </div>
+      <div class="callout" style="margin-bottom:0"><span class="title">읽는 법</span> 동기 작업이 끝나는 순간, 그동안 만료된 타이머는 <b>한 번만</b> 발화합니다(<code>setInterval</code>은 밀린 횟수만큼 몰아서 부르지 않고 다음 예정 시각을 "지금 + interval"로 다시 잡습니다). 그 사이 도착한 요청들은 모두 poll 페이즈에서 한꺼번에 처리되며, 각각 "도착 시각 → 작업 종료 시각"만큼 기다립니다.</div>
+    </div>
+
+    <h3>실제로 측정하기</h3>
+    <div class="tabs">
+      <div class="tab-bar"><button class="tab" data-tab="a">monitorEventLoopDelay</button><button class="tab" data-tab="b">eventLoopUtilization</button><button class="tab" data-tab="c">직접 구현 (간이)</button><button class="tab" data-tab="d">무엇이 루프를 막는가</button></div>
+      <div class="tab-pane" data-tab="a"><pre><code>const { monitorEventLoopDelay } = require('node:perf_hooks');
+const h = monitorEventLoopDelay({ resolution: 20 }); // 20ms마다 샘플
+h.enable();
+setInterval(() =&gt; {
+  console.log({
+    p50: h.percentile(50) / 1e6,   // 나노초 → ms
+    p99: h.percentile(99) / 1e6,
+    max: h.max / 1e6,
+  });
+  h.reset();
+}, 10_000).unref();</code></pre>
+      <p>libuv 타이머를 <code>resolution</code> 간격으로 걸어 두고 실제 발화 시각과의 차이를 히스토그램(HDR)으로 모읍니다. 프로덕션에서 상시 켜 두어도 비용이 거의 없고, 15장의 Prometheus 메트릭으로 내보내는 것이 표준 패턴입니다. 값이 <code>resolution</code>에 가까우면 정상이고, 수백 ms가 p99로 보이면 어딘가 동기 작업이 있는 것입니다.</p></div>
+      <div class="tab-pane" data-tab="b"><pre><code>const { performance } = require('node:perf_hooks');
+let last = performance.eventLoopUtilization();
+setInterval(() =&gt; {
+  const cur = performance.eventLoopUtilization();
+  const d = performance.eventLoopUtilization(cur, last);
+  console.log('ELU', d.utilization.toFixed(3)); // 0.0 (내내 idle) ~ 1.0 (내내 바쁨)
+  last = cur;
+}, 5000).unref();</code></pre>
+      <p>ELU(Event Loop Utilization)는 "루프가 poll에서 잠든 시간 대비 깨어 있던 시간의 비율"입니다. 지연 히스토그램이 <em>튀는 콜백</em>을 잡는다면, ELU는 <em>전체 포화도</em>를 봅니다. ELU가 0.7을 넘으면 그 프로세스는 더 이상 요청을 받으면 안 되는 상태로 보고 오토스케일 신호로 씁니다(Node.js 공식 블로그의 권고도 이 방식). 14장의 k8s HPA 연동 참고.</p></div>
+      <div class="tab-pane" data-tab="c"><pre><code>// 원리 이해용. 운영에서는 위 두 API를 쓸 것.
+let expected = performance.now() + 100;
+setInterval(() =&gt; {
+  const now = performance.now();
+  const lag = now - expected;          // 양수 = 그만큼 늦게 불렸다
+  if (lag &gt; 50) console.warn(`event loop lag ${lag.toFixed(1)}ms`);
+  expected = now + 100;
+}, 100).unref();</code></pre></div>
+      <div class="tab-pane" data-tab="d">
+        <div class="tbl-wrap"><table>
+          <tr><th>원인</th><th>전형적 크기</th><th>해결</th></tr>
+          <tr><td><code>JSON.parse/stringify</code> 대형 페이로드</td><td>1MB당 수~수십 ms</td><td>스트리밍 파서, 페이로드 제한, 워커</td></tr>
+          <tr><td><code>fs.*Sync</code>, <code>child_process.execSync</code></td><td>I/O 시간 전체</td><td>비동기 API. 부팅 시점에만 Sync 허용</td></tr>
+          <tr><td><code>crypto.pbkdf2Sync</code>, <code>bcrypt</code> 동기, <code>zlib.*Sync</code></td><td>수십~수백 ms</td><td>비동기 버전(스레드풀로 감)</td></tr>
+          <tr><td>정규식 백트래킹(ReDoS)</td><td>무한대</td><td>16장. 입력 길이 제한, RE2</td></tr>
+          <tr><td>큰 배열의 <code>sort</code>, 중첩 루프, 템플릿 렌더링</td><td>데이터 크기 비례</td><td>청크 분할 + <code>setImmediate</code> 양보, 워커</td></tr>
+          <tr><td>GC 일시정지(Mark-Compact)</td><td>힙 크기 비례, 수십~수백 ms</td><td>5장. 힙 압력 줄이기, 누수 제거</td></tr>
+          <tr><td>동기 로깅(<code>console.log</code>를 파이프로)</td><td>버퍼 차면 블로킹</td><td>15장. pino + 비동기 transport</td></tr>
+        </table></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s8">
+    <h2>8. 스타베이션과 안티패턴</h2>
+    <h3>8.1 재귀 nextTick은 루프를 영원히 멈춘다</h3>
+    <div class="compare">
+      <div><div class="lbl bad">I/O 스타베이션</div><pre><code>function pump() {
+  doSmallWork();
+  process.nextTick(pump);   // 큐가 영원히 비지 않음
+}
+pump();
+// 루프가 poll 페이즈에 도달하지 못함
+// → 어떤 요청도, 타이머도 실행 안 됨</code></pre></div>
+      <div><div class="lbl ok">루프에 양보</div><pre><code>function pump() {
+  doSmallWork();
+  setImmediate(pump);       // 매 회차 한 번씩만
+}
+pump();
+// 회차마다 timers → poll → check 를 지남
+// → I/O와 타이머가 사이사이 실행됨</code></pre></div>
+    </div>
+    <p>같은 이유로 <b>마이크로태스크 재귀</b>(<code>Promise.resolve().then(pump)</code>)도 스타베이션을 일으킵니다. V8의 <code>runMicrotasks()</code>는 큐가 빌 때까지 반환하지 않기 때문입니다. "비동기니까 괜찮겠지"는 틀린 직관입니다. 비동기이지만 <em>루프에 돌아가지 않는</em> 비동기가 있습니다.</p>
+
+    <h3>8.2 긴 동기 작업 쪼개기</h3>
+<pre><code>// 100만 건 처리: 1,000건 단위로 쪼개고 사이마다 루프에 양보
+async function processAll(items) {
+  for (let i = 0; i &lt; items.length; i += 1000) {
+    for (const it of items.slice(i, i + 1000)) handle(it);
+    await new Promise(r =&gt; setImmediate(r));   // ← setTimeout(r, 0)보다 낫다: 1ms 최소 지연이 없음
+  }
+}</code></pre>
+    <p>단, 쪼개기는 <b>지연을 줄일 뿐 처리량을 늘리지 않습니다</b>. CPU 총량이 같다면 워커 스레드(9장)로 보내는 것이 정답입니다. 쪼개기는 "작업이 가끔 있고, 그동안 다른 요청의 지연이 중요할 때"의 도구입니다.</p>
+
+    <h3>8.3 poll 페이즈 포화</h3>
+    <p>I/O 완료가 폭주하면 루프는 poll 페이즈에서 준비된 fd를 계속 처리합니다. libuv는 이를 막기 위해 한 번의 poll 호출에서 처리하는 양을 제한하지만, 각 콜백이 무거우면 타이머가 밀립니다. 증상은 "트래픽이 많을 때만 <code>setTimeout</code> 기반 타임아웃이 늦게 발화해 더 많은 요청이 쌓이는" 양의 피드백입니다. 해결은 요청 수락 자체를 제한하는 백프레셔(6장, 18장)입니다.</p>
+
+    <h3>8.4 unref와 프로세스 종료</h3>
+    <p><code>uv__loop_alive</code>는 활성 핸들이 하나라도 있으면 루프를 계속 돕니다. <code>setInterval</code> 하나, 열려 있는 소켓 하나가 프로세스 종료를 막습니다. 모니터링용 타이머에는 <code>.unref()</code>를, 테스트 종료가 안 될 때는 <code>process.getActiveResourcesInfo()</code>(Node 17+)로 무엇이 살아있는지 확인하세요. (<code>process._getActiveHandles()</code>는 비공개 API.)</p>
+<pre><code>$ node -e "setInterval(()=&gt;{},1000); console.log(process.getActiveResourcesInfo())"
+[ 'Timeout' ]</code></pre>
+  </section>
+
+  <section id="s9">
+    <h2>9. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: 헬스체크 실패로 인한 연쇄 재시작</span>
+      <p>k8s liveness 프로브 타임아웃 1초. 대형 리포트 생성 요청이 들어오면 <code>JSON.stringify</code>에 2~3초가 걸렸고, 그동안 <code>/healthz</code> 응답이 밀려 프로브가 실패 → 파드 재시작 → 남은 파드에 트래픽 집중 → 또 리포트 요청 → 재시작. 루프 지연 p99 메트릭이 있었다면 재시작 전에 경보가 났을 것입니다. 해결: 리포트 생성을 워커로 분리, liveness 타임아웃을 루프 지연 기대치보다 넉넉히, readiness는 ELU 기반으로.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: 캐시 TTL 타이머 드리프트</span>
+      <p>5초 <code>setInterval</code>로 캐시를 갱신하는 코드. 부하가 높아지자 루프 지연이 늘어 실제 갱신 간격이 7~8초로 벌어졌고, TTL 5초짜리 캐시가 "만료됐지만 갱신 전" 상태에 자주 빠져 DB로 폭주. <code>setInterval</code>은 <b>드리프트를 보정하지 않습니다</b>. 해결: 갱신 주기를 TTL보다 충분히 짧게, 또는 만료 시각을 기준으로 다음 타이머를 재계산.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 'close' 이벤트가 안 와서 새는 커넥션 카운터</span>
+      <p><code>socket.destroy()</code> 직후 동기적으로 카운터를 감소시키고, 'close' 핸들러에서 또 감소시킨 코드. close 콜백은 ⑥ 페이즈에서 비동기적으로 오므로 이중 감소. 커넥션 수 메트릭이 음수가 되어 오토스케일러가 축소 결정. 상태 전이는 한 곳(이벤트)에서만.</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>이벤트 루프 = libuv <code>uv_run</code>의 while 루프. 회차마다 timers → pending → idle/prepare → poll → check → close 순. 루프가 잠드는 곳은 poll의 <code>epoll_wait</code> 하나.</li>
+    <li>nextTick 큐와 마이크로태스크 큐는 페이즈가 아니라 <b>매 콜백 경계</b>에서 드레인된다. 순서: nextTick 전부 → 마이크로태스크 전부 → (nextTick이 또 생겼으면) 반복.</li>
+    <li>poll 타임아웃: immediate 대기 중이면 0, 아니면 가장 가까운 타이머까지, 둘 다 없으면 무한.</li>
+    <li>메인 모듈의 <code>setTimeout(0)</code> vs <code>setImmediate</code>는 비결정적, I/O 콜백 안에서는 항상 immediate가 먼저.</li>
+    <li>then에서 Promise 반환은 +2틱. 타이머 콜백 사이에도 드레인(Node 11+). immediate 안의 immediate는 다음 회차.</li>
+    <li>재귀 nextTick/마이크로태스크는 I/O를 굶긴다. 양보는 <code>setImmediate</code>로. 긴 CPU 작업은 쪼개기가 아니라 워커가 답.</li>
+    <li>운영 지표: <code>monitorEventLoopDelay</code>(p99 지연), <code>eventLoopUtilization</code>(포화도). 둘 다 상시 수집.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">다음 코드의 출력 순서는? <code>setImmediate(()=&gt;console.log('A')); process.nextTick(()=&gt;console.log('B')); Promise.resolve().then(()=&gt;console.log('C')); setTimeout(()=&gt;console.log('D'),0);</code> (메인 모듈 실행에 2ms가 걸렸다고 가정)</div>
+    <button class="opt">B, C, A, D</button>
+    <button class="opt">C, B, D, A</button>
+    <button class="opt">B, C, D, A</button>
+    <button class="opt">A, B, C, D</button>
+    <div class="explain">메인 모듈 종료 직후 드레인: nextTick(B) → 마이크로태스크(C). 루프 진입 시 2ms가 지났으므로 1ms 타이머 D는 이미 만료 → timers 페이즈에서 D. 그다음 check에서 A. 메인 모듈 비용이 1ms 미만이었다면 B, C, A, D.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">poll 페이즈에서 루프가 "무한히" 블로킹하는 조건은?</div>
+    <button class="opt">타이머가 하나라도 있을 때</button>
+    <button class="opt">immediate·pending·closing 핸들·타이머가 모두 없고, 활성 I/O 핸들만 있을 때</button>
+    <button class="opt">setImmediate가 등록되어 있을 때</button>
+    <button class="opt">nextTick 큐가 비어있지 않을 때</button>
+    <div class="explain"><code>uv__backend_timeout</code>은 깨울 이유(immediate=idle 핸들, pending, closing, 타이머)가 하나도 없을 때 -1을 돌려주고, 이 경우 epoll_wait는 I/O 이벤트가 올 때까지 잠듭니다. 활성 핸들조차 없으면 루프는 종료됩니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">마이크로태스크 콜백 안에서 <code>process.nextTick(f)</code>를 호출했다. f는 언제 실행되는가?</div>
+    <button class="opt">즉시 (현재 마이크로태스크 직후)</button>
+    <button class="opt">다음 매크로 콜백(타이머/I/O) 직후</button>
+    <button class="opt">다음 루프 회차의 timers 페이즈 전</button>
+    <button class="opt">현재 드레인의 마이크로태스크 큐가 모두 빈 직후</button>
+    <div class="explain"><code>processTicksAndRejections</code>의 do-while: <code>runMicrotasks()</code>가 큐를 완전히 비우고 반환한 뒤, nextTick 큐가 비어있지 않으면 한 바퀴 더 돕니다. 따라서 같은 드레인 안이지만 남은 마이크로태스크가 모두 끝난 뒤입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">10만 건 레코드를 CPU 집약적으로 변환해야 한다. 요청 지연이 중요한 API 서버에서 가장 적절한 접근은?</div>
+    <button class="opt">worker_threads로 보내고 결과만 메시지로 받는다</button>
+    <button class="opt">1,000건씩 쪼개고 setImmediate로 양보한다</button>
+    <button class="opt">process.nextTick으로 재귀하며 처리한다</button>
+    <button class="opt">setTimeout(fn, 0)으로 재귀하며 처리한다</button>
+    <div class="explain">쪼개기(2번)는 지연을 줄이지만 CPU 총량은 그대로여서 처리량이 늘지 않고 다른 요청의 지연도 여전히 늘어납니다. 3번은 I/O 스타베이션, 4번은 1ms 최소 지연 때문에 100번 이상 양보하면 눈에 띄게 느려집니다. CPU 작업은 루프 밖으로 보내는 것이 정답입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Node 10에서 11로 올리자 두 타이머 사이의 Promise 콜백 실행 순서가 바뀌었다. 무엇이 달라졌는가?</div>
+    <button class="opt">Promise가 nextTick보다 우선하게 되었다</button>
+    <button class="opt">타이머 최소 지연이 1ms에서 0ms로 바뀌었다</button>
+    <button class="opt">같은 페이즈의 콜백 사이마다 nextTick/마이크로태스크를 드레인하게 되었다</button>
+    <button class="opt">setImmediate가 timers 페이즈로 옮겨졌다</button>
+    <div class="explain">Node 11(nodejs/node#22842)부터 timers와 immediates 처리 시 콜백 하나마다 <code>runNextTicks()</code>를 호출합니다. 브라우저 의미론과 일치시키기 위한 변경입니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>순서 예측 훈련.</b> 시뮬레이터의 프리셋 6개 각각에 대해 실행 전에 순서를 적고, 로컬 Node 22에서 <code>node puzzle.js</code>로 실제 출력과 비교하세요. 퍼즐 1은 <code>for (let i=0;i&lt;20;i++) node p1.js</code>로 20번 돌려 두 순서가 모두 나오는지 확인합니다(빠른 머신에서는 immediate가 대부분 먼저 나옵니다). 기대: 퍼즐 2~6은 시뮬레이터와 100% 일치.</li>
+    <li><b>지연 측정.</b> 아래 서버를 띄우고 <code>autocannon -c 50 -d 10 http://localhost:3000/</code>(또는 <code>curl</code> 반복)으로 부하를 주면서 <code>/slow</code>를 한 번 호출하세요. 로그에 찍히는 p99 지연이 <code>/slow</code>의 동기 작업 길이와 거의 같은지 확인합니다. 그다음 <code>/slow</code>를 <code>setImmediate</code> 청크 버전으로 바꿔 p99가 떨어지는지(하지만 <code>/slow</code> 자체의 응답 시간은 거의 같음을) 확인하세요.
+<pre><code>const http = require('node:http');
+const { monitorEventLoopDelay } = require('node:perf_hooks');
+const h = monitorEventLoopDelay({ resolution: 10 }); h.enable();
+setInterval(() =&gt; { console.log('p99 lag ms', (h.percentile(99) / 1e6).toFixed(1)); h.reset(); }, 2000).unref();
+http.createServer((req, res) =&gt; {
+  if (req.url === '/slow') { const t = Date.now(); while (Date.now() - t &lt; 300) {} }   // 300ms 동기 블로킹
+  res.end('ok');
+}).listen(3000);</code></pre></li>
+    <li><b>종료 안 되는 프로세스 디버깅.</b> <code>setInterval</code> 하나와 <code>net.createServer().listen()</code>을 만든 뒤 <code>process.getActiveResourcesInfo()</code>를 출력하고, 각각에 <code>.unref()</code>를 적용했을 때 프로세스가 종료되는지 확인하세요. 기대: 둘 다 unref 되어야 종료.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  // ===================== 공용: 페이즈 링 그리기 =====================
+  const PHASES = [
+    { id: "timers", label: "timers", sub: "setTimeout / setInterval" },
+    { id: "pending", label: "pending", sub: "미룬 I/O 콜백" },
+    { id: "idle", label: "idle/prepare", sub: "내부용" },
+    { id: "poll", label: "poll", sub: "I/O 콜백 · 블로킹" },
+    { id: "check", label: "check", sub: "setImmediate" },
+    { id: "close", label: "close", sub: "'close' 콜백" },
+  ];
+  function drawRing(svg, opts) {
+    const w = +svg.viewBox.baseVal.width, hgt = +svg.viewBox.baseVal.height;
+    const cx = w / 2, cy = hgt / 2 + 8, R = Math.min(w, hgt) * 0.36;
+    const NS = "http://www.w3.org/2000/svg";
+    svg.innerHTML = "";
+    const mk = (t, a) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+    const ring = mk("circle", { cx, cy, r: R, class: "line", "stroke-dasharray": "6 5", style: "stroke:var(--border);stroke-width:2;fill:none" });
+    svg.append(ring);
+    PHASES.forEach((p, i) => {
+      const a = -Math.PI / 2 + i * (2 * Math.PI / PHASES.length);
+      const x = cx + R * Math.cos(a), y = cy + R * Math.sin(a);
+      const g = mk("g", { "data-ph": p.id });
+      const bw = 124, bh = 44;
+      g.append(mk("rect", { x: x - bw / 2, y: y - bh / 2, width: bw, height: bh, rx: 9, class: "ph" }));
+      const t1 = mk("text", { x, y: y - 4, "text-anchor": "middle", class: "lbl" }); t1.textContent = `${i + 1}. ${p.label}`;
+      const t2 = mk("text", { x, y: y + 13, "text-anchor": "middle", class: "muted", "font-size": "10.5" }); t2.textContent = p.sub;
+      g.append(t1, t2); svg.append(g);
+      // 화살표 (다음 페이즈로)
+      const a2 = a + 2 * Math.PI / PHASES.length;
+      const mid = (a + a2) / 2;
+      const ax = cx + (R + 0) * Math.cos(mid), ay = cy + R * Math.sin(mid);
+      const t = mk("text", { x: ax, y: ay + 4, "text-anchor": "middle", "font-size": "12", class: "muted", transform: `rotate(${(mid * 180 / Math.PI) + 90} ${ax} ${ay})` }); t.textContent = "▶";
+      svg.append(t);
+    });
+    // 중앙: 드레인 표시
+    const g = mk("g", { "data-ph": "tick" });
+    g.append(mk("rect", { x: cx - 78, y: cy - 30, width: 156, height: 60, rx: 10, class: "ph" }));
+    const t1 = mk("text", { x: cx, y: cy - 8, "text-anchor": "middle", class: "lbl" }); t1.textContent = "nextTick → microtask";
+    const t2 = mk("text", { x: cx, y: cy + 10, "text-anchor": "middle", class: "muted", "font-size": "10.5" }); t2.textContent = "매 콜백 사이에 드레인";
+    const t3 = mk("text", { x: cx, y: cy + 24, "text-anchor": "middle", class: "muted", "font-size": "10.5" }); t3.textContent = "(libuv 페이즈 아님)";
+    g.append(t1, t2, t3); svg.append(g);
+    if (opts && opts.main) {
+      const m = mk("g", { "data-ph": "main" });
+      m.append(mk("rect", { x: 8, y: 8, width: 96, height: 30, rx: 8, class: "ph" }));
+      const mt = mk("text", { x: 56, y: 28, "text-anchor": "middle", class: "lbl" }); mt.textContent = "main / exit";
+      m.append(mt); svg.append(m);
+    }
+    return {
+      set(phase) {
+        svg.querySelectorAll("[data-ph]").forEach(g => {
+          const r = g.querySelector("rect");
+          r.classList.remove("on", "tick-on");
+          const id = g.dataset.ph;
+          if (id === phase) r.classList.add(phase === "tick" ? "tick-on" : "on");
+          if (id === "main" && (phase === "main" || phase === "exit")) r.classList.add("on");
+        });
+      }
+    };
+  }
+
+  // ===================== 위젯 1: 페이즈 순환 =====================
+  (function () {
+    const svg = document.getElementById("ring1");
+    const ring = drawRing(svg, {});
+    const seq = [
+      ["timers", "<b>① timers</b>: <code>uv__update_time</code>로 now 갱신 후 만료된 타이머 콜백 실행. 콜백 하나마다 중앙의 드레인."],
+      ["tick", "타이머 콜백 하나가 끝날 때마다 <b>nextTick 큐 → 마이크로태스크 큐</b>를 비운다."],
+      ["pending", "<b>② pending</b>: 지난 회차에서 미뤄진 시스템 콜백(일부 TCP 에러 등)."],
+      ["idle", "<b>③ idle/prepare</b>: Node는 idle 핸들을 'immediate가 대기 중' 표시로 쓴다."],
+      ["poll", "<b>④ poll</b>: 완료된 I/O 콜백 실행. 할 일이 없으면 <code>uv__backend_timeout</code>만큼 <code>epoll_wait</code>에서 잠든다 (immediate가 있으면 0 = 안 잠듦)."],
+      ["tick", "I/O 콜백 하나마다 역시 드레인."],
+      ["check", "<b>⑤ check</b>: 진입 시점의 setImmediate 리스트를 떼어내 실행. 실행 중 등록된 것은 다음 회차."],
+      ["close", "<b>⑥ close</b>: <code>uv_close</code>된 핸들의 콜백 ('close' 이벤트). 회차 끝. <code>uv__loop_alive</code>가 참이면 ①로."],
+    ];
+    MM.stepper(document.getElementById("ring1-step"), { steps: seq.length, interval: 1600, render(i) { ring.set(seq[i][0]); return seq[i][1]; } });
+  })();
+
+  // ===================== 위젯 2: 이벤트 루프 시뮬레이터 =====================
+  function createEventLoopSim(opts) {
+    const mainMs = opts.mainMs ?? 0.5, ioMs = opts.ioMs ?? 3, cbMs = opts.cbMs ?? 0.05, maxSteps = 400;
+    const S = { clock: 0, tick: [], micro: [], timers: [], imm: [], immNext: [], io: [], out: [], frames: [], phase: "main", running: null, seq: 0, steps: 0 };
+    const esc = MM.esc;
+    const labelOf = (fn, fallback) => {
+      const m = /console\.log\(\s*(['"`])([^'"`]*)\1/.exec(fn.toString());
+      const s = m ? m[2] : fallback;
+      return s.length > 14 ? s.slice(0, 13) + "…" : s;
+    };
+    function snap(caption, extra) {
+      S.frames.push({
+        caption, clock: +S.clock.toFixed(2), phase: S.phase, running: S.running,
+        tick: S.tick.map(t => t.label), micro: S.micro.map(t => t.label),
+        timers: S.timers.map(t => ({ label: t.label, expiry: +t.expiry.toFixed(2) })),
+        imm: S.imm.map(t => t.label), immNext: S.immNext.map(t => t.label),
+        io: S.io.map(t => ({ label: t.label, readyAt: +t.readyAt.toFixed(2) })),
+        out: S.out.slice(), ...extra
+      });
+    }
+    function guard() { if (++S.steps > maxSteps) throw new Error("콜백 실행 횟수 초과(" + maxSteps + "). 무한 재귀(스타베이션)입니다. 바로 8절의 상황입니다."); }
+    function run(task, kind) {
+      guard();
+      S.running = { label: task.label, kind };
+      snap(`<b>${kind}</b> 콜백 <code>${esc(task.label)}</code> 실행`);
+      try { task.cb(); } catch (e) { S.out.push("Uncaught " + e); }
+      S.clock += cbMs;
+      S.running = null;
+    }
+    function drainTicks() {
+      if (!S.tick.length && !S.micro.length) return;
+      const prev = S.phase; S.phase = "tick";
+      do {
+        while (S.tick.length) run(S.tick.shift(), "nextTick");
+        while (S.micro.length) run(S.micro.shift(), "microtask");
+      } while (S.tick.length);
+      S.phase = prev;
+    }
+    let labelN = 0;
+    const api = {
+      console: { log: (...a) => S.out.push(a.map(x => typeof x === "object" ? JSON.stringify(x) : String(x)).join(" ")) },
+      setTimeout(cb, delay = 0) {
+        delay = Math.max(1, Number(delay) || 0);
+        const t = { label: labelOf(cb, "timer#" + (++labelN)), cb, expiry: S.clock + delay, seq: ++S.seq, delay };
+        S.timers.push(t); return t;
+      },
+      setImmediate(cb) { S.immNext.push({ label: labelOf(cb, "imm#" + (++labelN)), cb }); },
+      queueMicrotask(cb) { S.micro.push({ label: labelOf(cb, "micro#" + (++labelN)), cb }); },
+      process: { nextTick(cb, ...args) { S.tick.push({ label: labelOf(cb, "tick#" + (++labelN)), cb: () => cb(...args) }); } },
+      fs: { readFile(path, _enc, cb) { if (typeof _enc === "function") cb = _enc;
+        S.io.push({ label: labelOf(cb, "io#" + (++labelN)), cb: () => cb(null, "data"), readyAt: S.clock + ioMs }); } },
+      __filename: "/app/main.js",
+    };
+    class SimPromise {
+      constructor(executor) {
+        this.state = "pending"; this.value = undefined; this.handlers = [];
+        if (executor) { try { executor(v => this._resolve(v), e => this._reject(e)); } catch (e) { this._reject(e); } }
+      }
+      _resolve(v) {
+        if (this.state !== "pending") return;
+        if (v && (typeof v === "object" || typeof v === "function") && typeof v.then === "function") {
+          S.micro.push({ label: "resolveThenable", cb: () => v.then(x => this._settle("fulfilled", x), e => this._settle("rejected", e)) });
+          return;
+        }
+        this._settle("fulfilled", v);
+      }
+      _reject(e) { if (this.state === "pending") this._settle("rejected", e); }
+      _settle(state, v) { this.state = state; this.value = v; this.handlers.forEach(h => this._schedule(h)); this.handlers = []; }
+      then(onF, onR) {
+        const p = new SimPromise();
+        const h = { onF, onR, p, label: labelOf(typeof onF === "function" ? onF : (onR || function () {}), "then#" + (++labelN)) };
+        if (this.state === "pending") this.handlers.push(h); else this._schedule(h);
+        return p;
+      }
+      _schedule(h) {
+        const self = this;
+        S.micro.push({ label: h.label, cb() {
+          const cb = self.state === "fulfilled" ? h.onF : h.onR;
+          if (typeof cb !== "function") { self.state === "fulfilled" ? h.p._resolve(self.value) : h.p._reject(self.value); return; }
+          try { h.p._resolve(cb(self.value)); } catch (e) { h.p._reject(e); }
+        } });
+      }
+      catch(onR) { return this.then(undefined, onR); }
+      finally(f) { return this.then(v => { f(); return v; }, e => { f(); throw e; }); }
+      static resolve(v) { if (v instanceof SimPromise) return v; const p = new SimPromise(); p._resolve(v); return p; }
+      static reject(e) { const p = new SimPromise(); p._reject(e); return p; }
+    }
+    api.Promise = SimPromise;
+
+    function runProgram(code) {
+      if (/\basync\b|\bawait\b/.test(code)) throw new Error("이 시뮬레이터는 async/await를 지원하지 않습니다. Promise.resolve().then(...)으로 바꿔 주세요.");
+      const fn = new Function(...Object.keys(api), code);
+      S.phase = "main"; S.running = { label: "main", kind: "main" };
+      snap("메인 모듈(동기 코드) 실행 시작. 모든 콜백 등록은 큐에 쌓이기만 한다.");
+      fn(...Object.values(api));
+      S.running = null; S.clock += mainMs;
+      snap(`메인 모듈 종료 (가상 ${mainMs}ms 소요). 이제 nextTick → 마이크로태스크를 비운 뒤 루프로 진입한다.`);
+      drainTicks();
+      let iter = 0;
+      while (true) {
+        const alive = S.timers.length || S.immNext.length || S.io.length;
+        if (!alive) { S.phase = "exit"; snap("더 이상 활성 핸들/요청이 없다 → <code>uv_run</code> 반환, 프로세스 종료."); break; }
+        iter++;
+        S.phase = "timers";
+        const due = S.timers.filter(t => t.expiry <= S.clock).sort((a, b) => a.expiry - b.expiry || a.seq - b.seq);
+        snap(`루프 ${iter}회차 · <b>timers</b> 페이즈 진입 (now=${S.clock.toFixed(2)}ms). 만료된 타이머 ${due.length}개.`);
+        for (const t of due) { S.timers.splice(S.timers.indexOf(t), 1); run(t, "timer"); drainTicks(); }
+        S.phase = "pending"; snap("<b>pending callbacks</b>: 이전 회차에서 미뤄진 시스템 콜백 실행. 여기선 없음.");
+        S.phase = "poll";
+        const nextTimer = S.timers.length ? Math.min(...S.timers.map(t => t.expiry)) : Infinity;
+        const nextIo = S.io.length ? Math.min(...S.io.map(t => t.readyAt)) : Infinity;
+        let ready = S.io.filter(t => t.readyAt <= S.clock);
+        if (!ready.length) {
+          if (S.immNext.length) snap("<b>poll</b>: setImmediate가 대기 중(idle 핸들 활성)이므로 타임아웃 0 → 블로킹 없이 바로 check로.");
+          else if (nextIo === Infinity && nextTimer === Infinity) snap("<b>poll</b>: 기다릴 것이 없음.");
+          else {
+            const wake = Math.min(nextIo, nextTimer);
+            const wait = wake - S.clock;
+            snap(`<b>poll</b>: 실행할 I/O 콜백이 없고 immediate도 없음 → 가장 가까운 ${nextIo <= nextTimer ? "I/O 완료" : "타이머 만료"}까지 <b>${wait.toFixed(2)}ms 블로킹(epoll_wait)</b>.`, { blocked: wait });
+            S.clock = wake;
+            ready = S.io.filter(t => t.readyAt <= S.clock);
+          }
+        }
+        if (ready.length) snap(`<b>poll</b>: 완료된 I/O ${ready.length}개의 콜백을 실행.`);
+        for (const t of ready) { S.io.splice(S.io.indexOf(t), 1); run(t, "I/O"); drainTicks(); }
+        S.phase = "check";
+        if (S.immNext.length) {
+          S.imm = S.immNext; S.immNext = [];
+          snap(`<b>check</b> 페이즈: 큐에 있던 setImmediate ${S.imm.length}개를 떼어내 실행 (실행 중 새로 등록된 것은 다음 회차).`);
+          while (S.imm.length) { run(S.imm.shift(), "immediate"); drainTicks(); }
+        } else snap("<b>check</b> 페이즈: 실행할 immediate 없음.");
+        S.phase = "close"; snap("<b>close callbacks</b>: 'close' 이벤트 콜백. 여기선 없음. → 회차 종료, <code>uv__loop_alive</code> 확인.");
+        if (iter > 60) throw new Error("루프 회차 초과");
+      }
+      return S.frames;
+    }
+    return { runProgram };
+  }
+
+  const PRESETS = [
+    ["기본 6종 혼합", `console.log('A');
+setTimeout(() => console.log('timeout'), 0);
+setImmediate(() => console.log('immediate'));
+process.nextTick(() => console.log('nextTick'));
+Promise.resolve().then(() => console.log('promise'));
+console.log('B');`],
+    ["퍼즐 1. timeout vs immediate (메인)", `setTimeout(() => console.log('timeout'), 0);
+setImmediate(() => console.log('immediate'));
+// 위 '메인 모듈 비용' 슬라이더를 1ms 전후로 움직여 보세요`],
+    ["퍼즐 2. I/O 콜백 안에서", `fs.readFile(__filename, () => {
+  setTimeout(() => console.log('timeout'), 0);
+  setImmediate(() => console.log('immediate'));
+});`],
+    ["퍼즐 3. nextTick × 마이크로태스크", `process.nextTick(() => {
+  console.log('tick1');
+  Promise.resolve().then(() => console.log('micro-in-tick'));
+});
+Promise.resolve().then(() => {
+  console.log('micro1');
+  process.nextTick(() => console.log('tick-in-micro'));
+});
+Promise.resolve().then(() => console.log('micro2'));
+process.nextTick(() => console.log('tick2'));`],
+    ["퍼즐 4. then에서 Promise 반환 (+2틱)", `Promise.resolve()
+  .then(() => { console.log('a'); return Promise.resolve('x'); })
+  .then(v => console.log('b', v));
+Promise.resolve()
+  .then(() => console.log('1'))
+  .then(() => console.log('2'))
+  .then(() => console.log('3'))
+  .then(() => console.log('4'));`],
+    ["퍼즐 5. 타이머 사이 드레인", `setTimeout(() => {
+  console.log('t1');
+  Promise.resolve().then(() => console.log('p1'));
+  setTimeout(() => console.log('t-in-t'), 0);
+  setImmediate(() => console.log('i-in-t'));
+}, 0);
+setTimeout(() => {
+  console.log('t2');
+  Promise.resolve().then(() => console.log('p2'));
+}, 0);`],
+    ["퍼즐 6. immediate 안의 immediate", `setImmediate(() => {
+  console.log('i1');
+  setImmediate(() => console.log('i-in-i'));
+  process.nextTick(() => console.log('tick-in-i'));
+});
+setImmediate(() => console.log('i2'));`],
+    ["타이머와 I/O가 섞일 때 (poll 블로킹)", `setTimeout(() => console.log('timer 10ms'), 10);
+fs.readFile(__filename, () => {
+  console.log('io done');
+  setTimeout(() => console.log('timer 1ms (in io)'), 1);
+});
+setTimeout(() => console.log('timer 2ms'), 2);
+// I/O 완료 슬라이더를 1ms~10ms로 바꿔 보세요`],
+    ["스타베이션: 재귀 nextTick", `let n = 0;
+function pump() {
+  n++;
+  process.nextTick(pump);   // 루프가 영원히 poll에 못 감
+}
+setTimeout(() => console.log('timer (never runs)'), 1);
+pump();`],
+  ];
+
+  (function () {
+    const $ = id => document.getElementById(id);
+    const sel = $("sim-preset"), code = $("sim-code");
+    PRESETS.forEach((p, i) => sel.append(MM.el("option", { value: i }, p[0])));
+    sel.onchange = () => { code.value = PRESETS[sel.value][1]; };
+    code.value = PRESETS[0][1];
+    const ring = drawRing($("ring2"), { main: true });
+    const sl = (id, unit) => { const i = $(id); const v = $(id + "-v"); i.oninput = () => v.textContent = i.value + unit; };
+    sl("sim-main", "ms"); sl("sim-io", "ms");
+    let stepperHost = $("sim-stepper");
+    function task(label, cls) { return `<span class="task ${cls}">${MM.esc(label)}</span>`; }
+    function renderFrame(f, prevOutLen) {
+      ring.set(f.phase);
+      $("q-tick").innerHTML = f.tick.map(l => task(l, "tick")).join("") || "<span class='muted' style='font-size:12px'>비어 있음</span>";
+      $("q-micro").innerHTML = f.micro.map(l => task(l, "micro")).join("") || "<span class='muted' style='font-size:12px'>비어 있음</span>";
+      $("q-timers").innerHTML = f.timers.map(t => task(`${t.label} @${t.expiry}ms`, "timer")).join("") || "<span class='muted' style='font-size:12px'>비어 있음</span>";
+      $("q-imm").innerHTML = [...f.imm.map(l => task(l, "")), ...f.immNext.map(l => task(l + (f.imm.length ? " (다음 회차)" : ""), ""))].join("") || "<span class='muted' style='font-size:12px'>비어 있음</span>";
+      $("q-io").innerHTML = f.io.map(t => task(`${t.label} 완료@${t.readyAt}ms`, "io")).join("") || "<span class='muted' style='font-size:12px'>비어 있음</span>";
+      $("sim-clock").textContent = f.clock.toFixed(2) + " ms";
+      $("sim-phase").textContent = f.phase === "tick" ? "드레인" : f.phase;
+      $("sim-out").innerHTML = f.out.map((l, i) => `<div class="${i >= prevOutLen ? "new" : ""}">${MM.esc(l)}</div>`).join("") || "<span class='muted'>(아직 출력 없음)</span>";
+    }
+    $("sim-run").onclick = (ev) => {
+      $("sim-err").style.display = "none";
+      stepperHost.innerHTML = "";
+      let frames;
+      try {
+        frames = createEventLoopSim({ mainMs: +$("sim-main").value, ioMs: +$("sim-io").value }).runProgram(code.value);
+      } catch (e) {
+        $("sim-err").style.display = ""; $("sim-err").innerHTML = "<span class='title'>실행 중단</span>" + MM.esc(e.message);
+        if (!frames) return;
+      }
+      MM.stepper(stepperHost, { steps: frames.length, interval: 1100, render(i) {
+        renderFrame(frames[i], i > 0 ? frames[i - 1].out.length : 0);
+        const f = frames[i];
+        const run = f.running ? `<span class="c-accent">▶ ${MM.esc(f.running.label)}</span> · ` : "";
+        return run + f.caption;
+      } });
+      if (ev) stepperHost.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    };
+    // 스타베이션 프리셋은 frames가 없어도 에러만 표시되도록 처리
+    $("sim-run").onclick();
+  })();
+
+  // ===================== 위젯 3: 루프 지연 시뮬레이터 =====================
+  (function () {
+    const $ = id => document.getElementById(id);
+    const stage = $("lag-stage");
+    const T = 100; // 타임라인 길이(ms)
+    function sim() {
+      const work = +$("lag-work").value, at = +$("lag-at").value, reqGap = +$("lag-req").value;
+      $("lag-work-v").textContent = work + "ms"; $("lag-at-v").textContent = at + "ms"; $("lag-req-v").textContent = reqGap + "ms";
+      // 루프 모델: 시각 t에 루프가 '바쁜' 구간은 [at, at+work). 그 외엔 즉시 처리.
+      const busyEnd = at + work;
+      const busy = t => t >= at && t < busyEnd;
+      const serve = t => busy(t) ? busyEnd : t; // 실제 처리 시각
+      // 10ms 인터벌 타이머: 예정 시각 next; 발화되면 next = 실제 발화 + 10
+      const fires = []; let next = 10;
+      while (next < T) { const actual = serve(next); fires.push({ due: next, actual, lag: actual - next }); next = actual + 10; }
+      const reqs = []; for (let t = 3; t < T; t += reqGap) reqs.push({ at: t, done: serve(t), lag: serve(t) - t });
+      // 렌더
+      let html = `<div class="tl-lbl">이벤트 루프 상태</div><div class="timeline">`;
+      html += `<div class="seg" style="left:0;width:${at}%;background:var(--ok-soft)">idle/짧은 콜백</div>`;
+      if (work > 0) html += `<div class="seg" style="left:${at}%;width:${work}%;background:var(--bad-soft);color:var(--bad);font-weight:700">동기 작업 ${work}ms</div>`;
+      html += `<div class="seg" style="left:${busyEnd}%;width:${100 - busyEnd}%;background:var(--ok-soft)"></div></div>`;
+      html += `<div class="tl-lbl">10ms 인터벌 타이머 (▽ 예정, ▼ 실제 발화)</div><div class="timeline" style="height:40px">`;
+      fires.forEach(f => {
+        html += `<div style="position:absolute;left:${f.due}%;top:2px;font-size:10px;color:var(--muted)">▽</div>`;
+        html += `<div style="position:absolute;left:${f.actual}%;top:14px;font-size:11px;color:${f.lag > 0 ? "var(--bad)" : "var(--ok)"};font-weight:700">▼<span style="font-size:10px;font-family:var(--mono)">${f.lag > 0 ? "+" + f.lag : ""}</span></div>`;
+      });
+      html += `</div><div class="tl-lbl">도착 요청 (| 도착 → 처리 완료까지의 대기)</div><div class="timeline" style="height:40px">`;
+      reqs.forEach(r => {
+        if (r.lag > 0) html += `<div style="position:absolute;left:${r.at}%;width:${r.lag}%;top:8px;height:16px;background:var(--warn-soft);border-left:2px solid var(--warn)"></div>`;
+        else html += `<div style="position:absolute;left:${r.at}%;top:8px;height:16px;border-left:2px solid var(--ok)"></div>`;
+      });
+      html += `</div><div class="tl-lbl" style="display:flex;justify-content:space-between"><span>0ms</span><span>50ms</span><span>100ms</span></div>`;
+      stage.innerHTML = html;
+      const maxLag = Math.max(0, ...fires.map(f => f.lag));
+      const delayed = reqs.filter(r => r.lag > 0);
+      const lags = delayed.map(r => r.lag).sort((a, b) => a - b);
+      $("lag-max").textContent = maxLag + " ms";
+      $("lag-req-n").textContent = `${delayed.length} / ${reqs.length}`;
+      $("lag-req-p").textContent = lags.length ? `${lags[Math.floor(lags.length / 2)]} / ${lags[lags.length - 1]} ms` : "0 / 0 ms";
+    }
+    ["lag-work", "lag-at", "lag-req"].forEach(id => $(id).oninput = sim);
+    sim();
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11. 라우팅 심화: OSPF · BGP · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.dv-tables{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px}
+.dv-tables table{font-size:.72rem;margin:0}
+.dv-tables th,.dv-tables td{padding:3px 5px;text-align:center}
+.dv-tables caption{font-weight:700;font-size:.8rem;padding:2px}
+.dv-tables td.chg{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.dv-tables table.active{outline:2px solid var(--primary)}
+@media (max-width:760px){.dv-tables{grid-template-columns:repeat(3,1fr)}}
+.c2i-row{display:flex;gap:16px;justify-content:center;margin-top:8px;flex-wrap:wrap}
+.c2i-row .nd{border:1px solid var(--border);border-radius:8px;padding:6px 12px;min-width:150px;font-size:.82rem;background:var(--surface-2)}
+.c2i-row .nd b{display:block}
+.dj-table{font-size:.8rem;margin-top:8px}
+.dj-table td,.dj-table th{padding:4px 8px;text-align:center}
+.bgp-cand tr.out td{opacity:.35;text-decoration:line-through}
+.bgp-cand tr.win td{background:var(--green-soft);font-weight:700}
+.bgp-cand td,.bgp-cand th{font-size:.8rem;padding:5px 7px}
+.lpm tr.match td{background:var(--primary-soft)}
+.lpm tr.best td{background:var(--green-soft);font-weight:700}
+.lpm tr.nomatch td{opacity:.45}
+.lpm td.bin{font-family:var(--mono);font-size:.72rem;letter-spacing:.03em;white-space:nowrap}
+.lpm td.bin i{font-style:normal;background:var(--accent-soft);color:var(--accent)}
+.rule-list{list-style:none;padding:0;margin:0;display:grid;gap:4px}
+.rule-list li{padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)}
+.rule-list li.done{background:var(--surface-2);color:var(--muted)}
+.rule-list li.cur{border-color:var(--primary);background:var(--primary-soft);font-weight:600}
+</style>
+</head>
+<body data-chapter="11">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 2 · 심화 — CHAPTER 11</div>
+  <h1>라우팅 심화: OSPF · BGP</h1>
+  <p class="lead">3장에서 라우터가 "테이블을 보고 다음 홉을 고른다"는 것을 배웠습니다. 이 장은 그 테이블이 <b>어떻게 만들어지는가</b>에 답합니다. 조직 내부를 묶는 링크 상태 프로토콜(OSPF)과, 7만 개가 넘는 자율 시스템을 하나의 인터넷으로 잇는 경로 벡터 프로토콜(BGP)을 알고리즘부터 정책까지 따라갑니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 90분</span><span class="chip l-net">인터넷 계층</span><span class="chip l-tr">전송(BGP는 TCP 179)</span><span class="chip">RFC 2328 · 4271 · 5340 · 6811</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>라우팅과 포워딩을 구분하고, 라우팅 테이블 항목의 구성 요소(prefix, next-hop, metric, AD)를 설명할 수 있다.</li>
+    <li>거리 벡터(Bellman-Ford)와 링크 상태(Dijkstra)의 동작을 단계별로 손으로 따라갈 수 있고, 각각의 수렴 특성과 한계를 설명할 수 있다.</li>
+    <li>OSPF의 인접 형성 → LSA 플러딩 → LSDB → SPF 흐름과 영역 구조를 설명할 수 있다.</li>
+    <li>BGP 경로 속성과 경로 선택 순서를 적용해 최적 경로를 고를 수 있고, AS_PATH가 루프를 막는 원리를 설명할 수 있다.</li>
+    <li>피어링/트랜짓 관계, 경로 누출·하이재킹 사례와 RPKI의 역할을 설명할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="fwd-vs-rt"><span class="num">11.1</span>라우팅 vs 포워딩, 그리고 테이블 한 줄의 의미</h2>
+<p>두 단어는 자주 섞여 쓰이지만 전문가는 구분합니다.</p>
+<div class="vs">
+  <div class="side"><h4 style="color:var(--l-net)">포워딩 (Forwarding) — 데이터 평면</h4><p>패킷 <b>하나하나</b>에 대해 목적지 주소로 테이블을 조회해 출력 인터페이스로 넘기는 일. 나노초 단위, 하드웨어(ASIC/TCAM)가 수행. 조회 규칙은 3장에서 본 <b>Longest Prefix Match</b>.</p></div>
+  <div class="mid">vs</div>
+  <div class="side"><h4 style="color:var(--primary)">라우팅 (Routing) — 제어 평면</h4><p>그 테이블을 <b>만드는</b> 일. 이웃 라우터와 정보를 교환하고(라우팅 프로토콜), 알고리즘으로 최적 경로를 계산해 테이블을 채운다. 초~분 단위, 소프트웨어(CPU)가 수행.</p></div>
+</div>
+<p>라우터 내부에는 보통 두 테이블이 있습니다. 제어 평면이 관리하는 <b>RIB</b>(Routing Information Base, 모든 후보 경로)와 그중 최선만 골라 하드웨어로 내린 <b>FIB</b>(Forwarding Information Base). <code>ip route</code>가 보여주는 것은 FIB에 가깝고, <code>show ip bgp</code>가 보여주는 것은 RIB입니다.</p>
+<h3 id="rt-entry">라우팅 테이블 항목의 구성 요소</h3>
+<table>
+  <thead><tr><th>구성 요소</th><th>의미</th><th>예</th></tr></thead>
+  <tbody>
+    <tr><td><b>Prefix</b> (목적지)</td><td>네트워크 주소/프리픽스 길이. 조회의 키.</td><td><code>10.1.0.0/16</code></td></tr>
+    <tr><td><b>Next-hop</b></td><td>이 프리픽스로 가기 위해 프레임을 건넬 <i>같은 링크의</i> 다음 라우터 IP. 직접 연결 네트워크는 next-hop 없음(목적지로 바로 ARP).</td><td><code>via 10.0.0.1</code></td></tr>
+    <tr><td><b>Interface</b></td><td>패킷을 내보낼 출력 인터페이스.</td><td><code>dev eth0</code></td></tr>
+    <tr><td><b>Metric</b></td><td><i>같은 프로토콜 안에서</i> 경로 간 우열. 프로토콜마다 의미가 다르다(RIP: 홉 수, OSPF: 대역폭 기반 cost, BGP: 속성 집합).</td><td><code>metric 20</code></td></tr>
+    <tr><td><b>AD / 거리</b> (Administrative Distance, 리눅스에서는 <code>proto</code>+정책)</td><td><i>다른 프로토콜끼리</i> 같은 프리픽스를 알려줄 때 누구를 믿을지. 숫자가 작을수록 신뢰. 직접 연결 0 &lt; 정적 1 &lt; eBGP 20 &lt; OSPF 110 &lt; RIP 120 &lt; iBGP 200 (Cisco 기준).</td><td><code>[110/20]</code></td></tr>
+    <tr><td><b>Source</b></td><td>누가 이 항목을 넣었는가(connected, static, kernel, ospf, bgp…).</td><td><code>proto bgp</code></td></tr>
+  </tbody>
+</table>
+<div class="callout"><div class="t">📌 metric과 AD는 비교 대상이 다르다</div><p>OSPF cost 20과 RIP 홉 수 3은 비교할 수 없는 단위입니다. 그래서 라우터는 먼저 <b>AD로 프로토콜을 고르고</b>, 그 프로토콜 안에서 <b>metric으로 경로를 고릅니다</b>. 이 두 단계 중 어느 쪽도 Longest Prefix Match보다 먼저가 아닙니다. 순서는 항상 ① 가장 긴 프리픽스 → ② 가장 낮은 AD → ③ 가장 낮은 metric입니다.</p></div>
+<h3 id="static-dynamic">정적 vs 동적 라우팅</h3>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">정적 (static)</h4><p>관리자가 손으로 입력. 예측 가능하고 CPU·대역폭을 쓰지 않지만, 링크가 죽어도 스스로 바뀌지 않는다. 용도: 단일 출구(stub) 네트워크의 디폴트 경로, 보안상 광고하면 안 되는 경로, 소규모 랩.</p><pre><code>ip route add 10.9.0.0/16 via 10.0.0.2 dev eth0
+ip route add default via 203.0.113.1</code></pre></div>
+  <div class="card"><h4 style="margin-top:0">동적 (dynamic)</h4><p>라우터끼리 프로토콜로 정보를 교환해 테이블을 자동 갱신. 장애 시 우회 경로로 <b>수렴(convergence)</b>. 두 가족으로 나뉜다.</p><ul><li><b>IGP</b>(Interior Gateway Protocol): 한 조직(AS) 내부. RIP(거리 벡터), <b>OSPF</b>/IS-IS(링크 상태), EIGRP(고급 거리 벡터).</li><li><b>EGP</b>(Exterior Gateway Protocol): AS 사이. 현재 유일하게 <b>BGP-4</b>(RFC 4271).</li></ul></div>
+</div>
+
+<h2 id="as"><span class="num">11.2</span>자율 시스템(AS)과 IGP/EGP</h2>
+<p>인터넷은 하나의 네트워크가 아니라 <b>약 7만 5천 개의 자율 시스템(Autonomous System)</b>이 서로 연결된 집합입니다. AS는 "하나의 관리 주체가 하나의 라우팅 정책으로 운영하는 라우터들의 집합"이며, 16비트(현재는 32비트, RFC 6793) <b>AS 번호(ASN)</b>로 식별됩니다. 예: AS15169(Google), AS4766(KT), AS3786(LG U+), AS9318(SK브로드밴드). 문서·예제용으로는 64496–64511, 65536–65551이 예약되어 있습니다(RFC 5398).</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 330" id="as-fig"></svg>
+  <div class="cap">AS 내부는 IGP(OSPF)가 "가장 빠른 길"을 계산하고, AS 사이는 BGP가 "정책적으로 허용된 길"을 교환한다. BGP 세션은 TCP 179번 포트 위에서 유지된다.</div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 왜 내부는 링크 상태, 외부는 경로 벡터인가</div><p>AS 내부는 <b>한 주체가 모든 라우터를 신뢰</b>하고, 목표는 단순히 "가장 빠른 길"입니다. 전체 토폴로지를 모두에게 복제해 각자 Dijkstra를 돌리는 링크 상태 방식이 빠르고 루프가 없어 적합합니다. 반면 AS 사이에는 ① 토폴로지(내부 구조)를 공개하고 싶지 않고, ② "빠른 길"보다 <b>"돈을 내는 고객 방향", "경쟁사 경유 금지"</b> 같은 정책이 우선이며, ③ 수십만 프리픽스 × 수만 AS의 전체 그래프를 모두가 계산하는 것은 비현실적입니다. 경로 벡터는 "이 프리픽스로 가려면 이 AS 목록을 지난다"만 알려주므로 내부를 숨기면서도 루프 검출(자기 ASN이 있으면 거부)과 정책 적용(AS_PATH 필터)이 가능합니다. 즉, <b>링크 상태는 최적화 도구, 경로 벡터는 정책 도구</b>입니다.</p></div>
+
+<h2 id="dv"><span class="num">11.3</span>거리 벡터: Bellman-Ford <small>(애니메이션)</small></h2>
+<p>거리 벡터(Distance Vector) 라우팅의 아이디어는 단순합니다. 각 라우터는 "내가 아는 모든 목적지까지의 거리 목록(벡터)"을 <b>이웃에게만</b> 주기적으로 보내고, 이웃이 보낸 벡터에 링크 비용을 더해 더 짧으면 갱신합니다. 분산 Bellman-Ford 방정식: <code>D_x(y) = min_v { c(x,v) + D_v(y) }</code>. 전체 지도를 모르는 "소문 기반" 방식이며, RIP(RFC 2453)이 대표입니다.</p>
+<div class="anim" id="dv-anim">
+  <div class="stage">
+    <svg viewBox="0 0 440 230" id="dv-svg" style="max-width:440px;margin:0 auto"></svg>
+    <div class="dv-tables" id="dv-tables"></div>
+  </div>
+</div>
+<h3 id="c2i">무한 계수(count-to-infinity) 문제와 Split Horizon</h3>
+<p>소문 기반의 약점은 <b>나쁜 소식이 느리게 퍼진다</b>는 것입니다. 링크가 끊겼을 때, 이웃이 "나는 거기 갈 수 있어(사실은 너를 거쳐서)"라고 알려주면 서로를 믿고 거리를 1씩 올리며 루프에 빠집니다. 아래에서 <b>Split Horizon with Poison Reverse</b>를 켜고 끄며 비교해 보세요.</p>
+<div class="anim" id="c2i-anim">
+  <div class="stage">
+    <div class="row" style="margin-bottom:8px"><label><input type="checkbox" id="c2i-sh"> Split Horizon + Poison Reverse 활성화</label><span class="small">토글 후 ↺ 처음 을 누르세요</span></div>
+    <svg viewBox="0 0 440 110" id="c2i-svg" style="max-width:440px;margin:0 auto"></svg>
+    <div class="c2i-row" id="c2i-tables"></div>
+  </div>
+</div>
+<div class="grid-2">
+  <div class="card tight"><b>Split Horizon</b>: 어떤 목적지를 이웃 N을 통해 가고 있다면, 그 목적지 정보를 N에게는 <i>보내지 않는다</i>. "너한테서 배운 걸 너한테 되팔지 않는다."</div>
+  <div class="card tight"><b>Poison Reverse</b>: 보내지 않는 대신 명시적으로 "거리 ∞"라고 보낸다. 상대가 혹시 갖고 있을 잘못된 경로를 즉시 지워 준다. RIP는 16을 ∞로 쓴다(그래서 최대 15홉).</div>
+</div>
+<div class="callout warn"><div class="t">⚠️ Split Horizon의 한계</div><p>두 노드 사이 루프는 막지만 <b>세 노드 이상의 루프</b>(A→B→C→A)는 막지 못합니다. 그래서 RIP은 홀드다운 타이머, 트리거드 업데이트를 더하지만 근본 해결은 아닙니다. 오늘날 RIP는 소규모 랩 외에는 거의 쓰이지 않으며, 거리 벡터 계열 중 EIGRP만 DUAL 알고리즘(실현 가능한 후계자 조건)으로 루프를 수학적으로 막아 실무에 남아 있습니다.</p></div>
+
+<h2 id="ls"><span class="num">11.4</span>링크 상태: Dijkstra <small>(인터랙티브)</small></h2>
+<p>링크 상태(Link State) 라우팅은 반대 접근입니다. 각 라우터가 "내 링크들과 비용"을 <b>모든 라우터에게 플러딩</b>하여 전원이 <b>동일한 지도(LSDB)</b>를 갖게 한 뒤, 각자 자기를 뿌리로 하는 최단 경로 트리를 <b>Dijkstra 알고리즘</b>으로 계산합니다. 소문이 아니라 지도를 보므로 루프가 없고 수렴이 빠릅니다. OSPF와 IS-IS가 이 방식입니다.</p>
+<p>시작 노드를 고르고 단계별로 진행하세요. <span class="tag orange">주황</span> = 지금 확정하는 노드, <span class="tag green">초록</span> = 확정됨(visited), <span class="tag blue">파랑 점선</span> = 이번 단계에서 완화(relax)한 간선.</p>
+<div class="anim" id="dj-anim">
+  <div class="stage">
+    <div class="row" style="margin-bottom:8px"><label>시작(뿌리) 라우터 <select id="dj-start"></select></label></div>
+    <svg viewBox="0 0 660 270" id="dj-svg"></svg>
+    <div class="grid-2" style="margin-top:8px">
+      <div><div class="small"><b>임시 거리(tentative)</b> — 아직 확정되지 않은 최단 거리 추정치</div><table class="dj-table" id="dj-tent"></table></div>
+      <div><div class="small"><b>결과 라우팅 테이블</b> — 뿌리 라우터 관점의 next-hop</div><table class="dj-table" id="dj-rt"></table></div>
+    </div>
+  </div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: Dijkstra가 "확정"할 수 있는 이유</div><p>미방문 노드 중 임시 거리가 가장 작은 노드 u를 고르면, u까지의 거리는 더 이상 줄어들 수 없습니다. 다른 어떤 경로도 반드시 미방문 노드 하나를 먼저 지나야 하고, 그 노드의 거리는 이미 u보다 크거나 같기 때문입니다(간선 비용이 음수가 아닐 때). 이 성질 덕에 노드를 한 번씩만 확정하면 끝나며, 라우터 N개·링크 E개에 대해 O(E log N)입니다. 수천 라우터의 영역도 수십 ms에 계산되므로, OSPF의 병목은 계산이 아니라 <b>LSA 플러딩과 SPF 재계산 빈도</b>입니다. 그래서 SPF 지연 타이머(spf-delay, 지수 백오프)가 존재합니다.</p></div>
+
+<h2 id="ospf"><span class="num">11.5</span>OSPF 동작 원리 (RFC 2328 / RFC 5340)</h2>
+<p>OSPF(Open Shortest Path First)는 IP 프로토콜 번호 89 위에서 직접 동작하며(TCP/UDP 아님), 다음 단계로 라우팅 테이블을 만듭니다.</p>
+<ol class="steps">
+  <li><b>Hello</b>: 각 인터페이스에서 멀티캐스트 224.0.0.5(AllSPFRouters)로 10초(브로드캐스트 링크 기본)마다 Hello를 보내 이웃을 발견한다. 영역 ID, Hello/Dead 간격, 인증, 네트워크 마스크가 <i>모두 일치해야</i> 이웃이 된다 — 불일치는 OSPF 장애 원인 1순위.</li>
+  <li><b>인접(adjacency) 형성</b>: DBD(Database Description) 교환으로 서로의 LSDB 요약을 비교하고, 없는 LSA는 LSR/LSU로 요청·수신한다. 상태 머신: Down → Init → 2-Way → ExStart → Exchange → Loading → <b>Full</b>.</li>
+  <li><b>LSA 플러딩</b>: 각 라우터가 자신의 링크 정보를 LSA(Link State Advertisement)로 만들어 영역 전체에 신뢰성 있게 전파(ACK 기반). 시퀀스 번호로 최신성 판단, 30분마다 리프레시, MaxAge 60분.</li>
+  <li><b>LSDB 동기화</b>: 영역 안 모든 라우터가 동일한 Link State Database를 갖는다. 이것이 "지도".</li>
+  <li><b>SPF 계산</b>: 각 라우터가 자신을 뿌리로 Dijkstra를 실행, 최단 경로 트리에서 라우팅 테이블을 뽑는다. 비용 = 참조 대역폭(기본 100 Mbps) / 링크 대역폭 → 10G 링크에서 1 미만이 되므로 <code>auto-cost reference-bandwidth</code>를 반드시 올려야 한다.</li>
+</ol>
+<h3 id="ospf-area">영역(Area)과 라우터 역할</h3>
+<p>LSDB와 SPF 비용은 영역 크기에 비례합니다. 그래서 OSPF는 네트워크를 <b>영역</b>으로 나누고, 영역 사이에는 토폴로지 대신 <b>요약 경로</b>만 전달합니다. 모든 영역은 <b>Area 0(백본)</b>에 붙어야 하며, 영역 간 트래픽은 반드시 백본을 경유합니다(두 단계 계층).</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 300" id="ospf-area"></svg>
+  <div class="cap">ABR(Area Border Router)은 두 영역의 LSDB를 모두 갖고 Summary LSA(Type 3)를 만든다. ASBR(AS Boundary Router)은 외부 경로(BGP, 정적)를 External LSA(Type 5)로 주입한다.</div>
+</div>
+<table>
+  <thead><tr><th>LSA Type</th><th>이름</th><th>생성자</th><th>범위</th><th>내용</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Router</td><td>모든 라우터</td><td>영역 내</td><td>자신의 링크와 비용</td></tr>
+    <tr><td>2</td><td>Network</td><td>DR</td><td>영역 내</td><td>브로드캐스트 세그먼트에 붙은 라우터 목록</td></tr>
+    <tr><td>3</td><td>Summary</td><td>ABR</td><td>영역 간</td><td>다른 영역의 프리픽스(토폴로지 없이)</td></tr>
+    <tr><td>4</td><td>ASBR Summary</td><td>ABR</td><td>영역 간</td><td>ASBR까지의 경로</td></tr>
+    <tr><td>5</td><td>AS External</td><td>ASBR</td><td>AS 전체</td><td>재분배된 외부 경로</td></tr>
+    <tr><td>7</td><td>NSSA External</td><td>NSSA 내 ASBR</td><td>NSSA 영역</td><td>Stub 영역 변종에서의 외부 경로</td></tr>
+  </tbody>
+</table>
+<h3 id="dr">DR/BDR: 브로드캐스트 링크의 인접 폭발 막기</h3>
+<p>한 이더넷 세그먼트에 라우터 n대가 있으면 전부 서로 인접을 맺을 때 n(n−1)/2개의 인접과 그만큼의 LSA 중복 플러딩이 생깁니다. OSPF는 세그먼트마다 <b>DR(Designated Router)</b>과 <b>BDR</b>을 뽑아, 모든 라우터가 DR/BDR과만 Full 인접을 맺게 합니다(나머지는 2-Way에 머묾). DR은 우선순위(priority, 0이면 후보 제외) → Router ID 순으로 선출되며, <b>선점(preempt)하지 않습니다</b> — 더 좋은 라우터가 나중에 켜져도 현 DR이 유지됩니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 700 170" id="dr-fig"></svg>
+  <div class="cap">왼쪽: 5대 전부 인접(10개). 오른쪽: DR/BDR 선출 후 인접은 7개로, 라우터 수에 비례(2n−3)하게 줄어든다. DR은 224.0.0.6(AllDRouters)으로 LSU를 받는다.</div>
+</div>
+
+<h2 id="bgp"><span class="num">11.6</span>BGP: 인터넷을 잇는 경로 벡터 (RFC 4271)</h2>
+<p>BGP-4는 1994년 이후 인터넷의 유일한 AS 간 라우팅 프로토콜입니다. 특징을 한 줄로 요약하면 <b>"TCP 위에서, 전체 경로(AS 목록)를 담아, 정책에 따라 선택적으로 광고하는 프로토콜"</b>입니다.</p>
+<div class="grid-2">
+  <div class="card tight"><b>전송</b>: TCP 179. 이웃을 자동 발견하지 않고 <i>수동 설정</i>한 피어와 세션을 맺는다. 신뢰성·순서는 TCP가 책임지므로 BGP는 증분 업데이트만 보낸다(주기적 재광고 없음). 메시지: OPEN, UPDATE, KEEPALIVE(기본 60초), NOTIFICATION.</div>
+  <div class="card tight"><b>eBGP vs iBGP</b>: 다른 AS와 맺으면 eBGP(보통 직접 연결, TTL 1), 같은 AS 내부끼리 맺으면 iBGP. iBGP는 배운 경로를 다른 iBGP 피어에게 재광고하지 않으므로(루프 방지) 풀 메시 또는 <b>루트 리플렉터</b>(RFC 4456)가 필요하다.</div>
+</div>
+<h3 id="aspath">AS_PATH로 루프를 막는 원리 <small>(애니메이션)</small></h3>
+<p>BGP UPDATE는 프리픽스와 함께 <b>AS_PATH</b> 속성(그 프리픽스까지 지나온 AS 번호 목록)을 실어 보냅니다. eBGP 피어에게 광고할 때 자신의 ASN을 앞에 붙이고(prepend), 받은 경로의 AS_PATH에 <b>자기 ASN이 있으면 버립니다</b>.</p>
+<div class="anim" id="aspath-anim">
+  <div class="stage"><svg viewBox="0 0 700 230" id="aspath-svg"></svg></div>
+</div>
+<h3 id="attrs">주요 경로 속성</h3>
+<table>
+  <thead><tr><th>속성</th><th>종류</th><th>의미 · 용도</th></tr></thead>
+  <tbody>
+    <tr><td><b>NEXT_HOP</b></td><td>well-known mandatory</td><td>이 경로의 다음 홉 IP. eBGP에서는 광고한 피어 주소, iBGP로 전달될 때는 <i>바뀌지 않아</i> 내부 IGP로 도달 가능해야 한다(또는 <code>next-hop-self</code>).</td></tr>
+    <tr><td><b>AS_PATH</b></td><td>well-known mandatory</td><td>지나온 AS 목록. 루프 방지 + 길이로 경로 선호(짧을수록 선호). 일부러 자기 ASN을 여러 번 붙여(prepending) 인바운드 트래픽을 밀어내는 데도 쓴다.</td></tr>
+    <tr><td><b>ORIGIN</b></td><td>well-known mandatory</td><td>경로의 출처: <code>i</code>(IGP, network 명령) &lt; <code>e</code>(EGP, 구식) &lt; <code>?</code>(incomplete, 재분배). 작을수록 선호.</td></tr>
+    <tr><td><b>LOCAL_PREF</b></td><td>well-known discretionary</td><td>AS <i>내부</i>에서만 전파. 아웃바운드 정책의 핵심: "고객 경로 200 &gt; 피어 100 &gt; 트랜짓 50". 클수록 선호.</td></tr>
+    <tr><td><b>MED</b> (Multi-Exit Discriminator)</td><td>optional non-transitive</td><td>이웃 AS에게 "나로 들어올 땐 이 입구가 낫다"고 힌트. 작을수록 선호. 기본적으로 <i>같은 이웃 AS에서 온 경로끼리만</i> 비교.</td></tr>
+    <tr><td><b>COMMUNITY</b></td><td>optional transitive</td><td>32비트 태그(RFC 1997). ISP가 정의한 "이 경로는 유럽에만 광고", <code>NO_EXPORT</code> 등 정책 신호. Large Communities(RFC 8092)로 확장.</td></tr>
+  </tbody>
+</table>
+<h3 id="bgp-select">경로 선택 알고리즘 <small>(인터랙티브)</small></h3>
+<p>같은 프리픽스에 대해 여러 경로를 배우면 BGP는 아래 규칙을 <b>순서대로</b> 적용해 하나를 고릅니다. 어떤 규칙에서 하나만 남으면 거기서 끝납니다. 아래 표의 6개 후보 경로(목적지 203.0.113.0/24)에 규칙을 하나씩 적용해 보세요.</p>
+<div class="anim" id="bgp-anim">
+  <div class="stage">
+    <table class="bgp-cand" id="bgp-cand">
+      <thead><tr><th>#</th><th>NEXT_HOP</th><th>LOCAL_PREF</th><th>AS_PATH</th><th>ORIGIN</th><th>MED</th><th>세션</th><th>IGP metric</th><th>Router ID</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <ol class="rule-list" id="bgp-rules" style="margin-top:10px"></ol>
+  </div>
+</div>
+<div class="callout"><div class="t">📌 실무 기억법</div><p>Cisco 계열은 맨 앞에 <b>Weight</b>(로컬 전용)가 추가되고 그 뒤는 같습니다. 대부분의 실제 결정은 <b>LOCAL_PREF와 AS_PATH 길이</b>에서 끝나며, 그 둘을 조작하는 것이 BGP 정책의 90%입니다. ORIGIN·MED·Router ID까지 내려가는 상황은 보통 "설계가 애매하다"는 신호입니다.</p></div>
+
+<h2 id="policy"><span class="num">11.7</span>BGP 정책: 피어링, 트랜짓, 그리고 사고들</h2>
+<p>BGP가 "정책 프로토콜"이라는 말의 실체는 <b>돈</b>입니다. AS 사이의 관계는 크게 둘입니다.</p>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">트랜짓 (Transit) — 고객 ↔ 공급자</h4><p>고객이 공급자에게 돈을 내고 <b>인터넷 전체</b>로의 도달성을 산다. 공급자는 고객 프리픽스를 모든 이웃에게 광고하고, 고객에게는 풀 테이블(또는 디폴트)을 준다.</p></div>
+  <div class="card"><h4 style="margin-top:0">피어링 (Peering) — 대등</h4><p>두 AS가 (보통 무료로) <b>서로의 고객 트래픽만</b> 교환한다. 피어에게서 배운 경로를 다른 피어나 공급자에게 넘기지 않는다. IX(인터넷 익스체인지, 예: KINX, DE-CIX)에서 흔히 맺는다.</p></div>
+</div>
+<p>이 관계는 <b>Gao-Rexford 규칙</b>(valley-free)으로 요약됩니다: "고객에게서 배운 경로는 모두에게, 피어·공급자에게서 배운 경로는 <i>고객에게만</i> 광고한다." LOCAL_PREF로 고객 &gt; 피어 &gt; 공급자 순으로 선호를 두는 것도 이 규칙의 구현입니다.</p>
+<h3 id="incidents">경로 누출과 하이재킹</h3>
+<table>
+  <thead><tr><th>사고</th><th>무슨 일이 있었나</th><th>원인 유형</th></tr></thead>
+  <tbody>
+    <tr><td>2008 Pakistan Telecom – YouTube</td><td>정부의 YouTube 차단 지시로 AS17557이 YouTube의 /22보다 <b>더 구체적인 /24</b>를 광고 → 상위 ISP가 필터 없이 전 세계로 전파 → YouTube 전 세계 접속 불가 2시간.</td><td>하이재킹(더 긴 프리픽스)</td></tr>
+    <tr><td>2017 Google – Japan</td><td>Google이 실수로 NTT 등의 수만 프리픽스를 트랜짓하듯 광고(경로 누출). 일본 ISP 트래픽이 Google로 쏠려 대규모 장애.</td><td>경로 누출(valley-free 위반)</td></tr>
+    <tr><td>2018 Amazon Route 53</td><td>공격자가 AS10297로 Route 53의 /24를 하이재킹 → DNS 응답 위조 → MyEtherWallet 사용자를 가짜 사이트로 유도, 암호화폐 탈취.</td><td>악의적 하이재킹</td></tr>
+    <tr><td>2019 Verizon – Cloudflare</td><td>소규모 ISP가 BGP 옵티마이저가 만든 더 구체적 경로를 누출, Verizon이 필터 없이 수용 → Cloudflare·AWS 일부 도달 불가.</td><td>경로 누출 + 필터 부재</td></tr>
+  </tbody>
+</table>
+<h3 id="rpki">RPKI: 광고할 자격이 있는가 (RFC 6480 · 6811)</h3>
+<p>BGP 자체에는 "AS 64500이 정말 203.0.113.0/24를 가졌는가"를 검증할 수단이 없습니다. <b>RPKI</b>(Resource Public Key Infrastructure)는 주소 소유자가 "이 프리픽스는 이 ASN이 최대 이 길이까지 원천(origin)으로 광고할 수 있다"는 <b>ROA</b>(Route Origin Authorization)에 서명해 공개하고, 라우터는 수신 경로의 origin AS를 ROA와 대조해 <b>Valid / Invalid / NotFound</b>로 판정합니다(ROV, Route Origin Validation). Invalid를 버리면 위 YouTube·Route 53형 사고는 막을 수 있지만, AS_PATH 중간 위조나 경로 누출은 막지 못합니다. 이를 위한 BGPsec(RFC 8205)과 ASPA는 아직 보급 초기입니다.</p>
+<div class="callout deep"><div class="t">🔬 깊이 보기: BGP 수렴이 느린 이유</div><p>OSPF는 수백 ms에 수렴하지만 BGP는 경로 하나가 사라질 때 <b>수 분</b>이 걸리기도 합니다. 이유는 ① <b>MRAI</b>(MinRouteAdvertisementInterval, eBGP 기본 30초) — 플래핑 억제를 위해 같은 프리픽스의 업데이트를 묶어 보내므로 홉마다 최대 30초 지연, ② <b>경로 탐색(path hunting)</b> — 경로가 철회되면 각 AS가 차선·차차선 경로를 순서대로 시도하며 광고·철회를 반복(Labovitz 2000, 최악 O(n!)), ③ <b>라우트 댐핑</b>(RFC 2439) — 자주 흔들리는 경로에 페널티를 주어 일정 시간 무시. 안정성을 위한 장치들이 모두 수렴 지연으로 작동합니다. 그래서 실무에서는 BFD(RFC 5880)로 링크 장애를 수십 ms에 감지하고, 중요한 서비스는 애니캐스트와 여러 트랜짓으로 "수렴을 기다리지 않는" 구조를 만듭니다.</p></div>
+
+<h2 id="lpm"><span class="num">11.8</span>Longest Prefix Match 다시 보기 <small>(인터랙티브)</small></h2>
+<p>3장의 LPM을 실제 라우터에 가까운 테이블로 연습합니다. 디폴트 경로, 집계 경로, 구체적 경로, 호스트 경로, 블랙홀이 섞여 있습니다. 목적지를 입력하면 각 행의 프리픽스 비트와 비교해 매칭 여부와 선택 결과를 보여줍니다.</p>
+<div class="card">
+  <div class="row"><label>목적지 IP <input type="text" id="lpm-ip" value="10.1.2.200" class="mono" style="width:160px"></label>
+    <button class="btn sm" data-ip="10.1.2.200">10.1.2.200</button><button class="btn sm" data-ip="10.1.2.77">10.1.2.77</button><button class="btn sm" data-ip="10.1.5.1">10.1.5.1</button><button class="btn sm" data-ip="10.200.0.9">10.200.0.9</button><button class="btn sm" data-ip="172.20.1.1">172.20.1.1</button><button class="btn sm" data-ip="8.8.8.8">8.8.8.8</button></div>
+  <table class="lpm" id="lpm-table" style="margin-top:10px">
+    <thead><tr><th>Prefix</th><th>프리픽스 비트 (목적지와 비교)</th><th>Next-hop / 동작</th><th>출처</th><th>판정</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="hdr-desc" id="lpm-result" style="margin-top:8px"></div>
+</div>
+<h3 id="aggr">경로 집계(aggregation)와 ECMP</h3>
+<div class="figure card">
+  <svg viewBox="0 0 860 200" id="aggr-fig"></svg>
+  <div class="cap">10.1.0.0/24 ~ 10.1.3.0/24 네 개의 연속 프리픽스는 앞 22비트가 같으므로 10.1.0.0/22 하나로 상위에 광고할 수 있다. CIDR(RFC 4632)의 핵심 효과: 글로벌 테이블 크기 억제. 단, 집계된 쪽에서는 내부 한 서브넷이 죽어도 바깥은 모르므로(블랙홀), 집계 라우터는 보통 집계 프리픽스를 Null0로 가리키는 항목을 함께 둔다.</div>
+</div>
+<p><b>ECMP</b>(Equal-Cost Multi-Path): 같은 프리픽스에 같은 비용의 next-hop이 여러 개면 라우터는 둘 다 FIB에 넣고 <b>흐름(5-tuple 해시) 단위</b>로 분산합니다. 패킷 단위로 분산하면 같은 TCP 연결의 패킷이 순서가 뒤집혀 가짜 dup ACK·성능 저하를 일으키기 때문입니다. OSPF·BGP(<code>maximum-paths</code>) 모두 지원하며, 데이터센터의 Clos(leaf-spine) 토폴로지가 ECMP 위에 세워져 있습니다.</p>
+<div class="callout deep"><div class="t">🔬 깊이 보기: "풀 테이블 100만 경로"의 의미</div><p>2024년 기준 글로벌 IPv4 BGP 테이블은 약 <b>95만~100만 프리픽스</b>, IPv6는 약 20만입니다. 이 숫자가 중요한 이유는 ① 하드웨어 FIB(TCAM) 용량 — 2014년 8월 12일, 많은 구형 라우터의 기본 TCAM 할당 512K를 넘기면서 전 세계적으로 장애가 났습니다("512K day"). ② 수렴 시간 — 피어 세션이 리셋되면 100만 경로를 다시 받고 최선 경로를 재계산하는 데 수 분. ③ 메모리 — RIB는 피어 수 × 경로 수이므로 수십 피어면 수천만 항목. 그래서 대형 네트워크는 <b>디폴트 + 부분 테이블</b>, 루트 리플렉터 계층화, 플랫폼별 FIB 프로파일 조정 같은 운영 기법을 씁니다. 또 테이블이 느는 주 원인이 트래픽 엔지니어링용 /24 분할(deaggregation)이라는 점도 알아 두세요.</p></div>
+
+<h2 id="practice"><span class="num">11.9</span>실습: 라우팅 테이블과 AS 경로 들여다보기</h2>
+<div class="tabs">
+  <div class="tab-bar"><button>리눅스 테이블</button><button>AS 경로 추적</button><button>Looking Glass</button><button>FRR / BIRD</button></div>
+  <div class="tab-panel"><pre><code># FIB 보기 (proto 가 출처: kernel/static/bird/zebra…)
+ip route show
+ip -6 route show
+# 특정 목적지에 대해 어떤 항목이 선택되는지 (LPM 결과)
+ip route get 8.8.8.8
+# 여러 테이블(정책 라우팅)
+ip rule show
+ip route show table all | head
+# ECMP 경로 추가 예
+ip route add 10.9.0.0/16 nexthop via 10.0.0.2 weight 1 nexthop via 10.0.1.2 weight 1</code></pre></div>
+  <div class="tab-panel"><pre><code># mtr -z : 각 홉의 AS 번호를 함께 표시 (whois 조회 기반)
+mtr -z -n -r -c 20 www.example.com
+# 홉별 AS 번호 수동 확인
+whois -h whois.cymru.com " -v 93.184.216.34"
+# traceroute 에 AS 표시 (일부 버전)
+traceroute -A www.example.com</code></pre>
+  <div class="term"><span class="c"># mtr -z 출력 예 (일부)</span>
+HOST: laptop                 Loss%   Snt   Last   Avg  Best  Wrst StDev
+  1. AS???    192.168.0.1     0.0%    20    1.2   1.4   1.0   2.9   0.4
+  2. AS4766   10.20.30.1      0.0%    20    4.1   4.8   3.9   9.2   1.1
+  3. AS4766   112.188.x.x     0.0%    20    5.0   5.3   4.6   7.0   0.6
+  4. AS4766   112.174.x.x     0.0%    20   15.9  16.2  15.1  19.8   1.0
+  5. AS15169  142.250.x.x     0.0%    20   35.2  35.6  34.9  37.1   0.5
+  <span class="c"># 2~4 홉은 내 ISP(AS4766) 내부 = OSPF/IS-IS 영역, 4→5 홉이 eBGP 경계</span></div></div>
+  <div class="tab-panel"><p>Looking Glass는 다른 AS의 라우터에서 BGP 테이블을 조회해 볼 수 있게 공개한 웹 인터페이스입니다. "내 프리픽스가 바깥에서 어떻게 보이는가"를 확인하는 표준 도구입니다.</p><ul><li><b>bgp.tools</b> — 프리픽스/ASN을 입력하면 origin, 업스트림, RPKI 상태, 과거 이력을 보여줌.</li><li><b>RIPE RIS / RIPEstat</b> — 전 세계 수집기에서 본 BGP 경로와 BGPlay 시각화.</li><li><b>Hurricane Electric (bgp.he.net)</b> — AS 관계 그래프, 피어 목록.</li><li>각 ISP의 Looking Glass(예: <code>lg.he.net</code>)에서 <code>show ip bgp 203.0.113.0/24</code> 실행.</li></ul><div class="callout tip"><div class="t">✅ 확인 질문</div><p>bgp.tools에서 자신이 쓰는 ISP의 ASN을 찾고, 그 AS의 업스트림(트랜짓)과 피어 수를 확인하세요. 그 ISP가 광고하는 가장 큰 프리픽스는 무엇인가요?</p></div></div>
+  <div class="tab-panel"><pre><code># FRRouting (vtysh)
+vtysh -c "show ip ospf neighbor"
+vtysh -c "show ip ospf database"
+vtysh -c "show ip bgp summary"
+vtysh -c "show ip bgp 203.0.113.0/24"      # 후보 경로 전부 + 선택 이유
+vtysh -c "show ip route bgp"
+
+# BIRD 2
+birdc show protocols
+birdc show route for 8.8.8.8 all          # 속성 포함
+birdc show route protocol ospf1</code></pre>
+  <div class="term"><span class="c"># show ip bgp 203.0.113.0/24 출력 예 (FRR)</span>
+BGP routing table entry for 203.0.113.0/24
+Paths: (2 available, best #2, table default)
+  64510 64504
+    198.51.100.9 from 198.51.100.9 (10.255.0.9)
+      Origin IGP, metric 50, localpref 200, valid, external
+  64510 64504
+    198.51.100.5 from 198.51.100.5 (10.255.0.5)
+      Origin IGP, metric 30, localpref 200, valid, external, <span class="g">best (MED)</span>
+  <span class="c"># 마지막 줄의 괄호가 "어느 규칙에서 결정됐는가"</span></div></div>
+</div>
+
+<h2 id="quiz"><span class="num">11.10</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>포워딩은 패킷마다 FIB를 LPM으로 조회하는 데이터 평면, 라우팅은 그 테이블을 만드는 제어 평면이다. 선택 순서: 가장 긴 프리픽스 → 낮은 AD → 낮은 metric.</li>
+    <li>거리 벡터(Bellman-Ford)는 이웃의 소문으로 수렴하며 무한 계수 문제가 있다. Split horizon/poison reverse는 2노드 루프만 막는다.</li>
+    <li>링크 상태(Dijkstra)는 모두가 같은 지도(LSDB)를 갖고 각자 최단 경로 트리를 계산한다. OSPF: Hello → 인접 → LSA 플러딩 → SPF, 영역으로 규모를 제어하고 DR/BDR로 인접 수를 줄인다.</li>
+    <li>BGP는 TCP 179 위의 경로 벡터 프로토콜. AS_PATH로 루프를 막고, LOCAL_PREF → AS_PATH 길이 → ORIGIN → MED → eBGP → IGP metric → Router ID 순으로 경로를 고른다.</li>
+    <li>AS 관계(트랜짓/피어링)가 정책을 결정하고(valley-free), 경로 누출·하이재킹 사고를 RPKI/ROV가 부분적으로 막는다. BGP 수렴은 설계상 느리다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz, IP} = TCPIP;
+  const INF = 16;
+
+  /* ---------- 11.2 AS 도식 ---------- */
+  (function(){
+    const g = $('#as-fig');
+    const ases = [
+      {x:150,y:150,rx:130,ry:95,name:'AS 64500 · ISP A',color:'var(--l-tr)',routers:[[90,120],[200,110],[150,195]]},
+      {x:430,y:150,rx:120,ry:95,name:'AS 64501 · 기업',color:'var(--l-net)',routers:[[380,130],[480,130],[430,200]]},
+      {x:700,y:150,rx:120,ry:95,name:'AS 64502 · ISP B',color:'var(--purple)',routers:[[650,120],[750,120],[700,200]]},
+    ];
+    ases.forEach(a=>{
+      g.appendChild(svg('ellipse',{cx:a.x,cy:a.y,rx:a.rx,ry:a.ry,fill:a.color,opacity:.08,stroke:a.color,'stroke-width':1.5,'stroke-dasharray':'6 4'}));
+      g.appendChild(svg('text',{x:a.x,y:a.y-a.ry+18,'text-anchor':'middle','font-weight':'700',fill:a.color},a.name));
+      const r = a.routers;
+      for(let i=0;i<r.length;i++) for(let j=i+1;j<r.length;j++) g.appendChild(svg('line',{x1:r[i][0],y1:r[i][1],x2:r[j][0],y2:r[j][1],stroke:a.color,'stroke-width':2,opacity:.6}));
+      r.forEach(p=>{ g.appendChild(svg('circle',{cx:p[0],cy:p[1],r:13,fill:'var(--surface)',stroke:a.color,'stroke-width':2.5})); g.appendChild(svg('text',{x:p[0],y:p[1]+4,'text-anchor':'middle','font-size':10,'font-weight':'700'},'R')); });
+      g.appendChild(svg('text',{x:a.x,y:a.y+a.ry-12,'text-anchor':'middle','font-size':11,class:'muted'},'내부: OSPF (IGP) + iBGP'));
+    });
+    // eBGP links
+    [[200,110,380,130],[480,130,650,120]].forEach(([x1,y1,x2,y2])=>{
+      g.appendChild(svg('line',{x1,y1,x2,y2,stroke:'var(--red)','stroke-width':3}));
+      g.appendChild(svg('text',{x:(x1+x2)/2,y:(y1+y2)/2-8,'text-anchor':'middle','font-size':11,'font-weight':'700',fill:'var(--red)'},'eBGP (TCP 179)'));
+    });
+    g.appendChild(svg('path',{d:'M150 250 Q 430 320 700 250',fill:'none',stroke:'var(--red)','stroke-width':2,'stroke-dasharray':'5 5'}));
+    g.appendChild(svg('text',{x:430,y:300,'text-anchor':'middle','font-size':11,fill:'var(--red)'},'ISP A ↔ ISP B 피어링 (IX 경유)'));
+    g.appendChild(svg('text',{x:430,y:60,'text-anchor':'middle','font-size':11,class:'muted'},'기업은 ISP A·B 양쪽에서 트랜짓을 산다 (멀티호밍)'));
+  })();
+
+  /* ---------- 11.3 거리 벡터 ---------- */
+  (function(){
+    const N = ['A','B','C','D','E'];
+    const pos = {A:[60,60],B:[220,40],C:[380,60],D:[140,180],E:[300,180]};
+    const edges = [['A','B',2],['B','C',1],['A','D',4],['B','D',1],['C','E',3],['D','E',1]];
+    const cost = {}; N.forEach(n=>cost[n]={});
+    edges.forEach(([a,b,c])=>{cost[a][b]=c;cost[b][a]=c;});
+    // simulate synchronous rounds
+    const rounds = []; // rounds[k][node] = {dest:{d,via}}
+    let st = {};
+    N.forEach(n=>{ st[n]={}; N.forEach(m=>{ st[n][m] = n===m?{d:0,via:'—'}:(cost[n][m]!=null?{d:cost[n][m],via:m}:{d:INF,via:'—'}); }); });
+    rounds.push(JSON.parse(JSON.stringify(st)));
+    for(let r=0;r<6;r++){
+      const nx = JSON.parse(JSON.stringify(st)); let changed=false;
+      N.forEach(x=>{ N.forEach(y=>{ if(x===y) return; let best = cost[x][y]!=null?{d:cost[x][y],via:y}:{d:INF,via:'—'};
+        Object.keys(cost[x]).forEach(v=>{ const alt = cost[x][v] + st[v][y].d; if(alt<best.d) best={d:alt,via:v}; });
+        if(best.d!==st[x][y].d||best.via!==st[x][y].via) changed=true; nx[x][y]=best; }); });
+      rounds.push(nx); st=nx; if(!changed) break;
+    }
+    const g = $('#dv-svg');
+    edges.forEach(([a,b,c])=>{ const [x1,y1]=pos[a],[x2,y2]=pos[b]; g.appendChild(svg('line',{x1,y1,x2,y2,class:'wire',id:`dv-e-${a}${b}`})); g.appendChild(svg('rect',{x:(x1+x2)/2-9,y:(y1+y2)/2-9,width:18,height:18,rx:4,fill:'var(--surface)',stroke:'var(--border)'})); g.appendChild(svg('text',{x:(x1+x2)/2,y:(y1+y2)/2+4,'text-anchor':'middle','font-size':11,'font-weight':'700'},String(c))); });
+    N.forEach(n=>{ const [x,y]=pos[n]; g.appendChild(svg('circle',{cx:x,cy:y,r:18,fill:'var(--primary-soft)',stroke:'var(--primary)','stroke-width':2,id:'dv-n-'+n})); g.appendChild(svg('text',{x,y:y+5,'text-anchor':'middle','font-weight':'700','font-size':14},n)); });
+    const msgG = svg('g',{id:'dv-msgs'}); g.appendChild(msgG);
+    const tbl = $('#dv-tables');
+    function render(k){
+      tbl.innerHTML=''; const cur=rounds[k], prev=rounds[k-1];
+      N.forEach(n=>{ const t=el('table'); let h=`<caption>${n}의 벡터</caption><tr><th>목적지</th><th>거리</th><th>via</th></tr>`; let ch=false;
+        N.forEach(m=>{ const c=cur[n][m]; const chg = prev && (prev[n][m].d!==c.d||prev[n][m].via!==c.via); if(chg) ch=true; h+=`<tr><td>${m}</td><td class="${chg?'chg':''}">${c.d>=INF?'∞':c.d}</td><td class="${chg?'chg':''}">${c.via}</td></tr>`; });
+        t.innerHTML=h; if(ch) t.classList.add('active'); tbl.appendChild(t); });
+      msgG.innerHTML=''; if(k>0){ edges.forEach(([a,b])=>{ const [x1,y1]=pos[a],[x2,y2]=pos[b]; [[x1,y1,x2,y2],[x2,y2,x1,y1]].forEach(([sx,sy,tx,ty])=>{ const c=svg('circle',{r:5,fill:'var(--accent)',cx:sx,cy:sy,class:'anim-move'}); msgG.appendChild(c); requestAnimationFrame(()=>requestAnimationFrame(()=>{c.style.transform=`translate(${tx-sx}px,${ty-sy}px)`;})); }); }); }
+    }
+    const steps = rounds.map((r,k)=>({title: k===0?'초기화: 직접 연결만 안다':`라운드 ${k}: 이웃 벡터 수신 후 갱신`, text: k===0?'각 라우터는 자기 자신(0)과 직접 연결된 이웃까지의 링크 비용만 안다. 나머지는 ∞.': (k===rounds.length-1?'더 이상 바뀌는 항목이 없다 — <b>수렴</b>. 최대 경로 길이(홉)만큼의 라운드가 걸린다. 주황 표시가 없는 것을 확인하라.':`모든 라우터가 이전 라운드의 벡터를 이웃에게 보낸다(주황 점). 각 라우터는 <code>min(링크비용 + 이웃의 거리)</code>로 갱신한다. <span class="tag orange">주황 셀</span>이 이번 라운드에 바뀐 값, 파란 테두리가 바뀐 라우터.`), run(){ render(k); }}));
+    Stepper('#dv-anim',{steps,autoplayMs:2400,intro:'5개 라우터가 거리 벡터를 교환하며 수렴하는 과정입니다.',reset(){ render(0); }});
+  })();
+
+  /* ---------- 11.3b count-to-infinity ---------- */
+  (function(){
+    const g = $('#c2i-svg'); const pos={A:[60,55],B:[220,55],C:[380,55]};
+    g.appendChild(svg('line',{x1:60,y1:55,x2:220,y2:55,class:'wire'}));
+    const bc = svg('line',{x1:220,y1:55,x2:380,y2:55,class:'wire',id:'c2i-bc'}); g.appendChild(bc);
+    const xmark = svg('text',{x:300,y:48,'text-anchor':'middle','font-size':22,fill:'var(--red)','font-weight':'800',id:'c2i-x',opacity:0},'✕'); g.appendChild(xmark);
+    g.appendChild(svg('text',{x:140,y:45,'text-anchor':'middle','font-size':11},'cost 1')); g.appendChild(svg('text',{x:300,y:75,'text-anchor':'middle','font-size':11},'cost 1'));
+    Object.entries(pos).forEach(([n,[x,y]])=>{ g.appendChild(svg('circle',{cx:x,cy:y,r:18,fill:'var(--primary-soft)',stroke:'var(--primary)','stroke-width':2})); g.appendChild(svg('text',{x,y:y+5,'text-anchor':'middle','font-weight':'700','font-size':14},n)); });
+    const advG = svg('g'); g.appendChild(advG);
+    const tbl = $('#c2i-tables');
+    const sh = $('#c2i-sh');
+    const steps = [];
+    function build(){
+      steps.length=0; const split = sh.checked;
+      let A={d:2,via:'B'}, B={d:1,via:'C'};
+      const hist=[{A:{...A},B:{...B},advAB:null,advBA:null}];
+      for(let r=1;r<=8;r++){
+        const advAB = (split && A.via==='B') ? INF : A.d;  // A → B 광고 (목적지 C)
+        const advBA = (split && B.via==='A') ? INF : B.d;  // B → A 광고
+        const nA = {d:Math.min(INF,advBA+1),via:'B'}; if(nA.d>=INF) nA.via='—';
+        const nB = {d:Math.min(INF,advAB+1),via:'A'}; if(nB.d>=INF) nB.via='—';
+        const changed = nA.d!==A.d||nB.d!==B.d; A=nA; B=nB;
+        hist.push({A:{...A},B:{...B},advAB,advBA});
+        if(!changed) break;
+      }
+      hist.forEach((h,k)=>{
+        let title,text;
+        if(k===0){ title='링크 B–C 단절 직전'; text='A: C까지 2 (via B), B: C까지 1 (직접). 이제 B–C 링크가 끊어진다.'; }
+        else { const f=v=>v>=INF?'∞':v; title=`라운드 ${k}: A→B "${f(h.advAB)}", B→A "${f(h.advBA)}"`;
+          if(split) text = k===1?`A는 C로 가는 경로가 B를 거치므로 B에게는 <b>∞(poison reverse)</b>로 광고한다. B는 직접 링크도 잃었고 A도 ∞라 하니 C=∞. A는 B의 <i>이전</i> 광고(1)를 받아 아직 2.`:(k===2?`B가 A에게 ∞를 광고 → A도 C=∞. 두 라운드 만에 "C는 못 간다"로 수렴.`:`더 이상 변화 없음. 수렴 완료.`);
+          else text = k===1?`B는 직접 링크를 잃었지만, A가 "C까지 2"라고 광고하므로 <b>B: C=3 via A</b>로 믿는다 — A의 경로가 사실은 B를 거친다는 것을 모른다.`:(k<8?`A는 B가 ${f(h.advBA)}라 하니 ${f(h.A.d)}로, B는 A가 ${f(h.advAB)}라 하니 ${f(h.B.d)}로 갱신. 서로를 가리키며 거리만 1씩 오른다 — 그동안 C행 패킷은 A↔B 사이를 핑퐁하다 TTL로 죽는다.`:`… 이 과정이 16(∞)에 닿을 때까지 반복된다. RIP의 30초 주기라면 수 분. <b>count-to-infinity</b>.`); }
+        steps.push({title,text,run(){ render(h,k,split); }});
+      });
+    }
+    function render(h,k,split){
+      $('#c2i-x').setAttribute('opacity',k>0?1:0); $('#c2i-bc').setAttribute('stroke-dasharray',k>0?'4 4':'');
+      const f=v=>v>=INF?'∞':v;
+      tbl.innerHTML=`<div class="nd"><b>A의 경로 → C</b>거리 ${f(h.A.d)} via ${h.A.via}</div><div class="nd"><b>B의 경로 → C</b>거리 ${f(h.B.d)} via ${h.B.via}</div>`+(k>0?`<div class="nd"><b>이번 라운드 광고 (목적지 C)</b>A→B: ${f(h.advAB)}${split&&h.advAB>=INF?' (poison)':''} · B→A: ${f(h.advBA)}</div>`:'');
+      advG.innerHTML=''; if(k>0){ [[60,220,h.advAB,-14],[220,60,h.advBA,14]].forEach(([sx,tx,v,dy])=>{ const t=svg('text',{x:sx,y:55+dy+(dy>0?5:-2),'text-anchor':'middle','font-size':11,'font-weight':'700',fill:v>=INF?'var(--red)':'var(--accent)',class:'anim-move'},`C=${f(v)}`); advG.appendChild(t); requestAnimationFrame(()=>requestAnimationFrame(()=>{t.style.transform=`translate(${tx-sx}px,0)`;})); }); }
+    }
+    build();
+    const stp = Stepper('#c2i-anim',{steps,autoplayMs:2000,intro:'A–B–C 직선 토폴로지에서 B–C 링크가 끊어집니다.',reset(){ build(); render({A:{d:2,via:'B'},B:{d:1,via:'C'}},0,sh.checked); }});
+    sh.addEventListener('change',()=>stp.reset());
+  })();
+
+  /* ---------- 11.4 Dijkstra ---------- */
+  (function(){
+    const nodes = {A:[70,80],B:[240,40],C:[410,80],D:[160,210],E:[330,220],F:[500,200],G:[600,80]};
+    const edges = [['A','B',4],['A','D',2],['B','C',3],['B','D',5],['B','E',6],['C','E',2],['C','G',4],['D','E',7],['E','F',3],['F','G',2],['C','F',6]];
+    const adj={}; Object.keys(nodes).forEach(n=>adj[n]=[]); edges.forEach(([a,b,w])=>{adj[a].push([b,w]);adj[b].push([a,w]);});
+    const g=$('#dj-svg'); const eEl={};
+    edges.forEach(([a,b,w])=>{ const [x1,y1]=nodes[a],[x2,y2]=nodes[b]; const l=svg('line',{x1,y1,x2,y2,stroke:'var(--border)','stroke-width':3}); g.appendChild(l); eEl[a+b]=eEl[b+a]=l; g.appendChild(svg('rect',{x:(x1+x2)/2-10,y:(y1+y2)/2-9,width:20,height:18,rx:4,fill:'var(--surface)',stroke:'var(--border)'})); g.appendChild(svg('text',{x:(x1+x2)/2,y:(y1+y2)/2+4,'text-anchor':'middle','font-size':11,'font-weight':'700'},String(w))); });
+    const nEl={}, dEl={};
+    Object.entries(nodes).forEach(([n,[x,y]])=>{ const c=svg('circle',{cx:x,cy:y,r:19,fill:'var(--surface)',stroke:'var(--muted)','stroke-width':2.5}); g.appendChild(c); nEl[n]=c; g.appendChild(svg('text',{x,y:y+5,'text-anchor':'middle','font-weight':'700','font-size':14},n)); const d=svg('text',{x,y:y+36,'text-anchor':'middle','font-size':11,class:'mono','font-weight':'700',fill:'var(--primary-text)'},'∞'); g.appendChild(d); dEl[n]=d; });
+    const sel=$('#dj-start'); Object.keys(nodes).forEach(n=>sel.appendChild(el('option','',n)));
+    const steps=[];
+    function run(start){
+      const dist={},prev={},vis=new Set(); Object.keys(nodes).forEach(n=>dist[n]=Infinity); dist[start]=0;
+      const rec=[{type:'init',dist:{...dist},prev:{...prev},vis:[],u:null,relax:[]}];
+      while(vis.size<Object.keys(nodes).length){
+        let u=null; Object.keys(nodes).forEach(n=>{ if(!vis.has(n)&&(u===null||dist[n]<dist[u])) u=n; }); if(dist[u]===Infinity) break;
+        vis.add(u); const relax=[];
+        adj[u].forEach(([v,w])=>{ if(vis.has(v)) return; const alt=dist[u]+w; const imp=alt<dist[v]; if(imp){dist[v]=alt;prev[v]=u;} relax.push({v,alt,imp,old:imp?null:dist[v]}); });
+        rec.push({type:'visit',u,dist:{...dist},prev:{...prev},vis:[...vis],relax});
+      }
+      return rec;
+    }
+    function draw(r,start){
+      Object.keys(nodes).forEach(n=>{ const c=nEl[n]; const isV=r.vis.includes(n); c.setAttribute('fill', n===r.u?'var(--accent)':(isV?'var(--green)':'var(--surface)')); c.setAttribute('stroke', n===r.u?'var(--accent)':(isV?'var(--green)':'var(--muted)')); dEl[n].textContent = r.dist[n]===Infinity?'∞':r.dist[n]; });
+      edges.forEach(([a,b])=>{ const l=eEl[a+b]; l.setAttribute('stroke','var(--border)'); l.setAttribute('stroke-width',3); l.removeAttribute('stroke-dasharray'); });
+      Object.entries(r.prev).forEach(([v,u])=>{ if(r.vis.includes(v)){ const l=eEl[u+v]; l.setAttribute('stroke','var(--green)'); l.setAttribute('stroke-width',5); } });
+      r.relax.forEach(({v,imp})=>{ const l=eEl[r.u+v]; l.setAttribute('stroke', imp?'var(--primary)':'var(--muted)'); l.setAttribute('stroke-dasharray','6 4'); l.setAttribute('stroke-width',4); });
+      // tentative table
+      let h='<tr><th>노드</th><th>거리</th><th>prev</th><th>상태</th></tr>';
+      Object.keys(nodes).forEach(n=>{ h+=`<tr><td>${n}</td><td>${r.dist[n]===Infinity?'∞':r.dist[n]}</td><td>${r.prev[n]||'—'}</td><td>${n===r.u?'<span class="tag orange">확정 중</span>':(r.vis.includes(n)?'<span class="tag green">확정</span>':'<span class="tag">임시</span>')}</td></tr>`; });
+      $('#dj-tent').innerHTML=h;
+      // routing table (final only when all visited)
+      let rt='<tr><th>목적지</th><th>비용</th><th>next-hop</th></tr>';
+      Object.keys(nodes).forEach(n=>{ if(n===start) return; if(!r.vis.includes(n)){ rt+=`<tr><td>${n}</td><td class="muted">…</td><td class="muted">…</td></tr>`; return; } let c=n; while(r.prev[c]&&r.prev[c]!==start) c=r.prev[c]; rt+=`<tr><td>${n}</td><td>${r.dist[n]}</td><td>${c}</td></tr>`; });
+      $('#dj-rt').innerHTML=rt;
+    }
+    function build(){
+      const start=sel.value; const rec=run(start); steps.length=0;
+      rec.forEach((r,k)=>{
+        if(k===0) steps.push({title:`초기화: ${start}=0, 나머지 ∞`,text:'뿌리 라우터만 거리 0. 아직 확정된 노드는 없다.',run(){draw(r,start);}});
+        else { const txt = `미방문 노드 중 임시 거리가 가장 작은 <b>${r.u}</b>(${r.dist[r.u]})를 확정한다. 이웃을 완화(relax): `+ (r.relax.length? r.relax.map(x=>`${x.v}: ${r.dist[r.u]}+w=${x.alt}${x.imp?' <span class="tag green">갱신</span>':' <span class="tag">기존이 더 짧음</span>'}`).join(', ') : '미방문 이웃 없음.') + (k===rec.length-1?' — 모든 노드 확정. 초록 간선이 <b>최단 경로 트리</b>, 오른쪽이 라우팅 테이블.':'');
+          steps.push({title:`단계 ${k}: ${r.u} 확정`,text:txt,run(){draw(r,start);}}); }
+      });
+    }
+    build();
+    const stp=Stepper('#dj-anim',{steps,autoplayMs:2000,intro:'시작 라우터를 뿌리로 최단 경로 트리를 만듭니다.',reset(){ build(); draw(steps.length?run(sel.value)[0]:null,sel.value); }});
+    sel.addEventListener('change',()=>stp.reset());
+  })();
+
+  /* ---------- 11.5 OSPF area / DR ---------- */
+  (function(){
+    const g=$('#ospf-area');
+    const area=(x,y,w,h,name,col)=>{ g.appendChild(svg('rect',{x,y,width:w,height:h,rx:16,fill:col,opacity:.08,stroke:col,'stroke-width':1.5})); g.appendChild(svg('text',{x:x+w/2,y:y+20,'text-anchor':'middle','font-weight':'700',fill:col},name)); };
+    area(250,20,360,110,'Area 0 (Backbone)','var(--primary)');
+    area(20,160,300,120,'Area 1','var(--green)');
+    area(540,160,300,120,'Area 2 (Stub)','var(--purple)');
+    const R=(x,y,n,role,col)=>{ g.appendChild(svg('circle',{cx:x,cy:y,r:16,fill:'var(--surface)',stroke:col||'var(--muted)','stroke-width':2.5})); g.appendChild(svg('text',{x,y:y+4,'text-anchor':'middle','font-size':10,'font-weight':'700'},n)); if(role) g.appendChild(svg('text',{x,y:y+30,'text-anchor':'middle','font-size':10,'font-weight':'700',fill:col},role)); };
+    const L=(a,b,dash)=>g.appendChild(svg('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],class:'wire','stroke-dasharray':dash||''}));
+    L([320,75],[430,60]);L([430,60],[540,75]);L([320,75],[430,100]);L([430,100],[540,75]);
+    L([320,75],[120,215]);L([120,215],[220,250]);L([120,215],[80,250]);
+    L([540,75],[700,215]);L([700,215],[640,250]);L([700,215],[780,250]);
+    L([430,60],[430,-10],'4 4');
+    R(430,60,'R1','ASBR','var(--red)');R(430,100,'R2');R(320,75,'ABR1','ABR','var(--accent)');R(540,75,'ABR2','ABR','var(--accent)');
+    R(120,215,'R3');R(220,250,'R4');R(80,250,'R5');R(700,215,'R6');R(640,250,'R7');R(780,250,'R8');
+    g.appendChild(svg('text',{x:460,y:12,'font-size':10,fill:'var(--red)'},'외부 (BGP/정적) → Type 5 LSA'));
+    g.appendChild(svg('text',{x:200,y:150,'font-size':10,fill:'var(--accent)'},'Type 3 Summary ↕'));
+    g.appendChild(svg('text',{x:570,y:150,'font-size':10,fill:'var(--accent)'},'Type 3 Summary ↕ (Stub: Type 5 대신 디폴트)'));
+    // DR fig
+    const d=$('#dr-fig');
+    const seg=(ox,title,drmode)=>{ d.appendChild(svg('text',{x:ox+150,y:18,'text-anchor':'middle','font-weight':'700','font-size':12},title)); d.appendChild(svg('line',{x1:ox+20,y1:140,x2:ox+280,y2:140,stroke:'var(--muted)','stroke-width':4})); const pts=[]; for(let i=0;i<5;i++){ const x=ox+40+i*55; pts.push([x,60]); }
+      if(!drmode){ for(let i=0;i<5;i++) for(let j=i+1;j<5;j++) d.appendChild(svg('path',{d:`M${pts[i][0]} ${pts[i][1]} Q ${(pts[i][0]+pts[j][0])/2} ${60+Math.abs(i-j)*18} ${pts[j][0]} ${pts[j][1]}`,fill:'none',stroke:'var(--primary)','stroke-width':1.5,opacity:.6})); }
+      else { for(let i=2;i<5;i++){ d.appendChild(svg('path',{d:`M${pts[0][0]} ${pts[0][1]} Q ${(pts[0][0]+pts[i][0])/2} ${60+i*14} ${pts[i][0]} ${pts[i][1]}`,fill:'none',stroke:'var(--green)','stroke-width':2})); d.appendChild(svg('path',{d:`M${pts[1][0]} ${pts[1][1]} Q ${(pts[1][0]+pts[i][0])/2} ${60+i*10} ${pts[i][0]} ${pts[i][1]}`,fill:'none',stroke:'var(--accent)','stroke-width':2})); } d.appendChild(svg('line',{x1:pts[0][0],y1:60,x2:pts[1][0],y2:60,stroke:'var(--green)','stroke-width':2})); }
+      pts.forEach(([x,y],i)=>{ d.appendChild(svg('line',{x1:x,y1:y,x2:x,y2:140,stroke:'var(--border)','stroke-width':2})); d.appendChild(svg('circle',{cx:x,cy:y,r:13,fill:'var(--surface)',stroke: drmode&&i===0?'var(--green)':(drmode&&i===1?'var(--accent)':'var(--muted)'),'stroke-width':2.5})); d.appendChild(svg('text',{x,y:y+4,'text-anchor':'middle','font-size':9,'font-weight':'700'},'R'+(i+1))); if(drmode&&i<2) d.appendChild(svg('text',{x,y:y-20,'text-anchor':'middle','font-size':10,'font-weight':'700',fill:i===0?'var(--green)':'var(--accent)'},i===0?'DR':'BDR')); });
+      d.appendChild(svg('text',{x:ox+150,y:162,'text-anchor':'middle','font-size':11,class:'muted'},drmode?'인접 2n−3 = 7':'인접 n(n−1)/2 = 10')); };
+    seg(10,'DR 없이',false); seg(380,'DR/BDR 선출 후',true);
+  })();
+
+  /* ---------- 11.6 AS_PATH 루프 ---------- */
+  (function(){
+    const g=$('#aspath-svg'); const P={100:[100,115],200:[300,40],300:[500,40],400:[600,180]};
+    const names={100:'AS 100\n(원천)',200:'AS 200',300:'AS 300',400:'AS 400'};
+    [[100,200],[200,300],[300,400],[400,100]].forEach(([a,b])=>g.appendChild(svg('line',{x1:P[a][0],y1:P[a][1],x2:P[b][0],y2:P[b][1],class:'wire'})));
+    Object.entries(P).forEach(([n,[x,y]])=>{ g.appendChild(svg('ellipse',{cx:x,cy:y,rx:46,ry:28,fill:'var(--primary-soft)',stroke:'var(--primary)','stroke-width':2,id:'ap-'+n})); names[n].split('\n').forEach((s,i)=>g.appendChild(svg('text',{x,y:y+(i?12:-2)+(names[n].includes('\n')?0:6),'text-anchor':'middle','font-size':11,'font-weight':'700'},s))); });
+    const lbl=svg('g'); g.appendChild(lbl);
+    const put=(x,y,txt,col)=>{ const t=svg('text',{x,y,'text-anchor':'middle','font-size':11,'font-weight':'700',class:'mono',fill:col||'var(--text)'},txt); lbl.appendChild(t); };
+    const steps=[
+      {title:'AS 100이 프리픽스를 원천 광고',text:'AS 100은 자기 프리픽스 10.0.0.0/8을 eBGP 피어 AS 200에게 광고하며 AS_PATH에 자기 번호를 붙인다: <code>[100]</code>.',run(){ put(200,60,'10.0.0.0/8  AS_PATH [100]','var(--green)'); }},
+      {title:'AS 200 → AS 300',text:'AS 200은 경로를 받아들이고(자기 ASN 없음), AS 300에 전달하며 앞에 200을 붙인다: <code>[200 100]</code>.',run(){ put(400,22,'AS_PATH [200 100]','var(--green)'); }},
+      {title:'AS 300 → AS 400',text:'마찬가지로 <code>[300 200 100]</code>. 경로 길이가 3으로 늘었다. 멀리 갈수록 선호도는 낮아진다.',run(){ put(585,110,'[300 200 100]','var(--green)'); }},
+      {title:'AS 400 → AS 100: 루프 감지',text:'AS 400이 <code>[400 300 200 100]</code>을 AS 100에게 광고한다. AS 100은 AS_PATH에서 <b>자기 ASN(100)</b>을 발견 → <b>즉시 폐기</b>. 이것이 BGP의 루프 방지이며, 별도 알고리즘 없이 경로 정보 자체에서 루프가 드러난다.',run(){ put(330,170,'[400 300 200 100] ✕ 거부','var(--red)'); $('#ap-100').setAttribute('stroke','var(--red)'); $('#ap-100').setAttribute('fill','var(--red-soft)'); }},
+    ];
+    Stepper('#aspath-anim',{steps,autoplayMs:2200,intro:'AS 100이 자기 프리픽스를 광고하고, 그 광고가 링을 돌아 자신에게 돌아옵니다.',reset(){ lbl.innerHTML=''; $('#ap-100').setAttribute('stroke','var(--primary)'); $('#ap-100').setAttribute('fill','var(--primary-soft)'); }});
+  })();
+
+  /* ---------- 11.6 BGP 경로 선택 ---------- */
+  (function(){
+    const C=[
+      {id:1,nh:'198.51.100.1',lp:100,path:'64520 64530 64504',origin:'i',med:10,sess:'eBGP',igp:5,rid:'1.1.1.1'},
+      {id:2,nh:'198.51.100.2',lp:200,path:'64501 64502 64503 64504',origin:'i',med:0,sess:'eBGP',igp:10,rid:'2.2.2.2'},
+      {id:3,nh:'10.255.0.3',lp:200,path:'64510 64504',origin:'i',med:30,sess:'iBGP',igp:20,rid:'3.3.3.3'},
+      {id:4,nh:'198.51.100.4',lp:200,path:'64520 64504',origin:'?',med:20,sess:'eBGP',igp:5,rid:'4.4.4.4'},
+      {id:5,nh:'198.51.100.5',lp:200,path:'64510 64504',origin:'i',med:30,sess:'eBGP',igp:15,rid:'5.5.5.5'},
+      {id:6,nh:'198.51.100.6',lp:200,path:'64510 64504',origin:'i',med:50,sess:'eBGP',igp:25,rid:'6.6.6.6'},
+    ];
+    const tb=$('#bgp-cand tbody');
+    C.forEach(c=>{ const tr=el('tr'); tr.id='cand-'+c.id; tr.innerHTML=`<td>${c.id}</td><td class="mono">${c.nh}</td><td>${c.lp}</td><td class="mono">${c.path}</td><td>${c.origin}</td><td>${c.med}</td><td>${c.sess}</td><td>${c.igp}</td><td class="mono">${c.rid}</td>`; tb.appendChild(tr); });
+    const RULES=[
+      {n:'NEXT_HOP 도달 가능성',f:cs=>cs,why:'모든 후보의 next-hop이 IGP로 도달 가능하다고 가정 → 탈락 없음. (실무에서는 여기서 걸러지는 경우가 의외로 많다: iBGP next-hop이 IGP에 없을 때.)'},
+      {n:'가장 높은 LOCAL_PREF',f:cs=>{const m=Math.max(...cs.map(c=>c.lp));return cs.filter(c=>c.lp===m);},why:'LOCAL_PREF 200이 최고. #1(100)은 트랜짓 경로라 낮게 설정된 것 → 탈락.'},
+      {n:'가장 짧은 AS_PATH',f:cs=>{const m=Math.min(...cs.map(c=>c.path.split(' ').length));return cs.filter(c=>c.path.split(' ').length===m);},why:'길이 2가 최단. #2(길이 4)는 탈락. AS_PATH 길이는 홉 수이지 거리가 아니다 — prepending으로 조작 가능.'},
+      {n:'가장 낮은 ORIGIN (i < e < ?)',f:cs=>{const o={i:0,e:1,'?':2};const m=Math.min(...cs.map(c=>o[c.origin]));return cs.filter(c=>o[c.origin]===m);},why:'#4는 재분배된 경로(?)라 탈락. 나머지는 i.'},
+      {n:'가장 낮은 MED (같은 이웃 AS끼리)',f:cs=>{const by={};cs.forEach(c=>{const k=c.path.split(' ')[0];(by[k]=by[k]||[]).push(c);});let out=[];Object.values(by).forEach(arr=>{const m=Math.min(...arr.map(c=>c.med));out=out.concat(arr.filter(c=>c.med===m));});return out;},why:'남은 #3·#5·#6은 모두 이웃 AS 64510에서 왔으므로 MED 비교 가능. 30 < 50 → #6 탈락. #3과 #5는 동률(30).'},
+      {n:'eBGP를 iBGP보다 선호',f:cs=>cs.some(c=>c.sess==='eBGP')?cs.filter(c=>c.sess==='eBGP'):cs,why:'#3은 iBGP(다른 내부 라우터가 배운 것을 전달) → 탈락. 직접 외부에서 배운 #5가 "핫 포테이토" 원칙상 우선: 트래픽을 빨리 내 AS 밖으로 내보낸다.'},
+      {n:'next-hop까지 IGP metric이 가장 낮은 경로',f:cs=>{const m=Math.min(...cs.map(c=>c.igp));return cs.filter(c=>c.igp===m);},why:'하나만 남았으므로 적용할 것 없음. (여러 개였다면 가장 가까운 출구를 고른다.)'},
+      {n:'가장 오래된 경로 → 가장 낮은 Router ID',f:cs=>{return [cs.slice().sort((a,b)=>a.rid.localeCompare(b.rid))[0]];},why:'동률 깨기 최종 단계. 여기서는 이미 #5가 유일한 최선 경로. <b>#5 선택.</b>'},
+    ];
+    const ul=$('#bgp-rules'); RULES.forEach((r,i)=>ul.appendChild(el('li','',`${i+1}. ${r.n}`)));
+    let cur=C.slice();
+    const steps=RULES.map((r,i)=>({title:`규칙 ${i+1}: ${r.n}`,text:'',run(){ const next=r.f(cur); cur.forEach(c=>{ if(!next.includes(c)) $('#cand-'+c.id).classList.add('out'); }); cur=next; $$('#bgp-rules li').forEach((li,j)=>{ li.classList.toggle('done',j<i); li.classList.toggle('cur',j===i); }); if(i===RULES.length-1||cur.length===1) cur.forEach(c=>$('#cand-'+c.id).classList.add('win')); const cap=$('#bgp-anim .caption'); setTimeout(()=>{ cap.innerHTML=`<b>${i+1}. ${r.n}</b><div>${r.why} 남은 후보: ${cur.map(c=>'#'+c.id).join(', ')}</div>`; },0); }}));
+    Stepper('#bgp-anim',{steps,autoplayMs:2600,intro:'6개의 후보 경로에 선택 규칙을 순서대로 적용합니다.',reset(){ cur=C.slice(); $$('#bgp-cand tbody tr').forEach(tr=>tr.classList.remove('out','win')); $$('#bgp-rules li').forEach(li=>li.classList.remove('done','cur')); }});
+  })();
+
+  /* ---------- 11.8 LPM ---------- */
+  (function(){
+    const T=[
+      {p:'0.0.0.0/0',nh:'via 203.0.113.1 dev eth0',src:'static (디폴트)'},
+      {p:'10.0.0.0/8',nh:'via 10.255.0.1 dev eth1',src:'bgp (집계)'},
+      {p:'10.1.0.0/16',nh:'via 10.1.0.1 dev eth1',src:'ospf'},
+      {p:'10.1.2.0/24',nh:'dev eth2 (직접 연결)',src:'kernel'},
+      {p:'10.1.2.128/25',nh:'via 10.1.2.129 dev eth2',src:'ospf'},
+      {p:'10.1.2.200/32',nh:'dev lo (로컬 주소)',src:'kernel (local)'},
+      {p:'172.16.0.0/12',nh:'blackhole (폐기)',src:'static'},
+      {p:'192.168.0.0/16',nh:'via 192.168.0.1 dev eth3',src:'static'},
+      {p:'192.168.10.0/24',nh:'dev eth3 (직접 연결)',src:'kernel'},
+    ].map(r=>{ const [a,l]=r.p.split('/'); return {...r,net:IP.parse(a),len:+l}; });
+    const tb=$('#lpm-table tbody');
+    function render(){
+      const ip=IP.parse($('#lpm-ip').value); tb.innerHTML=''; let best=null;
+      if(ip==null){ $('#lpm-result').innerHTML='<span style="color:var(--red)">올바른 IPv4 주소를 입력하세요.</span>'; return; }
+      const db=IP.bin(ip);
+      T.forEach(r=>{ const m=IP.mask(r.len); const match=((ip&m)>>>0)===((r.net&m)>>>0); if(match&&(!best||r.len>best.len)) best=r; r._m=match; });
+      T.forEach(r=>{ const tr=el('tr', r===best?'best':(r._m?'match':'nomatch')); const nb=IP.bin(r.net); let bits=''; for(let i=0;i<32;i++){ if(i&&i%8===0) bits+='.'; if(i<r.len){ bits+= nb[i]===db[i]?nb[i]:`<i>${nb[i]}</i>`; } else bits+='<span class="muted">·</span>'; }
+        tr.innerHTML=`<td class="mono">${r.p}</td><td class="bin">${bits}</td><td class="mono">${r.nh}</td><td>${r.src}</td><td>${r===best?'<span class="tag green">선택</span>':(r._m?'<span class="tag blue">매칭</span>':'<span class="tag">불일치</span>')}</td>`; tb.appendChild(tr); });
+      const mc=T.filter(r=>r._m).length;
+      $('#lpm-result').innerHTML=`목적지 <b class="mono">${IP.str(ip)}</b> = <span class="mono small">${db.match(/.{8}/g).join('.')}</span><br>매칭 ${mc}개 중 가장 긴 프리픽스 <b class="mono">${best.p}</b> 선택 → <b>${best.nh}</b>`+(best.p==='0.0.0.0/0'?' (디폴트 경로: 아무것도 안 맞을 때의 안전망)':'')+(best.nh.startsWith('blackhole')?' — <span style="color:var(--red)">패킷은 조용히 폐기된다(RFC 1918 사설 대역 누출 방지).</span>':'');
+    }
+    $('#lpm-ip').addEventListener('input',render); $$('.row button[data-ip]').forEach(b=>b.addEventListener('click',()=>{ $('#lpm-ip').value=b.dataset.ip; render(); })); render();
+    // aggregation fig
+    const g=$('#aggr-fig');
+    const subs=['10.1.0.0/24','10.1.1.0/24','10.1.2.0/24','10.1.3.0/24'];
+    const bins=['00001010.00000001.000000<b>00</b>','00001010.00000001.000000<b>01</b>','00001010.00000001.000000<b>10</b>','00001010.00000001.000000<b>11</b>'];
+    subs.forEach((s,i)=>{ const y=25+i*42; g.appendChild(svg('rect',{x:20,y,width:300,height:32,rx:6,fill:'var(--green-soft)',stroke:'var(--green)'})); g.appendChild(svg('text',{x:30,y:y+14,'font-size':11,'font-weight':'700',class:'mono'},s)); const t=svg('text',{x:30,y:y+27,'font-size':9.5,class:'mono muted'}); t.innerHTML=bins[i].replace(/<b>/g,'<tspan fill="var(--accent)" font-weight="700">').replace(/<\/b>/g,'</tspan>'); g.appendChild(t); g.appendChild(svg('line',{x1:320,y1:y+16,x2:400,y2:100,class:'wire'})); });
+    g.appendChild(svg('rect',{x:400,y:70,width:70,height:60,rx:10,fill:'var(--surface-2)',stroke:'var(--border)'})); g.appendChild(svg('text',{x:435,y:105,'text-anchor':'middle','font-size':11,'font-weight':'700'},'라우터'));
+    g.appendChild(svg('line',{x1:470,y1:100,x2:560,y2:100,class:'wire'}));
+    g.appendChild(svg('rect',{x:560,y:72,width:280,height:56,rx:8,fill:'var(--primary-soft)',stroke:'var(--primary)','stroke-width':2})); g.appendChild(svg('text',{x:575,y:95,'font-size':13,'font-weight':'700',class:'mono'},'10.1.0.0/22')); g.appendChild(svg('text',{x:575,y:115,'font-size':10,class:'mono muted'},'00001010.00000001.000000xx — 앞 22비트 공통'));
+    g.appendChild(svg('text',{x:700,y:160,'text-anchor':'middle','font-size':11,class:'muted'},'상위 AS에는 이 한 줄만 광고 (4 → 1)'));
+    g.appendChild(svg('text',{x:435,y:150,'text-anchor':'middle','font-size':10,fill:'var(--red)'},'+ 10.1.0.0/22 → Null0'));
+    g.appendChild(svg('text',{x:435,y:163,'text-anchor':'middle','font-size':9,class:'muted'},'(블랙홀 루프 방지)'));
+  })();
+
+  /* ---------- 11.10 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'라우터가 한 패킷의 출력 인터페이스를 결정할 때 적용하는 순서로 옳은 것은?',options:['낮은 AD → 긴 프리픽스 → 낮은 metric','긴 프리픽스 → 낮은 AD → 낮은 metric','낮은 metric → 긴 프리픽스 → 낮은 AD','긴 프리픽스 → 낮은 metric → 낮은 AD'],answer:1,explain:'Longest Prefix Match가 항상 첫째다. 같은 프리픽스를 여러 프로토콜이 알려주면 AD로 프로토콜을 고르고, 그 안에서 metric으로 경로를 고른다.'},
+    {q:'거리 벡터 프로토콜에서 count-to-infinity가 생기는 근본 원인은?',options:['링크 비용이 음수일 수 있어서','라우터가 이웃이 광고한 경로가 자신을 거치는지 알 수 없어서','LSDB가 동기화되지 않아서','TCP 재전송이 느려서'],answer:1,explain:'거리 벡터는 "거리"만 교환하고 "경로"는 모른다. 그래서 이웃이 사실은 나를 거쳐 가는 경로를 다시 나에게 팔 수 있다. Split horizon은 이것을 2노드 범위에서만 막는다.'},
+    {q:'Dijkstra 알고리즘에서 한 노드를 "확정"할 수 있는 근거는?',options:['모든 간선 비용이 같기 때문','미방문 노드 중 최소 임시 거리 노드는 다른 경로로 더 짧아질 수 없기 때문(비음수 비용)','LSA가 신뢰성 있게 전달되기 때문','뿌리 노드가 항상 중앙에 있기 때문'],answer:1,explain:'다른 어떤 경로도 미방문 노드를 먼저 지나야 하고 그 노드의 거리는 이미 더 크거나 같다. 음수 간선이 있으면 이 보장이 깨진다(라우팅 비용은 항상 양수).'},
+    {q:'OSPF에서 두 라우터가 이웃이 되지 못하는 가장 흔한 원인은?',options:['Router ID가 같지 않아서','Hello/Dead 간격, 영역 ID, 서브넷 마스크 등 Hello 파라미터 불일치','TCP 179 포트가 막혀서','DR이 아직 선출되지 않아서'],answer:1,explain:'OSPF는 IP 프로토콜 89 위에서 돌며 TCP를 쓰지 않는다. Hello에 담긴 파라미터가 모두 일치해야 이웃이 된다. Router ID는 오히려 달라야 한다.'},
+    {q:'브로드캐스트 세그먼트에서 DR/BDR을 뽑는 이유는?',options:['라우팅 테이블을 중앙에서 계산하기 위해','인접(adjacency) 수와 LSA 중복 플러딩을 n(n−1)/2에서 2n−3으로 줄이기 위해','Hello 패킷을 암호화하기 위해','영역 간 경로를 요약하기 위해'],answer:1,explain:'모든 라우터가 DR/BDR과만 Full 인접을 맺는다. DR은 Type 2 Network LSA를 만들어 세그먼트를 대표한다. 선점하지 않는다는 점도 기억.'},
+    {q:'BGP가 라우팅 루프를 막는 방법은?',options:['TTL을 1로 설정해서','수신한 경로의 AS_PATH에 자기 ASN이 있으면 폐기해서','Dijkstra로 최단 경로 트리를 만들어서','Split horizon을 적용해서'],answer:1,explain:'경로 벡터의 본질: 경로 정보 자체에 지나온 AS가 모두 들어 있으므로 루프가 즉시 드러난다. TTL 1은 eBGP 피어가 직접 연결되었는지 확인하는 용도.'},
+    {q:'다음 중 AS 내부에서만 전파되며 아웃바운드 정책(어느 출구로 나갈지)의 핵심 도구인 BGP 속성은?',options:['MED','AS_PATH','LOCAL_PREF','ORIGIN'],answer:2,explain:'LOCAL_PREF는 iBGP로만 전파되고 선택 순서에서 (Weight 다음) 가장 먼저 비교된다. MED는 반대로 "들어올 때 어느 입구로"를 이웃에게 알리는 인바운드 힌트.'},
+    {q:'두 후보 경로가 LOCAL_PREF·AS_PATH 길이·ORIGIN이 모두 같고, 하나는 eBGP로 직접 배운 것, 다른 하나는 iBGP로 배운 것이다. MED는 비교 대상이 아니라고 할 때 선택되는 것은?',options:['iBGP 경로','eBGP 경로','Router ID가 낮은 쪽','둘 다 ECMP로 사용'],answer:1,explain:'eBGP > iBGP 규칙("핫 포테이토"): 트래픽을 가능한 한 빨리 자기 AS 밖으로 보내 내부 자원을 아낀다.'},
+    {q:'2008년 Pakistan Telecom의 YouTube 사고에서 전 세계 트래픽이 잘못된 AS로 흘러간 직접적 메커니즘은?',options:['AS_PATH가 더 짧아서','더 구체적인(긴) 프리픽스가 광고되어 LPM에서 이겼기 때문','LOCAL_PREF가 더 높아서','DNS가 변조되어서'],answer:1,explain:'YouTube의 /22보다 긴 /24를 광고하자 모든 라우터가 LPM으로 그 경로를 선택했다. RPKI ROA의 maxLength는 정확히 이런 "더 긴 프리픽스" 하이재킹을 막기 위한 필드다.'},
+    {q:'ECMP에서 패킷 단위가 아니라 흐름(5-tuple 해시) 단위로 분산하는 이유는?',options:['해시 계산이 더 빨라서','같은 TCP 연결의 패킷 순서 역전으로 인한 가짜 dup ACK·성능 저하를 피하기 위해','라우팅 테이블을 작게 유지하기 위해','BGP 규격이 요구해서'],answer:1,explain:'경로마다 지연이 다르면 패킷 단위 분산은 순서 역전을 일으키고, TCP는 이를 손실로 오인해 불필요한 재전송과 cwnd 감소를 겪는다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

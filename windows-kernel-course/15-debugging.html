@@ -1,0 +1,1063 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>커널 디버깅과 크래시 분석</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .cs-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cs-filter .btn { font-size: .8rem; padding: 4px 10px; }
+  .cs-count { font: 600 .8rem var(--mono); color: var(--muted); }
+  .cs-list { display: grid; gap: 6px; max-height: 470px; overflow: auto; padding-right: 4px; }
+  .cs-row { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 2px 14px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); }
+  .cs-row .cmd { font: 700 .85rem var(--mono); color: var(--kernel); }
+  .cs-row .cat { display: block; font: 600 .7rem var(--sans); color: var(--muted); }
+  .cs-row .desc { font-size: .9rem; line-height: 1.55; }
+  .cs-row .ex { grid-column: 2; font: .78rem var(--mono); color: var(--muted); white-space: pre-wrap; }
+  .cs-empty { color: var(--muted); padding: 10px; }
+  mark { background: var(--warn-bg); color: inherit; border-radius: 3px; padding: 0 1px; }
+  @media (max-width: 720px) { .cs-row { grid-template-columns: 1fr; } .cs-row .ex { grid-column: 1; } }
+
+  .bc-quick { display: flex; flex-wrap: wrap; gap: 5px; }
+  .bc-quick .btn { font: 600 .78rem var(--mono); padding: 3px 9px; }
+  .bc-out { margin-top: 12px; }
+  .bc-name { font: 700 1.12rem var(--mono); color: var(--head); }
+  .bc-name .code { color: var(--bad); margin-right: 8px; }
+  .bc-out table td:first-child { white-space: nowrap; font-family: var(--mono); color: var(--muted); }
+  .bc-out table td.val { font-family: var(--mono); white-space: nowrap; }
+  .bc-notes { margin: 8px 0; padding-left: 1.2em; }
+  .bc-notes li { font-size: .92rem; }
+
+  .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 12px; min-height: 34px; }
+  .chain .nd { font: 600 .78rem var(--mono); padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); }
+  .chain .nd.th { border-color: var(--user); background: var(--user-bg); }
+  .chain .nd.kth { border-color: var(--kernel); background: var(--kernel-bg); }
+  .chain .nd.obj { border-color: var(--hw); background: var(--hw-bg); }
+  .chain .nd.bad { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
+  .chain .nd.ok { border-color: var(--ok); background: var(--ok-bg); }
+  .chain .ar { color: var(--muted); font-weight: 700; }
+  ol.steps > li pre { margin: 10px 0 2px; font-size: 12.5px; }
+</style>
+</head>
+<body data-chapter="15">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part V · Chapter 15</div>
+  <h1>커널 디버깅과 크래시 분석</h1>
+  <p class="sub">블루스크린 한 장, 덤프 파일 하나에서 원인 드라이버와 코드 한 줄까지 증거를 따라가는 법. 시스템 엔지니어와 드라이버 개발자의 장애 분석 실전 챕터입니다.</p>
+  <div class="meta"><span class="pill lv-expert">전문가</span><span class="pill">⏱ 약 120분</span><span class="pill">선수: 06 · 07 · 09 · 11 · 14장</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>호스트/타깃 KDNET, 로컬 커널 디버깅, LiveKD의 차이를 알고 상황에 맞는 구성을 고를 수 있다.</li>
+    <li>심볼 경로를 올바르게 설정하고, 심볼 문제를 스스로 진단할 수 있다.</li>
+    <li>덤프 종류별로 무엇이 담기는지 알고, 운영 환경에 맞는 덤프 설정을 선택할 수 있다.</li>
+    <li><code>!analyze -v</code> → 콜스택 → 트랩 프레임 → 디스어셈블리 → 구조체 순으로 크래시의 근본 원인을 입증할 수 있다.</li>
+    <li>행(hang)·풀 손상·성능 저하를 각각 맞는 도구(<code>!running</code>/<code>!locks</code>, Special Pool·Driver Verifier, ETW/WPA)로 분석할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="mindset">분석의 사고방식</h2>
+<p>
+  크래시 분석은 추리 게임이 아니라 <strong>증거 사슬</strong>을 만드는 일입니다. 버그체크 코드와 파라미터는 "무엇이 일어났는가"를,
+  콜스택은 "누가 그 순간 실행 중이었나"를, 트랩 프레임과 디스어셈블리는 "정확히 어떤 명령이 왜 실패했나"를, 구조체 덤프는
+  "그 값이 어떻게 그렇게 되었나"를 알려 줍니다. 결론은 이 네 단계가 서로 모순 없이 이어질 때만 내립니다.
+</p>
+<div class="grid3">
+  <div class="card kernel"><h4>1. 현상 고정</h4><p>버그체크 코드·파라미터, 커널 빌드, 가동 시간, 실패 프로세서. <code>.bugcheck</code>, <code>vertarget</code>.</p></div>
+  <div class="card kernel"><h4>2. 가설 세우기</h4><p><code>!analyze -v</code>는 출발점일 뿐입니다. 자동 결론(<code>MODULE_NAME</code>)을 가설로 다룹니다.</p></div>
+  <div class="card kernel"><h4>3. 입증·반증</h4><p>레지스터 값의 출처를 거꾸로 추적하고, 구조체 상태가 가설과 맞는지 확인합니다.</p></div>
+</div>
+<div class="callout warn">
+  <div class="callout-title">스택 최상단의 드라이버가 범인이라는 보장은 없다</div>
+  <p>메모리 손상 계열(풀 손상, use-after-free, 스택 덮어쓰기)에서는 <b>손상을 일으킨 코드</b>와 <b>손상을 발견한 코드</b>가 다릅니다.
+  피해자의 스택만 보고 "ntfs.sys 버그"라고 결론 내리는 것이 가장 흔한 오진입니다. 이럴 때는 Special Pool·Driver Verifier로 <b>범행 현장에서 잡히게</b> 만들어야 합니다(아래 풀 손상 절).</p>
+</div>
+
+<h2 id="setup">디버깅 구성</h2>
+<p>
+  커널 디버거는 디버깅 대상 커널(<b>타깃</b>) 안의 디버거 엔진(<code>Kd*</code>)과 다른 머신의 WinDbg(<b>호스트</b>)가 전송 계층을 통해 통신하는 구조입니다.
+  타깃이 브레이크(중단점, 예외, <kbd>Ctrl</kbd>+<kbd>Break</kbd>)에 걸리면 <b>모든 프로세서가 멈추고</b> 디버거 엔진이 호스트의 명령을 기다립니다.
+  그래서 실행 제어(중단점, 스텝)가 필요한 디버깅은 반드시 <b>별도 머신 — 보통 VM</b>을 타깃으로 씁니다. 도식의 요소를 클릭해 보세요.
+</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 310" role="img" aria-label="커널 디버깅 구성">
+    <rect class="zone user" x="10" y="10" width="300" height="200" rx="12"/>
+    <text x="24" y="32" class="b c-user">호스트 · 분석 PC</text>
+    <g data-info="host"><rect class="box user" x="30" y="46" width="260" height="64" rx="8"/>
+      <text x="160" y="72" text-anchor="middle" class="b">WinDbg</text>
+      <text x="160" y="94" text-anchor="middle" class="sm">kd&gt; 프롬프트 · 심볼 · 확장 명령</text></g>
+    <g data-info="sym"><rect class="box user" x="30" y="126" width="260" height="64" rx="8"/>
+      <text x="160" y="152" text-anchor="middle" class="b">심볼 캐시 C:\symbols</text>
+      <text x="160" y="174" text-anchor="middle" class="sm">msdl.microsoft.com 심볼 서버</text></g>
+
+    <rect class="zone kernel" x="570" y="10" width="300" height="200" rx="12"/>
+    <text x="584" y="32" class="b c-kernel">타깃 · 테스트 VM</text>
+    <g data-info="kd"><rect class="box kernel" x="590" y="46" width="260" height="64" rx="8"/>
+      <text x="720" y="72" text-anchor="middle" class="b">커널 디버거 엔진 (Kd*)</text>
+      <text x="720" y="94" text-anchor="middle" class="sm">kdcom.dll / kdnet.dll 전송 계층</text></g>
+    <g data-info="nic"><rect class="box kernel" x="590" y="126" width="260" height="64" rx="8"/>
+      <text x="720" y="152" text-anchor="middle" class="b">NIC + KDNET 확장 모듈</text>
+      <text x="720" y="174" text-anchor="middle" class="sm">kd_02_8086.dll 등 벤더별 모듈</text></g>
+    <path class="ln noarr" d="M720 110 L720 126"/>
+
+    <g data-info="serial"><rect class="box plain" x="335" y="58" width="210" height="40" rx="8"/>
+      <text x="440" y="83" text-anchor="middle" class="b">직렬 · 명명 파이프</text></g>
+    <path class="ln dash" d="M290 78 L333 78"/><path class="ln dash" d="M545 78 L588 78"/>
+    <g data-info="kdnet"><rect class="box acc" x="335" y="138" width="210" height="40" rx="8"/>
+      <text x="440" y="163" text-anchor="middle" class="b">KDNET · UDP + 키</text></g>
+    <path class="ln acc flow" d="M290 102 C 312 102, 312 158, 333 158"/>
+    <path class="ln acc flow" d="M545 158 L588 158"/>
+
+    <g data-info="local"><rect class="box plain" x="10" y="228" width="425" height="70" rx="10"/>
+      <text x="222" y="256" text-anchor="middle" class="b">로컬 커널 디버깅 (lkd&gt;)</text>
+      <text x="222" y="278" text-anchor="middle" class="sm">같은 머신에서 읽기 전용 관찰 · bcdedit /debug on 필요</text></g>
+    <g data-info="livekd"><rect class="box plain" x="445" y="228" width="425" height="70" rx="10"/>
+      <text x="657" y="256" text-anchor="middle" class="b">LiveKD (Sysinternals)</text>
+      <text x="657" y="278" text-anchor="middle" class="sm">디버그 모드 없이 스냅숏 · Hyper-V 게스트 (-hv)</text></g>
+  </svg>
+  <template data-key="host">
+    <h4>호스트의 WinDbg</h4>
+    <p>최신 WinDbg(Microsoft Store/winget 배포, 구 WinDbg Preview)를 권장합니다. 커널 연결은 <b>File → Attach to kernel</b>에서 Net/COM/Local을 고르거나 명령줄로 시작합니다.</p>
+    <pre data-title="cmd"><code class="lang-ps">windbg -k net:port=50000,key=1a2b.3c4d.5e6f.7g8h
+windbg -k com:pipe,port=\\.\pipe\kd_vm1,resets=0,reconnect</code></pre>
+    <p>호스트는 타깃이 멈춰 있는 동안 메모리·레지스터를 읽고 쓰며, <code>g</code>를 입력해야 타깃이 다시 달립니다.</p>
+  </template>
+  <template data-key="sym">
+    <h4>심볼 캐시</h4>
+    <p>호스트에서 심볼을 내려받아 로컬 캐시에 보관합니다. 타깃은 심볼을 몰라도 됩니다. 디버거가 타깃 메모리의 모듈 이미지(타임스탬프·크기, PDB GUID)를 읽어 맞는 PDB를 찾습니다. 다음 절에서 자세히 다룹니다.</p>
+  </template>
+  <template data-key="kd">
+    <h4>타깃의 커널 디버거 엔진</h4>
+    <p>부팅 구성(BCD)에 <code>debug on</code>이 있으면 winload가 전송 계층 DLL(<code>kdcom.dll</code>=직렬, <code>kdnet.dll</code>=네트워크)을 로드하고 커널의 <code>Kd*</code> 루틴이 이를 사용합니다. 브레이크가 발생하면 모든 CPU를 IPI로 동결하고 호스트와 패킷을 주고받습니다.</p>
+    <p>Secure Boot가 켜져 있으면 디버그 설정 변경이 정책으로 막히므로("protected by Secure Boot policy") 테스트 VM에서는 Secure Boot를 끕니다.</p>
+  </template>
+  <template data-key="nic">
+    <h4>NIC와 KDNET 확장 모듈</h4>
+    <p>KDNET은 일반 네트워크 스택(NDIS, tcpip.sys)을 쓰지 않습니다. 커널이 멈춘 상태에서도 동작해야 하므로 <b>NIC을 직접 폴링하는 전용 모듈</b>(벤더 ID별 <code>kd_02_xxxx.dll</code>)을 사용합니다. 그래서 <b>지원 NIC 목록</b>에 있는 장치만 됩니다. Hyper-V 가상 NIC도 지원됩니다.</p>
+  </template>
+  <template data-key="kdnet">
+    <h4>KDNET (네트워크 디버깅)</h4>
+    <p>가장 일반적인 구성입니다. 타깃에서 <code>kdnet.exe</code>로 설정하면 키를 생성해 줍니다.</p>
+    <pre data-title="타깃 (관리자)"><code class="lang-ps">C:\KDNET> kdnet.exe 192.168.10.5 50000
+Enabling network debugging on Intel(R) 82574L Gigabit Network Connection.
+Key=1a2b.3c4d.5e6f.7g8h
+C:\KDNET> bcdedit /dbgsettings
+key                     1a2b.3c4d.5e6f.7g8h
+debugtype               NET
+hostip                  192.168.10.5
+port                    50000</code></pre>
+    <p>포트는 관례상 50000–50039를 씁니다. 키는 트래픽 암호화·인증에 쓰이므로 공유하지 마세요. NIC가 여럿이면 <code>busparams</code>로 PCI 위치를 지정합니다.</p>
+  </template>
+  <template data-key="serial">
+    <h4>직렬 / 명명 파이프</h4>
+    <p>가장 오래된 방식이며 느리지만, 부팅 초기 단계나 NIC를 쓸 수 없을 때 유용합니다. VM에서는 가상 COM 포트를 호스트의 명명 파이프에 연결합니다.</p>
+    <pre data-title="PowerShell"><code class="lang-ps"># 호스트(Hyper-V): VM의 COM1을 명명 파이프로
+PS C:\> Set-VMComPort -VMName vm1 -Number 1 -Path \\.\pipe\kd_vm1
+# 타깃
+C:\> bcdedit /dbgsettings serial debugport:1 baudrate:115200
+C:\> bcdedit /debug on</code></pre>
+  </template>
+  <template data-key="local">
+    <h4>로컬 커널 디버깅</h4>
+    <p><code>bcdedit /debug on</code> 후 재부팅하고, 같은 머신의 관리자 WinDbg에서 <b>Attach to kernel → Local</b>을 선택합니다. 프롬프트는 <code>lkd&gt;</code>입니다.</p>
+    <ul>
+      <li>가능: 메모리 읽기, <code>dt</code>/<code>dx</code>, <code>!process</code>, <code>!pte</code> 등 대부분의 조회</li>
+      <li>불가: 중단점, 스텝, 레지스터 문맥 확인, 커널 정지. 시스템이 계속 달리므로 읽는 도중 값이 바뀔 수 있습니다.</li>
+    </ul>
+  </template>
+  <template data-key="livekd">
+    <h4>LiveKD</h4>
+    <p>Sysinternals LiveKD는 드라이버로 물리 메모리를 읽어 <b>덤프 파일처럼 보이는 스냅숏</b>을 만들고 WinDbg/kd에 넘깁니다. 디버그 모드로 부팅할 필요가 없어 운영 서버 진단에 좋습니다.</p>
+    <ul>
+      <li><code>livekd -w</code>: WinDbg로 열기, <code>livekd -o C:\live.dmp</code>: 덤프 파일로 저장</li>
+      <li><code>livekd -ml</code>: Windows 내장 라이브 덤프 기능으로 일관된 스냅숏 생성</li>
+      <li><code>livekd -hv vm1</code>: Hyper-V 호스트에서 게스트 VM 커널을 들여다봄</li>
+    </ul>
+    <p>스냅숏 방식(<code>-ml</code> 제외)은 읽는 동안 메모리가 변하므로 리스트가 깨져 보일 수 있습니다.</p>
+  </template>
+  <figcaption><b>그림 15-1.</b> 커널 디버깅 구성. 실행 제어가 필요하면 호스트–타깃, 조회만 필요하면 로컬 KD나 LiveKD를 씁니다.</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>구성</th><th>중단점·스텝</th><th>재부팅·설정</th><th>대표 용도</th></tr></thead>
+  <tbody>
+    <tr><td>호스트–타깃 (KDNET/직렬)</td><td>가능</td><td>타깃 <code>debug on</code> + 재부팅</td><td>드라이버 개발, 재현 가능한 버그 추적, 부팅 문제</td></tr>
+    <tr><td>로컬 KD</td><td>불가</td><td><code>debug on</code> + 재부팅</td><td>구조체 학습, 상태 관찰</td></tr>
+    <tr><td>LiveKD</td><td>불가</td><td>불필요</td><td>운영 서버의 행·리소스 누수 진단</td></tr>
+    <tr><td>덤프 분석 (<code>windbg -z</code>)</td><td>불가</td><td>덤프 설정만</td><td>사후 크래시 분석 — 실무의 대부분</td></tr>
+  </tbody>
+</table>
+
+<div class="callout tip">
+  <div class="callout-title">드라이버 개발 VM 팁</div>
+  <p>체크포인트를 "디버거 연결됨, 드라이버 로드 직전" 상태로 만들어 두면 크래시 후 몇 초 만에 복귀할 수 있습니다.
+  드라이버가 로드되는 순간 멈추려면 <code>sxe ld:mydrv.sys</code>, 출력이 안 보이는 <code>DbgPrintEx</code>는 <code>ed nt!Kd_DEFAULT_Mask 0xFFFFFFFF</code>로 필터를 엽니다.</p>
+</div>
+
+<h2 id="symbols">심볼 경로</h2>
+<p>
+  심볼(PDB) 없이 콜스택은 <code>nt+0x3f2a10</code> 같은 오프셋의 나열일 뿐입니다. Microsoft는 OS 바이너리의 <b>공개(public) 심볼</b>을
+  심볼 서버로 배포합니다. 공개 심볼에는 함수·전역 변수 이름과 문서화된 일부 타입이 들어 있고, 지역 변수·소스 줄 정보는 빠져 있습니다.
+  여러분 드라이버의 <b>개인(private) 심볼</b>은 빌드할 때 나온 PDB를 직접 경로에 추가해야 합니다.
+</p>
+<pre data-title="WinDbg"><code class="lang-windbg">kd> .symfix C:\symbols
+kd> .sympath+ C:\build\mydrv\x64\Release
+kd> .sympath
+Symbol search path is: srv*C:\symbols*https://msdl.microsoft.com/download/symbols;C:\build\mydrv\x64\Release
+kd> .reload /f
+kd> lm m nt
+start             end                 module name
+fffff806`0ee00000 fffff806`0fe46000   nt         (pdb symbols)          C:\symbols\ntkrnlmp.pdb\...\ntkrnlmp.pdb
+kd> lm m mydrv
+fffff806`1a2b0000 fffff806`1a2c4000   mydrv      (private pdb symbols)  C:\build\mydrv\x64\Release\mydrv.pdb</code></pre>
+<p>환경 변수 <code>_NT_SYMBOL_PATH</code>에 같은 문자열을 넣으면 WinDbg, WPA, Process Explorer 등 대부분의 도구가 공유합니다.</p>
+
+<table>
+  <thead><tr><th><code>lm</code> 표시</th><th>의미</th><th>조치</th></tr></thead>
+  <tbody>
+    <tr><td><code>(pdb symbols)</code></td><td>공개 PDB 로드됨</td><td>정상</td></tr>
+    <tr><td><code>(private pdb symbols)</code></td><td>지역 변수·줄 정보 포함 PDB</td><td>정상 — <code>dv</code>, <code>kP</code>, 소스 매핑 가능</td></tr>
+    <tr><td><code>(deferred)</code></td><td>아직 로드 시도 전(지연 로딩)</td><td>필요할 때 자동 로드. 강제로는 <code>.reload /f 모듈</code></td></tr>
+    <tr><td><code>(export symbols)</code></td><td>PDB를 못 찾아 익스포트 테이블로 대체</td><td>경로·네트워크 확인. <code>!sym noisy</code> 후 <code>.reload /f</code></td></tr>
+    <tr><td><code>(no symbols)</code></td><td>심볼 없음</td><td>개인 PDB 경로 추가, 빌드와 PDB 일치 여부 확인</td></tr>
+  </tbody>
+</table>
+
+<div class="callout expert">
+  <div class="callout-title">PDB는 GUID+Age로 짝이 맞아야 한다</div>
+  <p>같은 소스라도 다시 빌드하면 PDB GUID가 바뀝니다. 고객 덤프의 드라이버와 지금 빌드한 PDB는 맞지 않으므로 <b>릴리스마다 PDB를 보관</b>(사내 심볼 서버, <code>symstore add</code>)해야 합니다.
+  <code>.reload /i</code>는 불일치를 무시하고 강제로 로드하지만, 줄 번호·오프셋이 틀릴 수 있어 마지막 수단입니다.
+  메모리의 코드가 디스크 이미지와 다른지(패치, 손상)는 <code>!chkimg -d nt</code>로 확인합니다.</p>
+</div>
+
+<h2 id="dumps">메모리 덤프 종류와 설정</h2>
+<p>
+  버그체크가 나면 커널은 정상 I/O 스택을 믿을 수 없는 상태에서 덤프를 써야 합니다. 그래서 부팅 시 미리 로드해 둔 <b>덤프 전용 스토리지 스택</b>
+  (<code>crashdmp.sys</code>가 준비한 <code>dump_stornvme.sys</code> 같은 미니포트 사본, BitLocker면 <code>dumpfve.sys</code>)으로 페이징 파일(또는 전용 덤프 파일)에 직접 기록합니다.
+  재부팅 후 세션 관리자가 페이징 파일에서 덤프를 발견해 <code>%SystemRoot%\MEMORY.DMP</code>(미니덤프는 <code>%SystemRoot%\Minidump</code>)로 옮기고, 시스템 로그에 <b>BugCheck 이벤트 1001</b>이 남습니다.
+  도식의 행을 클릭해 각 덤프에 무엇이 들어가는지 비교해 보세요.
+</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 340" role="img" aria-label="덤프 종류 비교">
+    <text x="276" y="36" text-anchor="middle" class="sm b">STOP · 스택</text>
+    <text x="408" y="36" text-anchor="middle" class="sm b">드라이버 목록</text>
+    <text x="540" y="36" text-anchor="middle" class="sm b">커널 메모리</text>
+    <text x="672" y="36" text-anchor="middle" class="sm b">활성 유저 메모리</text>
+    <text x="804" y="36" text-anchor="middle" class="sm b">나머지 물리 메모리</text>
+
+    <g data-info="small">
+      <rect class="box plain" x="10" y="50" width="190" height="48" rx="8"/>
+      <text x="22" y="70" class="b">Small (미니덤프)</text><text x="22" y="88" class="sm">수백 KB · 덤프마다 새 파일</text>
+      <rect class="box kernel" x="214" y="50" width="124" height="48" rx="6"/><text x="276" y="79" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="346" y="50" width="124" height="48" rx="6"/><text x="408" y="79" text-anchor="middle">포함</text>
+      <rect class="box warn" x="478" y="50" width="124" height="48" rx="6"/><text x="540" y="79" text-anchor="middle">일부만</text>
+      <rect class="box plain" x="610" y="50" width="124" height="48" rx="6"/><text x="672" y="79" text-anchor="middle" class="c-muted">—</text>
+      <rect class="box plain" x="742" y="50" width="124" height="48" rx="6"/><text x="804" y="79" text-anchor="middle" class="c-muted">—</text>
+    </g>
+    <g data-info="kernel">
+      <rect class="box plain" x="10" y="106" width="190" height="48" rx="8"/>
+      <text x="22" y="126" class="b">커널 메모리 덤프</text><text x="22" y="144" class="sm">커널 사용량에 비례</text>
+      <rect class="box kernel" x="214" y="106" width="124" height="48" rx="6"/><text x="276" y="135" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="346" y="106" width="124" height="48" rx="6"/><text x="408" y="135" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="478" y="106" width="124" height="48" rx="6"/><text x="540" y="135" text-anchor="middle">포함</text>
+      <rect class="box plain" x="610" y="106" width="124" height="48" rx="6"/><text x="672" y="135" text-anchor="middle" class="c-muted">—</text>
+      <rect class="box plain" x="742" y="106" width="124" height="48" rx="6"/><text x="804" y="135" text-anchor="middle" class="c-muted">—</text>
+    </g>
+    <g data-info="auto">
+      <rect class="box plain" x="10" y="162" width="190" height="48" rx="8"/>
+      <text x="22" y="182" class="b">자동 메모리 덤프</text><text x="22" y="200" class="sm">내용=커널 덤프 · 기본값</text>
+      <rect class="box kernel" x="214" y="162" width="124" height="48" rx="6"/><text x="276" y="191" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="346" y="162" width="124" height="48" rx="6"/><text x="408" y="191" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="478" y="162" width="124" height="48" rx="6"/><text x="540" y="191" text-anchor="middle">포함</text>
+      <rect class="box plain" x="610" y="162" width="124" height="48" rx="6"/><text x="672" y="191" text-anchor="middle" class="c-muted">—</text>
+      <rect class="box plain" x="742" y="162" width="124" height="48" rx="6"/><text x="804" y="191" text-anchor="middle" class="c-muted">—</text>
+    </g>
+    <g data-info="active">
+      <rect class="box plain" x="10" y="218" width="190" height="48" rx="8"/>
+      <text x="22" y="238" class="b">활성 메모리 덤프</text><text x="22" y="256" class="sm">전체보다 작음 · 서버 추천</text>
+      <rect class="box kernel" x="214" y="218" width="124" height="48" rx="6"/><text x="276" y="247" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="346" y="218" width="124" height="48" rx="6"/><text x="408" y="247" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="478" y="218" width="124" height="48" rx="6"/><text x="540" y="247" text-anchor="middle">포함</text>
+      <rect class="box user" x="610" y="218" width="124" height="48" rx="6"/><text x="672" y="247" text-anchor="middle">포함</text>
+      <rect class="box plain" x="742" y="218" width="124" height="48" rx="6"/><text x="804" y="247" text-anchor="middle" class="c-muted">제외</text>
+    </g>
+    <g data-info="complete">
+      <rect class="box plain" x="10" y="274" width="190" height="48" rx="8"/>
+      <text x="22" y="294" class="b">전체 메모리 덤프</text><text x="22" y="312" class="sm">≈ 물리 RAM 크기</text>
+      <rect class="box kernel" x="214" y="274" width="124" height="48" rx="6"/><text x="276" y="303" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="346" y="274" width="124" height="48" rx="6"/><text x="408" y="303" text-anchor="middle">포함</text>
+      <rect class="box kernel" x="478" y="274" width="124" height="48" rx="6"/><text x="540" y="303" text-anchor="middle">포함</text>
+      <rect class="box user" x="610" y="274" width="124" height="48" rx="6"/><text x="672" y="303" text-anchor="middle">포함</text>
+      <rect class="box hw" x="742" y="274" width="124" height="48" rx="6"/><text x="804" y="303" text-anchor="middle">포함</text>
+    </g>
+  </svg>
+  <template data-key="small">
+    <h4>Small memory dump (미니덤프) — <code>CrashDumpEnabled=3</code></h4>
+    <p>버그체크 코드·파라미터, 로드된 드라이버 목록, 실패한 프로세서의 PRCB와 문맥, 현재 프로세스·스레드 정보, 실패 스레드의 커널 스택 정도만 담습니다. 덤프마다 <code>Minidump</code> 폴더에 새 파일이 쌓입니다.</p>
+    <p><b>한계</b>: 풀, 다른 스레드, 대부분의 커널 구조체가 없습니다. <code>!pool</code>, <code>!locks</code>, <code>!irp</code>는 거의 실패합니다. 대량 배포 환경에서 "어떤 드라이버가 자주 죽는가" 통계용으로 적합합니다.</p>
+  </template>
+  <template data-key="kernel">
+    <h4>Kernel memory dump — <code>CrashDumpEnabled=2</code></h4>
+    <p>커널 모드에 할당된 메모리(풀, 커널 스택, 페이지 테이블, 드라이버 이미지 등)를 담고 유저 모드 메모리와 미할당 메모리는 뺍니다. <b>드라이버 크래시 분석에 필요한 거의 모든 것</b>이 들어 있습니다.</p>
+    <p>부트 볼륨 페이징 파일이 커널 사용량을 담을 만큼 커야 합니다. 부족하면 덤프가 잘리거나 생성되지 않습니다.</p>
+  </template>
+  <template data-key="auto">
+    <h4>Automatic memory dump — <code>CrashDumpEnabled=7</code> (Windows 8+ 기본값)</h4>
+    <p>내용은 커널 메모리 덤프와 같습니다. 차이는 <b>페이징 파일 크기 관리</b>입니다. 시스템 관리 페이징 파일인데 덤프를 담기에 작았다면, Windows가 이후 일정 기간 페이징 파일을 더 크게 잡아 다음 크래시를 대비합니다.</p>
+  </template>
+  <template data-key="active">
+    <h4>Active memory dump — <code>CrashDumpEnabled=1</code> + <code>FilterPages=1</code> (Windows 10+)</h4>
+    <p>전체 덤프에서 분석에 쓸모없을 가능성이 큰 페이지(사용 중이 아닌 페이지, Hyper-V 호스트라면 <b>게스트 VM에 할당된 메모리</b> 등)를 걸러 냅니다. 커널과 활성 유저 모드 메모리가 모두 남아 있어 <b>유저↔커널이 얽힌 문제</b>(서비스와 드라이버 간 교착 등)를 분석할 수 있습니다.</p>
+    <p>RAM이 큰 서버나 Hyper-V 호스트에서 전체 덤프의 현실적인 대안입니다.</p>
+  </template>
+  <template data-key="complete">
+    <h4>Complete memory dump — <code>CrashDumpEnabled=1</code></h4>
+    <p>물리 메모리 전부를 담습니다. 부트 볼륨 페이징 파일이 <b>RAM 크기 + 약 1MB 이상</b>이어야 합니다(또는 <code>DedicatedDumpFile</code> 사용). 모든 프로세스의 유저 메모리까지 볼 수 있지만, 1TB RAM 서버라면 덤프도 1TB이고 쓰는 동안 서비스가 내려가 있습니다.</p>
+    <p>시스템 설정 UI에서는 RAM이 큰 시스템에서 선택지가 숨겨질 수 있어 레지스트리로 설정하기도 합니다.</p>
+  </template>
+  <figcaption><b>그림 15-2.</b> 덤프 종류별 수록 범위. "일부만" = 실패 스레드·프로세서 문맥 위주.</figcaption>
+</figure>
+
+<h3>레지스트리 설정 (<code>HKLM\SYSTEM\CurrentControlSet\Control\CrashControl</code>)</h3>
+<table>
+  <thead><tr><th>값</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td><code>CrashDumpEnabled</code></td><td>0=없음, 1=전체(또는 활성), 2=커널, 3=Small, 7=자동</td></tr>
+    <tr><td><code>FilterPages</code></td><td>1이면 <code>CrashDumpEnabled=1</code>을 활성 메모리 덤프로</td></tr>
+    <tr><td><code>DumpFile</code> / <code>MinidumpDir</code></td><td>덤프 경로 (기본 <code>%SystemRoot%\MEMORY.DMP</code>, <code>%SystemRoot%\Minidump</code>)</td></tr>
+    <tr><td><code>Overwrite</code></td><td>1이면 기존 MEMORY.DMP 덮어쓰기</td></tr>
+    <tr><td><code>AlwaysKeepMemoryDump</code></td><td>1이면 디스크 여유가 적어도 덤프를 지우지 않음</td></tr>
+    <tr><td><code>DedicatedDumpFile</code>, <code>DumpFileSize</code></td><td>페이징 파일 대신 전용 덤프 파일 사용(경로, MB 단위 크기)</td></tr>
+    <tr><td><code>AutoReboot</code></td><td>0이면 블루스크린 화면에서 멈춤</td></tr>
+    <tr><td><code>NMICrashDump</code></td><td>NMI 수신 시 덤프 생성(행 분석용, 아래 절 참고)</td></tr>
+  </tbody>
+</table>
+<pre data-title="PowerShell"><code class="lang-ps">PS C:\> Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl |
+          Select CrashDumpEnabled, FilterPages, DumpFile, AlwaysKeepMemoryDump
+# 활성 메모리 덤프로 변경 (재부팅 후 적용)
+PS C:\> Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl CrashDumpEnabled 1
+PS C:\> Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl FilterPages 1</code></pre>
+<div class="callout note">
+  <div class="callout-title">라이브 커널 덤프</div>
+  <p>시스템을 죽이지 않고 덤프를 얻는 방법도 있습니다. 작업 관리자에서 <b>System 프로세스 → 라이브 커널 메모리 덤프 파일 만들기</b>, 또는 <code>livekd -ml -o</code>.
+  커널 구성요소가 심각하지만 복구 가능한 문제(예: 디스플레이 TDR)를 만나면 스스로 라이브 덤프를 남기며, <code>%SystemRoot%\LiveKernelReports</code>에서 찾을 수 있습니다.</p>
+</div>
+
+<h2 id="commands">WinDbg 핵심 명령 치트시트</h2>
+<p>
+  커널 분석에서 자주 쓰는 명령을 범주별로 모았습니다. 명령 이름, 설명, 예시 어디든 검색됩니다(예: <code>irp</code>, <code>트랩</code>, <code>pool</code>, <code>스택</code>).
+  <code>.</code>으로 시작하면 디버거 메타 명령, <code>!</code>로 시작하면 확장 DLL 명령입니다.
+</p>
+<div class="sim" id="csSim">
+  <div class="sim-title">WinDbg 명령 검색</div>
+  <div class="sim-controls">
+    <input type="text" id="csInput" placeholder="명령·설명 검색 (예: trap, 풀, 대기)" style="flex:1;min-width:240px" aria-label="명령 검색">
+    <span class="cs-count" id="csCount"></span>
+  </div>
+  <div class="cs-filter" id="csCats" style="margin-bottom:12px"></div>
+  <div class="cs-list" id="csList"></div>
+</div>
+
+<div class="callout expert">
+  <div class="callout-title">dx — 디버거 데이터 모델</div>
+  <p><code>dx</code>는 디버거 객체(프로세스·스레드·모듈)를 LINQ로 질의합니다. 예: <code>dx -g @$cursession.Processes.Select(p =&gt; new { Name = p.Name, Threads = p.Threads.Count() })</code>는 프로세스별 스레드 수를 표로 보여 줍니다.
+  <code>dt</code>가 "이 주소를 이 타입으로 해석"이라면, <code>dx</code>는 "디버거가 이미 아는 객체 그래프를 탐색·집계"입니다. 반복 분석은 JavaScript 확장(<code>.scriptload</code>)으로 자동화합니다.</p>
+</div>
+
+<h2 id="walkthrough">크래시 덤프 분석 워크스루</h2>
+<p>
+  가상의 <code>mydrv.sys</code>가 일으킨 <code>DRIVER_IRQL_NOT_LESS_OR_EQUAL</code>(0xD1) 커널 덤프를 처음부터 끝까지 따라가 봅니다.
+  출력은 실제 형식을 따른 <b>가상의 값</b>입니다. 각 단계에서 증거 보드가 어떻게 채워지는지 보세요.
+</p>
+
+<figure class="fig stepper" data-interval="6000" id="wtFig">
+  <svg class="dia" viewBox="0 0 880 250" role="img" aria-label="크래시 분석 단계">
+    <g data-hl="1"><rect class="box kernel" x="10" y="20" width="128" height="64" rx="8"/><text x="74" y="46" text-anchor="middle" class="b">① 덤프 열기</text><text x="74" y="68" text-anchor="middle" class="mono">.bugcheck</text></g>
+    <g data-hl="2" data-dim="1"><rect class="box kernel" x="151" y="20" width="128" height="64" rx="8"/><text x="215" y="46" text-anchor="middle" class="b">② 자동 분석</text><text x="215" y="68" text-anchor="middle" class="mono">!analyze -v</text></g>
+    <g data-hl="3" data-dim="1-2"><rect class="box kernel" x="292" y="20" width="128" height="64" rx="8"/><text x="356" y="46" text-anchor="middle" class="b">③ 콜스택</text><text x="356" y="68" text-anchor="middle" class="mono">kn / kv</text></g>
+    <g data-hl="4" data-dim="1-3"><rect class="box kernel" x="433" y="20" width="128" height="64" rx="8"/><text x="497" y="46" text-anchor="middle" class="b">④ 트랩 프레임</text><text x="497" y="68" text-anchor="middle" class="mono">.trap</text></g>
+    <g data-hl="5" data-dim="1-4"><rect class="box kernel" x="574" y="20" width="128" height="64" rx="8"/><text x="638" y="46" text-anchor="middle" class="b">⑤ 값의 출처</text><text x="638" y="68" text-anchor="middle" class="mono">ub · dt</text></g>
+    <g data-hl="6" data-dim="1-5"><rect class="box bad" x="715" y="20" width="155" height="64" rx="8"/><text x="792" y="46" text-anchor="middle" class="b">⑥ 결론</text><text x="792" y="68" text-anchor="middle" class="mono">lmvm mydrv</text></g>
+    <path class="ln noarr" d="M138 52 L151 52"/><path class="ln noarr" d="M279 52 L292 52"/><path class="ln noarr" d="M420 52 L433 52"/><path class="ln noarr" d="M561 52 L574 52"/><path class="ln noarr" d="M702 52 L715 52"/>
+
+    <rect class="box plain" x="10" y="104" width="860" height="136" rx="10"/>
+    <text x="24" y="124" class="sm b">증거 보드</text>
+    <g data-hl="1"><rect class="box" x="24" y="134" width="196" height="92" rx="8"/>
+      <text x="36" y="154" class="sm">버그체크</text>
+      <text x="36" y="180" class="mono b">0x000000D1</text>
+      <text x="36" y="204" class="sm">DRIVER_IRQL_NOT_LESS…</text></g>
+    <g data-hl="2"><rect class="box" x="234" y="134" width="196" height="92" rx="8"/>
+      <text x="246" y="154" class="sm">IRQL · 접근</text>
+      <text x="246" y="180" class="mono b" data-text="1:?|2:IRQL 2 · 읽기 0x28">?</text>
+      <text x="246" y="204" class="sm" data-text="1:—|2:DISPATCH에서 NULL+0x28?">—</text></g>
+    <g data-hl="3-5"><rect class="box" x="444" y="134" width="196" height="92" rx="8"/>
+      <text x="456" y="154" class="sm">실패 지점</text>
+      <text x="456" y="180" class="mono b" data-text="1:?|3:MyDpcRoutine+0x45|4:mov rax,[rcx+28h]">?</text>
+      <text x="456" y="204" class="sm" data-text="1:—|3:DPC 안에서 KiPageFault|4:rcx = 0 (NULL)|5:ctx-&gt;CurrentRequest == NULL">—</text></g>
+    <g data-hl="6"><rect class="box" x="654" y="134" width="202" height="92" rx="8"/>
+      <text x="666" y="154" class="sm">원인</text>
+      <text x="666" y="180" class="mono b" data-text="1:?|2:mydrv.sys (가설)|6:mydrv.sys 1.2.0.7">?</text>
+      <text x="666" y="204" class="sm" data-text="1:—|2:!analyze의 추정|5:정지 중 DPC 경쟁 조건|6:KeFlushQueuedDpcs 누락">—</text></g>
+  </svg>
+  <ol class="steps">
+    <li><b>덤프 열기와 현상 고정.</b> <code>windbg -z C:\Windows\MEMORY.DMP</code>로 열고 심볼을 맞춘 뒤, 버그체크 코드와 파라미터를 먼저 적어 둡니다.
+<pre data-title="WinDbg"><code class="lang-windbg">kd> .symfix C:\symbols; .reload
+kd> .bugcheck
+Bugcheck code 000000D1
+Arguments 00000000`00000028 00000000`00000002 00000000`00000000 fffff806`1a2b13c5
+kd> vertarget
+Windows 10 Kernel Version 22621 MP (8 procs) Free x64
+System Uptime: 3 days 4:12:09.517</code></pre></li>
+    <li><b><code>!analyze -v</code>로 파라미터 해석.</b> Arg1=0x28은 너무 작은 주소, 즉 <b>NULL 포인터 + 0x28 오프셋</b> 필드 읽기일 가능성이 큽니다. Arg2=2는 DISPATCH_LEVEL입니다. DISPATCH 이상에서는 페이지 폴트를 처리할 수 없으므로, 유효하지 않은 주소 접근이 0x50이 아니라 0xD1로 나타납니다.
+<pre data-title="WinDbg"><code class="lang-windbg">kd> !analyze -v
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.
+Arguments:
+Arg1: 0000000000000028, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000000, value 0 = read operation, 1 = write operation
+Arg4: fffff8061a2b13c5, address which referenced memory
+...
+TRAP_FRAME:  fffff80612a5f6d0 -- (.trap 0xfffff80612a5f6d0)
+SYMBOL_NAME:  mydrv!MyDpcRoutine+45
+IMAGE_NAME:  mydrv.sys
+FAILURE_BUCKET_ID:  AV_mydrv!MyDpcRoutine</code></pre></li>
+    <li><b>콜스택을 아래에서 위로 읽기.</b> 유휴 루프가 DPC 큐를 비우다(<code>KiRetireDpcList</code>) <code>mydrv!MyDpcRoutine</code>을 호출했고, 그 안에서 페이지 폴트(<code>KiPageFault</code>)가 났으며 IRQL이 높아 버그체크로 직행했습니다. <code>kv</code>로 보면 <code>KiPageFault</code> 줄에 TrapFrame 주소가 표시됩니다.
+<pre data-title="WinDbg"><code class="lang-windbg">kd> kn
+ # Child-SP          RetAddr               Call Site
+00 fffff806`12a5f588 fffff806`0f2129e9     nt!KeBugCheckEx
+01 fffff806`12a5f590 fffff806`0f20e2f8     nt!KiBugCheckDispatch+0x69
+02 fffff806`12a5f6d0 fffff806`1a2b13c5     nt!KiPageFault+0x478
+03 fffff806`12a5f860 fffff806`0f0a1b2e     mydrv!MyDpcRoutine+0x45
+04 fffff806`12a5f8a0 fffff806`0f0a0e14     nt!KiExecuteAllDpcs+0x30e
+05 fffff806`12a5fa10 fffff806`0f203c25     nt!KiRetireDpcList+0x1f4
+06 fffff806`12a5fca0 00000000`00000000     nt!KiIdleLoop+0x9e</code></pre></li>
+    <li><b>트랩 프레임으로 폴트 순간의 문맥 복원.</b> 실패한 명령은 <code>mov rax,[rcx+28h]</code>이고 <code>rcx=0</code>입니다. Arg1=0x28과 정확히 맞습니다. <code>rbx</code>, <code>rsi</code> 등이 0인 것은 x64 트랩 프레임이 <b>휘발성 레지스터만 저장</b>하기 때문이며, 실제 값이 0이었다는 뜻이 아닙니다.
+<pre data-title="WinDbg"><code class="lang-windbg">kd> .trap 0xfffff80612a5f6d0
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=ffffc50b3e2a1010 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff8061a2b13c5 rsp=fffff80612a5f860 rbp=fffff80612a5f8a0
+mydrv!MyDpcRoutine+0x45:
+fffff806`1a2b13c5 488b4128        mov     rax,qword ptr [rcx+28h] ds:00000000`00000028=????????????????</code></pre></li>
+    <li><b>값의 출처를 거꾸로 추적.</b> <code>ub</code>로 직전 명령을 보면 <code>rcx</code>는 <code>[rdx+18h]</code>에서 왔고, <code>rdx</code>는 DPC 루틴의 두 번째 인자 <code>DeferredContext</code>입니다. 개인 심볼로 구조체를 덤프하면 <code>CurrentRequest</code>가 NULL이고 장치는 <b>정지 중</b>입니다.
+<pre data-title="WinDbg"><code class="lang-windbg">kd> ub fffff806`1a2b13c5 L4
+fffff806`1a2b13b7 4883ec20        sub     rsp,20h
+fffff806`1a2b13bb 488bda          mov     rbx,rdx
+fffff806`1a2b13be 488b4a18        mov     rcx,qword ptr [rdx+18h]
+fffff806`1a2b13c2 498bf8          mov     rdi,r8
+kd> dt mydrv!_DEVICE_CONTEXT ffffc50b`3e2a1010
+   +0x000 Signature        : 0x6b6e4c4d
+   +0x010 DeviceObject     : 0xffffc50b`3d1e8c60 _DEVICE_OBJECT
+   +0x018 CurrentRequest   : (null)
+   +0x020 PendingCount     : 0n0
+   +0x024 State            : 3 ( StateStopping )</code></pre></li>
+    <li><b>결론과 수정 방향.</b> 정지 경로가 <code>CurrentRequest</code>를 NULL로 만든 뒤에도 이미 큐에 들어간 DPC가 실행되었습니다. 근본 원인은 정지 시 <code>KeRemoveQueueDpc</code>/<code>KeFlushQueuedDpcs</code>로 DPC를 정리하지 않은 것과, DPC가 락 없이 공유 상태를 읽은 것입니다. 보고서에는 드라이버 버전을 함께 남깁니다.
+<pre data-title="WinDbg"><code class="lang-windbg">kd> lmvm mydrv
+start             end                 module name
+fffff806`1a2b0000 fffff806`1a2c4000   mydrv      (private pdb symbols)
+    Image path: \SystemRoot\System32\drivers\mydrv.sys
+    Timestamp:        Mon Oct  9 15:47:12 2023 (6523A1F0)
+    FileVersion:      1.2.0.7
+    CompanyName:      Contoso Ltd.</code></pre></li>
+  </ol>
+  <figcaption><b>그림 15-3.</b> 0xD1 분석 워크스루. 파라미터 → 스택 → 트랩 → 값의 출처가 하나의 이야기로 맞물릴 때 결론을 내립니다.</figcaption>
+</figure>
+
+<div class="callout tip">
+  <div class="callout-title">주소만 보고 판단하는 감각</div>
+  <p><code>0x0000000000000028</code>처럼 작은 값은 NULL+오프셋, <code>0xffffxxxx`xxxxxxxx</code>는 커널 주소(해제됐거나 페이징 가능한 메모리일 수 있음 → <code>!pte</code>, <code>!pool</code>), 상위 비트가 유효하지 않은 값(예: <code>0x4141414141414141</code>)은 비정규(non-canonical) 주소로 보통 <b>#GP</b>를 일으키며 데이터 덮어쓰기를 의심합니다.
+  해제된 풀은 특정 패턴으로 채워지지 않으므로 패턴만으로 단정하지 말고 Verifier로 확인하세요.</p>
+</div>
+
+<h2 id="bugchecks">흔한 버그체크 코드</h2>
+<table>
+  <thead><tr><th>코드</th><th>이름</th><th>전형적 원인</th><th>먼저 볼 것</th></tr></thead>
+  <tbody>
+    <tr><td><code>0x0A</code></td><td>IRQL_NOT_LESS_OR_EQUAL</td><td>DISPATCH 이상에서 페이징 가능/무효 메모리 접근. 실패 주소가 커널 자체일 때</td><td><code>kv</code> → <code>.trap</code>, P1 주소</td></tr>
+    <tr><td><code>0x1E</code></td><td>KMODE_EXCEPTION_NOT_HANDLED</td><td>커널 예외 미처리(접근 위반, 잘못된 명령, 디버그 브레이크)</td><td>P1 예외 코드, P2 위치</td></tr>
+    <tr><td><code>0x3B</code></td><td>SYSTEM_SERVICE_EXCEPTION</td><td>시스템 콜 처리 중 예외 — 드라이버 IOCTL 처리기의 버그가 많음</td><td><code>.cxr P3</code></td></tr>
+    <tr><td><code>0x50</code></td><td>PAGE_FAULT_IN_NONPAGED_AREA</td><td>해제된 메모리, 잘못된 포인터, 범위를 넘은 접근</td><td><code>!pte P1</code>, <code>!pool P1</code></td></tr>
+    <tr><td><code>0x7E</code></td><td>SYSTEM_THREAD_EXCEPTION_NOT_HANDLED</td><td>시스템 스레드(워커 등)에서 예외 미처리</td><td><code>.exr P3</code>, <code>.cxr P4</code></td></tr>
+    <tr><td><code>0xC4</code></td><td>DRIVER_VERIFIER_DETECTED_VIOLATION</td><td>Verifier가 규칙 위반 포착(P1=하위 유형)</td><td><code>!analyze -v</code>, <code>!verifier</code></td></tr>
+    <tr><td><code>0xD1</code></td><td>DRIVER_IRQL_NOT_LESS_OR_EQUAL</td><td>드라이버가 높은 IRQL에서 무효/페이징 가능 메모리 접근, NULL 역참조</td><td><code>kv</code> → <code>.trap</code>, P4 명령</td></tr>
+    <tr><td><code>0xEF</code></td><td>CRITICAL_PROCESS_DIED</td><td>csrss·wininit·smss 등 필수 프로세스 종료</td><td><code>!process P1 7</code></td></tr>
+    <tr><td><code>0x133</code></td><td>DPC_WATCHDOG_VIOLATION</td><td>DPC/ISR가 너무 오래 실행되거나, DISPATCH 이상에 누적 체류</td><td><code>!dpcwatchdog</code>, <code>!running -it</code></td></tr>
+    <tr><td><code>0x139</code></td><td>KERNEL_SECURITY_CHECK_FAILURE</td><td>LIST_ENTRY 손상(P1=3), 스택 쿠키 손상(P1=2) 등 무결성 검사 실패</td><td><code>.trap P2</code>, <code>.exr P3</code></td></tr>
+    <tr><td><code>0x19</code> / <code>0x13A</code></td><td>BAD_POOL_HEADER / KERNEL_MODE_HEAP_CORRUPTION</td><td>풀 손상. 발견자 ≠ 범인</td><td>Special Pool 재현</td></tr>
+    <tr><td><code>0x9F</code></td><td>DRIVER_POWER_STATE_FAILURE</td><td>전원 IRP를 너무 오래 붙잡음(P1=3), PnP 락 대기</td><td><code>!irp P4</code>, <code>!devstack P2</code></td></tr>
+    <tr><td><code>0x124</code></td><td>WHEA_UNCORRECTABLE_ERROR</td><td>하드웨어 오류(MCE, PCIe, 메모리) — 소프트웨어 버그 아님</td><td><code>!errrec P2</code></td></tr>
+  </tbody>
+</table>
+
+<div class="sim" id="bcSim">
+  <div class="sim-title">버그체크 디코더 — 코드를 입력하거나 <code>.bugcheck</code> 출력을 붙여 넣기</div>
+  <div class="sim-controls">
+    <input type="text" id="bcInput" value="Bugcheck code 000000D1 Arguments 00000000`00000028 00000000`00000002 00000000`00000000 fffff806`1a2b13c5" style="flex:1;min-width:260px" aria-label="버그체크 코드">
+  </div>
+  <div class="bc-quick" id="bcQuick"></div>
+  <div class="bc-out" id="bcOut"></div>
+</div>
+
+<h3>흔한 커널 버그 패턴</h3>
+<div class="grid3">
+  <div class="card kernel"><h4>높은 IRQL의 잘못된 접근</h4><p>DPC·스핀락 보유 중 페이징 가능 코드/데이터 접근, NULL 역참조. → 0xD1, 0x0A. 탐지: Verifier IRQL 검사(0x2).</p></div>
+  <div class="card kernel"><h4>Use-after-free</h4><p>해제 후 남은 참조, 참조 카운트 누락. → 0x50, 0xD5, 무작위 손상. 탐지: Special Pool.</p></div>
+  <div class="card kernel"><h4>풀 오버런</h4><p>길이 계산 실수, 유저 입력 길이 미검증. → 0x19, 0x13A, 0x139. 탐지: Special Pool.</p></div>
+  <div class="card kernel"><h4>IRP 수명 오류</h4><p>두 번 완료, 완료 후 접근, 취소 경쟁. → 0x44, 0x50. 탐지: Verifier I/O 검증(0x10).</p></div>
+  <div class="card kernel"><h4>락 오류와 교착</h4><p>락 순서 역전, 해제 누락, 유저 서비스 응답을 커널에서 무한 대기. → 행. 탐지: Verifier 교착 탐지(0x20), <code>!locks</code>.</p></div>
+  <div class="card kernel"><h4>스택 고갈·과도한 DPC</h4><p>재귀, 큰 지역 배열, 깊은 필터 스택 → 0x7F(이중 폴트). 긴 DPC 루프 → 0x133. 탐지: <code>knf</code>, WPA DPC/ISR.</p></div>
+</div>
+
+<h2 id="hang">시스템 행(hang) 분석</h2>
+<p>
+  행은 크래시보다 어렵습니다. 무엇이 "멈춘" 것인지부터 구분해야 합니다. <b>하드 행</b>은 한 CPU 이상이 높은 IRQL에서 돌거나 인터럽트를 막고 있어 마우스조차 안 움직이는 상태,
+  <b>소프트 행</b>은 시스템은 살아 있지만 스레드들이 서로를 기다리며(교착) 특정 작업이 끝나지 않는 상태입니다.
+</p>
+<h3>멈춘 시스템에서 덤프 얻기</h3>
+<ul>
+  <li><b>키보드</b>: <code>CrashOnCtrlScroll=1</code>(USB 키보드는 <code>kbdhid\Parameters</code>, PS/2는 <code>i8042prt\Parameters</code>) 후 오른쪽 <kbd>Ctrl</kbd>+<kbd>Scroll Lock</kbd> 두 번 → 0xE2 MANUALLY_INITIATED_CRASH. 키보드 ISR이 돌 수 있어야 하므로 하드 행에는 안 될 수 있습니다.</li>
+  <li><b>NMI</b>: 서버 BMC(iLO/iDRAC)의 NMI 버튼, Hyper-V는 <code>Debug-VM -Name vm1 -InjectNonMaskableInterrupt</code>. NMI는 마스킹되지 않으므로 하드 행에서도 덤프를 얻을 수 있습니다(0x80).</li>
+  <li><b>디버거 연결</b>되어 있다면 <kbd>Ctrl</kbd>+<kbd>Break</kbd> 후 <code>.dump /f</code>, 또는 <code>.crash</code>.</li>
+</ul>
+<h3>핵심 명령</h3>
+<pre data-title="WinDbg"><code class="lang-windbg">kd> !analyze -hang              $$ 행 관점의 자동 분석
+kd> !running -it                $$ 각 CPU에서 실행 중인 스레드 + 스택 (-i: 유휴 CPU 포함)
+kd> !ready                      $$ CPU별 레디 큐 — 오래 기다리는 스레드는 CPU 굶주림의 증거
+kd> !locks                      $$ 경합 중인 ERESOURCE: 소유자와 대기자
+kd> !qlocks                     $$ 큐드 스핀락 상태
+kd> !stacks 2 mydrv             $$ 스택에 mydrv가 있는 모든 스레드
+kd> !thread ffffc50b`41a2e080   $$ 대기 이유(WAIT: (WrResource) ...), 대기 객체, 대기 시간(Ticks)</code></pre>
+<p>
+  소프트 행 분석의 핵심은 <b>대기 체인</b>입니다. 멈춘 스레드에서 출발해 "무엇을 기다리나 → 그것은 누가 갖고 있나 → 그 소유자는 무엇을 기다리나"를 반복하면,
+  체인은 결국 ① 자기 자신으로 돌아오거나(교착), ② 소유자 없는 이벤트·IRP 완료를 기다리거나(완료해 줄 쪽을 코드로 추론), ③ 실행 중인 스레드(CPU 독점)에서 끝납니다.
+  뮤턴트(KMUTEX)와 ERESOURCE는 소유자를 기록하지만 <b>이벤트는 소유자가 없다</b>는 점이 중요합니다.
+</p>
+
+<div class="sim" id="hangSim">
+  <div class="sim-title">대기 체인 추적기</div>
+  <div class="sim-controls">
+    <span>시나리오:</span>
+    <button class="btn on" data-sc="0">A · 락 교착</button>
+    <button class="btn" data-sc="1">B · 필터–서비스 순환</button>
+    <button class="btn" data-sc="2">C · CPU 독점</button>
+    <span style="flex:1"></span>
+    <button class="btn primary" id="hangNext">다음 명령 ▶</button>
+    <button class="btn" id="hangReset">↺ 처음부터</button>
+  </div>
+  <div class="chain" id="hangChain"></div>
+  <div class="console" id="hangCon" style="min-height:9em;max-height:340px"></div>
+</div>
+
+<h2 id="pool">풀 손상과 Special Pool · Driver Verifier</h2>
+<p>
+  풀 오버런은 <b>시한폭탄</b>입니다. 넘친 바이트는 이웃 블록을 덮어쓰지만 그 순간에는 아무 일도 없고, 한참 뒤 이웃 블록의 주인이 해제하거나 할당자가 메타데이터를 검사할 때 터집니다.
+  Windows 10 19H1부터 커널 풀이 <b>세그먼트 힙</b> 기반으로 바뀌어 손상 버그체크가 0x19 외에 0x13A, 0x139 등으로 다양해졌고 <code>!pool</code> 출력 형식도 달라졌습니다.
+</p>
+
+<figure class="fig stepper" data-interval="3800">
+  <svg class="dia" viewBox="0 0 880 300" role="img" aria-label="일반 풀과 Special Pool 비교">
+    <g data-dim="4+">
+      <text x="20" y="26" class="b">일반 풀 — 한 페이지에 여러 블록이 이웃해 있음</text>
+      <rect class="box plain" x="20" y="36" width="840" height="70" rx="8"/>
+      <rect class="box hw" x="30" y="46" width="40" height="50" rx="4"/><text x="50" y="76" text-anchor="middle" class="sm">헤더</text>
+      <rect class="box user" x="70" y="46" width="200" height="50" rx="4" data-hl="1-2"/><text x="170" y="76" text-anchor="middle">A 데이터 (0x40)</text>
+      <rect class="box hw" x="270" y="46" width="40" height="50" rx="4"/><text x="290" y="76" text-anchor="middle" class="sm">헤더</text>
+      <rect class="box kernel" x="310" y="46" width="220" height="50" rx="4"/><text x="420" y="76" text-anchor="middle">B 데이터</text>
+      <rect class="box hw" x="530" y="46" width="40" height="50" rx="4"/><text x="550" y="76" text-anchor="middle" class="sm">헤더</text>
+      <rect class="box plain" x="570" y="46" width="280" height="50" rx="4"/><text x="710" y="76" text-anchor="middle">C 데이터</text>
+      <g data-on="2"><rect class="box bad" x="270" y="46" width="40" height="50" rx="4"/><text x="290" y="76" text-anchor="middle" class="sm c-bad">덮임</text>
+        <text x="170" y="124" text-anchor="middle" class="sm c-bad">A가 0x48 바이트 기록 → 8바이트 넘침, 아무 일 없음</text></g>
+      <g data-only="3"><rect class="box bad" x="20" y="136" width="840" height="34" rx="8"/>
+        <text x="440" y="158" text-anchor="middle">나중에 B 해제 → 헤더 검사 실패 → 0x19 BAD_POOL_HEADER · 스택에 A는 없음</text></g>
+    </g>
+    <g data-on="4">
+      <text x="20" y="196" class="b">Special Pool (verifier /flags 0x1 /driver a.sys)</text>
+      <rect class="box plain" x="20" y="206" width="420" height="70" rx="8"/>
+      <g data-off="6"><rect class="box hw" x="30" y="216" width="200" height="50" rx="4" style="stroke-dasharray:4 3"/><text x="130" y="246" text-anchor="middle" class="sm">채움 패턴 (해제 시 검사)</text>
+      <rect class="box user" x="240" y="216" width="200" height="50" rx="4"/><text x="340" y="246" text-anchor="middle">A 데이터 (0x40)</text></g>
+      <rect class="box bad" x="440" y="206" width="420" height="70" rx="8" style="stroke-dasharray:6 4"/>
+      <text x="650" y="236" text-anchor="middle" class="b">가드 페이지</text>
+      <text x="650" y="256" text-anchor="middle" class="sm">PTE 무효 · 어떤 접근도 즉시 페이지 폴트</text>
+      <line class="sep" x1="440" y1="198" x2="440" y2="284"/>
+      <g data-only="5"><path class="ln bad" d="M400 290 C 430 290, 450 290, 480 270"/>
+        <text x="490" y="296" class="sm c-bad">넘친 첫 바이트에서 즉시 0xD6 · rip = 범인 명령</text></g>
+      <g data-on="6"><rect class="box hw" x="20" y="206" width="420" height="70" rx="8"/>
+        <text x="230" y="236" text-anchor="middle" class="b">해제됨: 페이지 전체 무효화</text>
+        <text x="230" y="256" text-anchor="middle" class="sm c-bad">해제 후 접근 → 즉시 0xD5</text></g>
+    </g>
+  </svg>
+  <ol class="steps">
+    <li><b>일반 풀</b>: 드라이버 A가 0x40바이트를 할당합니다. 같은 페이지에 B, C의 블록이 헤더를 사이에 두고 붙어 있습니다.</li>
+    <li><b>오버런</b>: A가 길이 계산을 잘못해 0x48바이트를 씁니다. 8바이트가 B의 헤더를 덮지만 이 순간에는 아무 예외도 없습니다. 범행 현장이 그대로 지나갑니다.</li>
+    <li><b>엉뚱한 곳에서 폭발</b>: 몇 분 뒤 B(예: 파일 시스템)가 블록을 해제하면 할당자가 손상된 헤더를 발견해 버그체크합니다. 콜스택에는 B와 무고한 커널 코드만 있습니다. 덤프 수십 개가 매번 다른 스택을 보이는 것이 풀 손상의 전형적 신호입니다.</li>
+    <li><b>Special Pool 활성화</b>: 대상 드라이버의 할당을 페이지 단위로 따로 놓고, <b>블록 끝을 페이지 끝에 맞춘 뒤 다음 페이지를 가드 페이지</b>(무효 PTE)로 둡니다. 앞쪽 남는 공간은 패턴으로 채워 해제 시 검사합니다.</li>
+    <li><b>즉시 포착</b>: A가 넘친 첫 바이트를 쓰는 순간 가드 페이지에서 페이지 폴트 → <code>DRIVER_PAGE_FAULT_BEYOND_END_OF_ALLOCATION</code>(0xD6). 스택 최상단이 범인 명령입니다. 정렬 패딩 안쪽의 작은 오버런은 해제 시 패턴 검사로 잡힙니다(0xC1).</li>
+    <li><b>Use-after-free</b>: 해제된 Special Pool 페이지는 한동안 통째로 무효화되므로, 해제 후 접근도 즉시 <code>DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL</code>(0xD5)로 잡힙니다. <code>!verifier 0x80 주소</code>로 할당·해제 스택 기록을 볼 수 있습니다.</li>
+  </ol>
+  <figcaption><b>그림 15-4.</b> 풀 오버런: 일반 풀은 "발견자"를, Special Pool은 "범인"을 보여 줍니다.</figcaption>
+</figure>
+
+<div class="tabs">
+  <div class="tab-bar"><button>Driver Verifier</button><button>풀 분석 명령</button></div>
+  <div class="tab-panel">
+<pre data-title="cmd (관리자)"><code class="lang-ps">C:\> verifier /standard /driver mydrv.sys        &lt;- 표준 검사 세트
+C:\> verifier /flags 0x1 /driver mydrv.sys       &lt;- Special Pool만
+C:\> verifier /querysettings                     &lt;- 현재 설정 (재부팅 후 적용)
+C:\> verifier /query                             &lt;- 실행 중 통계
+C:\> verifier /reset                             &lt;- 해제</code></pre>
+    <table>
+      <thead><tr><th>플래그</th><th>검사</th><th>잡아내는 버그</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x1</code></td><td>Special Pool</td><td>오버런, use-after-free</td></tr>
+        <tr><td><code>0x2</code></td><td>Force IRQL checking</td><td>DISPATCH 이상에서 페이징 가능 메모리 접근 (페이징 가능 페이지를 강제로 내보냄)</td></tr>
+        <tr><td><code>0x8</code></td><td>Pool tracking</td><td>언로드 시 미해제 풀(0xC4, P1=0x62)</td></tr>
+        <tr><td><code>0x10</code></td><td>I/O verification</td><td>IRP 이중 완료, 잘못된 상태 반환</td></tr>
+        <tr><td><code>0x20</code></td><td>Deadlock detection</td><td>락 획득 순서 위반 — 실제 교착 전에 경고</td></tr>
+        <tr><td><code>0x20000</code></td><td>DDI compliance checking</td><td>WDK 규칙 위반(DDI 사용법)</td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="font-size:.88rem">Verifier는 반드시 테스트 환경에서 대상 드라이버를 지정해 씁니다. 모든 드라이버에 켜면 부팅조차 느려지고, 서드파티 드라이버의 위반으로 부팅이 안 될 수 있습니다(안전 모드에서 <code>verifier /reset</code>).</p>
+  </div>
+  <div class="tab-panel">
+<pre data-title="WinDbg"><code class="lang-windbg">kd> !pool ffffc50b`3e2a1010
+Pool page ffffc50b3e2a1010 region is Nonpaged pool
+*ffffc50b3e2a1000 size:   70 previous size:    0  (Allocated) *MLnk
+		Owning component : Unknown (update pooltag.txt)
+kd> !poolused 2                 $$ 비페이징 풀 사용량 순 태그 목록 (누수 추적)
+kd> !poolfind MLnk              $$ 특정 태그의 모든 할당 찾기
+kd> !verifier 0x80 ffffc50b`3e2a1010   $$ (Verifier 사용 시) 할당/해제 스택 기록</code></pre>
+    <p>태그 주인 찾기: 디버거 폴더의 <code>triage\pooltag.txt</code>에 없으면 <code>findstr /m /l MLnk C:\Windows\System32\drivers\*.sys</code>로 바이너리를 뒤집니다.
+    태그 단위로 Special Pool을 걸 수도 있습니다(GFlags 또는 메모리 관리자 레지스트리 <code>PoolTag</code>).</p>
+  </div>
+</div>
+
+<h2 id="perf">ETW/WPR/WPA와 Time Travel Debugging</h2>
+<p>
+  크래시도 행도 아닌 "느리다"는 디버거로 잡기 어렵습니다. 이때는 <b>ETW(Event Tracing for Windows)</b>로 시스템 전체를 기록합니다.
+  커널 자체가 컨텍스트 스위치·DPC/ISR·디스크 I/O·페이지 폴트·스택 샘플 이벤트를 내보내는 거대한 공급자이고, 오버헤드가 낮아 운영 환경에서도 쓸 수 있습니다.
+</p>
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 180" role="img" aria-label="ETW 구조">
+    <rect class="box kernel" x="10" y="20" width="200" height="56" rx="8"/><text x="110" y="44" text-anchor="middle" class="b">커널 공급자</text><text x="110" y="64" text-anchor="middle" class="sm">CSwitch · DPC/ISR · DiskIO · Stack</text>
+    <rect class="box user" x="10" y="96" width="200" height="56" rx="8"/><text x="110" y="120" text-anchor="middle" class="b">유저/드라이버 공급자</text><text x="110" y="140" text-anchor="middle" class="sm">TraceLogging · manifest · WPP</text>
+    <rect class="box kernel" x="300" y="48" width="230" height="76" rx="8"/><text x="415" y="78" text-anchor="middle" class="b">ETW 세션 (커널 버퍼)</text><text x="415" y="100" text-anchor="middle" class="sm">CPU별 버퍼 · 순환/파일 모드</text>
+    <rect class="box user" x="330" y="140" width="170" height="34" rx="8"/><text x="415" y="162" text-anchor="middle" class="sm b">컨트롤러: wpr.exe</text>
+    <rect class="box plain" x="620" y="20" width="250" height="56" rx="8"/><text x="745" y="44" text-anchor="middle" class="b">.etl 파일 → WPA</text><text x="745" y="64" text-anchor="middle" class="sm">사후 분석 · 스택 · 그래프</text>
+    <rect class="box plain" x="620" y="96" width="250" height="56" rx="8"/><text x="745" y="120" text-anchor="middle" class="b">실시간 소비자</text><text x="745" y="140" text-anchor="middle" class="sm">EDR · 모니터링 에이전트</text>
+    <path class="ln kernel flow" d="M210 48 L298 76"/><path class="ln user flow" d="M210 124 L298 100"/>
+    <path class="ln acc" d="M415 140 L415 126"/>
+    <path class="ln flow" d="M530 76 L618 48"/><path class="ln flow" d="M530 100 L618 124"/>
+  </svg>
+  <figcaption><b>그림 15-5.</b> ETW: 공급자 → 세션(버퍼) → 파일/실시간 소비자. WPR이 세션을 켜고 끕니다.</figcaption>
+</figure>
+<pre data-title="cmd (관리자)"><code class="lang-ps">C:\> wpr -profiles                                   # 내장 프로필 목록
+C:\> wpr -start GeneralProfile -start CPU -filemode  # 기록 시작
+     ... 문제 재현 ...
+C:\> wpr -stop C:\traces\slow.etl "IOCTL 지연 재현"
+C:\> wpr -addboot GeneralProfile                     # 부팅 추적: 재부팅 후
+C:\> wpr -stopboot C:\traces\boot.etl</code></pre>
+<div class="grid2">
+  <div class="card"><h4>WPA에서 먼저 볼 그래프</h4>
+    <ul>
+      <li><b>CPU Usage (Sampled)</b>: CPU 시간이 어느 스택에서 쓰였나</li>
+      <li><b>CPU Usage (Precise)</b>: 컨텍스트 스위치 — 누가 기다렸고(Waits), 누가 깨웠나(ReadyingThread). 대기 분석의 핵심</li>
+      <li><b>DPC/ISR Duration</b>: 긴 DPC를 일으키는 드라이버 (0x133 전조, 오디오 끊김)</li>
+      <li><b>Disk / File I/O</b>, <b>Pool</b> 사용량</li>
+    </ul></div>
+  <div class="card"><h4>드라이버의 자체 로그</h4>
+    <p>WPP 추적과 KMDF의 내장 기록기(IFR)는 링 버퍼를 메모리에 남겨 <b>덤프 안에서도</b> 읽을 수 있습니다.</p>
+    <p><code>!wdfkd.wdflogdump mydrv</code> (KMDF 로그)<br><code>!rcdrkd.rcdrlogdump mydrv</code> (WPP 기록기)</p>
+    <p>크래시 직전 드라이버가 무엇을 하고 있었는지 알려 주는 가장 값싼 증거입니다.</p></div>
+</div>
+
+<h3>Time Travel Debugging (TTD)</h3>
+<p>
+  TTD는 프로세스 실행을 명령 단위로 기록해 두고, 재생하면서 <b>앞뒤로 자유롭게</b> 오갈 수 있게 합니다. "이 값을 누가 마지막으로 썼나?"를
+  쓰기 중단점 + 역방향 실행 한 번으로 답할 수 있습니다. 단, <b>유저 모드 프로세스 전용</b>이며 커널 코드는 기록하지 않습니다.
+  드라이버와 통신하는 서비스·앱 쪽 문제(잘못된 IOCTL 버퍼, 핸들 수명)를 좁힐 때 유용합니다.
+</p>
+<pre data-title="WinDbg (TTD 재생)"><code class="lang-windbg">0:000> dx @$cursession.TTD.Calls("kernelbase!DeviceIoControl").Count()
+0:000> ba w8 000001d2`3f2a10a8         $$ 이 주소에 쓰기 중단점
+0:000> g-                              $$ 거꾸로 실행 → 마지막으로 쓴 지점에서 정지
+0:000> !tt 50                          $$ 기록의 50% 지점으로 이동
+0:000> p-                              $$ 한 단계 뒤로</code></pre>
+<p class="muted" style="font-size:.88rem">기록은 WinDbg의 <b>Launch/Attach → Record with Time Travel Debugging</b> 또는 명령줄 <code>TTD.exe</code>로 합니다. 기록 오버헤드가 커서(수 배~수십 배 느려짐) 짧은 재현 구간에 씁니다.</p>
+
+<h2 id="lab">실습</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 15-1 · 의도된 크래시를 분석하기</div>
+  <p>테스트 VM에 Sysinternals <b>NotMyFault</b>를 받고 덤프 설정을 <b>커널 메모리 덤프</b>로 둡니다. 스냅숏을 찍은 뒤 진행하세요.</p>
+</div>
+<ol>
+  <li>NotMyFault에서 <b>High IRQL fault (Kernel-mode)</b>를 실행합니다. 재부팅 후 <code>MEMORY.DMP</code>를 호스트로 복사해 위 워크스루 순서(<code>.bugcheck</code> → <code>!analyze -v</code> → <code>kv</code> → <code>.trap</code> → <code>ub</code>)대로 <code>myfault.sys</code>의 실패 명령까지 추적하세요.</li>
+  <li><b>Buffer overflow</b>를 여러 번 실행해 크래시가 언제, 어떤 스택으로 나는지 기록합니다. 매번 다른지 관찰하세요.</li>
+  <li><code>verifier /flags 0x1 /driver myfault.sys</code> 후 재부팅하고 2번을 반복합니다. 버그체크 코드와 스택 최상단이 어떻게 바뀌었는지 비교하세요.</li>
+  <li>KDNET로 호스트를 연결하고 <code>bp myfault!*</code> 대신 <code>sxe ld:myfault.sys</code>로 로드 시점에 멈춘 뒤 <code>!drvobj myfault 2</code>로 디스패치 루틴을 확인하세요.</li>
+  <li>도전: NotMyFault의 <b>Hang</b> 계열 옵션을 실행한 뒤 Hyper-V NMI로 덤프를 얻어 <code>!running -it</code>, <code>!locks</code>로 원인 스레드를 찾으세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">0xD1 덤프에서 Arg1=<code>0x0000000000000028</code>, Arg2=<code>2</code>, Arg3=<code>0</code>입니다. 가장 타당한 첫 해석은?</p>
+  <ol class="opts">
+    <li>물리 주소 0x28의 하드웨어 레지스터를 IRQL 2에서 썼다</li>
+    <li data-correct>NULL 포인터의 오프셋 0x28 필드를 DISPATCH_LEVEL에서 읽었다</li>
+    <li>IRQL을 0x28로 올리려다 실패했다</li>
+    <li>풀 태그 0x28 블록이 손상되었다</li>
+  </ol>
+  <div class="explain">Arg1은 참조한 가상 주소, Arg2는 당시 IRQL(2=DISPATCH), Arg3은 접근 종류(0=읽기)입니다. 0x28 같은 작은 주소는 <code>p-&gt;Field</code>에서 <code>p</code>가 NULL인 전형적 패턴이며, <code>.trap</code>의 <code>[reg+28h]</code>로 확인합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>.trap</code> 결과에서 <code>rbx</code>, <code>rsi</code>, <code>r12</code>~<code>r15</code>가 모두 0입니다. 올바른 해석은?</p>
+  <ol class="opts">
+    <li>함수가 그 레지스터를 0으로 초기화했다</li>
+    <li>덤프가 손상되었다</li>
+    <li data-correct>x64 트랩 프레임은 휘발성 레지스터만 저장하므로 비휘발성 레지스터 값은 신뢰할 수 없다</li>
+    <li>CPU가 예외 시 레지스터를 지운다</li>
+  </ol>
+  <div class="explain"><code>KTRAP_FRAME</code>은 rax, rcx, rdx, r8–r11 등 휘발성 레지스터와 rip/rsp/rflags를 저장합니다. 비휘발성 값은 호출 체인의 저장 위치에서 복원해야 하며, <code>.frame /r</code>이나 스택의 push 위치를 봐야 합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">고객 서버에서 BAD_POOL_HEADER(0x19) 덤프 다섯 개가 모두 다른 콜스택(ntfs, tcpip, 백신 필터…)을 보입니다. 가장 효과적인 다음 단계는?</p>
+  <ol class="opts">
+    <li>가장 자주 보인 ntfs.sys를 업데이트한다</li>
+    <li>미니덤프로 바꿔 덤프를 더 많이 모은다</li>
+    <li data-correct>의심 드라이버들에 Special Pool(Verifier)을 걸어 손상 순간에 잡히게 만든다</li>
+    <li><code>!analyze -v</code>의 MODULE_NAME을 그대로 보고한다</li>
+  </ol>
+  <div class="explain">스택이 매번 다르다는 것은 "발견자"가 매번 다르다는 뜻입니다. 범인은 이미 떠난 뒤입니다. Special Pool은 오버런·해제 후 접근을 그 명령에서 즉시 버그체크로 바꿔 범인의 스택을 보여 줍니다. 미니덤프는 풀 정보가 없어 오히려 불리합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">RAM 512GB인 Hyper-V 호스트입니다. 커널과 유저 서비스가 얽힌 교착을 분석할 수 있으면서 덤프 크기를 줄이려면?</p>
+  <ol class="opts">
+    <li>Small memory dump</li>
+    <li>Kernel memory dump</li>
+    <li data-correct>Active memory dump (<code>CrashDumpEnabled=1</code>, <code>FilterPages=1</code>)</li>
+    <li>Complete memory dump</li>
+  </ol>
+  <div class="explain">활성 메모리 덤프는 커널과 활성 유저 메모리를 담으면서 게스트 VM 메모리 등 쓸모없는 페이지를 제외합니다. 커널 덤프는 유저 모드 메모리가 없어 서비스 쪽 상태를 볼 수 없고, 전체 덤프는 너무 큽니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">대기 체인을 따라가다 스레드가 <code>SynchronizationEvent</code>를 기다리는 것을 발견했습니다. 다음으로 할 일은?</p>
+  <ol class="opts">
+    <li><code>!locks</code>로 이벤트의 소유 스레드를 찾는다</li>
+    <li data-correct>이벤트에는 소유자가 없으므로, 누가 이 이벤트를 Set해야 하는지 코드와 다른 스레드 스택(<code>!stacks</code>)으로 추론한다</li>
+    <li>이벤트 대기는 정상이므로 분석을 끝낸다</li>
+    <li><code>.trap</code>으로 이벤트의 트랩 프레임을 본다</li>
+  </ol>
+  <div class="explain">뮤턴트와 ERESOURCE는 소유자를 기록하지만 이벤트는 신호 상태만 가집니다. 이벤트를 Set할 책임이 있는 코드 경로(완료 루틴, 워커, 유저 서비스 응답)를 찾아 그 쪽이 왜 진행하지 못하는지를 이어서 추적해야 합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">Time Travel Debugging에 대한 설명으로 옳은 것은?</p>
+  <ol class="opts">
+    <li>커널 드라이버의 실행을 기록해 크래시 직전으로 되돌릴 수 있다</li>
+    <li>운영 서버에서 상시 켜 두어도 오버헤드가 거의 없다</li>
+    <li data-correct>유저 모드 프로세스를 기록하며, 쓰기 중단점과 역방향 실행으로 "누가 이 값을 썼나"를 찾을 수 있다</li>
+    <li>ETW 세션의 다른 이름이다</li>
+  </ol>
+  <div class="explain">TTD는 유저 모드 전용이고 기록 오버헤드가 큽니다. 커널 쪽 시간 흐름은 ETW/WPA나 드라이버 자체 로그(WPP/IFR)로 재구성합니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>실행 제어가 필요하면 호스트–타깃(KDNET), 조회만 필요하면 로컬 KD·LiveKD, 사후 분석은 덤프. 심볼은 <code>.symfix</code> + 개인 PDB 경로, 문제 시 <code>!sym noisy</code>.</li>
+    <li>덤프: Small(통계용) &lt; Kernel/Automatic(드라이버 분석 표준) &lt; Active(유저+커널, 서버) &lt; Complete. 페이징 파일 크기가 덤프 생성의 전제 조건이다.</li>
+    <li>분석 순서: <code>.bugcheck</code> → <code>!analyze -v</code>(가설) → <code>kv</code> → <code>.trap</code>/<code>.cxr</code> → <code>ub</code>·<code>dt</code>로 값의 출처 입증 → 버전과 함께 결론.</li>
+    <li>행은 대기 체인(<code>!thread</code>·<code>!locks</code>·<code>!irp</code>)을 따라가고, CPU 독점은 <code>!running -it</code>·<code>!ready</code>로 본다. 이벤트는 소유자가 없다.</li>
+    <li>풀 손상은 발견자 ≠ 범인. Special Pool·Driver Verifier로 범행 현장을 잡는다. 성능은 ETW/WPA, 유저 측 재현은 TTD.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // ---------------- WinDbg 치트시트 ----------------
+  const CS = [
+    ['!analyze -v', '분석', '자동 크래시 분석. 버그체크 파라미터 해석, 트랩 프레임, 추정 원인 모듈. 결론은 가설로만 쓴다.', '!analyze -v'],
+    ['!analyze -hang', '분석', '행(hang) 관점의 자동 분석. 오래 대기 중인 스레드와 락을 추린다.', '!analyze -hang'],
+    ['.bugcheck', '분석', '버그체크 코드와 4개 파라미터를 출력.', '.bugcheck'],
+    ['vertarget', '분석', '타깃 OS 빌드, 프로세서 수, 가동 시간. 보고서 첫 줄에 쓸 정보.', 'vertarget'],
+    ['!sysinfo', '분석', 'SMBIOS·CPU 정보. 하드웨어 모델·BIOS 버전 확인(0x124 등).', '!sysinfo machineid\n!sysinfo cpuinfo'],
+    ['!error', '분석', 'NTSTATUS·Win32 오류 코드를 이름으로 변환.', '!error c0000005'],
+    ['!errrec', '분석', 'WHEA 오류 레코드 해석. 0x124의 P2 주소를 넣는다.', '!errrec ffffd30a`3c0e2028'],
+    ['.lastevent', '분석', '디버거를 멈추게 한 마지막 이벤트(예외·브레이크).', '.lastevent'],
+    ['k / kn / kv / kb', '스택·문맥', '콜스택. n=프레임 번호, v=FPO·트랩 프레임 정보, b=처음 인자 3~4개.', 'kn\nkv'],
+    ['kP', '스택·문맥', '개인 심볼이 있을 때 프레임별 전체 인자를 타입과 함께 표시.', 'kP'],
+    ['knf', '스택·문맥', '프레임 간 스택 사용량 표시. 커널 스택 고갈(0x7F 이중 폴트) 분석.', 'knf'],
+    ['.frame /r', '스택·문맥', '특정 프레임으로 문맥 전환 + 그 시점 레지스터. 이후 dv가 그 프레임 기준.', '.frame /r 3'],
+    ['dv /t /v', '스택·문맥', '현재 프레임의 지역 변수·인자(개인 심볼 필요). 위치(레지스터/스택)도 표시.', 'dv /t /v'],
+    ['.trap', '스택·문맥', 'KTRAP_FRAME으로 문맥 전환. 페이지 폴트·예외 순간의 레지스터와 명령.', '.trap fffff806`12a5f6d0'],
+    ['.cxr', '스택·문맥', 'CONTEXT 레코드로 문맥 전환. 0x3B의 P3, 0x7E의 P4.', '.cxr ffffb381`2f9c7a40'],
+    ['.exr', '스택·문맥', 'EXCEPTION_RECORD 출력: 예외 코드, 주소, 파라미터.', '.exr ffffb381`2f9c7f38'],
+    ['.thread / .process', '스택·문맥', '스레드·프로세스 문맥 전환. 덤프에서는 .process /r /p로 유저 주소 공간까지.', '.thread ffffc50b`41a2e080\n.process /r /p ffffc50b`40a1c080'],
+    ['dps', '메모리·타입', '메모리를 포인터로 읽고 심볼로 해석. 깨진 스택에서 리턴 주소 수동 복원.', 'dps rsp L40'],
+    ['db / dw / dd / dq', '메모리·타입', '바이트/워드/더블워드/쿼드워드 단위 메모리 덤프.', 'dq ffffc50b`3e2a1010 L8'],
+    ['dt', '메모리·타입', '주소를 타입으로 해석해 필드 출력. 오프셋 확인에도 사용.', 'dt nt!_EPROCESS ImageFileName\ndt mydrv!_DEVICE_CONTEXT ffffc50b`3e2a1010'],
+    ['dx', '메모리·타입', '디버거 데이터 모델 질의(LINQ). 객체 그래프 탐색·집계, -g는 표 형식.', 'dx -g @$cursession.Processes.Select(p => new { Name = p.Name })'],
+    ['??', '메모리·타입', 'C++ 식 평가기. 타입 크기, 캐스팅, 필드 접근.', '?? sizeof(nt!_KTHREAD)'],
+    ['u / ub / uf', '메모리·타입', '디스어셈블. ub는 주소 이전 명령(레지스터 출처 추적), uf는 함수 전체.', 'ub fffff806`1a2b13c5 L6\nuf mydrv!MyDpcRoutine'],
+    ['ln', '메모리·타입', '주소에서 가장 가까운 심볼. 의심 포인터가 어디를 가리키는지.', 'ln fffff806`1a2b13c5'],
+    ['s', '메모리·타입', '메모리 패턴 검색(바이트/문자열).', 's -a ffffc50b`3e000000 L?100000 "MLnk"'],
+    ['!pte', '메모리·타입', 'VA의 페이지 테이블 엔트리 4단계와 유효성. 주소가 왜 무효인지.', '!pte 0000000000000028'],
+    ['!pfn', '메모리·타입', 'PFN 데이터베이스 엔트리: 물리 페이지 상태·참조 수.', '!pfn 1a2b3'],
+    ['!vtop', '메모리·타입', '특정 DirBase 기준 가상→물리 변환.', '!vtop 1ad002 fffff8061a2b13c5'],
+    ['!vm', '메모리·타입', '가상 메모리·커밋·풀 사용 요약. 커밋 고갈·풀 누수 1차 진단.', '!vm 1'],
+    ['!pool', '메모리·타입', '주소가 속한 풀 페이지의 블록·태그·상태.', '!pool ffffc50b`3e2a1010'],
+    ['!poolused', '메모리·타입', '태그별 풀 사용량. 2=비페이징 순, 4=페이징 순. 누수 태그 찾기.', '!poolused 2'],
+    ['!poolfind', '메모리·타입', '특정 태그의 할당 위치 검색.', '!poolfind MLnk'],
+    ['!process', '객체·I/O', '프로세스 목록·상세. 0 0=전체 요약, 7=스레드와 스택까지.', '!process 0 0\n!process 0 7 lsass.exe'],
+    ['!thread', '객체·I/O', '스레드 상태, 대기 이유·객체, IRP 목록, 스택.', '!thread ffffc50b`41a2e080'],
+    ['!irp', '객체·I/O', 'IRP와 스택 로케이션: 현재 어느 드라이버에 있는지, Pending 여부.', '!irp ffffc50b`44c3a010 1'],
+    ['!irpfind', '객체·I/O', '풀을 훑어 모든 IRP 찾기(느림). 오래 걸린 IRP 탐색.', '!irpfind'],
+    ['!drvobj', '객체·I/O', '드라이버 객체, 디바이스 목록. 2=디스패치 루틴 표.', '!drvobj mydrv 2'],
+    ['!devobj / !devstack', '객체·I/O', '디바이스 객체와 그 디바이스 스택(필터 순서).', '!devstack ffffc50b`3d1e8c60'],
+    ['!devnode', '객체·I/O', 'PnP 디바이스 트리와 상태.', '!devnode 0 1'],
+    ['!object', '객체·I/O', '객체 관리자 네임스페이스·객체 헤더.', '!object \\Device'],
+    ['!handle', '객체·I/O', '프로세스 핸들 테이블 조회.', '!handle 0 3 ffffc50b`40a1c080'],
+    ['!running', '스케줄·동기화', 'CPU별 실행 중 스레드. -i 유휴 CPU 포함, -t 스택.', '!running -it'],
+    ['!ready', '스케줄·동기화', 'CPU별 레디 큐. 오래 대기한 레디 스레드 = CPU 굶주림.', '!ready'],
+    ['!locks', '스케줄·동기화', '경합 중인 ERESOURCE의 소유자와 대기자.', '!locks'],
+    ['!qlocks', '스케줄·동기화', '큐드 스핀락 상태(CPU별).', '!qlocks'],
+    ['!stacks', '스케줄·동기화', '모든 스레드 스택 요약. 2=전체 스택, 필터 문자열로 모듈 지정.', '!stacks 2 mydrv'],
+    ['!dpcs / !timer', '스케줄·동기화', '큐에 쌓인 DPC, 커널 타이머 목록.', '!dpcs'],
+    ['!irql', '스케줄·동기화', '프로세서의 (덤프 시 저장된) IRQL.', '!irql'],
+    ['!pcr / !prcb', '스케줄·동기화', '프로세서 제어 영역/블록. 현재 스레드, DPC 큐 등.', '!prcb 2'],
+    ['!idt', '스케줄·동기화', '인터럽트 디스크립터 테이블과 등록된 ISR.', '!idt'],
+    ['lm / lmvm', '모듈·심볼', '로드된 모듈과 심볼 상태. lmvm은 버전·타임스탬프 상세.', 'lm k\nlmvm mydrv'],
+    ['x', '모듈·심볼', '심볼 와일드카드 검색.', 'x nt!*Dpc*'],
+    ['.symfix / .sympath', '모듈·심볼', 'MS 심볼 서버 경로 설정 / 경로 보기·추가.', '.symfix C:\\symbols\n.sympath+ C:\\build\\pdb'],
+    ['.reload', '모듈·심볼', '심볼 다시 로드. /f 즉시 로드, /i 불일치 무시(최후 수단).', '.reload /f mydrv.sys'],
+    ['!sym noisy', '모듈·심볼', '심볼 탐색 과정을 자세히 출력. 심볼이 안 잡힐 때.', '!sym noisy'],
+    ['!chkimg', '모듈·심볼', '메모리 코드와 심볼 저장소 이미지 비교 — 패치·코드 손상 탐지.', '!chkimg -d nt'],
+    ['!verifier', '모듈·심볼', 'Driver Verifier 상태. 0x80+주소는 풀 할당·해제 스택 기록.', '!verifier\n!verifier 0x80 ffffc50b`3e2a1010'],
+    ['bp / bu / bm', '실행 제어', '중단점. bu=미로드 모듈 지연 중단점, bm=패턴 일괄.', 'bu mydrv!MyDpcRoutine\nbm mydrv!*Ioctl*'],
+    ['ba', '실행 제어', '하드웨어 데이터 중단점(읽기/쓰기/실행). 값 변조 범인 찾기.', 'ba w8 ffffc50b`3e2a1028'],
+    ['g / p / t / gu', '실행 제어', '실행 / 스텝 오버 / 스텝 인 / 현재 함수 반환까지.', 'g\np\ngu'],
+    ['sxe ld', '실행 제어', '모듈 로드 시 정지. DriverEntry 디버깅의 시작점.', 'sxe ld:mydrv.sys'],
+    ['ed nt!Kd_DEFAULT_Mask', '실행 제어', 'DbgPrintEx 출력 필터 열기.', 'ed nt!Kd_DEFAULT_Mask 0xFFFFFFFF'],
+    ['.dump', '실행 제어', '라이브 세션에서 덤프 저장. /f 전체, /m 미니.', '.dump /f C:\\dumps\\live.dmp'],
+    ['.crash / .reboot', '실행 제어', '타깃을 강제 버그체크(0xE2) / 재부팅.', '.crash'],
+    ['!wdfkd.wdflogdump', '실행 제어', 'KMDF 드라이버 내장 로그(IFR) 출력. 덤프에서도 동작.', '!wdfkd.wdflogdump mydrv'],
+  ];
+  const cats = ['전체', ...new Set(CS.map(c => c[1]))];
+  let cat = '전체';
+  const csIn = $('#csInput'), csList = $('#csList'), csCats = $('#csCats'), csCount = $('#csCount');
+  cats.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'btn' + (c === cat ? ' on' : '');
+    b.textContent = c;
+    b.addEventListener('click', () => { cat = c; csCats.querySelectorAll('.btn').forEach(x => x.classList.toggle('on', x === b)); renderCS(); });
+    csCats.appendChild(b);
+  });
+  function mark(text, q) {
+    const t = esc(text);
+    if (!q) return t;
+    const re = new RegExp('(' + esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    return t.replace(re, '<mark>$1</mark>');
+  }
+  function renderCS() {
+    const q = csIn.value.trim();
+    const ql = q.toLowerCase();
+    const rows = CS.filter(c => (cat === '전체' || c[1] === cat) && (!ql || (c[0] + ' ' + c[2] + ' ' + c[3]).toLowerCase().includes(ql)));
+    csCount.textContent = `${rows.length} / ${CS.length}개`;
+    csList.innerHTML = rows.length ? rows.map(c =>
+      `<div class="cs-row"><div><span class="cmd">${mark(c[0], q)}</span><span class="cat">${esc(c[1])}</span></div>` +
+      `<div class="desc">${mark(c[2], q)}</div><div class="ex">${mark(c[3], q)}</div></div>`).join('')
+      : '<div class="cs-empty">일치하는 명령이 없습니다. 영문 명령 일부(예: irp, pool)나 한글 설명(예: 스택, 대기)으로 찾아보세요.</div>';
+  }
+  csIn.addEventListener('input', renderCS);
+  renderCS();
+
+  // ---------------- 버그체크 디코더 ----------------
+  const IRQL = { 0: 'PASSIVE_LEVEL', 1: 'APC_LEVEL', 2: 'DISPATCH_LEVEL' };
+  const EXC = { 'c0000005': 'STATUS_ACCESS_VIOLATION (접근 위반)', '80000003': 'STATUS_BREAKPOINT (int 3 — 코드에 남은 DbgBreakPoint?)', 'c000001d': 'STATUS_ILLEGAL_INSTRUCTION', 'c0000096': 'STATUS_PRIVILEGED_INSTRUCTION', 'c0000094': 'STATUS_INTEGER_DIVIDE_BY_ZERO', '80000002': 'STATUS_DATATYPE_MISALIGNMENT', 'c0000420': 'STATUS_ASSERTION_FAILURE (NT_ASSERT)', 'c0000409': 'STATUS_STACK_BUFFER_OVERRUN (fast fail)' };
+  const P_EXC = ['예외 코드 (NTSTATUS)', '예외가 발생한 명령 주소'];
+  const DB = {
+    0x0A: ['IRQL_NOT_LESS_OR_EQUAL', 'DISPATCH_LEVEL 이상에서 페이징 가능하거나 무효한 메모리에 접근. 실패 명령이 드라이버가 아닌 커널 쪽일 때 이 코드가 쓰입니다(드라이버면 0xD1).',
+      ['참조한 메모리 주소', '당시 IRQL', '비트 필드: bit0 1=쓰기, bit3 1=실행', '메모리를 참조한 명령 주소'], ['!analyze -v', 'kv', 'ln {P4}', '!pte {P1}'], '커널 함수가 실패했어도 잘못된 포인터·락 상태를 넘겨준 호출자(드라이버)가 원인인 경우가 많습니다. kv의 위쪽 프레임을 따라가세요.'],
+    0x19: ['BAD_POOL_HEADER', '풀 블록 헤더가 손상됨. 할당자가 검사 중 발견한 것이며, 손상시킨 코드는 대개 이미 떠났습니다.',
+      ['위반 유형 (예: 0x20 = 블록 크기 손상)', '유형별 (대개 검사 중이던 풀 블록)', '유형별 (대개 다음 블록)', '유형별'], ['!analyze -v', '!pool {P2}', 'kv'], '의심 드라이버에 Special Pool을 걸어 재현하세요.'],
+    0x1A: ['MEMORY_MANAGEMENT', '메모리 관리자 내부 일관성 오류. P1의 하위 유형이 핵심입니다(예: 0x41790 페이지 테이블 페이지 손상).',
+      ['하위 유형', '유형별', '유형별', '유형별'], ['!analyze -v', 'kv', '!vm'], '드라이버의 MDL·매핑 오용, 그리고 불량 RAM이 흔한 원인입니다. 여러 덤프가 무작위면 메모리 진단도 병행하세요.'],
+    0x1E: ['KMODE_EXCEPTION_NOT_HANDLED', '커널 모드 예외가 처리되지 않음.',
+      [P_EXC[0], P_EXC[1], '예외 파라미터 0 (접근 위반이면 0=읽기, 1=쓰기)', '예외 파라미터 1 (접근 위반이면 접근한 주소)'], ['!analyze -v', 'kv', 'ln {P2}', 'u {P2}', '!error {P1}'], ''],
+    0x3B: ['SYSTEM_SERVICE_EXCEPTION', '시스템 서비스(시스템 콜) 처리 중 예외. 드라이버 IOCTL 처리기의 버퍼 검증 누락이 흔합니다.',
+      [P_EXC[0], P_EXC[1], 'CONTEXT 레코드 주소', '0'], ['.cxr {P3}', 'kv', 'u {P2}', '!error {P1}'], '.cxr 후 kv를 해야 예외 순간의 스택이 보입니다.'],
+    0x44: ['MULTIPLE_IRP_COMPLETE_REQUESTS', '이미 완료된 IRP를 다시 완료함.',
+      ['IRP 주소', '예약', '예약', '예약'], ['!irp {P1}', 'kv', '!analyze -v'], '완료 루틴과 디스패치 루틴이 둘 다 IoCompleteRequest를 호출하는 경쟁, 취소 루틴과의 경쟁이 대표적입니다. Verifier I/O 검증(0x10).'],
+    0x50: ['PAGE_FAULT_IN_NONPAGED_AREA', '무효한 시스템 메모리 참조 — 해제된 메모리, 잘못된 포인터, 범위 초과.',
+      ['참조한 메모리 주소', '접근 종류 (읽기/쓰기/실행 — 값 의미는 빌드별 문서 확인)', '참조한 명령 주소 (알 수 있을 때)', '내부 유형 값'], ['!analyze -v', '!pte {P1}', '!pool {P1}', 'ln {P3}', 'kv'], ''],
+    0x7E: ['SYSTEM_THREAD_EXCEPTION_NOT_HANDLED', '시스템 스레드(워커, 드라이버가 만든 스레드)에서 예외가 처리되지 않음.',
+      [P_EXC[0], P_EXC[1], 'EXCEPTION_RECORD 주소', 'CONTEXT 레코드 주소'], ['.exr {P3}', '.cxr {P4}', 'kv', '!error {P1}'], ''],
+    0x7F: ['UNEXPECTED_KERNEL_MODE_TRAP', '커널이 처리할 수 없는 트랩. P1=8(이중 폴트)은 대개 커널 스택 고갈입니다.',
+      ['트랩 번호', '예약', '예약', '예약'], ['!analyze -v', 'knf', '!thread'], 'knf로 프레임별 스택 사용량을 보고 깊은 재귀·큰 지역 배열·과도한 필터 스택을 찾으세요.'],
+    0x80: ['NMI_HARDWARE_FAILURE', 'NMI 수신. 하드웨어 오류 또는 관리자가 행 분석을 위해 주입한 NMI.',
+      ['플랫폼 의존', '플랫폼 의존', '플랫폼 의존', '플랫폼 의존'], ['!analyze -v', '!running -it', '!locks', '!stacks 2'], '의도적으로 주입했다면 행 분석 절차를 따르세요.'],
+    0x9F: ['DRIVER_POWER_STATE_FAILURE', '전원 상태 전환이 제한 시간 내에 끝나지 않음.',
+      ['하위 유형 (3=IRP 장기 보유, 4=PnP 락 대기 시간 초과)', 'P1=3: 스택의 PDO', 'P1=3: nt!TRIAGE_9F_POWER (Win7+)', 'P1=3: 막힌 IRP'], ['!analyze -v', '!irp {P4}', '!devstack {P2}', '!poaction'], 'IRP의 현재 스택 로케이션 드라이버가 전원 IRP를 왜 붙잡고 있는지(대기 중인 다른 I/O?) 추적하세요.'],
+    0xBE: ['ATTEMPTED_WRITE_TO_READONLY_MEMORY', '읽기 전용 메모리(코드, 상수 섹션 등)에 쓰기 시도.',
+      ['쓰려던 가상 주소', 'PTE 내용', '예약', '예약'], ['!analyze -v', '!pte {P1}', 'kv'], 'HVCI 환경에서는 커널 코드 패치 시도가 이렇게 드러나기도 합니다.'],
+    0xC1: ['SPECIAL_POOL_DETECTED_MEMORY_CORRUPTION', 'Special Pool이 해제 시 패턴 검사로 손상 발견(정렬 패딩 내 오버런, 언더런 등).',
+      ['해제하려던 주소', '유형별', '유형별', '손상 유형 코드'], ['!analyze -v', '!pool {P1}', '!verifier 0x80 {P1}', 'kv'], ''],
+    0xC2: ['BAD_POOL_CALLER', '잘못된 풀 요청(예: P1=0x7 이미 해제된 풀 재해제, 잘못된 IRQL에서 할당).',
+      ['위반 유형', '유형별', '유형별', '유형별'], ['!analyze -v', 'kv'], '이 버그체크는 호출자가 현재 스택에 있으므로 비교적 원인 드라이버가 명확합니다.'],
+    0xC4: ['DRIVER_VERIFIER_DETECTED_VIOLATION', 'Driver Verifier가 규칙 위반을 포착. P1이 위반 종류입니다(예: 0x62 = 언로드 시 미해제 풀).',
+      ['위반 유형', '유형별', '유형별', '유형별'], ['!analyze -v', '!verifier', 'kv'], '!analyze -v가 P1에 맞는 설명을 붙여 줍니다. DDI 규칙(0x2000x대)은 문서의 규칙 이름을 확인하세요.'],
+    0xC5: ['DRIVER_CORRUPTED_EXPOOL', '높은 IRQL에서 무효한 풀 메모리 접근 — 풀 손상의 결과인 경우가 많음.',
+      ['참조한 메모리 주소', '당시 IRQL', '0=읽기, 1=쓰기', '참조한 명령 주소'], ['!analyze -v', 'kv', '!pool {P1}'], 'Special Pool로 재현하세요.'],
+    0xD1: ['DRIVER_IRQL_NOT_LESS_OR_EQUAL', '드라이버가 높은 IRQL에서 페이징 가능하거나 무효한 주소에 접근. NULL 역참조가 가장 흔합니다.',
+      ['참조한 메모리 주소', '당시 IRQL', '0=읽기, 1=쓰기, 2/8=실행', '메모리를 참조한 명령 주소'], ['!analyze -v', 'kv', 'ln {P4}', 'ub {P4}', '!pte {P1}'], 'kv의 KiPageFault 줄에 표시된 TrapFrame으로 .trap 하세요.'],
+    0xD5: ['DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL', 'Special Pool에서 해제된 메모리에 접근(use-after-free).',
+      ['참조한 메모리 주소', '0=읽기, 1=쓰기', '참조한 명령 주소', '예약'], ['!analyze -v', 'kv', 'ln {P3}', '!verifier 0x80 {P1}'], '!verifier 0x80으로 누가 언제 해제했는지 스택을 확인하세요.'],
+    0xD6: ['DRIVER_PAGE_FAULT_BEYOND_END_OF_ALLOCATION', 'Special Pool 할당 끝을 넘어 접근(오버런).',
+      ['참조한 메모리 주소', '0=읽기, 1=쓰기', '참조한 명령 주소', '예약'], ['!analyze -v', 'kv', 'ln {P3}', '!pool {P1}'], '스택 최상단이 범인 명령입니다. 길이 계산과 유저 입력 크기 검증을 확인하세요.'],
+    0xE2: ['MANUALLY_INITIATED_CRASH', '사용자가 키보드(CrashOnCtrlScroll)나 디버거 .crash로 의도적으로 일으킨 크래시.',
+      ['0', '0', '0', '0'], ['!analyze -hang', '!running -it', '!locks', '!stacks 2'], '행 분석용 덤프입니다. 버그체크 자체가 아니라 그 순간의 대기 체인을 분석하세요.'],
+    0xEF: ['CRITICAL_PROCESS_DIED', '필수 시스템 프로세스(csrss, wininit, smss, services 등)나 그 스레드가 종료됨.',
+      ['프로세스 객체 주소', '0=프로세스 종료, 1=스레드 종료', '예약/빌드별', '예약/빌드별'], ['!process {P1} 7', '!analyze -v'], '누가 종료시켰는지가 핵심입니다. 유저 모드 크래시, 보안 제품의 강제 종료, 디스크 I/O 오류(페이지 인 실패)를 의심하세요.'],
+    0x101: ['CLOCK_WATCHDOG_TIMEOUT', '한 프로세서가 클록 인터럽트를 제때 처리하지 못함 — 그 CPU가 인터럽트를 막고 멈춰 있음.',
+      ['제한 시간 (클록 틱)', '0', '응답 없는 프로세서의 PRCB', '빌드별 (응답 없는 프로세서 인덱스)'], ['!analyze -v', '!prcb', '!running -it', '!ipi'], '덤프에 응답 없는 CPU의 문맥이 없을 수 있습니다. 하이퍼바이저·펌웨어·하드웨어 문제도 흔합니다.'],
+    0x109: ['CRITICAL_STRUCTURE_CORRUPTION', 'PatchGuard가 커널 코드·핵심 구조체 변조를 탐지.',
+      ['예약', '예약', '예약', '손상 영역 유형 (0=일반 데이터, 1=함수 수정, 2=IDT, 3=GDT …)'], ['!analyze -v', '!chkimg -d nt', 'lm'], '커널 훅을 거는 드라이버(구형 보안 제품, 치트, 루트킷) 또는 메모리 손상을 의심하세요.'],
+    0x116: ['VIDEO_TDR_FAILURE', 'GPU 시간 초과 감지·복구(TDR)가 실패.',
+      ['TDR 복구 컨텍스트 포인터', '원인 디바이스 드라이버 모듈 포인터', '마지막 실패 작업의 오류 코드', '내부 데이터'], ['!analyze -v', 'lm t n'], '디스플레이 드라이버 버전·GPU 하드웨어를 확인하세요. LiveKernelReports\\WATCHDOG의 라이브 덤프도 함께 보세요.'],
+    0x124: ['WHEA_UNCORRECTABLE_ERROR', '하드웨어가 정정 불가 오류를 보고(MCE, PCIe, 메모리).',
+      ['오류 원본 유형', 'WHEA_ERROR_RECORD 주소', 'MCE면 MCi_STATUS 상위 32비트', 'MCE면 MCi_STATUS 하위 32비트'], ['!errrec {P2}', '!whea', '!sysinfo cpuinfo'], '소프트웨어 버그가 아닙니다. 오버클럭·전압·펌웨어·하드웨어 교체 쪽으로 진행하세요.'],
+    0x133: ['DPC_WATCHDOG_VIOLATION', 'DPC 워치독 위반: 단일 DPC/ISR이 너무 오래 실행됐거나(P1=0), DISPATCH 이상에 누적해서 너무 오래 머묾(P1=1).',
+      ['0=단일 DPC/ISR 시간 초과, 1=누적 시간 초과', 'P1=0: DPC 실행 시간(틱) / P1=1: 워치독 기간', 'P1=0: 허용 시간 / P1=1: 트리아지 블록', '유형별'], ['!analyze -v', '!dpcwatchdog', '!running -it', '!dpcs'], 'P1=1이면 스택 최상단은 우연히 걸린 코드일 수 있습니다. WPA의 DPC/ISR 그래프로 반복 패턴을 확인하세요.'],
+    0x139: ['KERNEL_SECURITY_CHECK_FAILURE', '커널 무결성 검사 실패(fast fail). 데이터 구조 손상의 결과입니다.',
+      ['손상 유형 (2=스택 쿠키, 3=LIST_ENTRY 손상 …)', '트랩 프레임 주소', '예외 레코드 주소', '예약'], ['.trap {P2}', '.exr {P3}', 'kv', '!analyze -v'], 'LIST_ENTRY 손상은 해제된 객체가 리스트에 남은 use-after-free, 락 없이 리스트 조작한 경쟁이 흔한 원인입니다.'],
+    0x13A: ['KERNEL_MODE_HEAP_CORRUPTION', '세그먼트 힙 기반 커널 풀(19H1+)이 손상을 탐지.',
+      ['손상 유형', '손상을 보고한 힙 주소', '손상이 탐지된 주소', '예약'], ['!analyze -v', '!pool {P3}', 'kv'], 'BAD_POOL_HEADER와 같은 접근: Special Pool로 범인을 현장에서 잡으세요.'],
+  };
+  const BC_EXTRA = (code, a) => {
+    const n = [];
+    const has = i => a[i] !== undefined;
+    const small = v => v < 0x10000n;
+    if ([0x0A, 0xD1, 0xC5].includes(code)) {
+      if (has(0)) n.push(small(a[0]) ? `P1=${hex(a[0])}: 매우 작은 주소 → <b>NULL 포인터 + 오프셋 ${hex(a[0])}</b> 접근 가능성이 큼` : (a[0] >> 47n) ? 'P1이 커널 주소 → 해제된 풀이거나 페이징 가능한 메모리일 수 있음. <code>!pte</code>·<code>!pool</code>로 확인' : 'P1이 유저 주소 → 높은 IRQL에서 유저 버퍼 접근(MDL로 잠그지 않은 버퍼?)');
+      if (has(1)) n.push(`IRQL ${a[1]} = ${IRQL[Number(a[1])] || '장치 IRQL(DIRQL) 이상 — ISR 안'}`);
+      if (has(2)) {
+        const v = Number(a[2]);
+        n.push(code === 0x0A ? `접근: ${v & 8 ? '실행' : v & 1 ? '쓰기' : '읽기'}` : `접근: ${({ 0: '읽기', 1: '쓰기', 2: '실행', 8: '실행' })[v] || '알 수 없음'}`);
+      }
+    }
+    if ([0x1E, 0x3B, 0x7E].includes(code) && has(0)) {
+      const k = a[0].toString(16).padStart(8, '0').slice(-8);
+      n.push(`예외 코드 0x${k} = ${EXC[k] || '알 수 없음 — <code>!error</code>로 확인'}`);
+      if (code === 0x1E && k === 'c0000005' && has(2)) n.push(`접근 위반: ${a[2] === 0n ? '읽기' : a[2] === 1n ? '쓰기' : '실행/기타'}, 주소 ${has(3) ? hex(a[3]) : '?'}`);
+    }
+    if (code === 0x50 && has(0)) n.push(small(a[0]) ? 'P1이 매우 작음 → NULL+오프셋 접근' : '<code>!pte</code>가 무효면 해제·언맵된 메모리, <code>!pool</code>이 Free면 use-after-free 의심');
+    if (code === 0x139 && has(0)) n.push(`유형 ${a[0]}: ${({ 2: '스택 버퍼 오버런(/GS 쿠키 손상)', 3: 'LIST_ENTRY 손상 — Flink/Blink 불일치' })[Number(a[0])] || '문서의 유형 표 참조'}`);
+    if (code === 0x133 && has(0)) n.push(a[0] === 0n ? '단일 DPC/ISR이 시간 초과 → 스택 최상단 드라이버가 유력' : '누적 시간 초과 → 여러 DPC/스핀락 보유 시간의 합. 최상단은 우연일 수 있음');
+    if (code === 0x9F && has(0)) n.push(({ 3: '전원 IRP를 너무 오래 붙잡은 장치 → <code>!irp P4</code>의 현재 스택 로케이션 확인', 4: 'PnP 락 대기 시간 초과 → P3 스레드 확인' })[Number(a[0])] || '하위 유형은 문서 참조');
+    if (code === 0x7F && has(0)) n.push(`트랩 ${hex(a[0])}: ${({ 0: '#DE 0으로 나누기', 4: '#OF 오버플로', 6: '#UD 잘못된 명령', 8: '#DF 이중 폴트 — 대개 커널 스택 고갈' })[Number(a[0])] || '인텔 SDM 예외 번호 참조'}`);
+    return n;
+  };
+  const hex = v => '0x' + v.toString(16);
+  const fmt64 = v => { const h = v.toString(16).padStart(16, '0'); return h.slice(0, 8) + '`' + h.slice(8); };
+  const bcIn = $('#bcInput'), bcOut = $('#bcOut'), bcQuick = $('#bcQuick');
+  [0x0A, 0x1E, 0x3B, 0x50, 0x7E, 0xC4, 0xD1, 0xEF, 0x133, 0x139, 0x9F, 0x124].forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = '0x' + c.toString(16).toUpperCase().padStart(2, '0');
+    b.addEventListener('click', () => { bcIn.value = b.textContent; decodeBC(); });
+    bcQuick.appendChild(b);
+  });
+  function decodeBC() {
+    const s = bcIn.value.trim();
+    const toks = (s.match(/\b(?:0x)?[0-9a-f]+(?:`[0-9a-f]+)?\b/gi) || []).map(t => BigInt('0x' + t.replace(/^0x/i, '').replace(/`/g, '')));
+    let code = toks.length ? Number(toks[0] & 0xffffffffn) : null;
+    let args = toks.slice(1, 5);
+    if (code === null || !DB[code]) {
+      const q = s.toUpperCase().replace(/\s+/g, '_');
+      const hit = q.length >= 3 && Object.keys(DB).find(k => DB[k][0].includes(q));
+      if (hit) { code = +hit; args = []; }
+    }
+    if (!s) { bcOut.innerHTML = '<p class="muted">코드(예: D1, 0x133) 또는 이름 일부(예: POOL)를 입력하세요.</p>'; return; }
+    if (code === null || !DB[code]) {
+      bcOut.innerHTML = `<p class="muted">이 디코더에 없는 코드입니다. <code>!analyze -v</code>가 이름과 파라미터 설명을 출력하며, Microsoft 문서 "Bug check code reference"에서 전체 목록을 볼 수 있습니다.</p>`;
+      return;
+    }
+    const [name, desc, ps, cmds, tip] = DB[code];
+    const rows = ps.map((p, i) => `<tr><td>P${i + 1}</td><td class="val">${args[i] !== undefined ? fmt64(args[i]) : '—'}</td><td>${esc(p)}</td></tr>`).join('');
+    const notes = args.length ? BC_EXTRA(code, args) : [];
+    const cmdText = cmds.map(c => 'kd> ' + c.replace(/\{P(\d)\}/g, (m, d) => args[d - 1] !== undefined ? fmt64(args[d - 1]) : '<P' + d + '>')).join('\n');
+    bcOut.innerHTML =
+      `<div class="bc-name"><span class="code">0x${code.toString(16).toUpperCase().padStart(8, '0')}</span>${esc(name)}</div>` +
+      `<p>${esc(desc)}</p>` +
+      `<table><thead><tr><th>파라미터</th><th>값</th><th>의미</th></tr></thead><tbody>${rows}</tbody></table>` +
+      (notes.length ? `<ul class="bc-notes">${notes.map(x => `<li>${x}</li>`).join('')}</ul>` : '') +
+      `<pre data-title="먼저 실행할 명령"><code class="lang-windbg"></code></pre>` +
+      (tip ? `<div class="callout tip"><div class="callout-title">분석 팁</div><p>${esc(tip)}</p></div>` : '');
+    const codeEl = bcOut.querySelector('pre code');
+    codeEl.textContent = cmdText;
+    if (window.WK && WK.highlight) WK.highlight(codeEl);
+  }
+  bcIn.addEventListener('input', decodeBC);
+  decodeBC();
+
+  // ---------------- 대기 체인 추적기 ----------------
+  const SC = [
+    { start: { t: 'explorer UI 스레드', k: 'th' }, steps: [
+      { cmd: '!thread ffffc50b`41a2e080', out: 'THREAD ffffc50b41a2e080  Cid 1a2c.0f10  explorer.exe\n    <span class="warn">WAIT: (WrResource) KernelMode Non-Alertable</span>  Ticks: 18342 (0:00:04:46.593)\n    nt!KiSwapContext → nt!ExpWaitForResource → mydrv!ReadConfig+0x5c → ...', node: { t: 'ERESOURCE R1', k: 'obj' } },
+      { cmd: '!locks', out: 'Resource @ <b>ffffc50b3f001200</b>    Exclusively owned\n    Contention Count = 41\n    Threads: <span class="warn">ffffc50b3e9d1040-01&lt;*&gt;</span>   (소유자)\n    Threads Waiting On Exclusive Access:\n              ffffc50b41a2e080   ffffc50b42b7c080', node: { t: 'System 워커 T2', k: 'kth' } },
+      { cmd: '!thread ffffc50b`3e9d1040', out: 'THREAD ffffc50b3e9d1040  Cid 0004.01b8  System\n    <span class="warn">WAIT: (Executive) KernelMode Non-Alertable</span>\n        ffffc50b3e2a1050  Mutant - owning thread <b>ffffc50b42b7c080</b>\n    mydrv!FlushWorker+0x8e → nt!KeWaitForSingleObject', node: { t: 'KMUTEX M1', k: 'obj' } },
+      { cmd: '!thread ffffc50b`42b7c080', out: 'THREAD ffffc50b42b7c080  Cid 0b44.1d20  svchost.exe\n    <span class="warn">WAIT: (WrResource) KernelMode Non-Alertable</span>\n    mydrv!IoctlSetConfig+0xa1 → nt!ExAcquireResourceExclusiveLite\n    (M1을 보유한 채 R1을 요청 — R1의 소유자는 T2)', node: { t: 'svchost T3', k: 'th' } },
+      { cmd: '분석', out: '<span class="bad">✗ 순환 발견: T2 —(M1 대기)→ T3 —(R1 대기)→ T2</span>\n전형적인 <b>락 순서 역전</b>: FlushWorker는 R1→M1, IoctlSetConfig는 M1→R1 순서로 획득.\n수정: 전역 락 순서를 정하고 지킬 것. Verifier 교착 탐지(0x20)로 재발 방지.', node: { t: '↻ T2 (교착)', k: 'bad' }, end: true },
+    ] },
+    { start: { t: 'notepad 스레드', k: 'th' }, steps: [
+      { cmd: '!thread ffffc50b`45d0a080', out: 'THREAD ffffc50b45d0a080  Cid 2f10.2f14  notepad.exe\n    <span class="warn">WAIT: (Executive) KernelMode Non-Alertable</span>  Ticks: 19800\n        ffffc50b44b1e2a0  NotificationEvent\n    IRP List:\n        <b>ffffc50b44c3a010</b>: (0006,0118) Flags: 00060900', node: { t: 'IRP (CREATE)', k: 'obj' } },
+      { cmd: '!irp ffffc50b`44c3a010', out: 'Irp is active with 6 stacks 5 is current\n     cmd  flg cl Device   File     Completion-Context\n&gt;[IRP_MJ_CREATE(0), N/A(0)]\n            0 <span class="warn">e1</span> ffffc50b3c0a1d20 ffffc50b44b1e1f0  <b>\\Driver\\contosoflt</b>\n                Args: ...  <span class="warn">Pending has been returned</span>', node: { t: 'contosoflt.sys', k: 'kth' } },
+      { cmd: '!stacks 2 contosoflt', out: '[ffffc50b3e0d7040 System]\n  0004.0234  ffffc50b46a12080  Blocked  nt!KiSwapContext\n                                         nt!KeWaitForSingleObject\n                                         <b>contosoflt!WaitForScanVerdict+0x74</b>\n                                         contosoflt!ScanWorker+0x1c2', node: { t: '스캔 워커 T4', k: 'kth' } },
+      { cmd: '!thread ffffc50b`46a12080', out: 'THREAD ffffc50b46a12080  System\n    <span class="warn">WAIT: (UserRequest) KernelMode Non-Alertable</span>  Ticks: 19790\n        ffffc50b3e5a8b10  <b>SynchronizationEvent</b>   (소유자 개념 없음)\n→ 이 이벤트는 유저 모드 스캔 서비스(contososvc.exe)가 응답할 때 Set된다.', node: { t: 'Event (서비스 응답)', k: 'obj' } },
+      { cmd: '!process 0 7 contososvc.exe', out: 'PROCESS ffffc50b40f2d080  contososvc.exe\n  THREAD ffffc50b47110080  <span class="warn">WAIT: (Executive)</span>\n      IRP List: ffffc50b47a9c010 (IRP_MJ_CREATE → <b>\\Driver\\contosoflt</b> 에서 Pending)\n      contososvc!LoadSignatures → kernelbase!CreateFileW', node: { t: 'contososvc → 다시 contosoflt', k: 'th' } },
+      { cmd: '분석', out: '<span class="bad">✗ 유저–커널 순환</span>: 필터는 서비스의 판정을 기다리고, 서비스는 자기 파일 열기를 필터가 붙잡아 진행 못 함.\n수정: 필터가 자기 서비스 프로세스의 I/O는 검사하지 않고 통과시키고, 판정 대기에 타임아웃을 둔다.\n<span class="dim">이런 문제는 유저 메모리가 있는 활성/전체 덤프가 있어야 끝까지 추적할 수 있다.</span>', node: { t: '↻ 순환 대기', k: 'bad' }, end: true },
+    ] },
+    { start: { t: '시스템 전체 응답 없음', k: 'obj' }, steps: [
+      { cmd: '!running -it', out: 'System Processors:  (000000000000000f)\n  Idle Processors:  (000000000000000b)\n       Prcbs             Current         (pri) Next            (pri) Idle\n  0    fffff80611b6c180  fffff80612a5a400 ( 0)                       (유휴)\n  <span class="warn">2    ffffb3812f740180  ffffc50b43a1d080 (12)</span>\n        mydrv!WaitForHwReady+0x3a\n        mydrv!ResetDevice+0x118\n        nt!ExpWorkerThread+0x105', node: { t: 'CPU 2: T5', k: 'kth' } },
+      { cmd: '!irql 2', out: 'Debugger saved IRQL for processor 0x2 -- <span class="warn">2 (DISPATCH_LEVEL)</span>\n→ 스핀락을 잡은 채 하드웨어 레지스터를 폴링 중. 이 CPU에서는 스레드 전환이 일어날 수 없다.', node: { t: 'DISPATCH에서 폴링', k: 'bad' } },
+      { cmd: '!ready', out: 'Processor 2: Ready Threads at priority 15\n    THREAD ffffc50b4410c080  Cid 1e04.1e08  audiodg.exe   <span class="warn">Ready (Ticks 3020)</span>\nProcessor 2: Ready Threads at priority 8\n    THREAD ffffc50b45e88080  Cid 0f80.11a4  svchost.exe   <span class="warn">Ready (Ticks 3021)</span>', node: { t: '굶주린 스레드들', k: 'th' } },
+      { cmd: '!dpcs', out: 'CPU Type      KDPC       Function\n 2: Normal : 0xffffb3812f7431c0 0xfffff8061b3c1a20 ndis!ndisInterruptDpc\n 2: Normal : 0xffffb3812f745d10 0xfffff8061c0a2b40 storport!RaidpAdapterDpcRoutine\n→ CPU 2의 DPC도 처리되지 못하고 쌓여 있다.', node: { t: '밀린 DPC', k: 'obj' } },
+      { cmd: '분석', out: '<span class="bad">✗ CPU 독점</span>: mydrv가 DISPATCH_LEVEL에서 장치 준비 비트를 무한 폴링.\n그 CPU의 스레드·DPC가 굶어 네트워크/스토리지가 멈추고, 길어지면 0x133 DPC_WATCHDOG_VIOLATION.\n수정: 폴링에 타임아웃, 긴 대기는 PASSIVE_LEVEL에서 KeDelayExecutionThread/이벤트로.', node: { t: '원인: mydrv', k: 'bad' }, end: true },
+    ] },
+  ];
+  let sc = 0, si = 0;
+  const chain = $('#hangChain'), con = $('#hangCon'), nextB = $('#hangNext');
+  function chip(n) { return `<span class="nd ${n.k}">${esc(n.t)}</span>`; }
+  function renderHang() {
+    const S = SC[sc];
+    const nodes = [S.start, ...S.steps.slice(0, si).map(s => s.node)];
+    chain.innerHTML = nodes.map(chip).join('<span class="ar">→</span>');
+    con.innerHTML = si === 0 ? '<span class="dim">"다음 명령 ▶"을 눌러 대기 체인을 한 홉씩 따라가세요.</span>'
+      : S.steps.slice(0, si).map(s => `<span class="ok">kd&gt; ${esc(s.cmd)}</span>\n${s.out}`).join('\n\n');
+    con.scrollTop = con.scrollHeight;
+    nextB.disabled = si >= S.steps.length;
+  }
+  nextB.addEventListener('click', () => { if (si < SC[sc].steps.length) { si++; renderHang(); } });
+  $('#hangReset').addEventListener('click', () => { si = 0; renderHang(); });
+  document.querySelectorAll('#hangSim [data-sc]').forEach(b => b.addEventListener('click', () => {
+    sc = +b.dataset.sc; si = 0;
+    document.querySelectorAll('#hangSim [data-sc]').forEach(x => x.classList.toggle('on', x === b));
+    renderHang();
+  }));
+  renderHang();
+})();
+</script>
+</body>
+</html>

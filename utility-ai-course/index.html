@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>효용 AI 시뮬레이션 코스</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+  .hero { padding: 24px 0 8px; }
+  .hero h1 { font-size: clamp(30px, 6vw, 46px); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin: 16px 0 8px; }
+  .card { display: block; text-decoration: none; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); transition: border-color .15s, transform .15s; position: relative; }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .no { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; }
+  .card.sel .no, .card.eng .no { color: var(--violet); }
+  .card.prac .no { color: var(--teal); }
+  .card h3 { margin: 2px 0 6px; font-size: 17px; line-height: 1.4; }
+  .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.6; }
+  .card .part { margin-top: 8px; font-size: 12px; font-family: var(--mono); color: var(--teal); }
+  .card .seen { position: absolute; top: 12px; right: 14px; font-size: 12px; color: var(--ok); display: none; }
+  .card.visited .seen { display: inline; }
+  .part-title { display: flex; align-items: baseline; gap: 10px; }
+  .part-title small { color: var(--muted); font-weight: 400; font-size: 14px; }
+  #roadmap .node rect { fill: var(--surface-2); stroke: var(--border); transition: fill .2s, stroke .2s; cursor: pointer; }
+  #roadmap .node.basic rect { stroke: var(--accent); }
+  #roadmap .node.sel rect, #roadmap .node.eng rect { stroke: var(--violet); }
+  #roadmap .node.prac rect { stroke: var(--teal); }
+  #roadmap .node:hover rect, #roadmap .node.on rect { fill: var(--accent-soft); }
+  #roadmap .edge { stroke: var(--border); stroke-width: 1.5; fill: none; transition: stroke .2s; }
+  #roadmap .edge.on { stroke: var(--accent); stroke-width: 2.5; }
+  #roadmap text { font-size: 12px; pointer-events: none; }
+  /* 엔진 파이프라인 */
+  #pipe .blk rect { fill: var(--surface-2); stroke: var(--teal); cursor: pointer; transition: fill .2s; }
+  #pipe .blk:hover rect, #pipe .blk.on rect { fill: var(--teal-soft); }
+  #pipe text { font-size: 12px; pointer-events: none; }
+  #pipe .flow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+  #pipe .dot { fill: var(--warn); }
+  #pipe-info { min-height: 3.5em; }
+  /* 미니 데모 */
+  #mini { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 680px) { #mini { grid-template-columns: 1fr; } }
+  #mini-map { width: 100%; aspect-ratio: 24 / 16; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); display: block; }
+  .agent-row { display: grid; grid-template-columns: 44px 1fr; gap: 6px; align-items: center; font-size: 13px; margin: 6px 0; }
+  .agent-row .bars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+  .agent-row .act { grid-column: 2; color: var(--muted); font-size: 12px; margin-top: -2px; }
+  .howto li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="chapter-head" style="margin:0"><span class="label">게임 AI · 의사결정</span></div>
+    <h1>효용 기반 의사결정으로<br>시뮬레이션 엔진 만들기</h1>
+    <p class="lead">"얼마나 원하는가"를 숫자로 바꾸는 Utility AI의 원리에서 출발해 반응 커브, 점수 결합, 행동 선택, 관성, 욕구와 스마트 오브젝트를 다룹니다. 마지막에는 이것들을 하나로 묶어 마을 시뮬레이션 엔진을 완성합니다. 모든 챕터가 같은 엔진 <code>assets/uai.js</code>와 같은 마을 <b>Hamlet</b>을 공유합니다.</p>
+  </section>
+
+  <div class="widget">
+    <div class="w-title">미리 보기: 12장에서 완성할 Hamlet</div>
+    <div class="w-desc">주민 6명이 배고픔·기력·재미·사교 욕구에 따라 스스로 행동을 고릅니다. 지도를 클릭하면 늑대가 나타나고, 주민들은 하던 일을 멈추고 도망칩니다(05장 dual utility, 06장 인터럽트).</div>
+    <div id="mini">
+      <canvas id="mini-map" width="480" height="320" aria-label="Hamlet 마을 지도"></canvas>
+      <div>
+        <div class="controls"><button class="btn primary" id="mini-play">⏸ 정지</button><button class="btn" id="mini-reset">↺ 리셋</button><span id="mini-clock" class="c-teal" style="font-family:var(--mono)"></span></div>
+        <div style="font-size:12px;color:var(--muted)">막대: <span class="c-warn">배고픔</span> · <span class="c-accent">기력</span> · <span class="c-violet">재미</span> · <span class="c-ok">사교</span> (높을수록 충족)</div>
+        <div id="mini-agents"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout tip">
+    <span class="title">이 코스를 공부하는 방법</span>
+    <ul class="howto">
+      <li>각 챕터 맨 위의 <b>⚙ 엔진 부품</b> 박스는 그 장에서 <code>uai.js</code>의 어느 함수를 배우는지 알려 줍니다. 아래 파이프라인 도식에서 부품끼리의 관계를 먼저 보세요.</li>
+      <li><b>▶ 위젯</b>은 설명을 읽기 전에 먼저 만져 봐도 됩니다. 예측하고, 실행하고, 왜 그런지 본문에서 확인하는 순서를 권합니다.</li>
+      <li><b>↪ 링크</b>는 앞뒤 챕터의 관련 절로 이어집니다. 막히면 링크를 따라 거슬러 올라가세요.</li>
+      <li>출발점은 블로그 글 <a href="https://m.blog.naver.com/devdeepblue/220289807509">「효용기반 의사결정」</a>입니다. 이 글의 8개 절이 01~06장의 뼈대가 되고, 07~12장은 이를 시뮬레이션 엔진으로 확장합니다.</li>
+    </ul>
+  </div>
+
+  <h2>엔진 파이프라인: 상태에서 행동까지</h2>
+  <p>한 주민이 한 번 결정할 때 데이터가 흐르는 길입니다. 블록을 클릭하면 담당 챕터와 엔진 함수가 나옵니다. 노란 점은 실제 계산 한 번이 흘러가는 모습입니다.</p>
+  <div class="widget">
+    <div class="stage"><svg id="pipe" class="diagram" viewBox="0 0 880 250" style="min-width:640px">
+      <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+    </svg></div>
+    <div id="pipe-info" class="stepper-cap">블록을 클릭해 보세요.</div>
+  </div>
+
+  <h2>학습 로드맵</h2>
+  <p>노드에 마우스를 올리면 선수 관계가 강조되고, 클릭하면 해당 챕터로 이동합니다.</p>
+  <div class="widget">
+    <div class="stage"><svg id="roadmap" class="diagram" viewBox="0 0 880 330" style="min-width:640px"></svg></div>
+  </div>
+
+  <h2 class="part-title">Part I. 기초 <small>효용이라는 언어</small></h2>
+  <div class="grid" id="g-기초"></div>
+  <h2 class="part-title">Part II. 선택 <small>점수에서 행동으로, 그리고 안정성</small></h2>
+  <div class="grid" id="g-선택"></div>
+  <h2 class="part-title">Part III. 엔진 <small>시뮬레이션으로 확장</small></h2>
+  <div class="grid" id="g-엔진"></div>
+  <h2 class="part-title">Part IV. 실전 <small>튜닝과 완성</small></h2>
+  <div class="grid" id="g-실전"></div>
+
+  <h2>참고 문헌</h2>
+  <ul>
+    <li>DeepBlue, 「효용기반 의사결정 (Utility based Decision Making)」, 네이버 블로그 <i>길안에서 묻다</i>, 2015.</li>
+    <li>David "Rez" Graham, "An Introduction to Utility Theory", <i>Game AI Pro</i> 9장.</li>
+    <li>Dawe 외, "Behavior Selection Algorithms: An Overview", <i>Game AI Pro</i> 4장.</li>
+    <li>Bill Merrill, "Building Utility Decisions into Your Existing Behavior Tree", <i>Game AI Pro</i> 10장.</li>
+    <li>Carle Côté, "Reactivity and Deliberation in Decision-Making Systems", <i>Game AI Pro</i> 11장.</li>
+    <li>Kevin Dill, "Dual-Utility Reasoning", <i>Game AI Pro 2</i> 3장.</li>
+    <li>Mike Lewis, "Choosing Effective Utility-Based Considerations", <i>Game AI Pro 3</i> 13장.</li>
+    <li>Sebastian Hanlon, Cody Watts, "Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture", <i>Game AI Pro 3</i> 31장.</li>
+    <li>Dave Mark, <i>Behavioral Mathematics for Game AI</i>; Dave Mark &amp; Kevin Dill, GDC 2010 "Improving AI Decision Modeling Through Utility Theory"; Dave Mark &amp; Mike Lewis, GDC 2015 "Building a Better Centaur: AI at Massive Scale".</li>
+    <li>Epic Games, Unreal Engine StateTree 문서 "StateTree Selectors Overview".</li>
+    <li>Game AI Pro 각 장은 <a href="http://www.gameaipro.com/">gameaipro.com</a>에서 무료로 공개되어 있습니다.</li>
+  </ul>
+</main>
+<script>
+const DESC = {
+  "01": "FSM·BT·GOAP·HTN·Utility 비교, Boolean 판단과 점수 판단의 차이, 코스 엔진 지도.",
+  "02": "효용 ≠ 값, 장난감 구매 계산기, 기대 효용 EU = ΣD·P, 몬테카를로, 한계효용 체감.",
+  "03": "선형·다항·로지스틱·로짓·종형·구간 선형 커브 에디터, bookend 정규화, 프리셋 팔레트.",
+  "04": "정규화 → 커브 → 곱셈 결합, 거부권 0과 early-out, 보정(make-up) 공식, Lewis의 6개 consideration.",
+  "05": "최고점·가중 랜덤·상위 N·% 필터, 룰렛 애니메이션, Dual Utility(rank+weight), Zoo Tycoon 2.",
+  "06": "진동과 그 해법: inertia·히스테리시스·commitment·cooldown, 반응성과 숙고의 분리.",
+  "07": "욕구 감소와 긴급도 커브, 스마트 오브젝트의 광고, 한계효용, 성격, 창발.",
+  "08": "행동 × 대상 컨텍스트, Target Selector, 거리·방향 consideration, 공간 효용장, 조합 폭발.",
+  "09": "uai.js 해부, tick 루프, time-slicing, 시드 RNG와 재현성, 데이터 주도 핫 리로드.",
+  "10": "BT + Utility Selector, Dragon Age: Inquisition의 BDS, UE5 StateTree utility.",
+  "11": "결정 인스펙터, 점수 타임라인, 민감도 분석, 함정 카탈로그, 불변식 테스트.",
+  "12": "풀 샌드박스, 엔진 설정·시나리오·통계 대시보드, 실습 과제, 종합 문제."
+};
+const PARTS = { "01": "모델 비교", "02": "UAI.normalize", "03": "UAI.curve", "04": "UAI.combine", "05": "UAI.select", "06": "Reasoner.inertia", "07": "UAI.adValue", "08": "action.targets", "09": "World.tick", "10": "rank 체계", "11": "lastEval·trace", "12": "전부" };
+const POS = {
+  "01": [80, 60], "02": [230, 60], "03": [380, 60], "04": [530, 60],
+  "05": [530, 150], "06": [690, 150],
+  "07": [230, 245], "08": [380, 245], "09": [530, 245], "10": [690, 245],
+  "11": [810, 60], "12": [810, 290]
+};
+const PRE = {
+  "02": ["01"], "03": ["02"], "04": ["03"], "05": ["04"], "06": ["05"],
+  "07": ["03", "04"], "08": ["07", "04"], "09": ["05", "06", "08"], "10": ["01", "06", "09"],
+  "11": ["06", "09"], "12": ["10", "11"]
+};
+const cls = { "기초": "basic", "선택": "sel", "엔진": "eng", "실전": "prac" };
+let visited = {};
+try { visited = JSON.parse(localStorage.getItem("uai-visited") || "{}"); } catch (e) {}
+
+MM.CHAPTERS.forEach(c => {
+  const a = MM.el("a", { class: "card " + cls[c.part] + (visited[c.id] ? " visited" : ""), href: c.file },
+    `<span class="seen">✓ 열람</span><div class="no">CH ${c.id}</div><h3>${c.title}</h3><p>${DESC[c.id]}</p><div class="part">⚙ ${PARTS[c.id]}</div>`);
+  document.getElementById("g-" + c.part).append(a);
+});
+
+const NS = "http://www.w3.org/2000/svg";
+// ── 로드맵 ──
+(function () {
+  const svg = document.getElementById("roadmap");
+  const W = 124, H = 42, edges = [];
+  for (const to in PRE) for (const from of PRE[to]) {
+    const [x1, y1] = POS[from], [x2, y2] = POS[to];
+    const p = document.createElementNS(NS, "path");
+    const my = (y1 + y2) / 2;
+    p.setAttribute("d", y1 === y2 ? `M${x1},${y1} L${x2},${y2}` : `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`);
+    p.setAttribute("class", "edge");
+    p.dataset.from = from; p.dataset.to = to;
+    svg.append(p); edges.push(p);
+  }
+  MM.CHAPTERS.forEach(c => {
+    const [x, y] = POS[c.id];
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("class", "node " + cls[c.part]);
+    g.innerHTML = `<rect x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="8"></rect>
+      <text x="${x}" y="${y - 4}" text-anchor="middle" style="font-weight:700">${c.id}</text>
+      <text x="${x}" y="${y + 12}" text-anchor="middle" class="muted" style="font-size:10.5px">${c.title.split(/[:,]/)[0].slice(0, 13)}</text>`;
+    g.onmouseenter = () => {
+      const need = new Set([c.id]), stack = [c.id];
+      while (stack.length) for (const p of PRE[stack.pop()] || []) if (!need.has(p)) { need.add(p); stack.push(p); }
+      edges.forEach(e => e.classList.toggle("on", need.has(e.dataset.to) && need.has(e.dataset.from)));
+      svg.querySelectorAll(".node").forEach((n, i) => n.classList.toggle("on", need.has(MM.CHAPTERS[i].id)));
+    };
+    g.onmouseleave = () => { edges.forEach(e => e.classList.remove("on")); svg.querySelectorAll(".node").forEach(n => n.classList.remove("on")); };
+    g.onclick = () => location.href = c.file;
+    svg.append(g);
+  });
+  [["Part I 기초", 20, 22, "--accent"], ["Part II 선택", 380, 158, "--violet"], ["Part III 엔진", 20, 210, "--violet"], ["Part IV 실전", 760, 22, "--teal"]].forEach(([t, x, y, col]) => {
+    const tx = document.createElementNS(NS, "text");
+    tx.setAttribute("x", x); tx.setAttribute("y", y);
+    tx.setAttribute("style", `font-weight:700;fill:var(${col})`);
+    tx.textContent = t; svg.append(tx);
+  });
+})();
+
+// ── 엔진 파이프라인 ──
+(function () {
+  const svg = document.getElementById("pipe");
+  const B = [
+    { id: "state", x: 20, y: 30, t: "세계 상태", s: "욕구·위치·위협", ch: "07", fn: "World · agent.needs", d: "주민의 욕구값(0~100), 위치, 늑대 같은 위협. 시간이 흐르면 욕구가 줄어듭니다." },
+    { id: "ctx", x: 170, y: 30, t: "컨텍스트", s: "행동 × 대상", ch: "08", fn: "action.targets()", d: "‘이용하기’ 행동 하나가 빵집·집·선술집처럼 대상마다 별도 후보가 됩니다." },
+    { id: "norm", x: 320, y: 30, t: "정규화", s: "bookend → 0~1", ch: "02", fn: "UAI.normalize(v, lo, hi)", d: "거리 0~30칸, 욕구 0~100처럼 단위가 다른 입력을 0~1로 맞춥니다." },
+    { id: "curve", x: 470, y: 30, t: "반응 커브", s: "x → 효용 y", ch: "03", fn: "UAI.curve(spec)", d: "같은 입력이라도 커브 모양에 따라 긴급도가 달라집니다. 개성과 밸런스가 여기서 정해집니다." },
+    { id: "comb", x: 620, y: 30, t: "결합", s: "곱 · 보정", ch: "04", fn: "UAI.combine(vals, 'compensated')", d: "consideration 점수들을 곱해 행동 점수로 만듭니다. 0은 거부권이고, 개수에 따른 손해는 보정합니다." },
+    { id: "inert", x: 620, y: 150, t: "관성·쿨다운", s: "현재 행동 +δ", ch: "06", fn: "Reasoner opt.inertia · action.cooldown", d: "지금 하던 행동에 보너스를 줘 진동을 막고, 막 쓴 행동은 쿨다운으로 잠시 막습니다." },
+    { id: "sel", x: 470, y: 150, t: "선택", s: "dual · best · 랜덤", ch: "05", fn: "UAI.select(cands, opt, rng)", d: "rank가 가장 높은 범주만 남기고, 그 안에서 최고점이나 가중 랜덤으로 고릅니다." },
+    { id: "act", x: 320, y: 150, t: "실행", s: "action.run()", ch: "09", fn: "World.tick → act()", d: "선택된 행동을 여러 tick에 걸쳐 실행합니다. 이동하고, 오브젝트를 쓰고, 욕구를 회복합니다." },
+    { id: "trace", x: 170, y: 150, t: "기록", s: "lastEval · trace", ch: "11", fn: "agent.lastEval · world.log", d: "모든 후보의 점수 분해를 남겨 ‘왜 이걸 했나’에 답할 수 있게 합니다." },
+  ];
+  const W = 130, H = 54;
+  const order = ["state", "ctx", "norm", "curve", "comb", "inert", "sel", "act", "trace"];
+  const pts = [];
+  order.forEach((id, i) => {
+    if (i === order.length - 1) return;
+    const a = B.find(b => b.id === id), b = B.find(x => x.id === order[i + 1]);
+    const p = document.createElementNS(NS, "path");
+    let d;
+    if (a.y === b.y) {
+      const dir = b.x > a.x ? 1 : -1;
+      const x1 = a.x + (dir > 0 ? W : 0), x2 = b.x + (dir > 0 ? 0 : W);
+      d = `M${x1},${a.y + H / 2} L${x2 - dir * 2},${b.y + H / 2}`;
+      pts.push([[x1, a.y + H / 2], [x2, b.y + H / 2]]);
+    } else {
+      d = `M${a.x + W / 2},${a.y + H} L${b.x + W / 2},${b.y - 2}`;
+      pts.push([[a.x + W / 2, a.y + H], [b.x + W / 2, b.y]]);
+    }
+    p.setAttribute("d", d); p.setAttribute("class", "flow"); svg.append(p);
+  });
+  // 되먹임: 실행 → 세계 상태
+  const fb = document.createElementNS(NS, "path");
+  fb.setAttribute("d", `M${B[7].x + W / 2},${B[7].y + H} L${B[7].x + W / 2},232 L${B[0].x + 30},232 L${B[0].x + 30},${B[0].y + H + 2}`);
+  fb.setAttribute("class", "flow"); fb.setAttribute("style", "stroke-dasharray:5 4"); svg.append(fb);
+  const fbt = document.createElementNS(NS, "text");
+  fbt.setAttribute("x", 170); fbt.setAttribute("y", 226); fbt.setAttribute("class", "muted"); fbt.setAttribute("style", "font-size:11px");
+  fbt.textContent = "실행 결과가 다시 세계 상태를 바꾼다 (피드백 루프)"; svg.append(fbt);
+  const info = document.getElementById("pipe-info");
+  const ch = id => MM.CHAPTERS.find(c => c.id === id);
+  B.forEach(b => {
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("class", "blk");
+    g.innerHTML = `<rect x="${b.x}" y="${b.y}" width="${W}" height="${H}" rx="9"></rect>
+      <text x="${b.x + W / 2}" y="${b.y + 22}" text-anchor="middle" style="font-weight:700">${b.t}</text>
+      <text x="${b.x + W / 2}" y="${b.y + 40}" text-anchor="middle" class="muted" style="font-size:11px">${b.s}</text>`;
+    g.onclick = () => {
+      svg.querySelectorAll(".blk").forEach(x => x.classList.remove("on"));
+      g.classList.add("on");
+      const c = ch(b.ch);
+      info.innerHTML = `<b>${b.t}</b> — ${b.d}<br><code>${b.fn}</code> · <a class="xref" href="${c.file}">${c.id}장 ${c.title}</a>`;
+    };
+    svg.append(g);
+  });
+  // 흐르는 점
+  const dot = document.createElementNS(NS, "circle");
+  dot.setAttribute("r", 5); dot.setAttribute("class", "dot"); svg.append(dot);
+  let t0 = null;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function anim(ts) {
+    if (t0 == null) t0 = ts;
+    const per = 700, total = pts.length * per;
+    const k = ((ts - t0) % (total + 800)) / per;
+    const i = Math.min(pts.length - 1, Math.floor(k)), f = Math.min(1, k - i);
+    const [[x1, y1], [x2, y2]] = pts[i];
+    dot.setAttribute("cx", x1 + (x2 - x1) * f); dot.setAttribute("cy", y1 + (y2 - y1) * f);
+    dot.style.opacity = k > pts.length ? 0 : 1;
+    if (!reduce) requestAnimationFrame(anim);
+  }
+  if (reduce) { dot.setAttribute("cx", pts[0][0][0]); dot.setAttribute("cy", pts[0][0][1]); } else requestAnimationFrame(anim);
+})();
+
+// ── 미니 Hamlet 데모 ──
+(function () {
+  const cv = document.getElementById("mini-map"), g = cv.getContext("2d");
+  const list = document.getElementById("mini-agents"), clock = document.getElementById("mini-clock");
+  const playBtn = document.getElementById("mini-play");
+  let world, running = true, acc = 0, last = 0;
+  const NEED_COL = { hunger: "--warn", energy: "--accent", fun: "--violet", social: "--ok" };
+  function reset() {
+    world = UAI.makeHamlet({ seed: 11 });
+    list.innerHTML = world.agents.map(a => `<div class="agent-row" id="ar-${a.id}"><b>${a.name}</b><div class="bars">${UAI.NEEDS.map(n => `<div class="bar ${n === "hunger" ? "warn" : n === "fun" ? "violet" : n === "social" ? "ok" : ""}"><i></i></div>`).join("")}</div><div class="act"></div></div>`).join("");
+    draw();
+  }
+  function draw() {
+    const W = cv.width, H = cv.height, sx = W / world.w, sy = H / world.h;
+    const night = world.hour() >= 21 || world.hour() < 6;
+    g.fillStyle = MM.cssVar(night ? "--surface-2" : "--surface"); g.fillRect(0, 0, W, H);
+    g.strokeStyle = MM.cssVar("--border"); g.lineWidth = 0.5;
+    for (let x = 0; x <= world.w; x++) { g.beginPath(); g.moveTo(x * sx, 0); g.lineTo(x * sx, H); g.stroke(); }
+    for (let y = 0; y <= world.h; y++) { g.beginPath(); g.moveTo(0, y * sy); g.lineTo(W, y * sy); g.stroke(); }
+    g.font = `${Math.round(sy * 1.1)}px sans-serif`; g.textAlign = "center"; g.textBaseline = "middle";
+    for (const o of world.objects) g.fillText(o.icon, (o.x + 0.5) * sx, (o.y + 0.5) * sy);
+    if (world.threat) {
+      g.fillStyle = MM.cssVar("--bad-soft");
+      g.beginPath(); g.arc((world.threat.x + 0.5) * sx, (world.threat.y + 0.5) * sy, 14 * sx, 0, 7); g.fill();
+      g.fillText("🐺", (world.threat.x + 0.5) * sx, (world.threat.y + 0.5) * sy);
+    }
+    g.font = "bold 11px sans-serif";
+    for (const a of world.agents) {
+      const fleeing = a.current && a.current.action === "flee";
+      g.fillStyle = MM.cssVar(fleeing ? "--bad" : "--accent");
+      g.beginPath(); g.arc((a.x + 0.5) * sx, (a.y + 0.5) * sy, sx * 0.42, 0, 7); g.fill();
+      g.fillStyle = MM.cssVar("--text"); g.fillText(a.name, (a.x + 0.5) * sx, (a.y - 0.4) * sy);
+    }
+    clock.textContent = "🕒 " + UAI.clock(world.time);
+    for (const a of world.agents) {
+      const row = document.getElementById("ar-" + a.id);
+      row.querySelectorAll(".bar > i").forEach((el, i) => el.style.width = a.needs[UAI.NEEDS[i]] + "%");
+      const c = a.current;
+      row.querySelector(".act").textContent = c ? c.label + (c.target ? " · " + (c.target.label || c.target.name) : "") : "생각 중…";
+    }
+  }
+  function loop(ts) {
+    if (running && !document.hidden) {
+      acc += Math.min(100, ts - last);
+      while (acc > 60) { world.tick(); acc -= 60; }
+      draw();
+    }
+    last = ts;
+    requestAnimationFrame(loop);
+  }
+  cv.onclick = e => {
+    const r = cv.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) / r.width * world.w), y = Math.floor((e.clientY - r.top) / r.height * world.h);
+    world.threat = { x, y, until: world.time + 40 };
+    draw();
+  };
+  playBtn.onclick = () => { running = !running; playBtn.textContent = running ? "⏸ 정지" : "▶ 재생"; };
+  document.getElementById("mini-reset").onclick = reset;
+  document.addEventListener("themechange", () => draw());
+  reset();
+  requestAnimationFrame(t => { last = t; loop(t); });
+})();
+</script>
+</body>
+</html>

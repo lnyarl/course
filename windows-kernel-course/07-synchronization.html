@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>동기화</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  /* 경쟁 시뮬레이터 */
+  .rc-cpus { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+  .rc-cpu { border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); padding: 8px 10px; font-size: .82rem; }
+  .rc-cpu.done { opacity: .6; }
+  .rc-cpu .hd { display: flex; justify-content: space-between; font-weight: 700; color: var(--head); margin-bottom: 4px; }
+  .rc-cpu .code { font: 11.5px/1.5 var(--mono); }
+  .rc-cpu .code div { padding: 0 6px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rc-cpu .code div.cur { background: var(--acc-bg); color: var(--acc); font-weight: 700; }
+  .rc-cpu .code div.spin { background: var(--warn-bg); color: var(--warn); font-weight: 700; }
+  .rc-cpu .reg { margin-top: 4px; font: 12px var(--mono); color: var(--muted); }
+  .rc-cpu .reg b { color: var(--head); }
+  .rc-mem { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 12px 0; }
+  .rc-mem div { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--panel2); font-size: .78rem; color: var(--muted); }
+  .rc-mem b { display: block; font: 700 1.1rem var(--mono); color: var(--head); }
+  .rc-mem .bad b { color: var(--bad); } .rc-mem .ok b { color: var(--ok); }
+  .rc-hist { margin-top: 12px; }
+  /* 이벤트 시뮬레이터 */
+  .ev-stage { display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 760px) { .ev-stage { grid-template-columns: 1fr; } }
+  .ev-obj { border: 2px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel2); font-size: .82rem; transition: border-color .2s, background .2s; }
+  .ev-obj.sig { border-color: var(--ok); background: var(--ok-bg); }
+  .ev-obj .t { font: 700 .9rem var(--mono); color: var(--head); }
+  .ev-obj .s { font: 700 1.5rem var(--mono); margin: 4px 0; }
+  .ev-obj.sig .s { color: var(--ok); }
+  .ev-col h5 { margin: 0 0 6px; font-size: .78rem; color: var(--muted); }
+  .ev-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 40px; border: 1px dashed var(--line); border-radius: 10px; padding: 8px; }
+  .thr { font: 700 .82rem var(--mono); padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+  .thr.wait { border-color: var(--warn); color: var(--warn); }
+  .thr.run { border-color: var(--ok); color: var(--ok); cursor: pointer; }
+  .thr.new { animation: wk-fade .4s; box-shadow: 0 0 0 3px var(--ok-bg); }
+  .sim .hide { display: none; }
+  table.guide td:nth-child(n+2) { white-space: nowrap; }
+</style>
+</head>
+<body data-chapter="07">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part II · Chapter 07</div>
+  <h1>동기화</h1>
+  <p class="sub">커널 코드는 모든 CPU에서 동시에, 그리고 인터럽트에 끼어들리며 실행됩니다. 공유 데이터를 지키는 도구를 IRQL 규칙과 함께 정확히 고르는 법을 다룹니다.</p>
+  <div class="meta"><span class="pill lv-adv">심화</span><span class="pill">⏱ 약 100분</span><span class="pill">선수: 05 스케줄링, 06 IRQL</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>read-modify-write 경쟁이 왜 생기는지 명령어 수준에서 설명하고, <code>lock</code> 접두사·Interlocked 연산으로 해결할 수 있다.</li>
+    <li>스핀락이 IRQL을 DISPATCH_LEVEL로 올리는 이유, 큐드 스핀락이 확장성을 개선하는 원리를 설명할 수 있다.</li>
+    <li>디스패처 객체(<code>DISPATCHER_HEADER</code>)의 signaled 상태와 <code>KWAIT_BLOCK</code> 기반 대기 메커니즘을 그릴 수 있다.</li>
+    <li>이벤트·뮤텍스·패스트 뮤텍스·세마포어·ERESOURCE·푸시락·런다운 보호의 차이와 사용 IRQL을 구분해 상황에 맞게 선택할 수 있다.</li>
+    <li>데드락의 조건과 락 순서 규칙을 이해하고, WinDbg·Driver Verifier로 락 문제를 진단할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="race">경쟁 조건: counter++는 한 줄이 아니다</h2>
+<p>
+  C의 <code>counter++</code>는 x64에서 보통 <b>읽기 → 수정 → 쓰기(read-modify-write)</b> 세 단계로 실행됩니다.
+  두 CPU가 같은 변수에 동시에 이 세 단계를 수행하면 단계가 섞이면서(interleaving) 한쪽의 결과가 사라집니다.
+  이것이 <b>경쟁 조건(race condition)</b>이며, 같은 CPU에서도 인터럽트·DPC·스레드 선점이 단계 사이에 끼어들면 똑같이 일어납니다.
+</p>
+
+<figure class="fig stepper" data-interval="2800">
+  <svg class="dia" viewBox="0 0 880 380" role="img" aria-label="두 CPU의 read-modify-write 인터리빙">
+    <rect class="box plain" x="20" y="20" width="320" height="236" rx="12"/>
+    <text x="36" y="44" class="b">CPU 0</text>
+    <rect class="box plain" x="540" y="20" width="320" height="236" rx="12"/>
+    <text x="556" y="44" class="b">CPU 1</text>
+
+    <g data-hl="2"><rect class="box acc" x="40" y="60" width="280" height="34" rx="6"/><text x="54" y="82" class="mono">mov eax, [counter]</text></g>
+    <g data-hl="4"><rect class="box acc" x="40" y="104" width="280" height="34" rx="6"/><text x="54" y="126" class="mono">inc eax</text></g>
+    <g data-hl="6"><rect class="box acc" x="40" y="148" width="280" height="34" rx="6"/><text x="54" y="170" class="mono">mov [counter], eax</text></g>
+    <rect class="box plain" x="40" y="200" width="280" height="40" rx="6"/>
+    <text x="180" y="225" text-anchor="middle" class="mono b" data-text="1:EAX = ?|2:EAX = 0|4:EAX = 1">EAX = ?</text>
+
+    <g data-hl="3"><rect class="box warn" x="560" y="60" width="280" height="34" rx="6"/><text x="574" y="82" class="mono">mov eax, [counter]</text></g>
+    <g data-hl="5"><rect class="box warn" x="560" y="104" width="280" height="34" rx="6"/><text x="574" y="126" class="mono">inc eax</text></g>
+    <g data-hl="7"><rect class="box warn" x="560" y="148" width="280" height="34" rx="6"/><text x="574" y="170" class="mono">mov [counter], eax</text></g>
+    <rect class="box plain" x="560" y="200" width="280" height="40" rx="6"/>
+    <text x="700" y="225" text-anchor="middle" class="mono b" data-text="1:EAX = ?|3:EAX = 0|5:EAX = 1">EAX = ?</text>
+
+    <g data-hl="6,7"><rect class="box hw" x="380" y="90" width="120" height="110" rx="10"/>
+      <text x="440" y="112" text-anchor="middle" class="sm">메모리</text>
+      <text x="440" y="132" text-anchor="middle" class="mono">counter</text>
+      <text x="440" y="178" text-anchor="middle" class="lg mono" style="font-size:30px" data-text="1:0|6:1">0</text></g>
+    <text x="440" y="226" text-anchor="middle" class="b c-bad" data-only="7-8">덮어씀!</text>
+
+    <path class="ln acc" d="M378 120 L322 80" data-only="2"/>
+    <path class="ln acc" d="M502 120 L558 80" data-only="3"/>
+    <path class="ln kernel" d="M322 165 L378 160" data-only="6"/>
+    <path class="ln bad" d="M558 165 L502 160" data-only="7"/>
+
+    <text x="20" y="288" class="sm b">실행 순서 →</text>
+    <g data-on="2" data-off="99"><rect class="box acc" x="20" y="298" width="130" height="32" rx="6"/><text x="85" y="319" text-anchor="middle" class="sm b">CPU0 load</text></g>
+    <g data-on="3" data-off="99"><rect class="box warn" x="162" y="298" width="130" height="32" rx="6"/><text x="227" y="319" text-anchor="middle" class="sm b">CPU1 load</text></g>
+    <g data-on="4" data-off="99"><rect class="box acc" x="304" y="298" width="130" height="32" rx="6"/><text x="369" y="319" text-anchor="middle" class="sm b">CPU0 inc</text></g>
+    <g data-on="5" data-off="99"><rect class="box warn" x="446" y="298" width="130" height="32" rx="6"/><text x="511" y="319" text-anchor="middle" class="sm b">CPU1 inc</text></g>
+    <g data-on="6" data-off="99"><rect class="box acc" x="588" y="298" width="130" height="32" rx="6"/><text x="653" y="319" text-anchor="middle" class="sm b">CPU0 store</text></g>
+    <g data-on="7" data-off="99"><rect class="box warn" x="730" y="298" width="130" height="32" rx="6"/><text x="795" y="319" text-anchor="middle" class="sm b">CPU1 store</text></g>
+    <text x="440" y="364" text-anchor="middle" class="b c-bad" data-only="8">기대값 2 · 실제값 1 → 증가 1회 유실 (lost update)</text>
+  </svg>
+  <ol class="steps">
+    <li>초기 <code>counter = 0</code>. CPU 0과 CPU 1이 동시에 <code>counter++</code>를 실행하려 합니다. C 한 줄이 명령어 세 개가 됩니다.</li>
+    <li>CPU 0이 메모리에서 counter를 읽어 레지스터에 둡니다: EAX = 0.</li>
+    <li>CPU 0이 아직 쓰기 전에 CPU 1도 counter를 읽습니다: 역시 EAX = 0. 두 CPU가 <b>같은 옛 값</b>을 들고 있습니다.</li>
+    <li>CPU 0이 레지스터에서 1 증가: EAX = 1.</li>
+    <li>CPU 1도 1 증가: EAX = 1. 각 CPU의 레지스터는 서로 독립적입니다.</li>
+    <li>CPU 0이 1을 메모리에 씁니다: counter = 1.</li>
+    <li>CPU 1도 1을 씁니다: counter = 1. CPU 0의 증가분을 <b>덮어썼습니다</b>.</li>
+    <li>두 번 증가했는데 결과는 1. 단계 사이에 다른 CPU(또는 같은 CPU의 인터럽트·선점)가 끼어들 수 있는 한 이 버그는 확률적으로 반드시 발생합니다. 해결책은 세 단계를 <b>나눌 수 없는 하나</b>로 만드는 것(원자적 연산)이거나, 구간 전체를 <b>상호 배제</b>(락)로 감싸는 것입니다.</li>
+  </ol>
+  <figcaption><b>그림 7-1.</b> read-modify-write 인터리빙에 의한 갱신 유실.</figcaption>
+</figure>
+
+<div class="callout note">
+  <div class="callout-title">단일 CPU에서도 경쟁은 있다</div>
+  <p>CPU가 하나여도 <code>mov</code>와 <code>inc</code> 사이에 인터럽트가 들어와 DPC가 같은 변수를 바꾸면 똑같이 유실됩니다. 그래서 "멀티코어니까 동기화한다"가 아니라
+  <b>"이 데이터를 만지는 실행 문맥(스레드·DPC·ISR)이 둘 이상이면 동기화한다"</b>가 올바른 기준입니다.</p>
+</div>
+
+<h2 id="interlocked">Interlocked 연산과 lock 접두사</h2>
+<p>
+  x86의 <code>lock</code> 접두사는 뒤따르는 read-modify-write 명령을 <b>원자적으로</b> 실행하도록 보장합니다. 현대 CPU는 버스 전체를 잠그는 대신
+  캐시 일관성 프로토콜(MESI 계열)로 해당 <b>캐시 라인을 독점(Modified/Exclusive) 상태로 확보한 채</b> 읽기·쓰기를 끝냅니다. 그동안 다른 코어는 그 라인에 접근할 수 없습니다.
+  <code>xchg</code>는 메모리 피연산자가 있으면 <code>lock</code>이 암묵적으로 붙습니다.
+</p>
+<pre data-title="x64 — InterlockedIncrement(&amp;counter)"><code class="lang-asm">mov     eax, 1
+lock xadd dword ptr [counter], eax   ; [counter] += 1, 이전 값 → eax (원자적)
+inc     eax                          ; InterlockedIncrement는 "새 값"을 반환</code></pre>
+<table>
+  <thead><tr><th>함수 (wdm.h / 컴파일러 내장)</th><th>x64 명령</th><th>용도</th></tr></thead>
+  <tbody>
+    <tr><td><code>InterlockedIncrement/Decrement</code>, <code>InterlockedAdd</code></td><td><code>lock xadd</code></td><td>참조 카운트, 통계 카운터</td></tr>
+    <tr><td><code>InterlockedExchange</code></td><td><code>xchg</code></td><td>값 교체(이전 값 반환), 플래그 소비</td></tr>
+    <tr><td><code>InterlockedCompareExchange</code></td><td><code>lock cmpxchg</code></td><td>CAS — 모든 락-프리 알고리즘의 기본 블록</td></tr>
+    <tr><td><code>InterlockedCompareExchange128</code></td><td><code>lock cmpxchg16b</code></td><td>포인터 + 시퀀스 번호 동시 교체(ABA 방지)</td></tr>
+    <tr><td><code>InterlockedOr/And/Xor</code></td><td><code>lock or/and/xor</code> 또는 CAS 루프</td><td>비트 플래그 설정·해제</td></tr>
+    <tr><td><code>InterlockedBitTestAndSet/Reset</code></td><td><code>lock bts/btr</code></td><td>단일 비트 락·플래그</td></tr>
+    <tr><td><code>InterlockedPushEntrySList/PopEntrySList</code></td><td><code>cmpxchg16b</code> 기반</td><td>락-프리 단일 연결 스택(<code>SLIST_HEADER</code>)</td></tr>
+    <tr><td><code>ExInterlockedInsertHeadList</code> 등</td><td>스핀락 + 인터럽트 비활성</td><td>"Interlocked"라는 이름이지만 내부는 스핀락. 모든 IRQL에서 호출 가능</td></tr>
+  </tbody>
+</table>
+
+<pre data-title="C — CAS 루프: 원자적 최댓값 갱신"><code class="lang-c">VOID AtomicMax(_Inout_ volatile LONG *p, _In_ LONG v)
+{
+    LONG cur = *p;
+    while (v &gt; cur) {
+        LONG prev = InterlockedCompareExchange(p, v, cur);  // *p == cur 일 때만 v로 교체
+        if (prev == cur) break;      // 성공
+        cur = prev;                  // 다른 CPU가 먼저 바꿈 → 최신 값으로 재시도
+    }
+}</code></pre>
+
+<div class="callout expert">
+  <div class="callout-title">ABA 문제와 SLIST</div>
+  <p>CAS는 "값이 같으면 아무도 안 건드렸다"고 가정합니다. 락-프리 스택에서 A를 pop하려는 사이 다른 CPU가 A를 pop → B를 pop → A를 다시 push하면
+  헤드 포인터는 여전히 A이므로 CAS가 성공하지만 A의 Next는 이미 해제된 B를 가리킵니다. Windows의 <code>SLIST_HEADER</code>는 포인터와 함께
+  <b>시퀀스 번호(Depth/Sequence)</b>를 128비트로 묶어 <code>cmpxchg16b</code>로 한 번에 비교해 이 문제를 피합니다. 직접 락-프리 구조를 만들기 전에 SLIST로 충분한지 먼저 검토하세요.</p>
+</div>
+
+<h3>메모리 순서 — 원자성만으로는 부족할 때</h3>
+<p>
+  x64는 비교적 강한 메모리 모델(TSO)이라 "쓰기끼리", "읽기끼리"의 순서는 다른 CPU에게도 유지되지만, <b>나중 읽기가 앞선 쓰기보다 먼저 보일 수 있습니다</b>(스토어 버퍼).
+  <code>lock</code> 명령과 <code>xchg</code>는 완전한 메모리 배리어 역할도 합니다. ARM64는 훨씬 약한 모델이라 배리어 없이 쓴 "플래그 + 데이터" 패턴이 깨질 수 있습니다.
+  Windows는 <code>InterlockedXxx</code>(완전 배리어), <code>…Acquire</code>/<code>…Release</code>/<code>…NoFence</code> 변형, <code>ReadAcquire</code>/<code>WriteRelease</code>,
+  <code>KeMemoryBarrier</code>를 제공합니다. <code>volatile</code>은 <b>컴파일러</b> 최적화만 막을 뿐, CPU 재정렬이나 원자성을 보장하지 않는다는 점을 기억하세요.
+</p>
+
+<h2 id="spinlock">스핀락</h2>
+<p>
+  Interlocked는 변수 하나만 지킬 수 있습니다. 리스트 삽입처럼 여러 필드를 함께 바꿔야 하면 <b>락</b>이 필요합니다. DISPATCH_LEVEL 이상에서는 대기(스레드 전환)가
+  불가능하므로, 그 수준에서 쓸 수 있는 락은 <b>바쁜 대기(busy-wait)</b>하는 스핀락뿐입니다.
+  <code>KSPIN_LOCK</code>은 포인터 크기의 정수 하나이며, 반드시 <b>논페이지 메모리</b>에 있어야 합니다.
+</p>
+<pre data-title="x64 — 스핀락 획득의 개념 (실제 구현은 빌드마다 다름)"><code class="lang-asm">; KeAcquireSpinLock: 먼저 IRQL을 DISPATCH_LEVEL로 올린 뒤
+acquire:
+    lock bts qword ptr [rcx], 0    ; 비트 0 설정 시도, 이전 비트 → CF
+    jnc     acquired               ; CF=0 → 비어 있었음 → 획득
+spin:
+    pause                          ; 스핀 힌트 (하이퍼스레딩·전력에 우호적)
+    test    qword ptr [rcx], 1     ; 읽기만 하며 대기 → 캐시 라인을 공유 상태로 유지
+    jnz     spin
+    jmp     acquire                ; 비었다! 다시 원자적 시도 (test-and-test-and-set)
+acquired:</code></pre>
+
+<h3>왜 IRQL을 DISPATCH_LEVEL로 올리는가</h3>
+<p>스핀락은 "락 비트"와 "IRQL 상승"을 함께 씁니다. 락 비트만 쓰면 무슨 일이 생기는지, 같은 CPU에서 따라가 봅시다.</p>
+
+<figure class="fig stepper" data-interval="3200">
+  <svg class="dia" viewBox="0 0 880 340" role="img" aria-label="스핀락이 IRQL을 올리는 이유">
+    <text x="30" y="30" class="b c-bad">✗ 가상의 락 — IRQL을 올리지 않음</text>
+    <text x="460" y="30" class="b c-ok">✓ KeAcquireSpinLock — DISPATCH로 상승</text>
+    <line class="sep" x1="440" y1="14" x2="440" y2="330"/>
+
+    <g data-on="2" data-off="99"><rect class="box acc" x="30" y="250" width="270" height="52" rx="8"/>
+      <text x="44" y="272" class="b">스레드 A · IRQL 0</text>
+      <text x="44" y="292" class="sm">lock 보유 중 · 끼어들기 당함</text></g>
+    <g data-only="3"><rect class="box hw" x="30" y="190" width="270" height="50" rx="8"/>
+      <text x="44" y="212" class="b">NIC ISR · DIRQL</text>
+      <text x="44" y="231" class="sm">DPC 큐잉 → 반환 시 IRQL 0 → DPC 실행</text></g>
+    <g data-on="4" data-off="99"><rect class="box bad" x="30" y="130" width="270" height="50" rx="8"/>
+      <text x="44" y="152" class="b">DPC · IRQL 2 (A 위에 쌓임)</text>
+      <text x="44" y="171" class="sm">같은 lock 획득 시도</text></g>
+    <g data-on="5" data-off="99"><text x="165" y="108" text-anchor="middle" class="b c-bad pulse">⟳ 영원히 스핀 — 데드락</text></g>
+    <text x="30" y="324" class="sm" data-on="5" data-off="99">A는 DPC 아래 깔려 이 CPU에서 재개 불가 → 결국 0x133</text>
+    <g data-hl="2,4"><rect class="box warn" x="320" y="130" width="100" height="60" rx="8"/>
+      <text x="370" y="152" text-anchor="middle" class="sm">lock</text>
+      <text x="370" y="176" text-anchor="middle" class="mono b" data-text="1:비어 있음|2:소유: A">비어 있음</text></g>
+
+    <g data-on="6" data-off="99"><rect class="box acc" x="460" y="250" width="270" height="52" rx="8"/>
+      <text x="474" y="272" class="b" data-text="6:스레드 A · IRQL 0 → 2|8:스레드 A · 해제, IRQL 2 → 0">스레드 A · IRQL 0 → 2</text>
+      <text x="474" y="292" class="sm" data-text="6:KeAcquireSpinLock → lock 보유|8:KeReleaseSpinLock">KeAcquireSpinLock → lock 보유</text></g>
+    <g data-only="7"><rect class="box hw" x="460" y="190" width="270" height="50" rx="8"/>
+      <text x="474" y="212" class="b">NIC ISR · DIRQL (여전히 허용)</text>
+      <text x="474" y="231" class="sm">DPC 큐잉 → IRQL 2라서 보류</text></g>
+    <text x="595" y="160" text-anchor="middle" class="b c-kernel" data-only="7">⏸ DPC 보류 (KPRCB 큐)</text>
+    <g data-on="8" data-off="99"><rect class="box ok" x="460" y="130" width="270" height="50" rx="8"/>
+      <text x="474" y="152" class="b">DPC · IRQL 2</text>
+      <text x="474" y="171" class="sm">lock 획득 성공 → 작업 → 해제</text></g>
+    <g data-hl="6,8"><rect class="box warn" x="750" y="130" width="100" height="60" rx="8"/>
+      <text x="800" y="152" text-anchor="middle" class="sm">lock</text>
+      <text x="800" y="176" text-anchor="middle" class="mono b" data-text="1:비어 있음|6:소유: A|8:소유: DPC">비어 있음</text></g>
+  </svg>
+  <ol class="steps">
+    <li>CPU 0. 공유 리스트를 스레드 코드와 DPC 양쪽이 같은 락으로 보호한다고 합시다. 왼쪽은 IRQL을 올리지 않는 가상의 락, 오른쪽은 실제 <code>KeAcquireSpinLock</code>입니다.</li>
+    <li>(가상) 스레드 A가 IRQL 0에 머문 채 락 비트만 획득합니다.</li>
+    <li>NIC 인터럽트가 들어와 ISR이 DPC를 큐잉합니다. ISR이 끝나고 IRQL이 0으로 돌아가는 순간, 2보다 낮으므로 DPC가 <b>A 위에서</b> 바로 실행됩니다.</li>
+    <li>DPC가 같은 락을 잡으려 합니다. 소유자는 A입니다.</li>
+    <li>A는 DPC 아래에 "중단"되어 있어, DPC가 끝나야 재개됩니다. 그런데 DPC는 A가 락을 풀어야 끝납니다 → <b>같은 CPU 위의 영구 데드락</b>. 결국 <code>DPC_WATCHDOG_VIOLATION</code>(0x133). 같은 CPU의 다른 스레드가 A를 선점한 뒤 락을 잡으려 해도 퀀텀 내내 헛돕니다.</li>
+    <li>실제 <code>KeAcquireSpinLock</code>은 <b>먼저 IRQL을 DISPATCH_LEVEL로 올리고</b> 락 비트를 잡습니다. 이 CPU에서는 이제 스레드 전환도, DPC 실행도 일어나지 않습니다.</li>
+    <li>장치 인터럽트(DIRQL &gt; 2)는 여전히 받습니다. ISR이 DPC를 큐잉하지만 현재 IRQL이 2이므로 DPC는 KPRCB 큐에 보류됩니다.</li>
+    <li><code>KeReleaseSpinLock</code>이 락을 풀고 IRQL을 원래 값으로 내리는 순간 보류된 DPC가 실행되어 락을 문제없이 획득합니다. 다른 CPU의 스레드·DPC는 그동안 정상적으로 스핀하다 획득합니다.</li>
+  </ol>
+  <figcaption><b>그림 7-2.</b> IRQL 상승 없이 락만 쓰면 같은 CPU에서 데드락이 생긴다. 스핀락 = IRQL 상승(같은 CPU 보호) + 락 비트(다른 CPU 보호).</figcaption>
+</figure>
+
+<div class="callout warn">
+  <div class="callout-title">같은 논리가 ISR에도 적용된다 — 인터럽트 스핀락</div>
+  <p>ISR이 만지는 데이터를 DPC나 스레드에서 보호하려고 일반 스핀락을 쓰면, 락을 쥔 DPC를 같은 CPU의 ISR이 선점해 똑같은 데드락이 납니다(그리고 ISR에서는 일반 스핀락을 잡을 수도 없습니다).
+  ISR과 공유하는 데이터는 <code>KeSynchronizeExecution(Interrupt, SyncRoutine, Ctx)</code> 또는 <code>KeAcquireInterruptSpinLock</code>으로 보호합니다.
+  이들은 IRQL을 <code>KINTERRUPT.SynchronizeIrql</code>까지 올리고 ISR이 쓰는 바로 그 인터럽트 스핀락을 잡습니다(06장).</p>
+</div>
+
+<pre data-title="C — 스핀락 사용 패턴"><code class="lang-c">KSPIN_LOCK  g_ListLock;      // 논페이지 전역 또는 디바이스 확장
+LIST_ENTRY  g_List;
+KeInitializeSpinLock(&amp;g_ListLock);
+
+VOID AddItem(_In_ PITEM item)                 // IRQL &lt;= DISPATCH_LEVEL
+{
+    KIRQL old;
+    KeAcquireSpinLock(&amp;g_ListLock, &amp;old);     // IRQL → DISPATCH, 락 획득
+    InsertTailList(&amp;g_List, &amp;item-&gt;Link);     // 짧게! 논페이지 데이터만
+    KeReleaseSpinLock(&amp;g_ListLock, old);      // 락 해제, IRQL 복원
+}
+
+VOID MyDpc(PKDPC Dpc, PVOID Ctx, PVOID A1, PVOID A2)   // 이미 DISPATCH_LEVEL
+{
+    KeAcquireSpinLockAtDpcLevel(&amp;g_ListLock);  // IRQL 변경 없이 락만
+    /* ... */
+    KeReleaseSpinLockFromDpcLevel(&amp;g_ListLock);
+}</code></pre>
+<div class="grid2">
+  <div class="card kernel"><h4>스핀락 보유 중 금지 사항</h4>
+    <p>대기·<code>Zw*</code> 호출·페이지 가능 코드/데이터 접근·페이지드 풀 할당·다른 드라이버로의 긴 콜아웃. 보유 시간은 수 µs 수준이어야 합니다. 재귀 획득은 즉시 자기 데드락입니다.</p></div>
+  <div class="card kernel"><h4>리더/라이터 스핀락 <code>EX_SPIN_LOCK</code></h4>
+    <p><code>ExAcquireSpinLockShared</code>/<code>Exclusive</code>로 읽기 다수·쓰기 하나를 허용합니다. 읽기가 압도적으로 많은 테이블 조회(예: 콜백 목록)에 유리합니다. 역시 DISPATCH_LEVEL에서 보유합니다.</p></div>
+</div>
+
+<div class="callout expert">
+  <div class="callout-title">가상 머신에서의 스핀락 — Long Spin Wait 통지</div>
+  <p>게스트의 vCPU가 락을 쥔 채 하이퍼바이저에 의해 디스케줄되면 다른 vCPU가 오래 헛돌게 됩니다(lock-holder preemption). Hyper-V 계몽(enlightenment)이 켜진 Windows는
+  스핀이 일정 횟수를 넘으면 하이퍼바이저에 "오래 스핀 중"임을 알려(<code>HvlNotifyLongSpinWait</code>) 다른 vCPU에 시간을 양보하게 합니다. 덤프에서 이 함수가 보이면 스핀락 경합을 의심하세요.</p>
+</div>
+
+<h2 id="counter-sim">실험: 세 가지 방식으로 카운터 증가시키기</h2>
+<p>
+  여러 CPU가 공유 카운터를 각자 정해진 횟수만큼 증가시킵니다. 스케줄러는 매 스텝 <b>무작위 CPU</b>의 다음 명령 하나를 실행해 실제 병렬 실행의 임의 인터리빙을 흉내 냅니다.
+  방식을 바꿔 가며 <b>결과값</b>, <b>유실된 증가</b>, <b>스핀으로 낭비된 스텝</b>을 비교해 보세요. 기록은 아래 표에 누적됩니다.
+</p>
+<div class="sim" id="raceSim">
+  <div class="sim-title">공유 카운터 경쟁 시뮬레이터</div>
+  <div class="sim-controls">
+    <span>방식:</span>
+    <button class="btn on" data-mode="none">락 없음 (counter++)</button>
+    <button class="btn" data-mode="atomic">InterlockedIncrement</button>
+    <button class="btn" data-mode="spin">스핀락</button>
+    <label>CPU <select id="rcCpu"><option>2</option><option>3</option><option selected>4</option></select></label>
+    <label>CPU당 반복 <select id="rcIter"><option>3</option><option selected>20</option><option>200</option></select></label>
+  </div>
+  <div class="sim-controls">
+    <button class="btn" data-run="1">한 스텝</button>
+    <button class="btn" data-run="10">10 스텝</button>
+    <button class="btn primary" data-run="all">끝까지 실행</button>
+    <button class="btn" data-run="reset">↺ 리셋</button>
+  </div>
+  <div class="rc-cpus"></div>
+  <div class="rc-mem"></div>
+  <div class="console" style="min-height:6em"></div>
+  <table class="rc-hist">
+    <thead><tr><th>#</th><th>방식</th><th>CPU×반복</th><th>기대값</th><th>결과</th><th>유실</th><th>총 스텝</th><th>스핀 스텝</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+<p class="muted" style="font-size:.9rem">관찰 포인트: "락 없음"은 매번 결과가 달라지고 기대값보다 작습니다. Interlocked는 스텝 수가 가장 적지만(한 명령) 실제 하드웨어에서는 경합 시 캐시 라인이 CPU 사이를 오가며 비싸집니다. 스핀락은 정확하지만 대기 CPU의 스텝이 낭비됩니다 — 보유 구간이 길수록, CPU가 많을수록 낭비가 커집니다.</p>
+
+<h2 id="queued">큐드 스핀락</h2>
+<p>
+  일반 스핀락은 모든 대기 CPU가 <b>같은 락 워드</b>를 두드립니다. 해제될 때마다 그 캐시 라인이 모든 대기 CPU로 무효화·재전송되고(cache line bouncing),
+  누가 다음에 잡을지도 운에 달려 있어 공정성이 없습니다. <b>큐드 스핀락</b>(MCS 락 계열)은 대기자들을 큐로 줄 세우고, 각자 <b>자기 큐 엔트리</b>의 비트에서만 스핀하게 합니다.
+</p>
+
+<figure class="fig stepper" data-interval="3000">
+  <svg class="dia" viewBox="0 0 880 300" role="img" aria-label="큐드 스핀락 동작">
+    <g data-hl="2-4,7"><rect class="box warn" x="20" y="100" width="150" height="80" rx="8"/>
+      <text x="95" y="124" text-anchor="middle" class="sm">KSPIN_LOCK (tail)</text>
+      <text x="95" y="156" text-anchor="middle" class="mono b" data-text="1:NULL|2:&amp;Q0|3:&amp;Q1|4:&amp;Q2|7:NULL">NULL</text></g>
+
+    <g data-on="2" data-off="99" data-hl="2,5" data-dim="6+"><rect class="box kernel" x="230" y="80" width="190" height="120" rx="8"/>
+      <text x="325" y="104" text-anchor="middle" class="b">CPU 0 · 엔트리 Q0</text>
+      <text x="325" y="134" text-anchor="middle" class="mono" data-text="2:Next = NULL|3:Next = &amp;Q1">Next = NULL</text>
+      <text x="325" y="166" text-anchor="middle" class="sm" data-text="2:소유 ✓|5:해제 → Q1에 넘김">소유 ✓</text></g>
+    <g data-on="3" data-off="99" data-hl="3,5,6" data-dim="7+"><rect class="box kernel" x="450" y="80" width="190" height="120" rx="8"/>
+      <text x="545" y="104" text-anchor="middle" class="b">CPU 1 · 엔트리 Q1</text>
+      <text x="545" y="134" text-anchor="middle" class="mono" data-text="3:Next = NULL|4:Next = &amp;Q2">Next = NULL</text>
+      <text x="545" y="166" text-anchor="middle" class="sm" data-text="3:⟳ 자기 엔트리에서 스핀|5:소유 ✓|6:해제 → Q2에 넘김">⟳ 자기 엔트리에서 스핀</text></g>
+    <g data-on="4" data-off="99" data-hl="4,6,7"><rect class="box kernel" x="670" y="80" width="190" height="120" rx="8"/>
+      <text x="765" y="104" text-anchor="middle" class="b">CPU 2 · 엔트리 Q2</text>
+      <text x="765" y="134" text-anchor="middle" class="mono">Next = NULL</text>
+      <text x="765" y="166" text-anchor="middle" class="sm" data-text="4:⟳ 자기 엔트리에서 스핀|6:소유 ✓|7:해제 (cmpxchg → NULL)">⟳ 자기 엔트리에서 스핀</text></g>
+
+    <path class="ln kernel" d="M420 140 L448 140" data-on="3" data-off="6"/>
+    <path class="ln kernel" d="M640 140 L668 140" data-on="4" data-off="7"/>
+    <path class="ln acc" d="M170 140 L228 140" data-only="2"/>
+    <path class="ln acc" d="M170 165 C 260 260, 450 260, 545 202" data-only="3"/>
+    <path class="ln acc" d="M170 172 C 300 300, 650 300, 765 202" data-only="4-6"/>
+    <text x="200" y="60" class="sm b c-acc" data-only="2-6">tail = 마지막 대기자</text>
+  </svg>
+  <ol class="steps">
+    <li>락이 비어 있습니다. 큐드 스핀락의 락 워드는 "큐의 마지막 엔트리(tail)" 포인터입니다. 각 CPU는 획득 시 자기 스택(인스택) 또는 KPRCB에 큐 엔트리를 준비합니다.</li>
+    <li>CPU 0: <code>xchg(lock, &amp;Q0)</code> → 이전 값이 NULL이므로 즉시 소유자가 됩니다.</li>
+    <li>CPU 1: <code>xchg(lock, &amp;Q1)</code> → 이전 값 &amp;Q0. <code>Q0.Next = &amp;Q1</code>로 줄을 잇고, <b>자기 엔트리 Q1의 대기 비트</b>에서 스핀합니다. 이 캐시 라인은 CPU 1만 읽으므로 다른 CPU를 방해하지 않습니다.</li>
+    <li>CPU 2도 줄을 섭니다: Q1.Next = &amp;Q2, Q2에서 스핀. 일반 스핀락이었다면 세 CPU가 같은 락 워드를 두드리며 캐시 라인을 계속 빼앗았을 것입니다.</li>
+    <li>CPU 0이 해제: Q0.Next가 있으므로 Q1의 대기 비트를 지워 <b>CPU 1에게 직접 넘깁니다</b>. 락 워드는 건드리지 않습니다. 도착 순서(FIFO)가 보장됩니다.</li>
+    <li>CPU 1 해제 → CPU 2가 소유자가 됩니다.</li>
+    <li>CPU 2 해제: Next가 NULL이므로 <code>cmpxchg(lock, &amp;Q2 → NULL)</code>로 락을 비웁니다. 그 사이 누가 줄을 섰다면 cmpxchg가 실패하고, 새 대기자가 Next를 채울 때까지 잠깐 기다렸다 넘겨줍니다.</li>
+  </ol>
+  <figcaption><b>그림 7-3.</b> 큐드 스핀락(MCS 방식). 대기자는 자기 엔트리에서만 스핀하고, 해제자는 다음 대기자에게 직접 넘긴다.</figcaption>
+</figure>
+
+<pre data-title="C — 인스택 큐드 스핀락"><code class="lang-c">KSPIN_LOCK g_QLock;            // 이 락은 큐드 API로만 사용 (일반 KeAcquireSpinLock과 섞지 말 것)
+KeInitializeSpinLock(&amp;g_QLock);
+
+VOID Update(void)                                  // IRQL &lt;= DISPATCH_LEVEL
+{
+    KLOCK_QUEUE_HANDLE h;                          // 스택에 큐 엔트리 + 이전 IRQL
+    KeAcquireInStackQueuedSpinLock(&amp;g_QLock, &amp;h);
+    /* 임계 구역 */
+    KeReleaseInStackQueuedSpinLock(&amp;h);
+    // DPC 안이면: KeAcquireInStackQueuedSpinLockAtDpcLevel / ...FromDpcLevel
+}</code></pre>
+<p>
+  커널 내부에도 KPRCB에 미리 할당된 큐 엔트리를 쓰는 <b>전역 큐드 스핀락</b>들이 있습니다(<code>!qlocks</code>로 상태 확인). Windows 7에서는 오랫동안 스케줄러 확장성의 병목이던
+  전역 디스패처 락이 제거되고 객체별·스레드별 락으로 세분화되었습니다. 경합이 예상되는 드라이버 락은 일반 스핀락보다 인스택 큐드 스핀락을 쓰는 것이 권장됩니다.
+</p>
+
+<h2 id="dispatcher">디스패처 객체와 대기</h2>
+<p>
+  PASSIVE/APC_LEVEL 코드는 기다리는 동안 CPU를 다른 스레드에 양보할 수 있습니다. 이를 위한 커널 메커니즘이 <b>디스패처 객체</b>입니다.
+  이벤트, 뮤턴트(뮤텍스), 세마포어, 타이머, 프로세스, 스레드, 큐(KQUEUE), 게이트가 모두 맨 앞에 같은 헤더 <code>DISPATCHER_HEADER</code>를 가지며,
+  <code>KeWaitForSingleObject</code>/<code>KeWaitForMultipleObjects</code>로 기다릴 수 있습니다. 유저 모드의 <code>WaitForSingleObject</code>도 결국 이 경로입니다.
+</p>
+<table>
+  <thead><tr><th>객체 (<code>Header.Type</code>)</th><th>signaled가 되는 때</th><th>대기 충족 시 부작용</th></tr></thead>
+  <tbody>
+    <tr><td>Notification 이벤트</td><td><code>KeSetEvent</code></td><td>없음 — 모든 대기자 해제, 리셋 전까지 signaled 유지</td></tr>
+    <tr><td>Synchronization 이벤트</td><td><code>KeSetEvent</code></td><td>자동 리셋 — 대기자 <b>하나</b>만 해제</td></tr>
+    <tr><td>뮤턴트 (KMUTEX)</td><td>소유자가 없을 때</td><td>대기자가 소유자가 됨(재귀 카운트 증가)</td></tr>
+    <tr><td>세마포어</td><td>카운트 &gt; 0</td><td>카운트 1 감소</td></tr>
+    <tr><td>Notification / Synchronization 타이머</td><td>만료 시각 도달</td><td>없음 / 자동 리셋</td></tr>
+    <tr><td>프로세스 · 스레드</td><td>종료(마지막 스레드 종료 / 스레드 종료)</td><td>없음 — 영구 signaled</td></tr>
+    <tr><td>큐 (KQUEUE)</td><td>항목이 있을 때</td><td>항목 하나 꺼냄 (I/O 완료 포트의 기반)</td></tr>
+  </tbody>
+</table>
+<p class="muted" style="font-size:.88rem">타입 값은 <code>KOBJECTS</code> 열거형으로 정의됩니다(<code>dt nt!_KOBJECTS</code>). 파일 객체 핸들을 기다리면 <code>FILE_OBJECT</code> 안의 이벤트를 기다리는 것과 같습니다.</p>
+
+<p>대기 중인 상태는 <b>대기 블록(<code>KWAIT_BLOCK</code>)</b>으로 표현됩니다. 스레드 하나가 여러 객체를, 객체 하나를 여러 스레드가 기다릴 수 있으므로 "스레드 × 객체" 쌍마다 대기 블록이 하나씩 생깁니다. 아래 그림을 클릭해 보세요.</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 380" role="img" aria-label="디스패처 객체와 대기 블록">
+    <g data-info="hdr"><rect class="box kernel" x="30" y="30" width="240" height="130" rx="8"/>
+      <text x="150" y="54" text-anchor="middle" class="b">KEVENT A</text>
+      <text x="44" y="80" class="sm mono">Type: Synchronization 이벤트</text>
+      <text x="44" y="102" class="sm mono">SignalState = 0</text>
+      <text x="44" y="124" class="sm mono">Lock (객체별 락 비트)</text>
+      <text x="44" y="146" class="sm mono">WaitListHead ●</text></g>
+    <g data-info="sem"><rect class="box kernel" x="30" y="220" width="240" height="130" rx="8"/>
+      <text x="150" y="244" text-anchor="middle" class="b">KSEMAPHORE B</text>
+      <text x="44" y="270" class="sm mono">Type: 세마포어 · Limit = 2</text>
+      <text x="44" y="292" class="sm mono">SignalState = 0 (카운트)</text>
+      <text x="44" y="314" class="sm mono">Lock</text>
+      <text x="44" y="336" class="sm mono">WaitListHead ●</text></g>
+
+    <g data-info="wb"><rect class="box plain" x="330" y="40" width="220" height="56" rx="8"/>
+      <text x="440" y="63" text-anchor="middle" class="b mono">KWAIT_BLOCK (T1→A)</text>
+      <text x="440" y="83" text-anchor="middle" class="sm">WaitAny · WaitKey = 0</text></g>
+    <g data-info="wb"><rect class="box plain" x="330" y="120" width="220" height="56" rx="8"/>
+      <text x="440" y="143" text-anchor="middle" class="b mono">KWAIT_BLOCK (T2→A)</text>
+      <text x="440" y="163" text-anchor="middle" class="sm">WaitAll · WaitKey = 0</text></g>
+    <g data-info="wb"><rect class="box plain" x="330" y="250" width="220" height="56" rx="8"/>
+      <text x="440" y="273" text-anchor="middle" class="b mono">KWAIT_BLOCK (T2→B)</text>
+      <text x="440" y="293" text-anchor="middle" class="sm">WaitAll · WaitKey = 1</text></g>
+
+    <g data-info="t1"><rect class="box acc" x="620" y="40" width="230" height="110" rx="8"/>
+      <text x="735" y="64" text-anchor="middle" class="b">KTHREAD T1</text>
+      <text x="634" y="90" class="sm">State = Waiting</text>
+      <text x="634" y="112" class="sm mono">KeWaitForSingleObject(A)</text>
+      <text x="634" y="134" class="sm">WaitBlock[0] 사용</text></g>
+    <g data-info="t2"><rect class="box acc" x="620" y="220" width="230" height="130" rx="8"/>
+      <text x="735" y="244" text-anchor="middle" class="b">KTHREAD T2</text>
+      <text x="634" y="270" class="sm">State = Waiting</text>
+      <text x="634" y="292" class="sm mono">KeWaitForMultipleObjects</text>
+      <text x="634" y="314" class="sm mono">  (A, B, WaitAll)</text>
+      <text x="634" y="336" class="sm">WaitBlock[0], [1] 사용</text></g>
+
+    <path class="ln kernel" d="M270 140 C 300 140, 300 68, 328 68"/>
+    <path class="ln kernel" d="M440 96 L440 118"/>
+    <path class="ln kernel" d="M270 330 C 300 330, 300 278, 328 278"/>
+    <path class="ln acc dash" d="M550 68 L618 80"/>
+    <path class="ln acc dash" d="M550 148 C 590 148, 585 262, 618 266"/>
+    <path class="ln acc dash" d="M550 278 L618 292"/>
+  </svg>
+  <template data-key="hdr">
+    <h4>DISPATCHER_HEADER</h4>
+    <p>모든 디스패처 객체의 첫 필드. 핵심은 세 가지입니다.</p>
+    <ul>
+      <li><b>Type</b> — 객체 종류(이벤트 두 종류, 뮤턴트, 세마포어, 타이머, 프로세스, 스레드, 큐, 게이트). 대기 충족 시 부작용을 결정합니다.</li>
+      <li><b>SignalState</b> — 0이면 non-signaled. 이벤트는 0/1, 세마포어는 카운트, 뮤턴트는 1 − 재귀 획득 수 형태로 씁니다.</li>
+      <li><b>WaitListHead</b> — 이 객체를 기다리는 <code>KWAIT_BLOCK</code>들의 이중 연결 리스트.</li>
+    </ul>
+    <p>헤더는 버전마다 유니온 구조가 크게 바뀌었으므로 <code>dt nt!_DISPATCHER_HEADER</code>로 확인하세요. Windows 7 이후 대기·시그널은 전역 디스패처 락 대신 <b>객체 헤더의 락 비트</b>와 스레드 락으로 동기화됩니다.</p>
+  </template>
+  <template data-key="sem">
+    <h4>세마포어 B</h4>
+    <p><code>KeInitializeSemaphore(&amp;Sem, Count, Limit)</code>. SignalState가 곧 남은 카운트이며, 대기가 충족될 때마다 1 감소합니다. <code>KeReleaseSemaphore(&amp;Sem, Increment, Adjustment, Wait)</code>는 카운트를 Adjustment만큼 늘리고 그만큼 대기자를 깨웁니다. Limit를 넘기면 <code>STATUS_SEMAPHORE_LIMIT_EXCEEDED</code> 예외가 발생합니다.</p>
+    <p>소유권이 없으므로 <b>아무 스레드나 해제</b>할 수 있습니다. 동시 실행 수 제한, 생산자-소비자 큐의 항목 수 표현에 씁니다.</p>
+  </template>
+  <template data-key="wb">
+    <h4>KWAIT_BLOCK</h4>
+    <p>"이 스레드가 이 객체를 기다린다"는 관계 하나. 주요 필드: <code>WaitListEntry</code>(객체의 대기 리스트 링크), <code>Thread</code>, <code>Object</code>, <code>WaitKey</code>(WaitAny에서 몇 번째 객체 때문에 깨어났는지 → 반환값 <code>STATUS_WAIT_0 + WaitKey</code>), <code>WaitType</code>(WaitAny/WaitAll), <code>BlockState</code>.</p>
+    <p>KTHREAD는 대기 블록 몇 개를 <b>내장</b>하고 있어(<code>WaitBlock[]</code>, 하나는 타임아웃 타이머용) 소수 객체 대기는 할당 없이 처리됩니다. <code>KeWaitForMultipleObjects</code>로 <code>THREAD_WAIT_OBJECTS</code>(3)개를 넘게 기다리려면 호출자가 <code>WaitBlockArray</code>를 넘겨야 하며, 최대 개수는 <code>MAXIMUM_WAIT_OBJECTS</code>(64)입니다.</p>
+  </template>
+  <template data-key="t1">
+    <h4>T1 — WaitAny 대기</h4>
+    <p>A가 signaled 되면 커널은 A의 대기 리스트를 앞에서부터 훑으며 T1의 대기 블록을 만납니다. Synchronization 이벤트이므로 <b>T1 하나만</b> 깨우고 A를 자동 리셋합니다. T1은 Waiting → (Deferred) Ready가 되고, <code>KeSetEvent</code>의 Increment만큼 우선순위 부스트를 받을 수 있습니다.</p>
+    <p>반환값: <code>STATUS_SUCCESS</code>(= <code>STATUS_WAIT_0</code>). 타임아웃이면 <code>STATUS_TIMEOUT</code>, alertable 대기에서 APC로 깨면 <code>STATUS_USER_APC</code>/<code>STATUS_ALERTED</code>, 버려진 뮤턴트면 <code>STATUS_ABANDONED</code>.</p>
+  </template>
+  <template data-key="t2">
+    <h4>T2 — WaitAll 대기</h4>
+    <p>A와 B가 <b>동시에</b> signaled여야 충족됩니다. A가 signaled 되어도 B가 0이면 T2는 깨지 않고, A의 부작용(자동 리셋)도 T2 몫으로 소비되지 않습니다. 그래서 위 상황에서는 A가 시그널되면 T1이 가져갑니다.</p>
+    <p>WaitAll은 "모든 객체를 원자적으로 동시에 획득"하는 의미라, 여러 뮤텍스를 한 번에 잡아 데드락을 피하는 용도로 쓸 수 있지만 기아(starvation)에 취약합니다.</p>
+  </template>
+  <figcaption><b>그림 7-4.</b> 디스패처 객체–대기 블록–스레드의 관계. 객체 쪽 리스트(주황)와 스레드 쪽 참조(파랑 점선).</figcaption>
+</figure>
+
+<h3>KeWaitForSingleObject의 흐름</h3>
+<ol>
+  <li>스레드 락과 객체 락을 잡고 객체가 signaled인지 확인합니다. signaled이면 부작용(리셋·카운트 감소·소유권)을 적용하고 즉시 반환 — <b>대기 없음</b>.</li>
+  <li>non-signaled이고 타임아웃이 0이면 <code>STATUS_TIMEOUT</code>을 즉시 반환합니다(폴링). DISPATCH_LEVEL에서는 이 형태만 허용됩니다.</li>
+  <li>그렇지 않으면 대기 블록을 객체의 <code>WaitListHead</code>에 연결하고, 타임아웃이 있으면 타이머를 설정하고, 스레드 상태를 Waiting(대기 이유 포함)으로 바꾼 뒤 다른 스레드로 전환합니다.</li>
+  <li>다른 문맥에서 <code>KeSetEvent</code> 등이 객체를 signaled로 만들면 대기 리스트를 검사해 충족되는 스레드를 깨웁니다(Ready). 대기 중 커널 APC가 도착하면 잠시 깨어 APC를 실행하고 다시 대기에 들어갑니다(호출자에게는 보이지 않음).</li>
+</ol>
+<pre data-title="C — 대기 API 기본형"><code class="lang-c">LARGE_INTEGER timeout;
+timeout.QuadPart = -10LL * 1000 * 100;   // 100ms (음수 = 상대 시간, 100ns 단위)
+
+NTSTATUS st = KeWaitForSingleObject(&amp;g_Event,
+                                    Executive,     // 대기 이유 (드라이버는 보통 Executive)
+                                    KernelMode,    // WaitMode: KernelMode면 커널 스택이 페이지 아웃되지 않음
+                                    FALSE,         // Alertable
+                                    &amp;timeout);     // NULL = 무한, 0 = 폴링
+if (st == STATUS_TIMEOUT) { /* ... */ }</code></pre>
+<div class="callout tip">
+  <div class="callout-title">WaitMode가 KernelMode여야 하는 경우</div>
+  <p>대기 중인 스레드의 커널 스택은 메모리 압박 시 페이지 아웃될 수 있는데, <b>WaitMode = UserMode</b>일 때만 그렇습니다. 이벤트나 대기 대상이 <b>스택 변수</b>라면
+  반드시 KernelMode로 기다려야 합니다. 그렇지 않으면 다른 CPU의 <code>KeSetEvent</code>가 페이지 아웃된 스택의 이벤트를 건드려 크래시할 수 있습니다.</p>
+</div>
+
+<h2 id="events">이벤트: Notification vs Synchronization</h2>
+<div class="grid2">
+  <div class="card"><h4>Notification 이벤트 (수동 리셋)</h4>
+    <p><code>KeInitializeEvent(&amp;e, NotificationEvent, FALSE)</code>. 시그널되면 <b>기다리던 모든 스레드</b>가 깨어나고, <code>KeClearEvent</code>/<code>KeResetEvent</code>를 호출할 때까지 signaled로 남아 이후 대기자도 즉시 통과합니다. "초기화 완료", "종료 요청" 같은 <b>상태</b> 알림에 적합합니다.</p></div>
+  <div class="card"><h4>Synchronization 이벤트 (자동 리셋)</h4>
+    <p><code>KeInitializeEvent(&amp;e, SynchronizationEvent, FALSE)</code>. 시그널되면 대기자 <b>하나</b>만 깨우고 자동으로 non-signaled가 됩니다. 대기자가 없으면 signaled로 남아 있다가 다음 대기자 하나가 소비합니다. "작업이 하나 생겼다" 같은 <b>사건</b> 전달에 적합합니다.</p></div>
+</div>
+<p>
+  <code>KeSetEvent(Event, Increment, Wait)</code>는 이전 상태를 반환하며 ≤ DISPATCH_LEVEL에서 호출할 수 있습니다. <code>Wait=TRUE</code>는 "바로 이어서 대기 함수를 호출하겠다"는
+  특수 최적화로, 호출자가 디스패처 상태를 쥔 채 돌아오는 미묘한 계약이 있으므로 일반 드라이버는 <code>FALSE</code>를 씁니다.
+  <code>KePulseEvent</code>는 시그널 직후 리셋하는 레거시 함수로, "그 순간 대기 중이지 않던 스레드는 신호를 놓친다"는 경쟁 조건 때문에 사용을 피합니다.
+</p>
+
+<div class="sim" id="evSim">
+  <div class="sim-title">이벤트 종류별 대기 스레드 해제 시뮬레이터</div>
+  <div class="sim-controls">
+    <span>객체:</span>
+    <button class="btn on" data-type="notif">Notification 이벤트</button>
+    <button class="btn" data-type="sync">Synchronization 이벤트</button>
+    <button class="btn" data-type="sem">세마포어 (Limit 3)</button>
+  </div>
+  <div class="sim-controls">
+    <button class="btn" data-op="wait">+ 새 스레드가 대기 (KeWaitForSingleObject)</button>
+    <button class="btn primary" data-op="set" data-for="notif sync">KeSetEvent</button>
+    <button class="btn" data-op="reset" data-for="notif sync">KeResetEvent</button>
+    <button class="btn" data-op="pulse" data-for="notif sync">KePulseEvent</button>
+    <button class="btn primary" data-op="rel1" data-for="sem">KeReleaseSemaphore(+1)</button>
+    <button class="btn" data-op="rel2" data-for="sem">KeReleaseSemaphore(+2)</button>
+    <button class="btn" data-op="init">↺ 리셋</button>
+  </div>
+  <div class="ev-stage">
+    <div class="ev-obj"></div>
+    <div class="ev-col"><h5>WaitListHead — 대기 중 (Waiting)</h5><div class="ev-list ev-wait"></div></div>
+    <div class="ev-col"><h5>깨어남 (Ready/Running) — 클릭하면 다시 대기</h5><div class="ev-list ev-run"></div></div>
+  </div>
+  <div class="console" style="min-height:6em"></div>
+</div>
+<p class="muted" style="font-size:.9rem">대기 리스트 해제 순서는 이 시뮬레이터에서 FIFO로 표현했습니다. 실제 커널도 대체로 FIFO지만, 대기 중 커널 APC를 처리하고 다시 대기에 들어간 스레드는 리스트 뒤로 가는 등 <b>순서가 보장되지는 않습니다</b>. 공정성에 의존하는 설계는 피하세요.</p>
+
+<h2 id="mutex">뮤텍스 · 패스트 뮤텍스 · 가디드 뮤텍스 · 세마포어</h2>
+<table>
+  <thead><tr><th></th><th>KMUTEX (커널 뮤턴트)</th><th>FAST_MUTEX</th><th>KGUARDED_MUTEX</th></tr></thead>
+  <tbody>
+    <tr><td>획득</td><td><code>KeWaitForSingleObject</code> / <code>KeWaitForMutexObject</code></td><td><code>ExAcquireFastMutex</code></td><td><code>KeAcquireGuardedMutex</code></td></tr>
+    <tr><td>호출 IRQL</td><td>≤ APC_LEVEL (타임아웃 0이면 ≤ DISPATCH)</td><td>≤ APC_LEVEL</td><td>≤ APC_LEVEL</td></tr>
+    <tr><td>보유 중 상태</td><td>IRQL 유지, 일반 커널 APC 비활성</td><td><b>IRQL = APC_LEVEL</b> (모든 APC 차단)</td><td>Windows 8부터 패스트 뮤텍스와 동일 구현</td></tr>
+    <tr><td>재귀 획득</td><td class="mono">✓ (소유 스레드)</td><td class="mono">✗ → 자기 데드락</td><td class="mono">✗</td></tr>
+    <tr><td>다중 객체 대기·타임아웃</td><td class="mono">✓</td><td class="mono">✗ (Try 변형만)</td><td class="mono">✗ (Try 변형만)</td></tr>
+    <tr><td>특징</td><td>소유자가 종료되면 버려짐(abandoned). 디스패처 객체라 무겁다.</td><td>경합이 없으면 Interlocked 한 번. 가장 흔한 범용 커널 뮤텍스.</td><td>원래 IRQL 대신 가디드 리전으로 APC를 막는 변형(Server 2003~Windows 7).</td></tr>
+  </tbody>
+</table>
+<pre data-title="C — 패스트 뮤텍스"><code class="lang-c">FAST_MUTEX g_Mtx;                 // 논페이지 메모리
+ExInitializeFastMutex(&amp;g_Mtx);
+
+ExAcquireFastMutex(&amp;g_Mtx);       // IRQL → APC_LEVEL, 경합 시 스레드 대기
+/* 페이지 가능 데이터 접근 OK, 대기 OK — 단 APC가 막혀 있음에 유의 */
+ExReleaseFastMutex(&amp;g_Mtx);       // IRQL 복원
+
+// 이미 크리티컬 리전/APC_LEVEL이라면 IRQL 조작 없는 변형:
+// ExAcquireFastMutexUnsafe / ExReleaseFastMutexUnsafe</code></pre>
+<div class="callout warn">
+  <div class="callout-title">패스트 뮤텍스 안에서 Zw 파일 I/O를 하지 마라</div>
+  <p>보유 중 IRQL이 APC_LEVEL이므로 PASSIVE_LEVEL을 요구하는 <code>ZwCreateFile</code>/<code>ZwReadFile</code> 등은 호출 규칙 위반입니다. 또한 동기 I/O 완료는 특수 커널 APC에 의존하므로
+  APC가 막힌 상태에서 완료를 기다리면 멈출 수 있습니다. 파일 I/O를 감싸야 한다면 ERESOURCE나 푸시락(+ 크리티컬 리전)을 쓰세요.</p>
+</div>
+
+<h3>세마포어</h3>
+<p>
+  세마포어는 소유권 없는 카운터입니다. <code>KeInitializeSemaphore(&amp;s, 0, MAXLONG)</code>로 만들고 생산자는 항목을 넣을 때마다 <code>KeReleaseSemaphore(&amp;s, IO_NO_INCREMENT, 1, FALSE)</code>,
+  소비자는 <code>KeWaitForSingleObject(&amp;s, …)</code>로 항목 하나를 "가져갑니다". 큐 자체는 별도의 스핀락이나 SLIST로 보호해야 합니다.
+  커널에는 이 조합을 하나로 만든 <code>KQUEUE</code>(I/O 완료 포트, 시스템 워커 스레드의 기반)도 있습니다.
+</p>
+
+<h2 id="eresource">ERESOURCE와 푸시락 — 읽기/쓰기 락</h2>
+<p>
+  읽기가 대부분이고 쓰기가 드문 데이터(파일 시스템의 FCB, 커널의 각종 테이블)는 <b>공유(shared)/배타(exclusive)</b> 락으로 보호하면 읽기끼리 병렬로 진행할 수 있습니다.
+  Windows 커널에는 두 가지가 있습니다.
+</p>
+<div class="tabs">
+  <div class="tab-bar"><button>ERESOURCE</button><button>푸시락</button></div>
+  <div class="tab-panel">
+    <p><b>Executive Resource</b>. 공유/배타 획득, <b>재귀 획득</b>, 소유자 추적(owner table), 경합 통계를 지원하는 무거운 범용 R/W 락입니다. 파일 시스템과 캐시 관리자의 표준 락입니다.</p>
+    <ul>
+      <li>호출 전 <b>반드시</b> <code>KeEnterCriticalRegion</code> — 락을 쥔 스레드가 일시 중지 APC로 멈추면 시스템 전체가 그 락에서 멈추기 때문입니다.</li>
+      <li>공유 → 배타 <b>승격 불가</b>(같은 스레드가 공유를 쥔 채 배타를 요청하면 데드락). 배타 → 공유 강등은 <code>ExConvertExclusiveToSharedLite</code>.</li>
+      <li>기아 제어: <code>ExAcquireSharedStarveExclusive</code>(배타 대기자가 있어도 공유 허용), <code>ExAcquireSharedWaitForExclusive</code>(배타 대기자 우선).</li>
+      <li>소유자가 대기 중이면 소유 스레드의 우선순위를 높여 우선순위 역전을 완화합니다.</li>
+      <li>해제 전 <code>ExDeleteResourceLite</code> 필수 — 커널이 전역 리소스 리스트로 추적하므로, 빠뜨린 채 메모리를 해제하면 리스트가 손상됩니다.</li>
+    </ul>
+<pre data-title="C — ERESOURCE"><code class="lang-c">ERESOURCE g_Res;                       // 논페이지 메모리
+ExInitializeResourceLite(&amp;g_Res);
+
+// 읽기
+KeEnterCriticalRegion();
+ExAcquireResourceSharedLite(&amp;g_Res, TRUE);       // TRUE = 획득할 때까지 대기
+/* 읽기 */
+ExReleaseResourceLite(&amp;g_Res);
+KeLeaveCriticalRegion();
+
+// 쓰기
+KeEnterCriticalRegion();
+ExAcquireResourceExclusiveLite(&amp;g_Res, TRUE);
+/* 쓰기 */
+ExReleaseResourceLite(&amp;g_Res);
+KeLeaveCriticalRegion();
+
+ExDeleteResourceLite(&amp;g_Res);          // 메모리 해제 전</code></pre>
+  </div>
+  <div class="tab-panel">
+    <p><b>푸시락(<code>EX_PUSH_LOCK</code>)</b>은 포인터 하나 크기의 가벼운 R/W 락입니다. 경합이 없으면 Interlocked 한 번으로 끝나고, 경합 시에는 대기자의 <b>스택에 있는 대기 블록</b>을 연결해 이벤트로 잠듭니다.
+    하위 비트가 상태 플래그(Locked, Waiting, Waking, MultipleShared)이고 나머지가 공유 카운트 또는 대기 블록 포인터입니다(<code>dt nt!_EX_PUSH_LOCK</code>).</p>
+    <ul>
+      <li>재귀 획득 불가, 소유자 추적 없음(디버깅 정보가 적음).</li>
+      <li>핸들 테이블, 객체 관리자, 메모리 관리자 등 커널 내부의 핫 패스에 폭넓게 쓰입니다. CPU별로 분산한 cache-aware 변형도 있습니다.</li>
+      <li>서드파티 드라이버는 주로 Filter Manager 래퍼(<code>FltAcquirePushLockShared/Exclusive</code>)로 사용합니다. 최근 WDK에 노출된 <code>Ex…PushLock…Ex</code> 계열을 쓰려면 지원 버전을 문서로 확인하세요.</li>
+      <li>보유 중 일반 커널 APC가 막혀 있어야 합니다(크리티컬 리전). Flt 래퍼의 문서화된 동작을 확인하고 지키세요.</li>
+    </ul>
+<pre data-title="C — 미니필터에서의 푸시락"><code class="lang-c">EX_PUSH_LOCK g_Push;
+FltInitializePushLock(&amp;g_Push);
+
+FltAcquirePushLockShared(&amp;g_Push);     // 또는 FltAcquirePushLockExclusive
+/* 읽기 */
+FltReleasePushLock(&amp;g_Push);
+
+FltDeletePushLock(&amp;g_Push);</code></pre>
+  </div>
+</div>
+
+<h2 id="rundown">런다운 보호</h2>
+<p>
+  "곧 해체될 객체를 아직 누군가 쓰고 있는가?"는 락으로 풀기 까다롭습니다. 사용자는 매우 자주, 해체는 단 한 번 일어나기 때문입니다.
+  <b>런다운 보호(<code>EX_RUNDOWN_REF</code>)</b>는 이 비대칭에 맞춘 도구입니다. 사용자는 Interlocked 한 번으로 참조를 얻고 놓으며,
+  해체자는 "이후 획득은 모두 실패시키고, 이미 얻은 참조가 0이 될 때까지 기다린다"를 한 번에 수행합니다.
+</p>
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 170" role="img" aria-label="런다운 보호의 카운트 변화">
+    <g><rect class="box ok" x="20" y="50" width="125" height="64" rx="8"/><text x="82" y="76" text-anchor="middle" class="b">Acquire ✓</text><text x="82" y="98" text-anchor="middle" class="sm mono">Count 0 → 1</text></g>
+    <g><rect class="box ok" x="163" y="50" width="125" height="64" rx="8"/><text x="225" y="76" text-anchor="middle" class="b">Acquire ✓</text><text x="225" y="98" text-anchor="middle" class="sm mono">Count 1 → 2</text></g>
+    <g><rect class="box plain" x="306" y="50" width="125" height="64" rx="8"/><text x="368" y="76" text-anchor="middle" class="b">Release</text><text x="368" y="98" text-anchor="middle" class="sm mono">Count 2 → 1</text></g>
+    <g><rect class="box warn" x="449" y="50" width="125" height="64" rx="8"/><text x="511" y="76" text-anchor="middle" class="b">WaitForRelease</text><text x="511" y="98" text-anchor="middle" class="sm">Active 표시 · 대기</text></g>
+    <g><rect class="box bad" x="592" y="50" width="125" height="64" rx="8"/><text x="654" y="76" text-anchor="middle" class="b">Acquire ✗</text><text x="654" y="98" text-anchor="middle" class="sm">FALSE 반환</text></g>
+    <g><rect class="box ok" x="735" y="50" width="125" height="64" rx="8"/><text x="797" y="76" text-anchor="middle" class="b">Release</text><text x="797" y="98" text-anchor="middle" class="sm">1 → 0 · 대기 해제</text></g>
+    <path class="ln" d="M145 82 L161 82"/><path class="ln" d="M288 82 L304 82"/><path class="ln" d="M431 82 L447 82"/>
+    <path class="ln" d="M574 82 L590 82"/><path class="ln" d="M717 82 L733 82"/>
+    <text x="20" y="32" class="sm b c-acc">사용자 (콜백 호출 경로 등)</text>
+    <text x="449" y="32" class="sm b c-kernel">해체자 등장 이후</text>
+    <text x="440" y="150" text-anchor="middle" class="sm">WaitForRelease가 반환되면 남은 사용자가 없고 새 사용자도 들어올 수 없다 → 안전하게 해제</text>
+  </svg>
+  <figcaption><b>그림 7-5.</b> 런다운 보호. 해체가 시작되면 새 획득은 실패하고, 기존 참조가 모두 반환될 때 해체자가 깨어난다.</figcaption>
+</figure>
+<pre data-title="C — 콜백 해체 패턴"><code class="lang-c">EX_RUNDOWN_REF g_Rundown;
+ExInitializeRundownProtection(&amp;g_Rundown);
+
+VOID OnEvent(...)                                     // 아무 스레드, IRQL &lt;= DISPATCH_LEVEL
+{
+    if (!ExAcquireRundownProtection(&amp;g_Rundown))
+        return;                                       // 해체 중 → 손대지 않고 빠짐
+    UseSharedContext();
+    ExReleaseRundownProtection(&amp;g_Rundown);
+}
+
+VOID Teardown(void)                                   // PASSIVE_LEVEL
+{
+    UnregisterCallbacks();
+    ExWaitForRundownProtectionRelease(&amp;g_Rundown);    // 이후 Acquire 실패, 진행 중인 것 대기
+    FreeSharedContext();
+}</code></pre>
+<p>커널 자신도 같은 패턴을 씁니다. 예를 들어 <code>EPROCESS.RundownProtect</code>는 다른 스레드가 프로세스 주소 공간에 접근하는 동안 프로세스가 해체되지 않도록 막습니다. 참조가 매우 잦으면 CPU별로 분산한 cache-aware 런다운(<code>EX_RUNDOWN_REF_CACHE_AWARE</code>)을 씁니다.</p>
+
+<h2 id="deadlock">데드락과 락 순서</h2>
+<p>
+  데드락은 (1) 상호 배제, (2) 보유한 채 대기, (3) 선점 불가, (4) <b>순환 대기</b>가 모두 성립할 때 발생합니다. 커널 락은 1–3을 본질적으로 갖고 있으므로,
+  현실적으로 깰 수 있는 것은 4번입니다. 가장 흔한 형태가 두 스레드가 두 락을 반대 순서로 잡는 <b>ABBA 데드락</b>입니다.
+</p>
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 230" role="img" aria-label="ABBA 데드락">
+    <rect class="box acc" x="40" y="80" width="180" height="70" rx="10"/>
+    <text x="130" y="110" text-anchor="middle" class="b">스레드 1</text>
+    <text x="130" y="132" text-anchor="middle" class="sm">A 획득 → B 요청</text>
+    <rect class="box acc" x="660" y="80" width="180" height="70" rx="10"/>
+    <text x="750" y="110" text-anchor="middle" class="b">스레드 2</text>
+    <text x="750" y="132" text-anchor="middle" class="sm">B 획득 → A 요청</text>
+    <rect class="box warn" x="350" y="20" width="180" height="56" rx="10"/>
+    <text x="440" y="54" text-anchor="middle" class="b">락 A</text>
+    <rect class="box warn" x="350" y="160" width="180" height="56" rx="10"/>
+    <text x="440" y="194" text-anchor="middle" class="b">락 B</text>
+    <path class="ln ok" d="M350 48 C 280 48, 210 56, 170 78"/>
+    <text x="250" y="40" class="sm b c-ok">소유</text>
+    <path class="ln bad dash" d="M180 152 C 220 192, 300 192, 348 190"/>
+    <text x="240" y="208" class="sm b c-bad">대기</text>
+    <path class="ln ok" d="M530 188 C 600 188, 680 172, 720 152"/>
+    <text x="630" y="208" class="sm b c-ok">소유</text>
+    <path class="ln bad dash" d="M720 78 C 680 50, 600 48, 532 48"/>
+    <text x="620" y="40" class="sm b c-bad">대기</text>
+    <text x="440" y="122" text-anchor="middle" class="b c-bad">순환 대기 ⟲</text>
+  </svg>
+  <figcaption><b>그림 7-6.</b> ABBA 데드락. 모든 코드가 "항상 A 다음 B" 순서를 지키면 순환이 생길 수 없다.</figcaption>
+</figure>
+<div class="grid2">
+  <div class="card"><h4>예방 규칙</h4>
+    <ul>
+      <li><b>락 계층(순서)</b>을 문서화하고 모든 경로에서 지킨다. 같은 종류 락 여러 개는 주소 순 등 전역 순서를 정한다.</li>
+      <li>락을 쥔 채 <b>콜백·다른 드라이버 호출</b>(<code>IoCallDriver</code>, 등록된 알림 루틴)을 하지 않는다. 상대가 어떤 락을 잡을지 모른다.</li>
+      <li>스핀락 안에서 다른 스핀락을 잡아야 한다면 순서를 고정하고 최소화한다.</li>
+      <li>필요하면 Try 계열(<code>ExTryToAcquireFastMutex</code>, <code>ExAcquireResource…Lite(…, FALSE)</code>)로 획득 실패 시 물러난다.</li>
+    </ul></div>
+  <div class="card"><h4>진단 도구</h4>
+    <ul>
+      <li><b>Driver Verifier – Deadlock Detection</b>(<code>verifier /flags 0x20 /driver my.sys</code>): 실제 데드락이 나지 않아도 <b>락 순서 위반</b>을 감지해 0xC4로 알린다. <code>!deadlock</code>으로 순환을 출력.</li>
+      <li><code>!locks</code>: ERESOURCE 소유자·대기자·경합 횟수.</li>
+      <li><code>!qlocks</code>: 전역 큐드 스핀락 상태.</li>
+      <li><code>!running -ti</code>, <code>!stacks 2</code>: 모든 CPU·스레드의 스택에서 락 대기 함수를 찾는다.</li>
+    </ul></div>
+</div>
+<div class="callout expert">
+  <div class="callout-title">우선순위 역전</div>
+  <p>낮은 우선순위 스레드가 락을 쥔 채 중간 우선순위 스레드들에 밀려 실행되지 못하면, 그 락을 기다리는 높은 우선순위 스레드도 함께 멈춥니다.
+  ERESOURCE는 소유자 부스트로 이를 완화하고, Windows 8 이후 커널은 AutoBoost로 일부 커널 락(예: 푸시락, 가디드 뮤텍스)의 소유자 우선순위를 일시적으로 올립니다.
+  일반 스핀락은 보유 중 선점 자체가 없으므로 이 문제가 없지만, 대신 보유 시간을 극도로 짧게 유지해야 합니다.</p>
+</div>
+
+<h2 id="guide">선택 가이드: 어느 IRQL에서 무엇을 쓰나</h2>
+<table class="guide">
+  <thead><tr><th>프리미티브</th><th>획득 가능 IRQL</th><th>보유 중 IRQL</th><th>경합 시</th><th>재귀</th><th>공유</th></tr></thead>
+  <tbody>
+    <tr><td><b>Interlocked</b> — 변수 하나</td><td>모든 IRQL*</td><td>변화 없음</td><td>하드웨어 원자성</td><td>—</td><td>—</td></tr>
+    <tr><td><b>인터럽트 스핀락</b> — ISR과 공유</td><td>≤ SynchronizeIrql</td><td>SynchronizeIrql</td><td>스핀</td><td>✗</td><td>✗</td></tr>
+    <tr><td><b>스핀락 / 인스택 큐드</b> — DPC와 공유</td><td>≤ DISPATCH</td><td>DISPATCH</td><td>스핀</td><td>✗</td><td>✗</td></tr>
+    <tr><td><b>EX_SPIN_LOCK</b> — 읽기 위주, DPC와 공유</td><td>≤ DISPATCH</td><td>DISPATCH</td><td>스핀</td><td>✗</td><td>✓</td></tr>
+    <tr><td><b>FAST_MUTEX</b> — 범용 상호 배제</td><td>≤ APC</td><td>APC</td><td>대기</td><td>✗</td><td>✗</td></tr>
+    <tr><td><b>KMUTEX</b> — 재귀·타임아웃 필요</td><td>≤ APC</td><td>유지 (일반 커널 APC 차단)</td><td>대기</td><td>✓</td><td>✗</td></tr>
+    <tr><td><b>ERESOURCE</b> — 읽기 위주, I/O 경로</td><td>≤ APC (+크리티컬 리전)</td><td>유지</td><td>대기</td><td>✓</td><td>✓</td></tr>
+    <tr><td><b>푸시락</b> — 가벼운 R/W</td><td>≤ APC (+크리티컬 리전)</td><td>유지</td><td>대기</td><td>✗</td><td>✓</td></tr>
+    <tr><td><b>이벤트 / 세마포어</b> — 신호·카운트</td><td>대기 ≤ APC, 시그널 ≤ DISPATCH</td><td>—</td><td>대기</td><td>—</td><td>—</td></tr>
+    <tr><td><b>런다운 보호</b> — 해체 동기화</td><td>Acquire/Release ≤ DISPATCH, Wait &lt; DISPATCH</td><td>변화 없음</td><td>Acquire 실패</td><td>다중 OK</td><td>—</td></tr>
+  </tbody>
+</table>
+<p class="muted" style="font-size:.88rem">* 대상 변수가 논페이지 메모리에 있을 때. 정확한 IRQL 요구는 각 API 문서를 최종 기준으로 삼으세요.</p>
+<ol>
+  <li>데이터가 <b>ISR</b>과 공유되는가? → 인터럽트 스핀락(<code>KeSynchronizeExecution</code>).</li>
+  <li><b>DPC</b>나 DISPATCH_LEVEL 코드와 공유되는가? → 스핀락(경합 크면 인스택 큐드, 읽기 위주면 EX_SPIN_LOCK). 데이터는 논페이지.</li>
+  <li>그 외(PASSIVE/APC만) → 기본은 <b>FAST_MUTEX</b>, 읽기 위주거나 I/O·재귀가 필요하면 <b>ERESOURCE</b>, 가볍게 R/W면 <b>푸시락</b>.</li>
+  <li>단일 카운터·플래그라면 락 대신 <b>Interlocked</b>. 해체 경합이라면 <b>런다운 보호</b>. "일이 생겼다" 신호는 <b>이벤트</b>.</li>
+</ol>
+
+<h2 id="lab">실습: 락과 대기를 디버거로 보기</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 7-1 · 대기 중인 스레드와 락 추적</div>
+  <p>KDNET 커널 디버거를 붙인 VM에서 진행합니다. 출력 주소와 필드 배치는 예시이며 빌드마다 다릅니다.</p>
+</div>
+<pre data-title="WinDbg"><code class="lang-windbg">kd> !thread ffffa60c`a8d1f080
+THREAD ffffa60ca8d1f080  Cid 1a2c.0f18  Teb: 000000a1`2e5f3000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffa60ca91e2b70  SynchronizationEvent
+...
+kd> dt nt!_DISPATCHER_HEADER ffffa60ca91e2b70
+kd> dt nt!_KWAIT_BLOCK
+kd> dt nt!_KTHREAD @$thread WaitBlock
+
+kd> !locks
+**** DUMP OF ALL RESOURCE OBJECTS ****
+Resource @ 0xffffa60ca7a0e1b8    Exclusively owned
+    Contention Count = 12
+    NumberOfExclusiveWaiters = 2
+     Threads: ffffa60ca8d1f080-01&lt;*&gt;
+...
+kd> !qlocks
+kd> dt nt!_EX_PUSH_LOCK
+kd> !running -ti</code></pre>
+<ol>
+  <li>메모장에서 "열기" 대화 상자를 띄운 상태로 브레이크해 <code>!process 0 7 notepad.exe</code>로 스레드들의 <b>WAIT</b> 줄을 읽어 보세요. 어떤 객체 타입을 기다리는지, UserMode/KernelMode, Alertable 여부가 보입니다.</li>
+  <li><code>!thread</code>로 얻은 대기 객체 주소에 <code>dt nt!_DISPATCHER_HEADER</code>를 적용해 <code>Type</code>, <code>SignalState</code>, <code>WaitListHead</code>를 확인하세요.</li>
+  <li>테스트 드라이버에서 두 락을 반대 순서로 잡는 코드를 만들고 <code>verifier /flags 0x20 /driver test.sys</code>를 켠 뒤 실행해 보세요. 실제 데드락 전에 0xC4가 나며 <code>!deadlock</code>이 순환을 보여 줍니다.</li>
+  <li><code>!locks</code>에서 Contention Count가 큰 ERESOURCE를 찾아 소유 스레드의 스택(<code>!thread</code>)을 보고 무엇을 하며 락을 쥐고 있는지 분석해 보세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">두 CPU가 <code>g_count++</code>를 각각 1000번 실행했더니 결과가 1873이었습니다. 원인으로 가장 정확한 것은?</p>
+  <ol class="opts">
+    <li>컴파일러가 루프를 잘못 최적화했다</li>
+    <li data-correct>증가가 읽기·수정·쓰기 세 단계로 나뉘어, 두 CPU의 단계가 섞일 때 한쪽의 쓰기가 다른 쪽을 덮어썼다</li>
+    <li>캐시 일관성 프로토콜이 고장 나 값이 손실되었다</li>
+    <li><code>volatile</code>을 붙이지 않았기 때문이며, 붙이면 해결된다</li>
+  </ol>
+  <div class="explain">갱신 유실(lost update)입니다. 캐시 일관성은 정상 동작해도 RMW의 원자성은 보장하지 않습니다. <code>volatile</code>은 컴파일러 최적화만 막고 원자성을 주지 않습니다. <code>InterlockedIncrement</code>나 락이 필요합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>KeAcquireSpinLock</code>이 락 비트를 잡기 전에 IRQL을 DISPATCH_LEVEL로 올리는 가장 중요한 이유는?</p>
+  <ol class="opts">
+    <li>DISPATCH_LEVEL에서 lock 명령이 더 빠르게 실행되기 때문</li>
+    <li>다른 CPU가 락에 접근하지 못하게 하기 위해</li>
+    <li data-correct>같은 CPU에서 스레드 전환과 DPC 실행을 막아, 락 보유자가 같은 CPU의 다른 코드에 밀려 영원히 재개되지 못하는 상황(데드락)을 방지하기 위해</li>
+    <li>페이지 폴트를 허용하기 위해</li>
+  </ol>
+  <div class="explain">IRQL은 CPU별 상태이므로 다른 CPU를 막는 것은 락 비트의 역할입니다. IRQL 상승은 같은 CPU에서의 선점을 막습니다. 락을 쥔 코드 위에 같은 락을 원하는 DPC가 쌓이면 보유자가 재개될 수 없습니다. DISPATCH 이상에서는 오히려 페이지 폴트가 금지됩니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">Synchronization 이벤트에 스레드 3개가 대기 중일 때 <code>KeSetEvent</code>를 한 번 호출하면?</p>
+  <ol class="opts">
+    <li>세 스레드가 모두 깨어나고 이벤트는 signaled로 남는다</li>
+    <li data-correct>한 스레드만 깨어나고 이벤트는 자동으로 non-signaled가 된다</li>
+    <li>세 스레드가 모두 깨어나고 이벤트는 자동 리셋된다</li>
+    <li>아무도 깨어나지 않고 이벤트만 signaled가 된다</li>
+  </ol>
+  <div class="explain">자동 리셋 이벤트는 대기 충족의 부작용으로 리셋되므로 정확히 하나만 깨웁니다. 1번은 Notification 이벤트의 동작, 3번은 Notification 이벤트에 KePulseEvent를 쓴 결과에 가깝습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">DPC 루틴에서 다른 스레드가 설정할 이벤트를 100ms 동안 기다리고 싶습니다. 올바른 설계는?</p>
+  <ol class="opts">
+    <li><code>KeWaitForSingleObject</code>에 100ms 타임아웃을 주어 기다린다</li>
+    <li>IRQL을 PASSIVE_LEVEL로 낮춘 뒤 기다리고 다시 올린다</li>
+    <li data-correct>DPC에서는 대기할 수 없으므로 작업을 워크 아이템(PASSIVE_LEVEL)으로 넘기거나, 타이머 DPC로 나중에 다시 확인하는 비동기 구조로 바꾼다</li>
+    <li>스핀락을 잡고 이벤트 상태를 루프로 확인한다</li>
+  </ol>
+  <div class="explain">DISPATCH_LEVEL에서는 0이 아닌 타임아웃 대기가 금지되고(DPC 안이면 0xB8 위험), 진입 IRQL보다 낮추는 것도 규칙 위반입니다. 100ms 스핀은 DPC 워치독과 시스템 지연을 해칩니다. 대기가 필요한 작업은 PASSIVE_LEVEL 문맥으로 옮겨야 합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">ERESOURCE를 공유(shared)로 획득한 스레드가, 쓰기가 필요해져 같은 리소스를 배타(exclusive)로 획득하려 하면?</p>
+  <ol class="opts">
+    <li>자동으로 배타로 승격된다</li>
+    <li>재귀 획득이 허용되므로 즉시 성공한다</li>
+    <li data-correct>자신이 쥔 공유 락이 풀리기를 스스로 기다리게 되어 데드락이 발생한다</li>
+    <li>STATUS_INVALID_PARAMETER를 반환한다</li>
+  </ol>
+  <div class="explain">ERESOURCE는 공유→배타 승격을 지원하지 않습니다. 재귀는 같은 모드(배타 보유 중 배타/공유 재획득)에서만 허용됩니다. 해제 후 배타로 다시 잡고, 그 사이 상태가 바뀌었을 수 있으니 재검증해야 합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">큐드 스핀락이 일반 스핀락보다 경합 상황에서 확장성이 좋은 이유는?</p>
+  <ol class="opts">
+    <li>IRQL을 올리지 않기 때문에</li>
+    <li>대기 CPU가 스핀 대신 잠들기 때문에</li>
+    <li data-correct>각 대기자가 자기 큐 엔트리에서만 스핀해 캐시 라인 경합이 줄고, 해제 시 다음 대기자에게 FIFO로 직접 넘기기 때문에</li>
+    <li>락 워드가 CPU마다 복제되어 있기 때문에</li>
+  </ol>
+  <div class="explain">MCS 방식의 핵심은 로컬 스핀과 직접 핸드오프입니다. 여전히 DISPATCH_LEVEL로 올라가고 바쁜 대기도 합니다. 공정성(FIFO)이 덤으로 생깁니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>RMW는 원자적이지 않다. 변수 하나는 <code>lock</code> 접두사 기반 Interlocked로, 여러 필드는 락으로 보호한다. <code>volatile</code>은 원자성·순서를 보장하지 않는다.</li>
+    <li>스핀락 = IRQL을 DISPATCH로 올리기(같은 CPU 보호) + 락 비트(다른 CPU 보호). 경합이 크면 인스택 큐드 스핀락, ISR과 공유하면 인터럽트 스핀락.</li>
+    <li>디스패처 객체는 <code>DISPATCHER_HEADER</code>(Type·SignalState·WaitListHead)를 가지며, 대기는 <code>KWAIT_BLOCK</code>으로 스레드와 객체를 잇는다. 대기 충족의 부작용이 객체 종류를 구분한다.</li>
+    <li>Notification 이벤트는 모두 해제·유지, Synchronization 이벤트는 하나 해제·자동 리셋. 패스트 뮤텍스는 APC_LEVEL·비재귀, KMUTEX는 재귀·무겁다.</li>
+    <li>ERESOURCE·푸시락은 크리티컬 리전과 함께 쓰는 R/W 락, 런다운 보호는 해체 동기화. 데드락은 락 순서로 예방하고 Verifier로 검증한다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  /* ---------------- 공유 카운터 경쟁 시뮬레이터 ---------------- */
+  const sim = document.getElementById('raceSim');
+  const cpuBox = sim.querySelector('.rc-cpus');
+  const memBox = sim.querySelector('.rc-mem');
+  const out = sim.querySelector('.console');
+  const hist = sim.querySelector('.rc-hist tbody');
+  const PROG = {
+    none:   ['mov eax, [counter]', 'inc eax', 'mov [counter], eax'],
+    atomic: ['lock xadd [counter], eax'],
+    spin:   ['lock bts [lock], 0 ; 획득 시도', 'mov eax, [counter]', 'inc eax', 'mov [counter], eax', 'mov [lock], 0 ; 해제'],
+  };
+  const MODE_NAME = { none: '락 없음', atomic: 'Interlocked', spin: '스핀락' };
+  let mode = 'none', N = 4, K = 20, cpus, mem, lock, owner, steps, spins, recorded, lines, runs = 0;
+
+  const say = h => { lines.push(h); if (lines.length > 160) lines.shift(); };
+  function reset() {
+    N = +sim.querySelector('#rcCpu').value; K = +sim.querySelector('#rcIter').value;
+    cpus = Array.from({ length: N }, (_, i) => ({ id: i, pc: 0, it: 0, reg: null, spins: 0, spinning: false }));
+    mem = 0; lock = 0; owner = -1; steps = 0; spins = 0; recorded = false;
+    lines = [`<span class="dim">${MODE_NAME[mode]} · CPU ${N}개 × ${K}회 — 스텝을 실행하세요.</span>`];
+    render();
+  }
+  function stepOnce() {
+    const live = cpus.filter(c => c.it < K);
+    if (!live.length) return false;
+    const c = live[Math.floor(Math.random() * live.length)];
+    const pre = `CPU${c.id}: `;
+    steps++; c.spinning = false;
+    if (mode === 'none') {
+      if (c.pc === 0) { c.reg = mem; say(pre + `mov eax,[counter] → eax=${c.reg}`); c.pc = 1; }
+      else if (c.pc === 1) { c.reg++; say(pre + `inc eax → ${c.reg}`); c.pc = 2; }
+      else {
+        const lost = mem !== c.reg - 1;
+        mem = c.reg; say(pre + `mov [counter],eax → counter=${mem}` + (lost ? ' <span class="bad">← 다른 CPU의 증가를 덮어씀</span>' : ''));
+        c.pc = 0; c.it++;
+      }
+    } else if (mode === 'atomic') {
+      mem++; c.reg = mem; c.it++;
+      say(pre + `lock xadd → counter=${mem} <span class="dim">(캐시 라인 독점 후 원자적 RMW)</span>`);
+    } else {
+      if (c.pc === 0) {
+        if (lock === 0) { lock = 1; owner = c.id; c.pc = 1; say(pre + `lock bts → CF=0 <span class="ok">획득</span>`); }
+        else { c.spins++; spins++; c.spinning = true; say(pre + `<span class="warn">lock 사용 중(CPU${owner}) → pause 스핀</span>`); }
+      } else if (c.pc === 1) { c.reg = mem; c.pc = 2; say(pre + `mov eax,[counter] → ${c.reg}`); }
+      else if (c.pc === 2) { c.reg++; c.pc = 3; say(pre + `inc eax → ${c.reg}`); }
+      else if (c.pc === 3) { mem = c.reg; c.pc = 4; say(pre + `mov [counter],eax → counter=${mem}`); }
+      else { lock = 0; owner = -1; c.pc = 0; c.it++; say(pre + `mov [lock],0 → 해제`); }
+    }
+    return true;
+  }
+  function finishCheck() {
+    if (recorded || cpus.some(c => c.it < K)) return;
+    recorded = true; runs++;
+    const exp = N * K, lost = exp - mem;
+    say(lost ? `<span class="bad">완료: 기대 ${exp}, 결과 ${mem} → ${lost}회 유실</span>` : `<span class="ok">완료: 기대 ${exp}, 결과 ${mem} → 정확</span>`);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${runs}</td><td>${MODE_NAME[mode]}</td><td>${N}×${K}</td><td>${exp}</td><td>${mem}</td><td>${lost ? '<b style="color:var(--bad)">' + lost + '</b>' : '0'}</td><td>${steps}</td><td>${spins}</td>`;
+    hist.prepend(tr);
+  }
+  function run(n) {
+    for (let i = 0; i < n; i++) if (!stepOnce()) break;
+    finishCheck(); render();
+  }
+  function render() {
+    const prog = PROG[mode];
+    cpuBox.innerHTML = cpus.map(c => {
+      const done = c.it >= K;
+      const code = prog.map((l, i) => `<div class="${!done && i === c.pc ? (c.spinning ? 'spin' : 'cur') : ''}">${l}</div>`).join('');
+      return `<div class="rc-cpu${done ? ' done' : ''}"><div class="hd"><span>CPU ${c.id}</span><span>${c.it}/${K}</span></div><div class="code">${code}</div>` +
+        `<div class="reg">EAX = <b>${c.reg === null ? '?' : c.reg}</b>${mode === 'spin' ? ` · 스핀 <b>${c.spins}</b>` : ''}</div></div>`;
+    }).join('');
+    const exp = N * K, completed = cpus.reduce((s, c) => s + c.it, 0), fin = completed === exp;
+    const lost = exp - mem;
+    memBox.innerHTML =
+      `<div>[counter]<b>${mem}</b></div>` +
+      (mode === 'spin' ? `<div>[lock]<b>${lock ? '1 (CPU' + owner + ')' : '0'}</b></div>` : '') +
+      `<div>완료된 증가 시도<b>${completed} / ${exp}</b></div>` +
+      `<div class="${fin ? (lost ? 'bad' : 'ok') : ''}">유실<b>${fin ? lost : '—'}</b></div>` +
+      `<div>총 스텝<b>${steps}</b></div>` +
+      `<div>스핀 낭비 스텝<b>${spins}</b></div>`;
+    out.innerHTML = lines.join('\n');
+    out.scrollTop = out.scrollHeight;
+  }
+  sim.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
+    mode = b.dataset.mode;
+    sim.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b));
+    reset();
+  }));
+  sim.querySelectorAll('select').forEach(s => s.addEventListener('change', reset));
+  sim.querySelectorAll('[data-run]').forEach(b => b.addEventListener('click', () => {
+    const r = b.dataset.run;
+    if (r === 'reset') return reset();
+    run(r === 'all' ? 1e6 : +r);
+  }));
+  reset();
+})();
+
+(function () {
+  /* ---------------- 이벤트 해제 시뮬레이터 ---------------- */
+  const ev = document.getElementById('evSim');
+  const objBox = ev.querySelector('.ev-obj');
+  const waitBox = ev.querySelector('.ev-wait');
+  const runBox = ev.querySelector('.ev-run');
+  const eout = ev.querySelector('.console');
+  const TYPE = {
+    notif: { hdr: 'EventNotificationObject', init: 'KeInitializeEvent(&e, NotificationEvent, FALSE)' },
+    sync:  { hdr: 'EventSynchronizationObject', init: 'KeInitializeEvent(&e, SynchronizationEvent, FALSE)' },
+    sem:   { hdr: 'SemaphoreObject', init: 'KeInitializeSemaphore(&s, 0, 3)' },
+  };
+  const LIMIT = 3;
+  let type = 'notif', sig, waiters, running, nextId, fresh;
+  const esc = s => s.replace(/&/g, '&amp;');
+  const elog = h => { eout.innerHTML += h + '\n'; eout.scrollTop = eout.scrollHeight; };
+
+  function consume() { if (type === 'sync') sig = 0; else if (type === 'sem') sig--; }
+  function sideEffect() {
+    return type === 'sync' ? '자동 리셋 → SignalState 0' : type === 'sem' ? `카운트 감소 → ${sig}` : '부작용 없음 → signaled 유지';
+  }
+  function wake() {
+    let n = 0;
+    while (waiters.length && sig > 0) {
+      const t = waiters.shift();
+      consume(); running.push(t); fresh.add(t); n++;
+      elog(`   <span class="ok">${t} 대기 충족 → Ready</span> <span class="dim">(${sideEffect()})</span>`);
+    }
+    if (!n) elog('   <span class="dim">깨울 대기자 없음</span>');
+  }
+  function wait(name) {
+    const t = name || 'T' + nextId++;
+    if (sig > 0) {
+      consume(); running.push(t); fresh.add(t);
+      elog(`${t}: KeWaitForSingleObject → 이미 signaled → <span class="ok">즉시 반환 STATUS_SUCCESS</span> <span class="dim">(${sideEffect()})</span>`);
+    } else {
+      waiters.push(t);
+      elog(`${t}: KeWaitForSingleObject → non-signaled → <span class="warn">KWAIT_BLOCK을 WaitListHead에 연결, Waiting</span>`);
+    }
+  }
+  function op(o) {
+    fresh = new Set();
+    if (o === 'init') return init();
+    if (o === 'wait') { if (waiters.length + running.length >= 10) { elog('<span class="dim">스레드는 최대 10개까지</span>'); } else wait(); }
+    if (o === 'set') { const prev = sig; sig = 1; elog(`KeSetEvent → 이전 상태 ${prev} 반환, SignalState = 1`); wake(); }
+    if (o === 'reset') { const prev = sig; sig = 0; elog(`KeResetEvent → 이전 상태 ${prev}, SignalState = 0`); }
+    if (o === 'pulse') {
+      sig = 1; elog('KePulseEvent → 시그널'); wake(); sig = 0;
+      elog('   <span class="warn">즉시 리셋 → 이 순간 대기 중이 아니던 스레드는 신호를 놓친다 (레거시, 사용 비권장)</span>');
+    }
+    if (o === 'rel1' || o === 'rel2') {
+      const n = o === 'rel1' ? 1 : 2;
+      if (sig + n > LIMIT) { elog(`KeReleaseSemaphore(+${n}) → <span class="bad">카운트 ${sig}+${n} &gt; Limit ${LIMIT} → STATUS_SEMAPHORE_LIMIT_EXCEEDED 예외</span>`); }
+      else { const prev = sig; sig += n; elog(`KeReleaseSemaphore(+${n}) → 이전 카운트 ${prev} 반환, 카운트 = ${sig}`); wake(); }
+    }
+    render();
+  }
+  function render() {
+    const sg = sig > 0;
+    objBox.className = 'ev-obj' + (sg ? ' sig' : '');
+    objBox.innerHTML = `<div class="t">${TYPE[type].hdr}</div><div class="s">SignalState = ${sig}</div>` +
+      `<div>${sg ? 'signaled' : 'non-signaled'}${type === 'sem' ? ` · Limit ${LIMIT}` : ''}</div><div class="muted mono" style="font-size:.72rem;margin-top:6px">${esc(TYPE[type].init)}</div>`;
+    waitBox.innerHTML = waiters.length ? waiters.map(t => `<span class="thr wait">⏸ ${t}</span>`).join('') : '<span class="muted" style="font-size:.8rem">(비어 있음)</span>';
+    runBox.innerHTML = running.length ? running.map(t => `<span class="thr run${fresh.has(t) ? ' new' : ''}" data-t="${t}" title="클릭: 다시 대기">▶ ${t}</span>`).join('') : '<span class="muted" style="font-size:.8rem">(없음)</span>';
+    runBox.querySelectorAll('[data-t]').forEach(s => s.addEventListener('click', () => {
+      fresh = new Set();
+      running.splice(running.indexOf(s.dataset.t), 1);
+      wait(s.dataset.t); render();
+    }));
+    ev.querySelectorAll('[data-for]').forEach(b => b.classList.toggle('hide', !b.dataset.for.split(' ').includes(type)));
+    ev.querySelectorAll('[data-type]').forEach(b => b.classList.toggle('on', b.dataset.type === type));
+  }
+  function init() {
+    sig = 0; waiters = []; running = []; nextId = 1; fresh = new Set();
+    eout.innerHTML = `<span class="dim">${esc(TYPE[type].init)}</span>\n`;
+    for (let i = 0; i < 3; i++) wait();
+    render();
+  }
+  ev.querySelectorAll('[data-type]').forEach(b => b.addEventListener('click', () => { type = b.dataset.type; init(); }));
+  ev.querySelectorAll('[data-op]').forEach(b => b.addEventListener('click', () => op(b.dataset.op)));
+  init();
+})();
+</script>
+</body>
+</html>

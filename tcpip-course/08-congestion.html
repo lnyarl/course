@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08. 혼잡 제어 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.sim-panel{display:grid;grid-template-columns:1fr;gap:10px}
+.sim-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;border-top:1px solid var(--border);background:var(--surface-2);font-size:.86rem}
+.sim-ctl label{display:inline-flex;align-items:center;gap:5px;color:var(--text-2)}
+.sim-ctl input[type=number]{width:70px;padding:4px 6px}
+.sim-stat{display:flex;flex-wrap:wrap;gap:14px;padding:8px 14px;font-family:var(--mono);font-size:.8rem;border-top:1px solid var(--border)}
+.sim-stat b{color:var(--primary-text)}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.78rem;color:var(--text-2);padding:6px 14px}
+.legend i{display:inline-block;width:14px;height:4px;border-radius:2px;vertical-align:middle;margin-right:4px}
+canvas{width:100%;height:auto;display:block;background:var(--surface);border-radius:8px}
+.phase-ss{color:var(--l-net)}.phase-ca{color:var(--l-tr)}.phase-fr{color:var(--accent)}.phase-cubic{color:var(--purple)}
+.mini-eq{font-family:var(--mono);background:var(--surface-2);padding:10px 14px;border-radius:8px;font-size:.9rem;margin:.6rem 0;overflow:auto}
+</style>
+</head>
+<body data-chapter="08">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 2 · 심화 — CHAPTER 08</div>
+  <h1>혼잡 제어 (Congestion Control)</h1>
+  <p class="lead">TCP는 네트워크가 얼마나 붐비는지 아무도 알려주지 않는 상황에서, 오직 ACK의 도착과 손실이라는 간접 신호만으로 "지금 얼마나 보내도 되는가"를 추정합니다. 이 장은 Slow Start부터 CUBIC·BBR까지, 혼잡 윈도우(cwnd)가 어떻게 움직이는지를 시뮬레이터로 직접 돌려보며 익힙니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 90분</span><span class="chip l-tr">전송</span><span class="chip l-net">인터넷</span><span class="chip">RFC 5681 · 6298 · 6928 · 8312 · 9438 · 3168</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>흐름 제어(rwnd)와 혼잡 제어(cwnd)를 구분하고, 실제 송신 윈도우가 둘의 최솟값임을 설명할 수 있다.</li>
+    <li>Slow Start, Congestion Avoidance, Fast Retransmit/Fast Recovery의 cwnd 변화를 그래프로 그릴 수 있다.</li>
+    <li>Tahoe · Reno · NewReno · CUBIC · BBR의 차이를 "손실에 어떻게 반응하고, 손실 없을 때 어떻게 커지는가"로 설명할 수 있다.</li>
+    <li>AIMD가 여러 흐름 사이에서 공정성으로 수렴하는 이유를 위상 평면으로 설명할 수 있다.</li>
+    <li>ECN, bufferbloat, AQM이 혼잡 제어와 어떻게 맞물리는지 이해한다.</li>
+  </ul>
+</div>
+
+<h2 id="why"><span class="num">8.1</span>1986년, 인터넷이 멈추다</h2>
+<p>1986년 10월, LBL(로렌스 버클리 연구소)과 UC 버클리 사이 400m 거리의 링크에서 처리량이 32 kbps에서 <b>40 bps</b>로, 거의 1000분의 1로 떨어지는 일이 벌어졌습니다. 이것이 <b>혼잡 붕괴(congestion collapse)</b>입니다. 원인은 단순했습니다. 당시 TCP는 수신 윈도우가 허락하는 만큼 무조건 보냈고, 라우터 큐가 넘쳐 패킷이 버려지면 <b>재전송으로 더 많이</b> 보냈습니다. 손실 → 재전송 → 더 심한 혼잡 → 더 많은 손실의 양성 피드백입니다.</p>
+<p>Van Jacobson은 1988년 논문 "Congestion Avoidance and Control"에서 해법을 제시했습니다. 핵심 통찰은 두 가지입니다.</p>
+<ol>
+  <li><b>패킷 보존 원칙(packet conservation)</b>: 평형 상태의 연결은 ACK 하나가 돌아올 때 새 패킷 하나를 내보내야 한다. ACK는 "패킷 하나가 네트워크를 떠났다"는 신호(ACK clocking)다.</li>
+  <li><b>손실은 혼잡의 신호</b>다. 유선 링크에서 비트 오류로 인한 손실은 극히 드물므로(10⁻⁶ 이하), 손실은 거의 항상 "큐가 넘쳤다"는 뜻이다. 따라서 손실을 보면 송신 속도를 <i>크게</i> 줄여야 한다.</li>
+</ol>
+<div class="callout"><div class="t">📌 두 가지 제어의 분리</div><p>혼잡 제어는 <b>네트워크</b>를 보호하고, 흐름 제어는 <b>수신자</b>를 보호합니다. 둘 다 "보낼 수 있는 양"을 제한하지만 정보의 출처가 다릅니다. 수신자는 자기 버퍼 상태를 <b>헤더의 Window 필드</b>로 명시적으로 알려주지만, 네트워크는 아무 말도 하지 않으므로 송신자가 <b>추정</b>해야 합니다.</p></div>
+
+<h2 id="rwnd-cwnd"><span class="num">8.2</span>흐름 제어 vs 혼잡 제어: 두 개의 윈도우</h2>
+<div class="vs">
+  <div class="side"><h4 style="color:var(--l-net)">rwnd — 수신 윈도우</h4><ul><li>수신자가 광고(advertise)한다: TCP 헤더 Window 필드 × 스케일</li><li>의미: "내 수신 버퍼에 이만큼 남았다"</li><li>목적: 수신 애플리케이션이 느릴 때 넘침 방지</li><li>변동: 애플리케이션이 read()할 때마다 커짐</li></ul></div>
+  <div class="mid">vs</div>
+  <div class="side"><h4 style="color:var(--l-tr)">cwnd — 혼잡 윈도우</h4><ul><li>송신자가 <b>스스로</b> 유지한다. 헤더에 실리지 않는다</li><li>의미: "네트워크가 이만큼은 받아줄 것 같다"</li><li>목적: 라우터 큐 넘침(혼잡) 방지</li><li>변동: ACK가 오면 커지고, 손실을 감지하면 줄어듦</li></ul></div>
+</div>
+<div class="mini-eq">실제 송신 윈도우 (swnd) = min(cwnd, rwnd)<br>보낼 수 있는 양 = swnd − (보냈지만 ACK 안 된 바이트, flight size)</div>
+<div class="figure card">
+  <svg viewBox="0 0 760 170">
+    <defs><marker id="a8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <rect x="20" y="40" width="130" height="70" rx="10" class="node"/><text x="85" y="70" text-anchor="middle" font-weight="700">송신자</text><text x="85" y="92" text-anchor="middle" font-size="11" fill="var(--l-tr)">cwnd 추정</text>
+    <rect x="300" y="30" width="160" height="90" rx="10" class="node"/><text x="380" y="58" text-anchor="middle" font-weight="700">라우터</text>
+    <rect x="320" y="70" width="120" height="30" fill="var(--surface-3)" stroke="var(--border)"/><rect x="320" y="70" width="84" height="30" fill="var(--accent)" opacity=".7"/><text x="380" y="118" text-anchor="middle" font-size="11" class="muted">큐 (버퍼)</text>
+    <rect x="610" y="40" width="130" height="70" rx="10" class="node"/><text x="675" y="70" text-anchor="middle" font-weight="700">수신자</text><text x="675" y="92" text-anchor="middle" font-size="11" fill="var(--l-net)">rwnd 광고</text>
+    <line x1="150" y1="60" x2="300" y2="60" class="wire" marker-end="url(#a8)"/><line x1="460" y1="60" x2="610" y2="60" class="wire" marker-end="url(#a8)"/>
+    <line x1="610" y1="95" x2="150" y2="95" class="wire" stroke="var(--l-net)" marker-end="url(#a8)"/>
+    <text x="380" y="150" text-anchor="middle" font-size="12">ACK ← Window=rwnd (명시적)   |   큐 넘침 → 손실 (암묵적 신호)</text>
+  </svg>
+  <div class="cap">rwnd는 헤더로 전달되는 명시적 값, cwnd는 손실·ACK 패턴으로부터 송신자가 추정하는 값.</div>
+</div>
+
+<h2 id="phases"><span class="num">8.3</span>cwnd의 세 가지 국면: Slow Start · Congestion Avoidance · 손실 반응</h2>
+<p>RFC 5681은 cwnd와 함께 <b>ssthresh(slow start threshold)</b>라는 변수를 둡니다. ssthresh는 "지난번 혼잡이 일어났던 지점의 절반"을 기억하는 값으로, cwnd가 그 아래면 공격적으로(지수), 그 위면 조심스럽게(선형) 키웁니다.</p>
+<table>
+  <thead><tr><th>국면</th><th>조건</th><th>cwnd 증가 규칙</th><th>RTT당 변화</th></tr></thead>
+  <tbody>
+    <tr><td><b class="phase-ss">Slow Start</b></td><td>cwnd &lt; ssthresh</td><td>ACK 하나마다 cwnd += 1 MSS</td><td>×2 (지수 증가)</td></tr>
+    <tr><td><b class="phase-ca">Congestion Avoidance</b></td><td>cwnd ≥ ssthresh</td><td>ACK 하나마다 cwnd += MSS²/cwnd</td><td>+1 MSS (선형, Additive Increase)</td></tr>
+    <tr><td><b class="phase-fr">손실 반응</b></td><td>RTO 만료 또는 3 dup ACK</td><td>ssthresh = max(FlightSize/2, 2 MSS)</td><td>cwnd 급감 (Multiplicative Decrease)</td></tr>
+  </tbody>
+</table>
+<h3>손실 신호는 두 종류다</h3>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0;color:var(--red)">RTO 타임아웃</h4><p>ACK가 아예 오지 않는다. 네트워크가 <b>심각하게</b> 막혔거나 윈도우 끝이 통째로 사라졌다는 뜻. 반응: ssthresh = cwnd/2, <b>cwnd = 1 MSS</b>로 리셋하고 Slow Start부터 다시.</p></div>
+  <div class="card"><h4 style="margin-top:0;color:var(--accent)">3 Duplicate ACK</h4><p>같은 ACK 번호가 3번 더 왔다 = 그 뒤 세그먼트들은 <b>도착하고 있다</b>. 패킷 하나만 빠진 가벼운 혼잡. 반응: 빠른 재전송 후 cwnd를 절반으로만 줄이고 Slow Start는 건너뛴다(Fast Recovery).</p></div>
+</div>
+<h3>Tahoe · Reno · NewReno</h3>
+<table>
+  <thead><tr><th></th><th>Tahoe (1988)</th><th>Reno (1990)</th><th>NewReno (RFC 6582)</th></tr></thead>
+  <tbody>
+    <tr><td>타임아웃 시</td><td>ssthresh=cwnd/2, cwnd=1, Slow Start</td><td>동일</td><td>동일</td></tr>
+    <tr><td>3 dup ACK 시</td><td>타임아웃과 <b>동일</b>하게 cwnd=1</td><td>Fast Retransmit + <b>Fast Recovery</b>: cwnd = ssthresh + 3, dup ACK마다 +1, 새 ACK 오면 cwnd = ssthresh</td><td>Reno와 같으나 <b>부분 ACK</b>(partial ACK)를 받으면 다음 손실 세그먼트를 즉시 재전송, 전체 윈도우가 복구될 때까지 Fast Recovery 유지</td></tr>
+    <tr><td>약점</td><td>가벼운 손실에도 처리량 급락</td><td>한 윈도우 안에 손실이 2개 이상이면 타임아웃으로 빠짐</td><td>SACK 없이 다중 손실을 RTT당 1개씩만 복구</td></tr>
+  </tbody>
+</table>
+<div class="callout deep"><div class="t">🔬 깊이 보기: Slow Start는 왜 "느린" 시작인가</div><p>지수적으로 커지는데 slow라니 이상합니다. 이름의 기준점은 1986년 이전의 TCP입니다. 당시에는 연결을 열자마자 <b>rwnd 전체</b>(예: 64 KB)를 한꺼번에 쏟아냈습니다. 그에 비하면 1 MSS에서 시작하는 것은 "느린" 시작이지요. 또 하나 중요한 점은 Slow Start의 목적이 속도 제한이 아니라 <b>ACK clock을 돌리기 시작하는 것</b>이라는 것입니다. 평형 상태에서는 ACK가 돌아올 때만 보내므로, 첫 ACK가 생길 때까지는 어떻게든 패킷을 "밀어 넣어야" 하는데 그것을 가능한 한 조심스럽게 하자는 것입니다.</p></div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 초기 윈도우 IW10 (RFC 6928)</div><p>RFC 5681의 초기 cwnd는 2~4 MSS였습니다. 2013년 Google의 제안으로 <b>10 MSS(약 14.6 KB)</b>로 늘어났습니다(RFC 6928). 이유는 웹 응답 대부분이 15 KB 이하라서, IW가 크면 Slow Start 라운드를 2~3 RTT 아끼기 때문입니다. 리눅스는 2.6.39부터 IW10이 기본값입니다(<code>ip route change … initcwnd 10</code>으로 경로별 조정 가능). 반대로 ssthresh의 초기값은 사실상 무한대(리눅스: <code>TCP_INFINITE_SSTHRESH</code>)라, 첫 손실 전까지는 계속 Slow Start입니다.</p></div>
+
+<h2 id="sim"><span class="num">8.4</span>cwnd 시뮬레이터 <small>(인터랙티브)</small></h2>
+<p>x축은 RTT 라운드, y축은 MSS 단위 cwnd입니다. 알고리즘을 바꾸고 손실을 주입하며 곡선 모양의 차이를 몸에 익히세요. "톱니(sawtooth)" 모양이 Reno의 특징이고, CUBIC은 톱니의 윗부분이 평평하게 다듬어진 모양입니다.</p>
+<div class="anim" id="cwnd-sim">
+  <div class="stage"><canvas id="cwnd-cv" width="860" height="360"></canvas></div>
+  <div class="legend"><span><i style="background:var(--l-net)"></i>Slow Start</span><span><i style="background:var(--l-tr)"></i>Congestion Avoidance</span><span><i style="background:var(--accent)"></i>Fast Recovery</span><span><i style="background:var(--purple)"></i>CUBIC 구간</span><span><i style="background:var(--red);height:2px"></i>ssthresh (점선)</span><span>▼ 타임아웃 · ▽ 3 dup ACK</span></div>
+  <div class="sim-ctl">
+    <label>알고리즘 <select id="sim-alg"><option value="tahoe">Tahoe</option><option value="reno" selected>Reno / NewReno</option><option value="cubic">CUBIC</option></select></label>
+    <label>초기 ssthresh <input type="number" id="sim-ssth" value="32" min="2" max="500"></label>
+    <label>초기 cwnd <input type="number" id="sim-iw" value="1" min="1" max="10"></label>
+    <label>랜덤 손실률/라운드 <input type="range" id="sim-loss" min="0" max="30" value="0" style="width:100px"> <span id="sim-loss-v" class="mono">0%</span></label>
+  </div>
+  <div class="sim-ctl">
+    <button class="btn sm primary" id="sim-step">1 라운드 ▶</button>
+    <button class="btn sm" id="sim-play">▶▶ 재생</button>
+    <button class="btn sm" id="sim-to">▼ 타임아웃 주입</button>
+    <button class="btn sm" id="sim-dup">▽ 3 dup ACK 주입</button>
+    <button class="btn sm" id="sim-reset">↺ 초기화</button>
+  </div>
+  <div class="sim-stat"><span>라운드 <b id="st-t">0</b></span><span>cwnd <b id="st-cwnd">1.0</b> MSS</span><span>ssthresh <b id="st-ssth">32</b></span><span>국면 <b id="st-phase">Slow Start</b></span><span id="st-cubic" style="display:none">W_max <b id="st-wmax">—</b> K <b id="st-k">—</b></span></div>
+</div>
+<div class="callout tip"><div class="t">✅ 해 볼 것</div><p>① Reno로 ssthresh 32, 손실 0%에서 재생 → Slow Start가 32에서 선형으로 꺾이는 지점을 확인. ② 라운드 40쯤에서 "3 dup ACK 주입" → 절반으로 떨어지고 선형 회복. ③ 같은 상황에서 Tahoe로 바꿔 "3 dup ACK 주입" → 1로 떨어지는 차이. ④ CUBIC으로 바꾸고 손실 주입 → W_max 근처에서 평평해졌다가 다시 가속하는 모양(오목→볼록). ⑤ 손실률 5%로 올리고 Reno vs CUBIC 평균 cwnd 비교.</p></div>
+
+<h2 id="cubic"><span class="num">8.5</span>CUBIC: 시간의 함수로 윈도우를 키우다</h2>
+<p>Reno의 선형 증가(RTT당 +1 MSS)는 고대역폭·장거리 경로에서 치명적으로 느립니다. 10 Gbps, RTT 100 ms, MSS 1460 B라면 BDP는 약 85,600 MSS인데, 손실 후 절반에서 다시 채우려면 <b>약 42,800 RTT ≈ 71분</b>이 걸립니다. 그동안 손실이 한 번도 없어야 합니다. CUBIC(RFC 8312 → RFC 9438)은 이 문제를 윈도우 증가량을 <b>RTT가 아닌 실제 경과 시간의 3차 함수</b>로 바꿔 해결합니다.</p>
+<div class="mini-eq">W(t) = C · (t − K)³ + W_max        K = ∛( W_max · (1 − β) / C )<br>C = 0.4,  β = 0.7  (손실 직후 cwnd = β · W_max = 0.7 · W_max)</div>
+<ul>
+  <li><b>t</b>: 마지막 손실 이후 경과 시간(초). RTT와 무관하므로 RTT가 긴 흐름도 같은 속도로 회복 → <b>RTT 공정성</b> 개선.</li>
+  <li><b>W_max</b>: 직전 손실이 일어났던 cwnd. "거기가 한계였다"는 기억.</li>
+  <li><b>K</b>: W_max까지 되돌아가는 데 걸리는 시간. 그래프의 변곡점.</li>
+  <li>t &lt; K: <b>오목(concave)</b> 구간 — 빠르게 올라가다 W_max 근처에서 속도를 늦춰 조심스럽게 탐색. t &gt; K: <b>볼록(convex)</b> 구간 — 새 대역폭이 생겼다고 판단, 가속.</li>
+</ul>
+<div class="anim" id="cubic-fig">
+  <div class="stage"><canvas id="cubic-cv" width="860" height="300"></canvas></div>
+  <div class="sim-ctl"><label>W_max <input type="range" id="cubic-wmax" min="20" max="400" value="100" style="width:160px"> <span id="cubic-wmax-v" class="mono">100</span> MSS</label><span class="small" id="cubic-k"></span></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: TCP-friendly 영역과 Reno와의 공존</div><p>RTT가 짧은 LAN에서는 Reno의 선형 증가가 CUBIC의 3차 함수보다 빠를 수 있습니다. 그러면 CUBIC 흐름이 Reno 흐름에 밀립니다. RFC 9438은 이를 막기 위해 "같은 상황에서 Reno라면 도달했을 윈도우" W_est를 함께 계산하고, cwnd = max(W_cubic, W_est)를 쓰도록 합니다. 즉 CUBIC은 <b>Reno보다 결코 덜 공격적이지 않도록</b> 하한을 두고, 긴 RTT에서만 더 공격적입니다. 또한 RFC 9438은 손실 직후가 아니라 <b>실제 혼잡 회피 구간에 들어선 시점</b>부터 t를 세도록 하고, 첫 손실 전 Slow Start에는 HyStart++(RFC 9406)를 권장합니다. HyStart++는 RTT가 늘어나기 시작하면 손실 전에 Slow Start를 빠져나와 큐를 덜 채웁니다.</p></div>
+
+<h2 id="bbr"><span class="num">8.6</span>BBR: 손실이 아니라 모델로</h2>
+<p>손실 기반 알고리즘(Reno, CUBIC)은 구조적으로 <b>라우터 버퍼를 꽉 채워야</b> 손실 신호를 받습니다. 버퍼가 크면 큐잉 지연이 수백 ms로 늘어나고(bufferbloat), 버퍼가 작으면 조금만 몰려도 손실이 나서 cwnd가 반 토막 납니다. Google의 BBR(Bottleneck Bandwidth and RTT, 2016)은 손실 대신 경로의 두 물리량을 직접 추정합니다.</p>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">BtlBw — 병목 대역폭</h4><p>최근 10 RTT 동안 관측된 <b>최대 전달률</b>(ACK로 확인된 바이트/시간). 큐가 비어 있든 차 있든 전달률의 상한은 병목 링크 속도다.</p></div>
+  <div class="card"><h4 style="margin-top:0">RTprop — 전파 지연</h4><p>최근 10초 동안 관측된 <b>최소 RTT</b>. 큐가 비었을 때의 RTT. 주기적으로(10초마다) cwnd를 4 패킷으로 줄여 큐를 비우고 다시 잰다(ProbeRTT).</p></div>
+</div>
+<div class="mini-eq">BDP = BtlBw × RTprop     → BBR의 목표: inflight ≈ BDP,  pacing rate ≈ BtlBw</div>
+<div class="figure card">
+  <svg viewBox="0 0 820 300">
+    <defs><marker id="a8b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <!-- axes -->
+    <line x1="70" y1="20" x2="70" y2="130" class="wire"/><line x1="70" y1="130" x2="780" y2="130" class="wire" marker-end="url(#a8b)"/>
+    <line x1="70" y1="160" x2="70" y2="270" class="wire"/><line x1="70" y1="270" x2="780" y2="270" class="wire" marker-end="url(#a8b)"/>
+    <text x="20" y="80" font-size="11" transform="rotate(-90 20 80)" text-anchor="middle">RTT</text>
+    <text x="20" y="215" font-size="11" transform="rotate(-90 20 215)" text-anchor="middle">전달률</text>
+    <text x="790" y="285" font-size="11">inflight →</text>
+    <!-- regions -->
+    <rect x="70" y="20" width="230" height="250" fill="var(--l-net)" opacity=".06"/><rect x="300" y="20" width="300" height="250" fill="var(--accent)" opacity=".08"/><rect x="600" y="20" width="180" height="250" fill="var(--red)" opacity=".08"/>
+    <text x="185" y="40" text-anchor="middle" font-size="11" fill="var(--l-net)" font-weight="700">app-limited</text>
+    <text x="450" y="40" text-anchor="middle" font-size="11" fill="var(--accent)" font-weight="700">bandwidth-limited (큐 적체)</text>
+    <text x="690" y="40" text-anchor="middle" font-size="11" fill="var(--red)" font-weight="700">buffer-limited (손실)</text>
+    <!-- RTT curve -->
+    <path d="M70 110 H300 L600 45 H780" fill="none" stroke="var(--l-tr)" stroke-width="3"/>
+    <text x="150" y="105" font-size="10" fill="var(--l-tr)">RTprop (큐 없음)</text>
+    <text x="620" y="62" font-size="10" fill="var(--l-tr)">RTprop + 버퍼/BtlBw</text>
+    <!-- rate curve -->
+    <path d="M70 265 L300 185 H780" fill="none" stroke="var(--l-net)" stroke-width="3"/>
+    <text x="320" y="180" font-size="10" fill="var(--l-net)">BtlBw</text>
+    <!-- markers -->
+    <line x1="300" y1="20" x2="300" y2="270" stroke="var(--purple)" stroke-width="2" stroke-dasharray="5 4"/><text x="300" y="290" text-anchor="middle" font-size="11" fill="var(--purple)" font-weight="700">BDP ← BBR 동작점</text>
+    <line x1="600" y1="20" x2="600" y2="270" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 4"/><text x="600" y="290" text-anchor="middle" font-size="11" fill="var(--red)" font-weight="700">BDP + 버퍼 ← 손실 기반 동작점</text>
+  </svg>
+  <div class="cap">Kleinrock의 최적점: inflight가 BDP를 넘으면 전달률은 더 늘지 않고 RTT만 늘어난다. 손실 기반 TCP는 버퍼가 다 찰 때까지 밀어 넣는다.</div>
+</div>
+<p>BBR은 Startup(지수 탐색) → Drain(만들어진 큐 비우기) → ProbeBW(8 RTT 주기로 1.25배 올려보고 0.75배 내리기) → ProbeRTT의 상태 기계로 돕니다. 손실은 기본적으로 무시하므로 무선처럼 비혼잡 손실이 있는 경로에서 강하지만, 초기 BBRv1은 CUBIC 흐름과 섞이면 대역폭을 과점하는 문제가 있어 BBRv2/v3에서 손실률과 ECN을 다시 반영했습니다.</p>
+
+<h2 id="ecn"><span class="num">8.7</span>ECN: 버리지 말고 표시하라 <small>(애니메이션)</small></h2>
+<p>손실은 비싼 신호입니다. 재전송 한 번에 최소 1 RTT가 날아갑니다. ECN(Explicit Congestion Notification, RFC 3168)은 라우터가 패킷을 버리는 대신 IP 헤더의 <b>ECN 2비트</b>에 "혼잡 겪음(CE)"을 찍고, 수신자가 이를 TCP ACK의 <b>ECE 플래그</b>로 송신자에게 되돌려 주는 방식입니다. 송신자는 손실 때와 똑같이 cwnd를 줄이되 재전송은 하지 않습니다.</p>
+<table>
+  <thead><tr><th>IP ECN 비트</th><th>이름</th><th>의미</th></tr></thead>
+  <tbody><tr><td>00</td><td>Not-ECT</td><td>ECN 미지원 패킷 → 혼잡 시 드롭</td></tr><tr><td>10 / 01</td><td>ECT(0) / ECT(1)</td><td>ECN 지원, 아직 혼잡 표시 없음</td></tr><tr><td>11</td><td>CE</td><td>라우터가 혼잡 겪음을 표시</td></tr></tbody>
+</table>
+<div class="anim" id="ecn-anim">
+  <div class="stage">
+    <svg viewBox="0 0 860 230" id="ecn-svg">
+      <defs><marker id="a8c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+      <rect x="20" y="60" width="130" height="70" rx="10" class="node"/><text x="85" y="90" text-anchor="middle" font-weight="700">송신자</text><text x="85" y="112" text-anchor="middle" font-size="11" class="mono" id="ecn-cwnd">cwnd = 40</text>
+      <rect x="360" y="50" width="140" height="90" rx="10" class="node"/><text x="430" y="76" text-anchor="middle" font-weight="700">라우터 (AQM)</text>
+      <rect x="375" y="90" width="110" height="24" fill="var(--surface-3)" stroke="var(--border)"/><rect x="375" y="90" width="40" height="24" fill="var(--accent)" opacity=".7" id="ecn-q"/><text x="430" y="130" text-anchor="middle" font-size="10" class="muted">큐 점유율</text>
+      <rect x="710" y="60" width="130" height="70" rx="10" class="node"/><text x="775" y="90" text-anchor="middle" font-weight="700">수신자</text>
+      <line x1="150" y1="80" x2="360" y2="80" class="wire"/><line x1="500" y1="80" x2="710" y2="80" class="wire"/>
+      <line x1="710" y1="115" x2="150" y2="115" class="wire"/>
+      <g id="ecn-pkt" class="anim-move" style="opacity:0"><rect x="-34" y="-12" width="68" height="24" rx="5" fill="var(--l-net)"/><text x="0" y="4" text-anchor="middle" fill="#fff" font-size="10" class="mono" id="ecn-pkt-t">ECT(0)</text></g>
+      <g id="ecn-ack" class="anim-move" style="opacity:0"><rect x="-34" y="-12" width="68" height="24" rx="5" fill="var(--l-tr)"/><text x="0" y="4" text-anchor="middle" fill="#fff" font-size="10" class="mono" id="ecn-ack-t">ACK</text></g>
+      <text x="430" y="185" text-anchor="middle" font-size="12" id="ecn-msg" class="mono"></text>
+      <text x="430" y="210" text-anchor="middle" font-size="11" class="muted">SYN: ECE+CWR 설정 → SYN/ACK: ECE 설정 = 양쪽 ECN 협상 완료</text>
+    </svg>
+  </div>
+</div>
+<p>리눅스는 <code>net.ipv4.tcp_ecn=2</code>(기본값: 상대가 요청하면 응답, 먼저 요청하지는 않음)입니다. 데이터센터용 DCTCP(RFC 8257)는 CE 표시의 <b>비율</b>에 비례해 cwnd를 줄여 ECN을 훨씬 정밀하게 씁니다. L4S(RFC 9330)는 ECT(1)을 새 의미로 재정의해 초저지연 서비스를 인터넷 규모로 확장하려는 시도입니다.</p>
+
+<h2 id="fairness"><span class="num">8.8</span>AIMD는 왜 공정한가 <small>(위상 평면 애니메이션)</small></h2>
+<p>두 흐름이 같은 병목을 공유한다고 합시다. x축을 흐름 1의 cwnd, y축을 흐름 2의 cwnd로 놓으면 "x + y = 용량 C"인 선이 <b>효율선</b>, "x = y"인 선이 <b>공정선</b>입니다. 가산 증가는 점을 45° 방향으로 밀고(두 흐름이 같은 양 증가), 승산 감소는 점을 <b>원점 방향</b>으로 당깁니다(각자 절반). 이 둘을 반복하면 어디서 시작하든 교점으로 수렴합니다.</p>
+<div class="anim" id="aimd-anim">
+  <div class="stage"><canvas id="aimd-cv" width="860" height="420"></canvas></div>
+  <div class="sim-ctl">
+    <label>흐름1 시작 <input type="number" id="aimd-x" value="70" min="1" max="95"></label>
+    <label>흐름2 시작 <input type="number" id="aimd-y" value="10" min="1" max="95"></label>
+    <label>규칙 <select id="aimd-rule"><option value="aimd">AIMD (가산증가·승산감소)</option><option value="aiad">AIAD (가산증가·가산감소)</option><option value="mimd">MIMD (승산증가·승산감소)</option></select></label>
+    <button class="btn sm primary" id="aimd-run">▶ 실행</button><button class="btn sm" id="aimd-reset">↺</button>
+  </div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 왜 "가산 증가 · 승산 감소"여야만 수렴하는가 (Chiu &amp; Jain, 1989)</div><p>위 시뮬레이터에서 규칙을 바꿔 보세요. <b>AIAD</b>(둘 다 가산)는 점이 45° 선을 따라 오르내리기만 할 뿐 공정선으로 다가가지 않습니다. 시작 시 불공정이 영원히 유지됩니다. <b>MIMD</b>(둘 다 승산)는 원점을 지나는 직선 위에서만 움직이므로 역시 공정선에 닿지 못합니다. 오직 <b>AIMD</b>만이 증가 단계에서는 공정선에 평행하게 이동하고, 감소 단계에서는 원점 방향으로 당겨지면서 <i>비율</i>을 공정선 쪽으로 바꿉니다. 이것이 Reno가 공정한 이유이며, 동시에 Reno의 처리량이 손실률 p에 대해 약 <code>1.22·MSS/(RTT·√p)</code>로 결정되는 이유이기도 합니다(RFC 3448의 TCP 처리량 식). RTT가 짧은 흐름이 더 빨리 증가하므로 AIMD는 <b>RTT 공정성</b>은 보장하지 못하며, CUBIC이 이를 완화합니다.</p></div>
+
+<h2 id="bufferbloat"><span class="num">8.9</span>Bufferbloat와 AQM</h2>
+<p>메모리가 싸지면서 라우터·모뎀·Wi‑Fi 드라이버의 버퍼는 수 MB로 커졌습니다. 손실 기반 TCP는 그 버퍼를 끝까지 채운 뒤에야 속도를 줄이므로, 가정용 회선에서 업로드 하나만 돌려도 RTT가 20 ms에서 <b>1~2초</b>로 치솟는 현상이 생깁니다. 이것이 <b>bufferbloat</b>(Gettys, 2011)입니다. 해법은 큐를 "넘칠 때"가 아니라 "오래 머물 때" 관리하는 것입니다.</p>
+<table>
+  <thead><tr><th>AQM</th><th>원리</th><th>비고</th></tr></thead>
+  <tbody>
+    <tr><td>Tail Drop</td><td>큐가 차면 뒤 패킷을 버림</td><td>AQM 아님. 전역 동기화(global synchronization) 유발: 모든 흐름이 동시에 손실·동시에 절반</td></tr>
+    <tr><td>RED (1993)</td><td>평균 큐 길이가 임계를 넘으면 확률적으로 드롭/마킹</td><td>파라미터 튜닝이 어려워 널리 쓰이지 못함</td></tr>
+    <tr><td>CoDel (RFC 8289)</td><td>패킷의 <b>체류 시간</b>(sojourn)이 5 ms를 100 ms 이상 초과하면 드롭, 간격을 √n으로 줄여가며 반복</td><td>파라미터 없음. 큐 길이가 아닌 지연을 본다</td></tr>
+    <tr><td>FQ-CoDel (RFC 8290)</td><td>흐름별 큐 + 각 큐에 CoDel, DRR 스케줄링</td><td>리눅스 기본 qdisc(systemd 기반 배포판). 작은 흐름(DNS, ACK)이 큰 흐름 뒤에 갇히지 않음</td></tr>
+    <tr><td>CAKE</td><td>FQ-CoDel + 대역폭 셰이핑 + NAT 인식 + DiffServ</td><td>가정용 라우터(OpenWrt)에 최적화</td></tr>
+  </tbody>
+</table>
+<div class="callout warn"><div class="t">⚠️ 혼잡 제어는 양쪽 끝과 중간의 합작</div><p>송신자의 알고리즘(CUBIC/BBR)만 바꿔서는 bufferbloat를 해결할 수 없습니다. 병목 장비가 AQM(FQ-CoDel)을 돌리거나, 송신자가 BBR처럼 큐를 만들지 않도록 pacing을 해야 합니다. 리눅스의 <code>fq</code> qdisc는 소켓별 pacing rate에 맞춰 패킷을 고르게 내보내며, BBR은 fq 또는 커널 내부 pacing을 필요로 합니다.</p></div>
+
+<h2 id="practice"><span class="num">8.10</span>실습: 리눅스에서 혼잡 제어 관찰하기</h2>
+<pre><code># 현재 알고리즘과 사용 가능한 알고리즘
+sysctl net.ipv4.tcp_congestion_control
+sysctl net.ipv4.tcp_available_congestion_control
+# BBR로 전환 (커널 4.9+, fq qdisc 권장)
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+sudo sysctl -w net.core.default_qdisc=fq
+# 초기 윈도우 확인/변경 (경로별)
+ip route show
+sudo ip route change default via 192.168.0.1 dev eth0 initcwnd 10 initrwnd 10
+# ECN 설정 (0 끔, 1 항상 요청, 2 요청받으면 응답)
+sysctl net.ipv4.tcp_ecn</code></pre>
+<p><code>ss -ti</code>는 연결별 혼잡 제어 상태를 보여 줍니다. 아래는 다운로드 중인 연결의 예입니다.</p>
+<div class="term"><span class="p">$ ss -ti dst 93.184.216.34</span>
+ESTAB 0 0 10.0.0.5:51234 93.184.216.34:443
+	 <span class="y">cubic</span> wscale:7,7 rto:204 rtt:3.2/0.4 ato:40 mss:1448 pmtu:1500 rcvmss:1448 advmss:1448
+	 <span class="g">cwnd:231 ssthresh:116</span> bytes_sent:1024 bytes_acked:1024 bytes_received:3385200
+	 segs_out:2341 segs_in:2350 data_segs_out:12 data_segs_in:2338
+	 send 836.5Mbps lastsnd:12 lastrcv:0 lastack:0 pacing_rate 1.67Gbps delivery_rate 412Mbps
+	 <span class="r">retrans:0/2</span> rcv_rtt:3 rcv_space:67880 minrtt:2.9</div>
+<ul>
+  <li><b>cubic</b>: 이 소켓의 혼잡 제어 알고리즘. <b>cwnd:231</b>(MSS 단위) → 231 × 1448 ≈ 334 KB. <b>ssthresh:116</b> → 지난 손실 때 cwnd가 ~232였음을 뜻함.</li>
+  <li><b>retrans:0/2</b>: 현재 재전송 중 0, 누적 재전송 2. <b>pacing_rate</b>: fq가 패킷을 내보내는 속도(보통 cwnd/RTT의 2배 정도로 설정).</li>
+  <li><b>delivery_rate</b>: BBR이 BtlBw 추정에 쓰는 값. <b>minrtt</b>: RTprop에 해당.</li>
+</ul>
+<pre><code># iperf3로 알고리즘별 처리량 비교 (서버: iperf3 -s)
+iperf3 -c 서버IP -t 20 -C cubic
+iperf3 -c 서버IP -t 20 -C bbr
+# tc로 인위적 손실/지연을 넣어 실험 (주의: 해당 인터페이스 전체에 영향)
+sudo tc qdisc add dev eth0 root netem delay 50ms loss 1%
+sudo tc qdisc del dev eth0 root</code></pre>
+
+<h2 id="quiz"><span class="num">8.11</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>송신 윈도우 = min(cwnd, rwnd). rwnd는 수신자가 명시적으로, cwnd는 송신자가 손실·ACK로 추정한다.</li>
+    <li>Slow Start(지수) → ssthresh 이후 Congestion Avoidance(선형 +1 MSS/RTT) → 손실 시 ssthresh = cwnd/2. 타임아웃이면 cwnd = 1, 3 dup ACK이면 Fast Recovery로 절반에서 재개(Reno).</li>
+    <li>CUBIC은 경과 시간의 3차 함수로 W_max 근처를 조심스럽게 탐색하며 RTT 공정성을 개선한다. 리눅스 기본값.</li>
+    <li>BBR은 손실 대신 BtlBw·RTprop을 추정해 BDP 근처에서 동작, 큐를 만들지 않는다.</li>
+    <li>AIMD만이 효율선과 공정선의 교점으로 수렴한다(Chiu-Jain). ECN은 드롭 없이 혼잡을 알리고, AQM(FQ-CoDel)은 bufferbloat를 막는다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, Stepper, Quiz} = TCPIP;
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const COL = () => ({ss:css('--l-net'), ca:css('--l-tr'), fr:css('--accent'), cubic:css('--purple'), red:css('--red'), text:css('--text'), muted:css('--muted'), border:css('--border'), surface:css('--surface'), primary:css('--primary')});
+
+  /* ---------- 8.4 cwnd 시뮬레이터 ---------- */
+  const cv = $('#cwnd-cv'), ctx = cv.getContext('2d');
+  let S; let timer = null;
+  const CUBIC_C = 0.4, CUBIC_B = 0.7, RTT_S = 0.1; // 1 라운드 = 100ms 가정
+  function initSim(){
+    S = { t:0, cwnd:+$('#sim-iw').value||1, ssth:+$('#sim-ssth').value||32, phase:'ss', alg:$('#sim-alg').value, hist:[], events:[], wmax:0, k:0, tloss:0, frLeft:0 };
+    S.hist.push({t:0, cwnd:S.cwnd, ssth:S.ssth, phase:'ss'});
+    draw(); stat();
+  }
+  function loss(kind){
+    const fs = S.cwnd;
+    S.events.push({t:S.t, kind});
+    if(S.alg==='cubic'){
+      S.wmax = fs; S.ssth = Math.max(Math.floor(fs*CUBIC_B),2);
+      if(kind==='to'){ S.cwnd = 1; S.phase='ss'; }
+      else { S.cwnd = Math.max(fs*CUBIC_B,2); S.phase='cubic'; S.k = Math.cbrt(S.wmax*(1-CUBIC_B)/CUBIC_C); S.tloss = S.t; }
+      return;
+    }
+    S.ssth = Math.max(Math.floor(fs/2),2);
+    if(kind==='to' || S.alg==='tahoe'){ S.cwnd = 1; S.phase='ss'; }
+    else { S.cwnd = S.ssth + 3; S.phase='fr'; S.frLeft = 1; }
+  }
+  function round(){
+    const p = +$('#sim-loss').value/100;
+    // 손실 발생 여부 (랜덤)
+    if(p>0 && Math.random()<p && S.cwnd>2){ loss(Math.random()<0.15?'to':'dup'); }
+    else {
+      if(S.alg==='cubic' && S.phase==='cubic'){
+        const tt = (S.t - S.tloss + 1)*RTT_S;
+        const w = CUBIC_C*Math.pow(tt - S.k,3) + S.wmax;
+        // Reno-friendly 하한 (간이): 이전 cwnd + 1
+        S.cwnd = Math.max(w, S.cwnd + 0.5);
+      } else if(S.phase==='ss'){
+        S.cwnd = S.cwnd*2;
+        if(S.cwnd >= S.ssth){ S.cwnd = Math.max(S.ssth, S.cwnd===S.ssth?S.ssth:S.ssth); S.phase = S.alg==='cubic' ? 'cubic' : 'ca'; if(S.alg==='cubic'){ S.wmax=Math.max(S.wmax,S.cwnd); S.k=Math.cbrt(S.wmax*(1-CUBIC_B)/CUBIC_C); S.tloss=S.t; S.cwnd=S.ssth; } }
+      } else if(S.phase==='fr'){
+        S.cwnd = S.ssth; S.phase='ca';
+      } else { S.cwnd += 1; }
+    }
+    S.t++;
+    S.hist.push({t:S.t, cwnd:S.cwnd, ssth:S.ssth, phase:S.phase});
+    if(S.hist.length>400){ S.hist.shift(); }
+    draw(); stat();
+  }
+  function stat(){
+    $('#st-t').textContent=S.t; $('#st-cwnd').textContent=S.cwnd.toFixed(1); $('#st-ssth').textContent=S.ssth;
+    const names={ss:'Slow Start',ca:'Congestion Avoidance',fr:'Fast Recovery',cubic:'CUBIC 회피'};
+    const ph=$('#st-phase'); ph.textContent=names[S.phase]; ph.className='phase-'+S.phase;
+    $('#st-cubic').style.display = S.alg==='cubic'?'inline':'none';
+    $('#st-wmax').textContent=S.wmax?S.wmax.toFixed(0):'—'; $('#st-k').textContent=S.k?S.k.toFixed(2)+'s':'—';
+  }
+  function draw(){
+    const C = COL(); const W=cv.width,H=cv.height, L=50,R=20,T=16,B=36;
+    ctx.fillStyle=C.surface; ctx.fillRect(0,0,W,H);
+    const h=S.hist; const t0=h[0].t, t1=Math.max(h[h.length-1].t, t0+40);
+    const ymax = Math.max(40, ...h.map(x=>Math.max(x.cwnd,x.ssth<1e4?x.ssth:0)))*1.15;
+    const X=t=>L+(t-t0)/(t1-t0)*(W-L-R), Y=v=>H-B-(v/ymax)*(H-T-B);
+    // grid
+    ctx.strokeStyle=C.border; ctx.lineWidth=1; ctx.fillStyle=C.muted; ctx.font='11px monospace'; ctx.textAlign='right';
+    const ystep = ymax>400?100:ymax>160?40:ymax>80?20:10;
+    for(let v=0; v<=ymax; v+=ystep){ ctx.beginPath(); ctx.moveTo(L,Y(v)); ctx.lineTo(W-R,Y(v)); ctx.stroke(); ctx.fillText(v,L-6,Y(v)+4); }
+    ctx.textAlign='center'; const xstep = (t1-t0)>200?50:(t1-t0)>80?20:10;
+    for(let t=Math.ceil(t0/xstep)*xstep; t<=t1; t+=xstep){ ctx.fillText(t,X(t),H-B+16); }
+    ctx.fillStyle=C.text; ctx.font='bold 11px sans-serif'; ctx.fillText('RTT 라운드',W/2,H-6); ctx.save(); ctx.translate(14,H/2); ctx.rotate(-Math.PI/2); ctx.fillText('cwnd (MSS)',0,0); ctx.restore();
+    // ssthresh
+    ctx.setLineDash([5,4]); ctx.strokeStyle=C.red; ctx.lineWidth=1.5; ctx.beginPath();
+    h.forEach((p,i)=>{ const yy=Y(Math.min(p.ssth,ymax)); if(i===0) ctx.moveTo(X(p.t),yy); else { ctx.lineTo(X(p.t),Y(Math.min(h[i-1].ssth,ymax))); ctx.lineTo(X(p.t),yy);} }); ctx.stroke(); ctx.setLineDash([]);
+    // cwnd
+    ctx.lineWidth=2.5;
+    for(let i=1;i<h.length;i++){ ctx.strokeStyle=C[h[i].phase]||C.ca; ctx.beginPath(); ctx.moveTo(X(h[i-1].t),Y(h[i-1].cwnd)); ctx.lineTo(X(h[i].t),Y(h[i].cwnd)); ctx.stroke(); }
+    // events
+    S.events.forEach(e=>{ if(e.t<t0) return; const p=h.find(x=>x.t===e.t); if(!p) return; const x=X(e.t), y=Y(p.cwnd)-10; ctx.fillStyle=e.kind==='to'?C.red:C.fr; ctx.beginPath(); ctx.moveTo(x-6,y-10); ctx.lineTo(x+6,y-10); ctx.lineTo(x,y); ctx.closePath(); if(e.kind==='to') ctx.fill(); else { ctx.strokeStyle=C.fr; ctx.lineWidth=2; ctx.stroke(); } });
+    // current point
+    const last=h[h.length-1]; ctx.fillStyle=C.primary; ctx.beginPath(); ctx.arc(X(last.t),Y(last.cwnd),4,0,7); ctx.fill();
+  }
+  $('#sim-step').onclick=()=>round();
+  $('#sim-play').onclick=()=>{ if(timer){ clearInterval(timer); timer=null; $('#sim-play').textContent='▶▶ 재생'; } else { $('#sim-play').textContent='⏸ 정지'; timer=setInterval(round,160); } };
+  $('#sim-to').onclick=()=>{ loss('to'); S.t++; S.hist.push({t:S.t,cwnd:S.cwnd,ssth:S.ssth,phase:S.phase}); draw(); stat(); };
+  $('#sim-dup').onclick=()=>{ loss('dup'); S.t++; S.hist.push({t:S.t,cwnd:S.cwnd,ssth:S.ssth,phase:S.phase}); draw(); stat(); };
+  $('#sim-reset').onclick=()=>{ if(timer){clearInterval(timer);timer=null;$('#sim-play').textContent='▶▶ 재생';} initSim(); };
+  $('#sim-alg').onchange=()=>$('#sim-reset').click();
+  $('#sim-loss').oninput=e=>$('#sim-loss-v').textContent=e.target.value+'%';
+  initSim();
+
+  /* ---------- 8.5 CUBIC 그래프 ---------- */
+  const cc=$('#cubic-cv'), cx=cc.getContext('2d');
+  function drawCubic(){
+    const C=COL(); const wmax=+$('#cubic-wmax').value; $('#cubic-wmax-v').textContent=wmax;
+    const K=Math.cbrt(wmax*(1-CUBIC_B)/CUBIC_C); $('#cubic-k').textContent=`K = ∛(${wmax}×0.3/0.4) ≈ ${K.toFixed(2)} s — 손실 후 ${K.toFixed(1)}초에 W_max 복귀`;
+    const W=cc.width,H=cc.height,L=50,R=20,T=16,B=36; cx.fillStyle=C.surface; cx.fillRect(0,0,W,H);
+    const tmax=Math.max(K*2.2,4), ymax=wmax*1.6;
+    const X=t=>L+t/tmax*(W-L-R), Y=v=>H-B-(v/ymax)*(H-T-B);
+    cx.strokeStyle=C.border; cx.lineWidth=1; cx.fillStyle=C.muted; cx.font='11px monospace'; cx.textAlign='right';
+    for(let v=0; v<=ymax; v+=Math.ceil(ymax/8/10)*10){ cx.beginPath(); cx.moveTo(L,Y(v)); cx.lineTo(W-R,Y(v)); cx.stroke(); cx.fillText(v,L-6,Y(v)+4); }
+    cx.textAlign='center'; for(let t=0;t<=tmax;t+=1){ cx.fillText(t+'s',X(t),H-B+16); }
+    // W_max line
+    cx.setLineDash([5,4]); cx.strokeStyle=C.red; cx.beginPath(); cx.moveTo(L,Y(wmax)); cx.lineTo(W-R,Y(wmax)); cx.stroke();
+    cx.strokeStyle=C.muted; cx.beginPath(); cx.moveTo(X(K),T); cx.lineTo(X(K),H-B); cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle=C.red; cx.textAlign='left'; cx.fillText('W_max = '+wmax, X(0.05), Y(wmax)-6);
+    cx.fillStyle=C.muted; cx.textAlign='center'; cx.fillText('K', X(K), T+10);
+    // Reno 비교 (RTT 100ms 가정: +1 MSS/0.1s)
+    cx.strokeStyle=C.ca; cx.lineWidth=1.5; cx.setLineDash([3,3]); cx.beginPath(); for(let t=0;t<=tmax;t+=0.05){ const w=wmax*CUBIC_B + t/RTT_S; const y=Y(Math.min(w,ymax)); if(t===0) cx.moveTo(X(t),y); else cx.lineTo(X(t),y);} cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle=C.ca; cx.textAlign='left'; cx.fillText('Reno (RTT=100ms, 절반에서 +1/RTT)', X(tmax*0.55), Y(wmax*CUBIC_B + tmax*0.55/RTT_S)-6);
+    // cubic
+    cx.strokeStyle=C.cubic; cx.lineWidth=3; cx.beginPath(); for(let t=0;t<=tmax;t+=0.02){ const w=CUBIC_C*Math.pow(t-K,3)+wmax; const y=Y(Math.min(Math.max(w,0),ymax)); if(t===0) cx.moveTo(X(t),y); else cx.lineTo(X(t),y);} cx.stroke();
+    cx.fillStyle=C.cubic; cx.fillText('CUBIC W(t)', X(0.05), Y(wmax*CUBIC_B)+16);
+    cx.fillStyle=C.text; cx.font='11px sans-serif'; cx.fillText('오목 (조심스런 탐색)', X(K*0.3), Y(wmax*0.9)); cx.fillText('볼록 (가속)', X(K*1.35), Y(wmax*1.15));
+  }
+  $('#cubic-wmax').oninput=drawCubic; drawCubic();
+
+  /* ---------- 8.7 ECN 애니메이션 ---------- */
+  const pk=$('#ecn-pkt'), ak=$('#ecn-ack');
+  const mv=(el,x,y,show=true)=>{ el.style.transform=`translate(${x}px,${y}px)`; el.style.opacity=show?1:0; };
+  const msg=t=>$('#ecn-msg').textContent=t;
+  Stepper('#ecn-anim',{steps:[
+    {title:'ECN 협상 완료, 데이터 송신', text:'핸드셰이크에서 SYN(ECE+CWR) / SYN-ACK(ECE)로 양쪽이 ECN을 지원함을 확인했다. 송신자는 IP 헤더 ECN 필드를 <b>ECT(0)</b>로 설정해 데이터를 보낸다. "이 패킷은 드롭 대신 마킹해도 됩니다."', run(){ $('#ecn-pkt-t').textContent='ECT(0)'; pk.querySelector('rect').setAttribute('fill','var(--l-net)'); mv(pk,150,80); setTimeout(()=>mv(pk,360,80),50); msg('IP ECN = 10 (ECT(0))'); }},
+    {title:'라우터 큐 점유율 상승', text:'큐가 AQM 임계(예: CoDel 5 ms 체류)를 넘었다. ECN 미지원 패킷이었다면 여기서 <b>드롭</b>됐을 것이다.', run(){ $('#ecn-q').setAttribute('width',95); $('#ecn-q').setAttribute('fill','var(--red)'); msg('큐 체류 시간 > 임계 → 혼잡 판단'); }},
+    {title:'CE 마킹 후 통과', text:'라우터는 패킷을 버리지 않고 ECN 필드를 <b>CE(11)</b>로 바꿔 그대로 내보낸다. 패킷 손실 없음, 재전송 없음.', run(){ $('#ecn-pkt-t').textContent='CE'; pk.querySelector('rect').setAttribute('fill','var(--red)'); mv(pk,710,80); msg('IP ECN = 11 (Congestion Experienced)'); }},
+    {title:'수신자: ACK에 ECE 설정', text:'수신 TCP는 CE가 찍힌 패킷을 받으면 이후 보내는 <b>모든 ACK에 ECE 플래그</b>를 켠다. 송신자가 반응(CWR)할 때까지 계속 켠다 — ACK 하나가 유실돼도 신호가 전달되도록.', run(){ mv(pk,710,80,false); $('#ecn-ack-t').textContent='ACK+ECE'; mv(ak,710,115); setTimeout(()=>mv(ak,150,115),50); msg('TCP flags: ACK ECE'); }},
+    {title:'송신자: cwnd 절반, CWR로 응답', text:'송신자는 손실 때와 동일하게 <b>ssthresh = cwnd/2, cwnd = cwnd/2</b>(한 RTT에 한 번만). 다음 데이터 세그먼트에 <b>CWR</b> 플래그를 켜 "줄였다"고 알린다.', run(){ mv(ak,150,115,false); $('#ecn-cwnd').textContent='cwnd = 20'; $('#ecn-pkt-t').textContent='ECT+CWR'; pk.querySelector('rect').setAttribute('fill','var(--l-tr)'); mv(pk,150,80); setTimeout(()=>mv(pk,710,80),50); msg('cwnd 40 → 20, TCP flags: CWR'); $('#ecn-q').setAttribute('width',40); $('#ecn-q').setAttribute('fill','var(--accent)'); }},
+    {title:'수신자: ECE 해제', text:'CWR이 찍힌 세그먼트를 받으면 수신자는 ECE 켜기를 멈춘다. 한 사이클이 끝났다. 손실 없이, 1 RTT 만에 혼잡 신호가 전달·반영되었다.', run(){ $('#ecn-ack-t').textContent='ACK'; mv(ak,710,115); setTimeout(()=>mv(ak,150,115),50); msg('정상 ACK 재개'); }},
+  ], reset(){ mv(pk,150,80,false); mv(ak,710,115,false); $('#ecn-cwnd').textContent='cwnd = 40'; $('#ecn-q').setAttribute('width',40); $('#ecn-q').setAttribute('fill','var(--accent)'); msg(''); }, intro:'ECN이 손실 없이 혼잡을 전달하는 한 사이클.'});
+
+  /* ---------- 8.8 AIMD 위상 평면 ---------- */
+  const ac=$('#aimd-cv'), ax=ac.getContext('2d'); const CAP=100; let aTimer=null, trail=[];
+  function drawAimd(){
+    const C=COL(); const W=ac.width,H=ac.height,L=50,R=20,T=20,B=40; ax.fillStyle=C.surface; ax.fillRect(0,0,W,H);
+    const X=v=>L+v/CAP*(W-L-R), Y=v=>H-B-v/CAP*(H-T-B);
+    ax.strokeStyle=C.border; ax.lineWidth=1; ax.fillStyle=C.muted; ax.font='11px monospace';
+    for(let v=0;v<=CAP;v+=20){ ax.beginPath(); ax.moveTo(X(v),T); ax.lineTo(X(v),H-B); ax.stroke(); ax.beginPath(); ax.moveTo(L,Y(v)); ax.lineTo(W-R,Y(v)); ax.stroke(); ax.textAlign='center'; ax.fillText(v,X(v),H-B+14); ax.textAlign='right'; ax.fillText(v,L-6,Y(v)+4); }
+    ax.fillStyle=C.text; ax.font='bold 11px sans-serif'; ax.textAlign='center'; ax.fillText('흐름 1 cwnd',W/2,H-8); ax.save(); ax.translate(14,H/2); ax.rotate(-Math.PI/2); ax.fillText('흐름 2 cwnd',0,0); ax.restore();
+    // efficiency line x+y=CAP
+    ax.strokeStyle=C.red; ax.lineWidth=2; ax.beginPath(); ax.moveTo(X(0),Y(CAP)); ax.lineTo(X(CAP),Y(0)); ax.stroke(); ax.fillStyle=C.red; ax.font='11px sans-serif'; ax.textAlign='left'; ax.fillText('효율선 x+y=C (넘으면 손실)',X(55),Y(50));
+    // fairness line
+    ax.strokeStyle=C.ss; ax.setLineDash([5,4]); ax.beginPath(); ax.moveTo(X(0),Y(0)); ax.lineTo(X(CAP),Y(CAP)); ax.stroke(); ax.setLineDash([]); ax.fillStyle=C.ss; ax.fillText('공정선 x=y',X(78),Y(84));
+    ax.fillStyle=C.primary; ax.beginPath(); ax.arc(X(CAP/2),Y(CAP/2),5,0,7); ax.fill(); ax.fillText('최적점',X(52),Y(44));
+    // trail
+    if(trail.length){ ax.strokeStyle=C.cubic; ax.lineWidth=2; ax.beginPath(); trail.forEach((p,i)=>{ if(i===0) ax.moveTo(X(p[0]),Y(p[1])); else ax.lineTo(X(p[0]),Y(p[1])); }); ax.stroke(); const l=trail[trail.length-1]; ax.fillStyle=C.cubic; ax.beginPath(); ax.arc(X(l[0]),Y(l[1]),5,0,7); ax.fill(); const f=trail[0]; ax.fillStyle=C.muted; ax.beginPath(); ax.arc(X(f[0]),Y(f[1]),4,0,7); ax.fill(); ax.fillText('시작',X(f[0])+8,Y(f[1])+4); }
+  }
+  function runAimd(){
+    if(aTimer) clearInterval(aTimer);
+    let x=Math.min(+$('#aimd-x').value,95), y=Math.min(+$('#aimd-y').value,95); const rule=$('#aimd-rule').value; trail=[[x,y]]; let n=0;
+    aTimer=setInterval(()=>{
+      if(x+y>=CAP){ if(rule==='aiad'){ x=Math.max(x-20,1); y=Math.max(y-20,1);} else { x/=2; y/=2; } }
+      else { if(rule==='mimd'){ x*=1.15; y*=1.15; } else { x+=3; y+=3; } }
+      trail.push([x,y]); drawAimd(); if(++n>120){ clearInterval(aTimer); aTimer=null; }
+    },120);
+  }
+  $('#aimd-run').onclick=runAimd; $('#aimd-reset').onclick=()=>{ if(aTimer){clearInterval(aTimer);aTimer=null;} trail=[]; drawAimd(); };
+  drawAimd();
+  $('#theme-btn') && $('#theme-btn').addEventListener('click',()=>{ setTimeout(()=>{draw();drawCubic();drawAimd();},50); });
+
+  /* ---------- 8.11 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'cwnd = 64 KB, rwnd = 32 KB, 아직 ACK되지 않은 바이트가 20 KB일 때 지금 추가로 보낼 수 있는 양은?',options:['44 KB','12 KB','32 KB','64 KB'],answer:1,explain:'송신 윈도우 = min(64, 32) = 32 KB. 그중 20 KB가 이미 비행 중이므로 12 KB.'},
+    {q:'Slow Start 중 cwnd가 RTT마다 두 배가 되는 직접적인 이유는?',options:['RTT마다 cwnd를 2배로 설정하는 규칙이 있어서','ACK 하나를 받을 때마다 cwnd를 1 MSS 늘리기 때문','수신자가 rwnd를 두 배로 늘려 주기 때문','라우터가 허용량을 알려 주기 때문'],answer:1,explain:'한 윈도우를 보내면 그만큼의 ACK가 돌아오고, ACK마다 +1 MSS이므로 한 RTT 뒤 cwnd는 두 배가 된다. 규칙은 ACK 단위이고 결과가 RTT당 2배다.'},
+    {q:'Reno에서 3 duplicate ACK를 받았을 때의 동작으로 옳은 것은?',options:['cwnd = 1 MSS로 리셋하고 Slow Start','ssthresh = cwnd/2, cwnd = ssthresh(+3)에서 Congestion Avoidance 재개','cwnd를 그대로 두고 재전송만 수행','연결을 RST로 종료'],answer:1,explain:'dup ACK는 뒤 세그먼트들이 도착하고 있다는 뜻이므로 가벼운 혼잡으로 보고 절반에서 재개(Fast Recovery). cwnd=1은 Tahoe 또는 타임아웃의 동작.'},
+    {q:'CUBIC이 Reno보다 고대역폭·장거리 경로에서 유리한 핵심 이유는?',options:['손실을 무시하기 때문','윈도우 증가가 RTT가 아닌 경과 시간의 함수라서 RTT가 길어도 회복이 느려지지 않기 때문','초기 윈도우가 훨씬 크기 때문','ECN을 필수로 쓰기 때문'],answer:1,explain:'W(t)=C(t−K)³+W_max. t는 실제 시간이므로 RTT가 긴 흐름도 같은 속도로 W_max에 복귀한다 → RTT 공정성.'},
+    {q:'BBR이 추정하는 두 물리량은?',options:['손실률과 재전송률','병목 대역폭(BtlBw)과 전파 지연(RTprop)','rwnd와 cwnd','MSS와 MTU'],answer:1,explain:'BBR은 BtlBw×RTprop=BDP 만큼만 inflight를 유지해 큐를 만들지 않는다. 손실은 1차 신호가 아니다.'},
+    {q:'손실 기반 혼잡 제어(Reno/CUBIC)가 큰 버퍼를 가진 라우터에서 긴 지연을 만드는 이유는?',options:['버퍼가 크면 패킷이 손상되기 때문','손실이 날 때까지 윈도우를 키우므로 버퍼가 꽉 찰 때까지 큐잉 지연이 쌓이기 때문','큰 버퍼는 ACK를 지연시키기 때문','라우터가 cwnd를 제한하기 때문'],answer:1,explain:'Bufferbloat. 손실 신호는 버퍼가 넘쳐야 생기므로 송신자는 그때까지 큐를 채운다. 해법은 AQM(CoDel) 또는 BBR 같은 모델 기반 알고리즘.'},
+    {q:'ECN 동작 순서로 옳은 것은?',options:['라우터가 TCP ECE를 설정 → 송신자가 IP CE 설정','라우터가 IP CE 마킹 → 수신자가 ACK에 ECE → 송신자가 cwnd 감소 후 CWR','송신자가 CE 마킹 → 라우터가 드롭','수신자가 CWR → 송신자가 ECE'],answer:1,explain:'CE는 IP 헤더(라우터), ECE/CWR은 TCP 헤더(종단). 라우터는 TCP 헤더를 건드리지 않는다.'},
+    {q:'AIMD가 여러 흐름 사이에서 공정성으로 수렴하는 이유는?',options:['가산 증가는 공정선에 평행하게, 승산 감소는 원점 방향으로 움직여 비율이 1:1로 수렴하기 때문','모든 흐름이 같은 RTT를 갖기 때문','라우터가 흐름별로 대역폭을 배분하기 때문','ssthresh가 모든 흐름에서 같기 때문'],answer:0,explain:'Chiu-Jain 분석. AIAD나 MIMD는 시작 시 불공정 비율을 바꾸지 못한다.'},
+    {q:'ss -ti 출력에서 cwnd:231 ssthresh:116 이 뜻하는 것은?',options:['현재 cwnd가 231 바이트','현재 cwnd 231 MSS, 마지막 손실 시 cwnd가 약 232 MSS였음','ssthresh가 cwnd보다 작으므로 Slow Start 중','수신 윈도우가 116 MSS'],answer:1,explain:'ss의 cwnd/ssthresh는 MSS 단위. ssthresh가 cwnd보다 작으므로 Congestion Avoidance 구간. ssthresh=116은 직전 손실 시 cwnd≈232의 절반.'},
+    {q:'RFC 6928이 초기 윈도우를 10 MSS로 올린 근거는?',options:['모든 링크가 10 Gbps 이상이 되어서','대부분의 웹 응답이 약 15 KB 이하라 첫 몇 RTT를 아낄 수 있어서','Slow Start가 폐지되어서','rwnd 기본값이 커져서'],answer:1,explain:'IW10 ≈ 14.6 KB. 작은 객체는 Slow Start 라운드 없이 한 RTT에 전달된다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

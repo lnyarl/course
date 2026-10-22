@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07. TCP 신뢰성: 시퀀스 · ACK · 재전송 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.sw-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.8rem;margin:6px 0}
+.sw-legend span::before{content:"";display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:5px;vertical-align:-2px;background:var(--c)}
+.sw-log{font-family:var(--mono);font-size:.76rem;background:var(--surface-2);border-radius:8px;padding:8px 12px;height:120px;overflow:auto;line-height:1.5}
+.sw-log .l{color:var(--red)}.sw-log .r{color:var(--accent)}.sw-log .ok{color:var(--green)}
+.sw-stats{display:flex;flex-wrap:wrap;gap:14px;font-size:.84rem;margin-top:8px}
+.sw-stats b{font-family:var(--mono)}
+canvas{width:100%;height:auto;display:block;border-radius:8px;background:var(--surface)}
+.sack-box{display:flex;gap:4px;flex-wrap:wrap;margin:8px 0}
+.sack-box div{width:60px;height:46px;border-radius:7px;border:2px solid var(--border);display:grid;place-items:center;font-family:var(--mono);font-size:.74rem;cursor:pointer;background:var(--surface-2);user-select:none}
+.sack-box div.rcv{background:var(--green-soft);border-color:var(--green)}
+.sack-box div.acked{background:var(--primary-soft);border-color:var(--primary)}
+.sack-out{font-family:var(--mono);font-size:.86rem;background:var(--surface-2);border-radius:8px;padding:10px 14px}
+.bo-table td{font-family:var(--mono)}
+</style>
+</head>
+<body data-chapter="07">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 2 · 심화 — CHAPTER 07</div>
+  <h1>TCP 신뢰성: 시퀀스 · ACK · 재전송</h1>
+  <p class="lead">IP는 패킷을 잃어버립니다. TCP는 그 위에서 "한 바이트도 빠짐없이, 순서대로"를 만들어 냅니다. 비결은 세 가지뿐입니다. 바이트마다 번호를 붙이고(시퀀스), 받은 데까지를 알리고(ACK), 못 받았으면 다시 보냅니다(재전송). 이 장에서는 그 세 가지가 어떻게 맞물려 <b>슬라이딩 윈도우</b>가 되고, 재전송 타이머(RTO)가 어떻게 계산되는지를 시뮬레이터로 직접 돌려 봅니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 90분</span><span class="chip l-tr">전송</span><span class="chip">RFC 9293 · 6298 · 2018 · 5681</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>시퀀스 번호가 세그먼트가 아닌 <b>바이트</b>에 붙는다는 것과 누적 ACK의 의미를 설명할 수 있다.</li>
+    <li>정지-대기 대비 파이프라이닝(슬라이딩 윈도우)의 효율을 대역폭·RTT로 계산할 수 있다.</li>
+    <li>RFC 6298의 SRTT/RTTVAR/RTO 계산식을 손으로 적용하고, Karn 알고리즘과 지수 백오프의 이유를 설명할 수 있다.</li>
+    <li>타임아웃 재전송과 빠른 재전송(3 dup ACK)의 차이, SACK가 해결하는 문제를 설명할 수 있다.</li>
+    <li><code>ss -ti</code> 출력에서 rtt/rto/cwnd/retrans를 읽어 연결의 건강 상태를 판단할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="bytes"><span class="num">7.1</span>바이트 스트림과 시퀀스 번호</h2>
+<p>응용이 <code>write()</code>로 넘긴 데이터는 커널 송신 버퍼에서 <b>하나의 긴 바이트 열</b>이 되고, TCP는 각 바이트에 번호를 매깁니다. 세그먼트는 이 열의 연속된 조각이며, 헤더의 <code>seq</code>는 "이 조각의 첫 바이트 번호"입니다. 그래서 세그먼트 크기가 바뀌어도(재전송 때 더 크게 묶어 보내도) 번호 체계는 흔들리지 않습니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 230" id="bs-svg"></svg>
+  <div class="cap">ISN=1000, MSS=1000인 연결. 4 세그먼트 전송 후 각 ACK가 가리키는 "다음 기대 바이트". 끝 번호는 배타적(seq 1001:2001 = 1001~2000).</div>
+</div>
+<div class="grid-2">
+  <div class="callout"><div class="t">📌 누적 ACK (cumulative ACK)</div><p><code>ack = n</code>은 "n-1번 바이트까지 <b>연속으로</b> 전부 받았다. 다음은 n부터 달라"입니다. 중간에 빠진 것이 있으면 그 앞까지만 인정합니다. 단순하고(ACK 하나 잃어도 다음 ACK가 대신함) 작지만, "n 이후에 무엇을 받았는지"는 표현할 수 없습니다 — 그 틈을 SACK(7.9)가 메웁니다.</p></div>
+  <div class="callout tip"><div class="t">💡 ACK는 "공짜"로 실린다</div><p>ACK 번호는 모든 세그먼트에 들어 있는 필드이므로, 반대 방향 데이터가 있으면 거기에 얹어 보냅니다(piggybacking). 순수 ACK(데이터 0바이트)는 반대 방향 데이터가 없을 때만 따로 나갑니다.</p></div>
+</div>
+
+<h2 id="pipeline"><span class="num">7.2</span>정지-대기 vs 파이프라이닝 <small>(계산기)</small></h2>
+<p>세그먼트 하나 보내고 ACK를 기다렸다가 다음을 보내는 <b>정지-대기</b>는 링크를 RTT 동안 놀립니다. 링크가 빠르고 멀수록 손해가 커집니다. 값을 바꿔 <b>활용률</b>이 윈도우 크기에 따라 어떻게 변하는지 보세요.</p>
+<div class="card">
+  <div class="row">
+    <label>대역폭 <input type="number" id="pl-bw" value="100" min="1" style="width:80px"> Mbps</label>
+    <label>RTT <input type="number" id="pl-rtt" value="50" min="1" style="width:70px"> ms</label>
+    <label>세그먼트 <input type="number" id="pl-mss" value="1460" min="100" style="width:80px"> B</label>
+    <label>윈도우 <input type="range" id="pl-w" min="1" max="4096" value="1"> <b id="pl-wv">1</b> 세그먼트</label>
+  </div>
+  <div class="kv" style="margin:10px 0">
+    <dt>세그먼트 전송 시간 (L/R)</dt><dd id="pl-tx">—</dd>
+    <dt>활용률 U = (W·L/R) / (RTT + L/R)</dt><dd id="pl-u">—</dd>
+    <dt>실효 처리량</dt><dd id="pl-tp">—</dd>
+    <dt>링크를 채우는 윈도우 (BDP ÷ MSS)</dt><dd id="pl-bdp">—</dd>
+  </div>
+  <canvas id="pl-canvas" width="860" height="220"></canvas>
+  <p class="small">그래프: 윈도우 크기(가로, 로그 스케일)에 따른 활용률. 빨간 선 = 현재 윈도우.</p>
+</div>
+<div class="callout"><div class="t">📌 대역폭-지연 곱 (BDP)</div><p><code>BDP = 대역폭 × RTT</code>는 "링크 위에 떠 있을 수 있는 바이트 수"입니다. 송신 윈도우가 BDP보다 작으면 링크를 다 못 씁니다. 100 Mbps × 50 ms = 625 KB → MSS 1460이면 약 428 세그먼트가 항상 날아다녀야 합니다. TCP 헤더의 Window 필드(최대 64 KB)로는 어림도 없어 Window Scale 옵션이 필요합니다(9장).</p></div>
+
+<h2 id="window"><span class="num">7.3</span>슬라이딩 윈도우 시뮬레이터</h2>
+<p>송신자는 ACK를 기다리지 않고 윈도우 크기만큼 <b>미리</b> 보냅니다. ACK가 올 때마다 윈도우의 왼쪽 끝이 전진(슬라이드)하고, 그만큼 새 세그먼트를 보낼 수 있습니다. 손실이 나면 타임아웃(RTO) 또는 3 중복 ACK로 재전송합니다. 윈도우 크기와 손실률을 바꿔 가며 돌려 보세요.</p>
+<div class="anim" id="sw-anim">
+  <div class="stage">
+    <div class="row" style="margin-bottom:6px">
+      <label>송신 윈도우 <input type="range" id="sw-w" min="1" max="12" value="5"> <b id="sw-wv">5</b></label>
+      <label>손실률 <input type="range" id="sw-loss" min="0" max="50" value="10"> <b id="sw-lossv">10</b>%</label>
+      <label>속도 <select id="sw-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+      <button class="btn primary sm" id="sw-start">▶ 시작</button>
+      <button class="btn sm" id="sw-reset">↺ 리셋</button>
+    </div>
+    <div class="sw-legend"><span style="--c:var(--green)">ACK 완료</span><span style="--c:var(--l-tr)">전송됨·미확인 (in flight)</span><span style="--c:var(--primary-soft);outline:1px solid var(--primary)">전송 가능 (윈도우 안)</span><span style="--c:var(--surface-3)">윈도우 밖</span><span style="--c:var(--red)">재전송</span></div>
+    <svg viewBox="0 0 900 400" id="sw-svg"></svg>
+    <div class="sw-stats" id="sw-stats"></div>
+    <div class="sw-log" id="sw-log"></div>
+  </div>
+</div>
+<div class="callout tip"><div class="t">💡 관찰 포인트</div><p>① 손실 0%, 윈도우 1로 두면 정지-대기 — 한 번에 하나씩만 날아간다. ② 윈도우 8, 손실 20%: 세그먼트 하나가 빠지면 뒤 세그먼트들이 도착해도 ACK 번호가 멈춰 있다(누적 ACK). 중복 ACK 3개가 쌓이면 RTO 전에 재전송되는 것을 보라. ③ 윈도우가 작을 때는 중복 ACK가 3개 모이지 못해 타임아웃까지 기다리는 것을 보라 — 작은 전송(짧은 HTTP 응답)이 손실에 유독 약한 이유다.</p></div>
+
+<h2 id="flow"><span class="num">7.4</span>흐름 제어: 수신 윈도우(rwnd)</h2>
+<p>송신 윈도우는 송신자 마음대로가 아닙니다. 수신자는 모든 세그먼트의 <code>Window</code> 필드로 "내 수신 버퍼에 남은 공간"을 알립니다(<b>rwnd</b>). 송신자는 <code>미확인 바이트 ≤ min(rwnd, cwnd)</code>를 지킵니다. cwnd(혼잡 윈도우)는 네트워크를 위한 것이고(8장), rwnd는 <b>수신 응용이 느릴 때</b>를 위한 것입니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 210">
+    <defs><marker id="fl-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="context-stroke"/></marker></defs>
+    <text x="150" y="24" text-anchor="middle" font-weight="700">수신 버퍼 (RcvBuffer = 64 KB)</text>
+    <rect x="30" y="40" width="240" height="40" rx="6" fill="var(--surface-3)" stroke="var(--border)"/>
+    <rect x="30" y="40" width="150" height="40" rx="6" fill="var(--accent-soft)" stroke="var(--l-link)"/>
+    <text x="105" y="65" text-anchor="middle" font-size="11">응용이 아직 안 읽은 데이터 (40 KB)</text>
+    <text x="225" y="65" text-anchor="middle" font-size="11" fill="var(--green)">빈 공간</text>
+    <text x="150" y="100" text-anchor="middle" font-size="11" class="mono">rwnd = RcvBuffer − (LastByteRcvd − LastByteRead) = 24 KB</text>
+    <line x1="290" y1="60" x2="400" y2="60" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#fl-ar)"/>
+    <text x="345" y="52" text-anchor="middle" font-size="10" class="mono">Window=24576</text>
+    <text x="620" y="24" text-anchor="middle" font-weight="700">송신자</text>
+    <rect x="420" y="40" width="400" height="40" rx="6" fill="var(--surface-3)" stroke="var(--border)"/>
+    <rect x="420" y="40" width="100" height="40" fill="var(--green-soft)"/><rect x="520" y="40" width="120" height="40" fill="var(--primary-soft)" stroke="var(--primary)"/>
+    <text x="470" y="65" text-anchor="middle" font-size="10.5">ACK됨</text><text x="580" y="65" text-anchor="middle" font-size="10.5">보낼 수 있음 ≤ 24 KB</text><text x="730" y="65" text-anchor="middle" font-size="10.5" class="muted">rwnd 밖 — 대기</text>
+    <text x="620" y="100" text-anchor="middle" font-size="11" class="mono">LastByteSent − LastByteAcked ≤ min(rwnd, cwnd)</text>
+    <g font-size="11">
+      <text x="30" y="140" font-weight="700" fill="var(--red)">rwnd = 0 (zero window)</text>
+      <text x="30" y="158">응용이 안 읽어 버퍼가 꽉 참 → 송신자는 멈춤. 그런데 공간이 생겼다는 "윈도우 갱신" ACK가 유실되면? 양쪽이 영원히 기다린다(교착).</text>
+      <text x="30" y="176">해법: 송신자가 <tspan class="mono">persist 타이머</tspan>로 1바이트짜리 <tspan class="mono">윈도우 프로브</tspan>를 주기적으로 보내 rwnd를 다시 묻는다. 응답의 Window 필드가 0이 아니면 재개.</text>
+      <text x="30" y="194" class="muted">ss -ti 에서 "persist" 가 보이거나, 캡처에서 [TCP ZeroWindow]/[TCP Window Full] 이 보이면 수신 응용이 병목이다.</text>
+    </g>
+  </svg>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 어리석은 윈도우 증후군 (Silly Window Syndrome)</div><p>수신 응용이 1바이트씩 읽으면 rwnd가 1바이트씩 열리고, 송신자가 그때마다 1바이트 세그먼트(헤더 40바이트+)를 보내면 효율이 2% 미만으로 떨어집니다. 대응은 양쪽에 있습니다. 수신 측은 빈 공간이 <code>min(MSS, 버퍼/2)</code> 이상이 될 때까지 윈도우 갱신을 미루고(Clark), 송신 측은 작은 데이터를 모아 보냅니다(Nagle, 9장). 흐름 제어 규칙 하나하나가 "작은 세그먼트를 막는다"는 같은 목표를 향합니다.</p></div>
+
+<h2 id="rto"><span class="num">7.5</span>RTT 측정과 재전송 타임아웃(RTO) <small>(RFC 6298 · 인터랙티브)</small></h2>
+<p>얼마나 기다려야 "잃어버렸다"고 판단할까요? 너무 짧으면 불필요한 재전송(spurious retransmission)이, 너무 길면 손실 복구가 늦어집니다. TCP는 RTT를 계속 측정해 <b>평활 RTT(SRTT)</b>와 <b>변동(RTTVAR)</b>을 추적하고, 그 위에 여유를 더해 RTO를 정합니다.</p>
+<div class="card">
+<pre data-nocopy="1"><code>첫 측정 R:     SRTT = R,            RTTVAR = R/2,            RTO = SRTT + max(G, 4·RTTVAR)
+이후 측정 R':  RTTVAR = (1−β)·RTTVAR + β·|SRTT − R'|      (β = 1/4)   ← 먼저 계산
+               SRTT   = (1−α)·SRTT   + α·R'               (α = 1/8)
+               RTO    = SRTT + max(G, 4·RTTVAR)            (G = 클록 입도)
+재전송 발생:   RTO = RTO × 2 (지수 백오프, 상한 60 s)      측정 없음(Karn)
+하한:          RTO ≥ 1 s (RFC 6298)   — 리눅스는 200 ms(TCP_RTO_MIN)</code></pre>
+  <div class="row" style="margin-top:8px">
+    <label>기준 RTT <input type="range" id="rto-base" min="10" max="300" value="80"> <b id="rto-basev">80</b> ms</label>
+    <label>지터 <input type="range" id="rto-jit" min="0" max="100" value="20"> <b id="rto-jitv">20</b>%</label>
+    <button class="btn sm primary" id="rto-add">+ 샘플 1개</button>
+    <button class="btn sm" id="rto-add10">+ 샘플 10개</button>
+    <button class="btn sm" id="rto-spike">+ 스파이크 (×4)</button>
+    <label>직접 입력 <input type="number" id="rto-custom" placeholder="ms" style="width:80px"><button class="btn sm" id="rto-addc">추가</button></label>
+    <button class="btn sm" id="rto-clear">지우기</button>
+  </div>
+  <canvas id="rto-canvas" width="860" height="260" style="margin-top:10px"></canvas>
+  <div class="kv" style="margin-top:8px"><dt>마지막 샘플 R</dt><dd id="rto-r">—</dd><dt>SRTT</dt><dd id="rto-srtt">—</dd><dt>RTTVAR</dt><dd id="rto-var">—</dd><dt>RTO = SRTT + 4·RTTVAR</dt><dd id="rto-rto">—</dd></div>
+  <p class="small">점 = RTT 샘플, 파란 선 = SRTT, 주황 선 = RTO. 스파이크 하나가 RTTVAR을 통해 RTO를 크게 밀어 올리고, 이후 샘플이 안정되면 천천히 내려오는 것을 관찰하라. 지터가 클수록 RTO가 SRTT에서 멀어진다 — "4·RTTVAR" 항이 변동이 큰 경로에서 조기 재전송을 막는다.</p>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 리눅스의 RTO 최소값은 왜 200 ms인가</div><p>RFC 6298은 RTO 하한을 1초로 권고하지만, 데이터센터 RTT는 수백 µs라 1초는 터무니없이 깁니다. 리눅스는 <code>TCP_RTO_MIN = 200 ms</code>(HZ/5)를 씁니다. 그런데 이것도 데이터센터에서는 너무 길어, 많은 흐름이 동시에 한 스위치 버퍼를 넘치게 하는 <b>incast</b> 상황에서 200 ms 동안 멈추는 "TCP incast collapse"가 생깁니다. 해법으로 µs 단위 RTO(Vasudevan 2009), <code>ip route … rto_min 5ms</code>, 그리고 손실을 빨리 감지하는 RACK-TLP(RFC 8985, 리눅스 기본)가 쓰입니다. 왜 아예 하한을 없애지 않을까요? 지연 ACK(수신자가 최대 40~200 ms 기다렸다 ACK)가 RTT 샘플보다 늦게 올 수 있어, 하한이 너무 낮으면 "손실 아닌 손실"로 재전송이 폭주하기 때문입니다.</p></div>
+
+<h2 id="karn"><span class="num">7.6</span>Karn 알고리즘과 지수 백오프</h2>
+<p>재전송한 세그먼트의 ACK가 왔습니다. 이 ACK는 <b>원본</b>에 대한 것일까요, <b>재전송본</b>에 대한 것일까요? 알 수 없습니다(재전송 모호성). 원본이라 생각하고 RTT를 재면 너무 길게, 재전송본이라 생각하면 너무 짧게 측정됩니다. Karn의 답은 둘입니다.</p>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">① 재전송된 세그먼트로는 RTT를 재지 않는다</h4><p>모호한 샘플은 버린다. 단, Timestamps 옵션이 있으면 ACK가 어느 전송본에 대한 것인지(TSecr) 알 수 있어 이 제한이 풀린다 — 현대 스택이 Timestamps를 기본으로 켜는 이유 중 하나.</p></div>
+  <div class="card"><h4 style="margin-top:0">② 타임아웃마다 RTO를 2배로 (지수 백오프)</h4><p>재전송 뒤 정상 측정으로 RTO를 갱신할 때까지 백오프된 값을 유지한다. 네트워크가 혼잡해서 잃어버린 것이라면, 더 자주 보내는 것은 불에 기름 붓기다.</p></div>
+</div>
+<table class="bo-table">
+  <thead><tr><th>재전송 횟수</th><th>RTO (초기 200 ms 가정)</th><th>누적 대기</th><th>비고</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>0.2 s → 0.4 s</td><td>0.2 s</td><td></td></tr>
+    <tr><td>2</td><td>0.8 s</td><td>0.6 s</td><td></td></tr>
+    <tr><td>3</td><td>1.6 s</td><td>1.4 s</td><td>SYN 재전송은 1 s부터: 1, 2, 4, 8, 16, 32 (tcp_syn_retries=6 → 약 127 s)</td></tr>
+    <tr><td>5</td><td>6.4 s</td><td>6.2 s</td><td></td></tr>
+    <tr><td>8</td><td>51.2 s</td><td>51 s</td><td>상한 60 s 도달 직전</td></tr>
+    <tr><td>15</td><td>60 s (상한)</td><td>약 924 s</td><td>리눅스 tcp_retries2=15 → 약 15분 뒤 연결 포기(ETIMEDOUT)</td></tr>
+  </tbody>
+</table>
+<div class="callout warn"><div class="t">⚠️ "연결이 15분 뒤에야 끊겼어요"</div><p>상대가 사라져도(전원 차단, 케이블 뽑힘) RST가 오지 않으면 송신자는 위 표대로 약 15분을 재시도합니다. 데이터를 보내지 않는 유휴 연결은 영원히 ESTABLISHED로 남습니다. 응용 수준 하트비트나 <code>TCP_USER_TIMEOUT</code>, keepalive(9장)가 필요한 이유입니다.</p></div>
+
+<h2 id="fast"><span class="num">7.7</span>빠른 재전송: 3 중복 ACK <small>(애니메이션 · RFC 5681)</small></h2>
+<p>타임아웃은 느립니다(최소 200 ms, 보통 RTT의 몇 배). 다행히 손실의 증거가 더 빨리 옵니다. 손실 뒤의 세그먼트들이 도착할 때마다 수신자는 <b>같은 ACK 번호</b>를 반복합니다(중복 ACK). 송신자는 중복 ACK를 3개 받으면 타이머를 기다리지 않고 즉시 재전송합니다.</p>
+<div class="anim" id="fr-anim"><div class="stage"><svg viewBox="0 0 900 420" id="fr-svg"></svg></div></div>
+<div class="callout"><div class="t">📌 왜 1개가 아니라 3개인가</div><p>중복 ACK는 손실 없이도 생깁니다 — 세그먼트 순서가 바뀌어 도착하면(reordering) 수신자는 잠시 같은 ACK를 반복하다가 곧 따라잡습니다. 1~2개는 순서 바뀜일 수 있고, 3개면 손실일 가능성이 충분히 높다는 경험적 타협입니다. 순서 바뀜이 잦은 경로(다중 경로 로드밸런싱)에서는 이것도 오판을 일으켜, 리눅스는 중복 ACK 임계값을 동적으로 조정하고 RACK(시간 기반 손실 감지)를 함께 씁니다.</p></div>
+
+<h2 id="sack"><span class="num">7.8</span>SACK: 구멍을 정확히 알리기 <small>(RFC 2018 · 인터랙티브)</small></h2>
+<p>누적 ACK만으로는 "3번은 못 받았지만 5~6, 8~9번은 받았다"를 말할 수 없습니다. 송신자는 3번을 재전송한 뒤에도 4번 이후를 다시 보내야 할지 모릅니다(Go-Back-N처럼 낭비). <b>SACK(Selective ACK)</b> 옵션은 수신한 불연속 블록을 최대 3~4개 실어 보냅니다. 아래 상자를 클릭해 수신 상태를 바꿔 보세요.</p>
+<div class="card">
+  <div class="small">수신 버퍼 (세그먼트 1000바이트씩, seq 1부터). 클릭 = 수신/미수신 토글</div>
+  <div class="sack-box" id="sack-box"></div>
+  <div class="sack-out" id="sack-out"></div>
+  <p class="small" style="margin-top:8px">SACK 블록은 [왼쪽 경계, 오른쪽 경계) 바이트 범위. 옵션 길이 = 2 + 8×블록수. Timestamps(10B)와 함께 쓰면 옵션 40B 한도 때문에 블록은 최대 3개. 송신자는 SACK로 "확실히 도착한 것"을 제외하고 구멍만 재전송한다(선택적 재전송). handshake의 <code>SACK-Permitted</code>(종류 4)로 양쪽이 합의해야 한다.</p>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 시퀀스 번호 순환(wrap-around)과 PAWS</div><p>32비트 시퀀스는 4 GiB마다 돌아옵니다. 10 Gbps에서는 약 3.4초. MSL(2분)보다 훨씬 짧아, 지연된 옛 세그먼트가 "미래의 유효한" 번호로 둔갑할 수 있습니다. RFC 7323의 <b>PAWS</b>(Protect Against Wrapped Sequences)는 Timestamps 옵션을 이용합니다. 세그먼트의 타임스탬프(TSval)가 마지막으로 받아들인 것보다 작으면 — 시퀀스 번호가 맞아 보여도 — 옛 세그먼트로 간주하고 버립니다. 타임스탬프는 단조 증가 32비트 시계이므로 순환까지 수십 일이 걸려 안전합니다. 결국 Timestamps 옵션 하나가 ① 정확한 RTT 측정, ② Karn 제한 해제, ③ PAWS 세 가지를 동시에 해결합니다.</p></div>
+
+<h2 id="delack"><span class="num">7.9</span>지연 ACK 미리 보기</h2>
+<p>수신자는 세그먼트마다 즉시 ACK하지 않고 최대 40~200 ms(리눅스) 또는 두 번째 세그먼트가 올 때까지 기다렸다가 한 번에 ACK합니다(RFC 1122). ACK 수를 절반으로 줄이고 응답 데이터에 얹을 기회를 노리는 것인데, 송신 측 Nagle 알고리즘과 만나면 수십 ms씩 멈추는 유명한 상호작용이 생깁니다. 9장에서 애니메이션으로 다룹니다. 여기서는 "RTT 샘플에는 지연 ACK 시간이 섞일 수 있다"는 점만 기억하세요 — RTO 하한이 필요한 이유입니다.</p>
+
+<h2 id="practice"><span class="num">7.10</span>실습: 연결 내부 상태 읽기</h2>
+<h3>ss -ti</h3>
+<pre><code>ss -ti dst 93.184.216.34</code></pre>
+<div class="term">ESTAB 0  0  10.0.0.5:51234  93.184.216.34:443
+	 cubic wscale:7,7 <span class="y">rto:204</span> <span class="y">rtt:3.25/1.5</span> ato:40 mss:1448 pmtu:1500 rcvmss:1448 advmss:1448
+	 <span class="g">cwnd:10</span> ssthresh:7 bytes_sent:4210 bytes_acked:4210 bytes_received:98213 segs_out:48 segs_in:92
+	 data_segs_out:12 data_segs_in:71 send 35.6Mbps lastsnd:120 lastrcv:118 lastack:118
+	 pacing_rate 71.2Mbps delivery_rate 28.9Mbps delivered:13 app_limited busy:60ms
+	 <span class="r">retrans:0/2</span> dsack_dups:1 rcv_rtt:12 rcv_space:64000 minrtt:2.9</div>
+<table>
+  <thead><tr><th>필드</th><th>의미</th><th>해석</th></tr></thead>
+  <tbody>
+    <tr><td><code>rtt:3.25/1.5</code></td><td>SRTT / RTTVAR (ms)</td><td>평균 3.25 ms, 변동 1.5 ms. LAN급.</td></tr>
+    <tr><td><code>rto:204</code></td><td>현재 RTO (ms)</td><td>3.25 + 4×1.5 = 9.25 → 하한 200 ms에 걸려 204. 손실 시 200 ms 멈춤.</td></tr>
+    <tr><td><code>ato:40</code></td><td>지연 ACK 타임아웃</td><td>수신 측이 ACK를 최대 40 ms 미룸.</td></tr>
+    <tr><td><code>cwnd:10 ssthresh:7</code></td><td>혼잡 윈도우(세그먼트) / 슬로스타트 임계</td><td>8장. ssthresh가 설정됐다 = 과거에 손실을 겪었다.</td></tr>
+    <tr><td><code>retrans:0/2</code></td><td>현재 미해결 재전송 / 누적 재전송</td><td>총 2회 재전송. 세그먼트 48개 중 2개 ≈ 4% — 높다.</td></tr>
+    <tr><td><code>dsack_dups:1</code></td><td>D-SACK로 확인된 불필요한 재전송</td><td>재전송 2회 중 1회는 사실 손실이 아니었다(spurious).</td></tr>
+    <tr><td><code>minrtt:2.9</code></td><td>관측된 최소 RTT</td><td>경로 고유 지연. SRTT − minrtt = 큐잉 지연의 힌트.</td></tr>
+  </tbody>
+</table>
+<h3>tcpdump로 중복 ACK와 재전송 찾기</h3>
+<pre><code>sudo tcpdump -n -r capture.pcap 'tcp and host 93.184.216.34' | less
+# Wireshark: 필터  tcp.analysis.duplicate_ack  /  tcp.analysis.retransmission  /  tcp.analysis.fast_retransmission</code></pre>
+<div class="term">10:00:00.100 IP S.443 > C.51234: Flags [.], seq 1:1449, ack 80, length 1448
+10:00:00.101 IP S.443 > C.51234: Flags [.], seq <span class="r">2897</span>:4345, ack 80, length 1448   <span class="c">← 1449:2897 이 보이지 않음 (유실 추정)</span>
+10:00:00.102 IP C.51234 > S.443: Flags [.], ack <span class="y">1449</span>, options [sack 1 {2897:4345}]   <span class="c">← 누적 ACK는 1449에서 멈춤 + SACK 블록</span>
+10:00:00.103 IP S.443 > C.51234: Flags [.], seq 4345:5793, ack 80, length 1448
+10:00:00.104 IP C.51234 > S.443: Flags [.], ack <span class="y">1449</span>, options [sack 1 {2897:5793}]   <span class="c">← dup ACK #2</span>
+10:00:00.105 IP S.443 > C.51234: Flags [.], seq 5793:7241, ack 80, length 1448
+10:00:00.106 IP C.51234 > S.443: Flags [.], ack <span class="y">1449</span>, options [sack 1 {2897:7241}]   <span class="c">← dup ACK #3 → 빠른 재전송 조건</span>
+10:00:00.107 IP S.443 > C.51234: Flags [.], seq <span class="g">1449:2897</span>, ack 80, length 1448        <span class="c">← 재전송 (RTO 기다리지 않음)</span>
+10:00:00.109 IP C.51234 > S.443: Flags [.], ack <span class="g">7241</span>                                 <span class="c">← 구멍이 메워져 누적 ACK가 한 번에 점프</span></div>
+<p>tcpdump만으로 "재전송"을 판별하는 기준: <b>같은 seq 범위가 두 번</b> 보이면 재전송, <b>같은 ack 번호의 순수 ACK가 반복</b>되면 중복 ACK. Wireshark는 이를 자동으로 색칠해 주지만 손으로 읽을 줄 알아야 캡처 도구가 없는 서버에서도 진단할 수 있습니다.</p>
+
+<h2 id="quiz"><span class="num">7.11</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>시퀀스 번호는 바이트에 붙고, ACK는 "다음에 기대하는 바이트"를 누적으로 알린다. SACK가 불연속 수신 블록을 보완한다.</li>
+    <li>슬라이딩 윈도우로 ACK 전에 여러 세그먼트를 띄운다. 활용률은 윈도우 ÷ BDP로 결정된다. 송신 가능량 = min(rwnd, cwnd).</li>
+    <li>RTO = SRTT + 4·RTTVAR (RFC 6298). 재전송 샘플은 버리고(Karn), 타임아웃마다 2배 백오프. 리눅스 하한 200 ms.</li>
+    <li>3 중복 ACK → 빠른 재전송. 윈도우가 작으면 중복 ACK가 모이지 않아 타임아웃까지 기다린다.</li>
+    <li>Timestamps 옵션은 정확한 RTT, Karn 제한 해제, PAWS를 한 번에 해결한다.</li>
+    <li><code>ss -ti</code>의 rtt/rto/retrans/dsack_dups로 연결의 손실·지연 상태를 읽을 수 있다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz} = TCPIP;
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  /* ---------- 7.1 바이트 스트림 ---------- */
+  (function(){
+    const s=$('#bs-svg'); const X0=40, PX=0.19; // 1 byte = 0.19px → 4000 bytes = 760px
+    s.appendChild(svg('text',{x:X0,y:22,'font-weight':700,'font-size':12},'송신 버퍼 (바이트 번호)'));
+    for(let b=1000;b<=5000;b+=1000){ const x=X0+(b-1000)*PX; s.appendChild(svg('line',{x1:x,y1:30,x2:x,y2:100,class:'line'})); s.appendChild(svg('text',{x,y:116,'text-anchor':'middle','font-size':10,class:'mono muted'},String(b+1))); }
+    const segs=[[1001,2001,'seg 1'],[2001,3001,'seg 2'],[3001,4001,'seg 3'],[4001,5001,'seg 4']];
+    segs.forEach(([a,b,n],i)=>{ const x=X0+(a-1001)*PX; s.appendChild(svg('rect',{x:x+2,y:40,width:(b-a)*PX-4,height:50,rx:6,fill:'var(--primary-soft)',stroke:'var(--l-tr)'})); s.appendChild(svg('text',{x:x+(b-a)*PX/2,y:60,'text-anchor':'middle','font-size':11,'font-weight':700},n)); s.appendChild(svg('text',{x:x+(b-a)*PX/2,y:78,'text-anchor':'middle','font-size':10,class:'mono'},`seq ${a}:${b}`)); });
+    s.appendChild(svg('text',{x:X0,y:150,'font-weight':700,'font-size':12},'수신자의 ACK (각 세그먼트 도착 후)'));
+    segs.forEach(([a,b],i)=>{ const x=X0+(b-1001)*PX; s.appendChild(svg('line',{x1:x,y1:100,x2:x,y2:170,stroke:'var(--l-net)','stroke-width':1.5,'stroke-dasharray':'3 3'})); s.appendChild(svg('rect',{x:x-44,y:168,width:88,height:22,rx:5,fill:'var(--green-soft)',stroke:'var(--l-net)'})); s.appendChild(svg('text',{x,y:183,'text-anchor':'middle','font-size':10.5,class:'mono','font-weight':700,fill:'var(--l-net)'},`ack ${b}`)); });
+    s.appendChild(svg('text',{x:X0,y:215,'font-size':11,class:'muted'},'seg 2가 유실되면? seg 3, 4가 도착해도 ACK는 2001에 머문다 (누적). seg 2 재전송 후에야 ack 5001로 점프.'));
+  })();
+
+  /* ---------- 7.2 파이프라이닝 계산기 ---------- */
+  (function(){
+    const cv=$('#pl-canvas'), ctx=cv.getContext('2d');
+    function calc(){
+      const bw=+$('#pl-bw').value*1e6, rtt=+$('#pl-rtt').value/1000, L=+$('#pl-mss').value*8, W=+$('#pl-w').value;
+      $('#pl-wv').textContent=W;
+      const tx=L/bw; const U=w=>Math.min(1,(w*tx)/(rtt+tx));
+      $('#pl-tx').textContent=(tx*1e6).toFixed(1)+' µs';
+      $('#pl-u').textContent=(U(W)*100).toFixed(2)+' %';
+      $('#pl-tp').textContent=(U(W)*bw/1e6).toFixed(2)+' Mbps';
+      $('#pl-bdp').textContent=Math.ceil(bw*rtt/L)+' 세그먼트 ('+(bw*rtt/8/1024).toFixed(0)+' KB)';
+      const Wd=cv.width, H=cv.height, m={l:50,r:20,t:14,b:30};
+      ctx.clearRect(0,0,Wd,H); ctx.fillStyle=css('--surface'); ctx.fillRect(0,0,Wd,H);
+      const xs=w=>m.l+(Math.log2(w)/12)*(Wd-m.l-m.r), ys=u=>m.t+(1-u)*(H-m.t-m.b);
+      ctx.strokeStyle=css('--border'); ctx.lineWidth=1; ctx.fillStyle=css('--muted'); ctx.font='11px '+css('--mono');
+      for(let i=0;i<=4;i++){ const y=ys(i/4); ctx.beginPath(); ctx.moveTo(m.l,y); ctx.lineTo(Wd-m.r,y); ctx.stroke(); ctx.fillText((i*25)+'%',6,y+4); }
+      for(let e=0;e<=12;e+=2){ const x=xs(2**e); ctx.beginPath(); ctx.moveTo(x,m.t); ctx.lineTo(x,H-m.b); ctx.stroke(); ctx.fillText(String(2**e),x-8,H-10); }
+      ctx.strokeStyle=css('--primary'); ctx.lineWidth=2.5; ctx.beginPath();
+      for(let w=1;w<=4096;w*=1.05){ const x=xs(w), y=ys(U(w)); w===1?ctx.moveTo(x,y):ctx.lineTo(x,y); }
+      ctx.stroke();
+      ctx.strokeStyle=css('--red'); ctx.lineWidth=1.5; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(xs(W),m.t); ctx.lineTo(xs(W),H-m.b); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle=css('--red'); ctx.beginPath(); ctx.arc(xs(W),ys(U(W)),5,0,7); ctx.fill();
+    }
+    ['pl-bw','pl-rtt','pl-mss','pl-w'].forEach(id=>$('#'+id).addEventListener('input',calc)); calc();
+    document.addEventListener('click',e=>{ if(e.target.id==='theme-btn') setTimeout(calc,50); });
+  })();
+
+  /* ---------- 7.3 슬라이딩 윈도우 시뮬레이터 ---------- */
+  (function(){
+    const s=$('#sw-svg'), N=24, FLIGHT=1500, SEND_GAP=170, XS=150, XR=750, YD=235, YA=305;
+    const stat=svg('g'), boxes=svg('g'), rboxes=svg('g'), pk=svg('g'), tmr=svg('g'); s.append(stat,boxes,rboxes,pk,tmr);
+    // 정적
+    s.appendChild(svg('text',{x:20,y:24,'font-weight':700,'font-size':12},'송신 버퍼'));
+    s.appendChild(svg('text',{x:20,y:364,'font-weight':700,'font-size':12},'수신 버퍼'));
+    [[XS,'송신자'],[XR,'수신자']].forEach(([x,n])=>{ s.appendChild(svg('rect',{x:x-50,y:140,width:100,height:30,rx:8,class:'node'})); s.appendChild(svg('text',{x,y:160,'text-anchor':'middle','font-weight':700},n)); });
+    s.appendChild(svg('line',{x1:XS+55,y1:YD,x2:XR-55,y2:YD,class:'line'})); s.appendChild(svg('text',{x:450,y:YD-16,'text-anchor':'middle','font-size':10,class:'muted'},'데이터 →'));
+    s.appendChild(svg('line',{x1:XS+55,y1:YA,x2:XR-55,y2:YA,class:'line'})); s.appendChild(svg('text',{x:450,y:YA+22,'text-anchor':'middle','font-size':10,class:'muted'},'← ACK'));
+    const BW=33, BX=20;
+    const sb=[], rb=[];
+    for(let i=0;i<N;i++){ const r=svg('rect',{x:BX+i*(BW+3),y:34,width:BW,height:36,rx:5}); const t=svg('text',{x:BX+i*(BW+3)+BW/2,y:57,'text-anchor':'middle','font-size':10,class:'mono'},String(i)); boxes.append(r,t); sb.push(r);
+      const r2=svg('rect',{x:BX+i*(BW+3),y:372,width:BW,height:22,rx:4}); const t2=svg('text',{x:BX+i*(BW+3)+BW/2,y:387,'text-anchor':'middle','font-size':9,class:'mono'},String(i)); rboxes.append(r2,t2); rb.push(r2); }
+    const winRect=svg('rect',{x:BX,y:30,width:0,height:44,rx:7,fill:'none',stroke:'var(--primary)','stroke-width':2,'stroke-dasharray':'5 3'}); boxes.appendChild(winRect);
+    const winLbl=svg('text',{x:BX,y:90,'font-size':10,fill:'var(--primary-text)','font-weight':700,class:'mono'},''); boxes.appendChild(winLbl);
+    const tbar=svg('rect',{x:XS-50,y:178,width:0,height:6,rx:3,fill:'var(--accent)'}); const tlbl=svg('text',{x:XS,y:200,'text-anchor':'middle','font-size':10,class:'mono muted'},'RTO 타이머'); tmr.append(svg('rect',{x:XS-50,y:178,width:100,height:6,rx:3,fill:'var(--surface-3)'}),tbar,tlbl);
+    const dupLbl=svg('text',{x:XS,y:122,'text-anchor':'middle','font-size':11,class:'mono',fill:'var(--red)','font-weight':700},''); s.appendChild(dupLbl);
+    const rcvLbl=svg('text',{x:XR,y:122,'text-anchor':'middle','font-size':11,class:'mono',fill:'var(--l-net)','font-weight':700},''); s.appendChild(rcvLbl);
+
+    let st; let raf=null, lastT=null, simT=0;
+    const log=(m,c)=>{ const L=$('#sw-log'); const d=el('div',c||'',`[${(simT/1000).toFixed(2)}s] ${m}`); L.appendChild(d); L.scrollTop=L.scrollHeight; };
+    function reset(){ if(raf) cancelAnimationFrame(raf); raf=null; lastT=null; simT=0;
+      st={base:0,next:0,rcvNext:0,rbuf:new Set(),fl:[],timer:null,rto:FLIGHT*2.6,dup:0,lastSend:-1e9,sent:0,retx:0,acks:0,done:false,marks:[]};
+      $('#sw-log').innerHTML=''; $('#sw-start').textContent='▶ 시작'; draw(); }
+    function W(){ return +$('#sw-w').value; }
+    function send(seq,re){ const lost=Math.random()*100<+$('#sw-loss').value; st.fl.push({k:'d',seq,t0:simT,lost,re}); st.sent++; if(re) st.retx++; if(st.timer==null) st.timer=simT; st.lastSend=simT; if(lost) log(`seg ${seq} ${re?'재전송 ':''}전송 → 네트워크에서 유실될 예정`, 'l'); }
+    function sendAck(){ const lost=Math.random()*100<+$('#sw-loss').value/2; st.fl.push({k:'a',ack:st.rcvNext,t0:simT,lost}); }
+    function step(dt){
+      simT+=dt;
+      // 송신
+      if(st.next<N && st.next<st.base+W() && simT-st.lastSend>=SEND_GAP){ send(st.next,false); st.next++; }
+      // 패킷 진행
+      const keep=[];
+      for(const p of st.fl){ const pr=(simT-p.t0)/FLIGHT;
+        if(p.lost && pr>=0.5){ st.marks.push({x:p.k==='d'?XS+55+(XR-XS-110)*0.5:XR-55-(XR-XS-110)*0.5,y:p.k==='d'?YD:YA,t:simT}); continue; }
+        if(pr>=1){ if(p.k==='d'){ if(p.seq===st.rcvNext){ st.rcvNext++; while(st.rbuf.has(st.rcvNext)){ st.rbuf.delete(st.rcvNext); st.rcvNext++; } } else if(p.seq>st.rcvNext) st.rbuf.add(p.seq); sendAck(); }
+          else { st.acks++; if(p.ack>st.base){ st.base=p.ack; st.dup=0; st.timer=st.base<st.next?simT:null; } else if(p.ack===st.base && st.base<st.next){ st.dup++; if(st.dup===3){ log(`dup ACK ×3 (ack ${p.ack}) → seg ${st.base} 빠른 재전송`,'r'); send(st.base,true); st.timer=simT; } } }
+          continue; }
+        keep.push(p); }
+      st.fl=keep; st.marks=st.marks.filter(m=>simT-m.t<700);
+      // 타임아웃
+      if(st.timer!=null && st.base<st.next && simT-st.timer>st.rto){ log(`RTO 타임아웃 → seg ${st.base} 재전송`,'r'); send(st.base,true); st.timer=simT; st.dup=0; }
+      if(st.base>=N && !st.done){ st.done=true; log(`완료: ${st.sent}회 전송 (재전송 ${st.retx}), ${(simT/1000).toFixed(1)}s`,'ok'); }
+    }
+    function draw(){
+      const w=W();
+      sb.forEach((r,i)=>{ let f; if(i<st.base) f='var(--green)'; else if(i<st.next) f='var(--l-tr)'; else if(i<st.base+w) f='var(--primary-soft)'; else f='var(--surface-3)'; r.setAttribute('fill',f); r.setAttribute('stroke',i<st.base+w&&i>=st.base?'var(--primary)':'var(--border)'); });
+      winRect.setAttribute('x',BX+st.base*(BW+3)-2); winRect.setAttribute('width',Math.min(w,N-st.base)*(BW+3)+1);
+      winLbl.setAttribute('x',BX+st.base*(BW+3)); winLbl.textContent=`base=${st.base} next=${st.next} window=${w}`;
+      rb.forEach((r,i)=>r.setAttribute('fill', i<st.rcvNext?'var(--green)':st.rbuf.has(i)?'var(--accent)':'var(--surface-3)'));
+      rcvLbl.textContent=`rcvNext=${st.rcvNext}`+(st.rbuf.size?`  버퍼: {${[...st.rbuf].sort((a,b)=>a-b).join(',')}}`:'');
+      dupLbl.textContent=st.dup?`dup ACK ×${st.dup}`:'';
+      pk.innerHTML='';
+      for(const p of st.fl){ const pr=Math.min(1,(simT-p.t0)/FLIGHT); const x=p.k==='d'?XS+55+(XR-XS-110)*pr:XR-55-(XR-XS-110)*pr; const y=p.k==='d'?YD:YA;
+        const g=svg('g',{transform:`translate(${x},${y})`}); g.appendChild(svg('rect',{x:-16,y:-11,width:32,height:22,rx:5,fill:p.k==='d'?(p.re?'var(--red)':'var(--l-tr)'):'var(--l-net)',opacity:p.lost&&pr>0.35?0.4:1})); g.appendChild(svg('text',{x:0,y:4,'text-anchor':'middle','font-size':9.5,fill:'#fff',class:'mono','font-weight':700},String(p.k==='d'?p.seq:'A'+p.ack))); pk.appendChild(g); }
+      for(const m of st.marks){ pk.appendChild(svg('text',{x:m.x,y:m.y+5,'text-anchor':'middle','font-size':16,fill:'var(--red)','font-weight':800},'✕')); }
+      const tp=st.timer!=null?Math.min(1,(simT-st.timer)/st.rto):0; tbar.setAttribute('width',100*tp); tbar.setAttribute('fill',tp>0.8?'var(--red)':'var(--accent)');
+      $('#sw-stats').innerHTML=`<span>전송 <b>${st.sent}</b></span><span>재전송 <b>${st.retx}</b></span><span>ACK 수신 <b>${st.acks}</b></span><span>진행 <b>${st.base}/${N}</b></span><span>시간 <b>${(simT/1000).toFixed(1)}s</b></span>`;
+    }
+    function frame(t){ if(lastT!=null){ const dt=Math.min(100,t-lastT)*(+$('#sw-speed').value); step(dt); draw(); } lastT=t; if(!st.done) raf=requestAnimationFrame(frame); else { raf=null; $('#sw-start').textContent='▶ 시작'; } }
+    $('#sw-start').onclick=()=>{ if(raf){ cancelAnimationFrame(raf); raf=null; lastT=null; $('#sw-start').textContent='▶ 계속'; } else { if(st.done) reset(); $('#sw-start').textContent='⏸ 일시정지'; raf=requestAnimationFrame(frame); } };
+    $('#sw-reset').onclick=reset;
+    $('#sw-w').oninput=()=>{ $('#sw-wv').textContent=$('#sw-w').value; draw(); };
+    $('#sw-loss').oninput=()=>{ $('#sw-lossv').textContent=$('#sw-loss').value; };
+    reset();
+  })();
+
+  /* ---------- 7.5 RTO 계산기 ---------- */
+  (function(){
+    const cv=$('#rto-canvas'), ctx=cv.getContext('2d'); let samples=[];
+    function compute(){ let srtt=null,rttvar=null; const out=[]; for(const R of samples){ if(srtt==null){ srtt=R; rttvar=R/2; } else { rttvar=0.75*rttvar+0.25*Math.abs(srtt-R); srtt=0.875*srtt+0.125*R; } out.push({R,srtt,rttvar,rto:Math.max(200,srtt+Math.max(1,4*rttvar))}); } return out; }
+    function draw(){
+      const d=compute(); const W=cv.width,H=cv.height,m={l:46,r:16,t:12,b:26};
+      ctx.clearRect(0,0,W,H); ctx.fillStyle=css('--surface'); ctx.fillRect(0,0,W,H);
+      const maxY=Math.max(300,...d.map(x=>Math.max(x.R,x.rto)))*1.1; const n=Math.max(20,d.length);
+      const xs=i=>m.l+(i/(n-1))*(W-m.l-m.r), ys=v=>m.t+(1-v/maxY)*(H-m.t-m.b);
+      ctx.strokeStyle=css('--border'); ctx.fillStyle=css('--muted'); ctx.font='11px '+css('--mono'); ctx.lineWidth=1;
+      for(let i=0;i<=4;i++){ const v=maxY*i/4, y=ys(v); ctx.beginPath(); ctx.moveTo(m.l,y); ctx.lineTo(W-m.r,y); ctx.stroke(); ctx.fillText(v.toFixed(0),4,y+4); }
+      ctx.fillText('샘플 #',W-60,H-8);
+      const line=(key,color,wd)=>{ ctx.strokeStyle=color; ctx.lineWidth=wd; ctx.beginPath(); d.forEach((p,i)=>{ i?ctx.lineTo(xs(i),ys(p[key])):ctx.moveTo(xs(i),ys(p[key])); }); ctx.stroke(); };
+      if(d.length){ line('rto',css('--accent'),2.5); line('srtt',css('--primary'),2.5); ctx.fillStyle=css('--text-2'); d.forEach((p,i)=>{ ctx.beginPath(); ctx.arc(xs(i),ys(p.R),3.2,0,7); ctx.fill(); }); }
+      const last=d[d.length-1]; $('#rto-r').textContent=last?last.R.toFixed(1)+' ms':'—'; $('#rto-srtt').textContent=last?last.srtt.toFixed(1)+' ms':'—'; $('#rto-var').textContent=last?last.rttvar.toFixed(1)+' ms':'—'; $('#rto-rto').textContent=last?last.rto.toFixed(1)+' ms'+(last.rto===200?' (하한 200 ms 적용)':''):'—';
+    }
+    const base=()=>+$('#rto-base').value, jit=()=>+$('#rto-jit').value/100;
+    const rnd=()=>{ const b=base(); return Math.max(1,b*(1+jit()*(Math.random()*2-1))+(Math.random()<0.05?b*1.5:0)); };
+    $('#rto-base').oninput=()=>$('#rto-basev').textContent=base(); $('#rto-jit').oninput=()=>$('#rto-jitv').textContent=$('#rto-jit').value;
+    $('#rto-add').onclick=()=>{ samples.push(rnd()); draw(); };
+    $('#rto-add10').onclick=()=>{ for(let i=0;i<10;i++) samples.push(rnd()); draw(); };
+    $('#rto-spike').onclick=()=>{ samples.push(base()*4); draw(); };
+    $('#rto-addc').onclick=()=>{ const v=+$('#rto-custom').value; if(v>0){ samples.push(v); $('#rto-custom').value=''; draw(); } };
+    $('#rto-clear').onclick=()=>{ samples=[]; draw(); };
+    for(let i=0;i<12;i++) samples.push(rnd()); draw();
+    document.addEventListener('click',e=>{ if(e.target.id==='theme-btn') setTimeout(draw,50); });
+  })();
+
+  /* ---------- 7.7 빠른 재전송 애니메이션 ---------- */
+  (function(){
+    const s=$('#fr-svg'), XL=220, XR=680; const dyn=svg('g');
+    [[XL,'송신자'],[XR,'수신자']].forEach(([x,n])=>{ s.appendChild(svg('rect',{x:x-60,y:10,width:120,height:30,rx:8,class:'node'})); s.appendChild(svg('text',{x,y:30,'text-anchor':'middle','font-weight':700},n)); s.appendChild(svg('line',{x1:x,y1:40,x2:x,y2:410,class:'line','stroke-dasharray':'4 4'})); });
+    s.appendChild(dyn);
+    function arrow(x1,y1,x2,y2,label,color,ins,lost){
+      const g=svg('g'); const ex=lost?(x1+x2)/2:x2, ey=lost?(y1+y2)/2:y2;
+      const line=svg('line',{x1,y1,x2:ex,y2:ey,stroke:color,'stroke-width':2.5,'stroke-dasharray':lost?'6 4':null}); const len=Math.hypot(ex-x1,ey-y1);
+      if(!lost){ line.style.strokeDasharray=len; line.style.strokeDashoffset=ins?0:len; line.style.transition='stroke-dashoffset .5s'; }
+      const ang=Math.atan2(ey-y1,ex-x1)*180/Math.PI; const head=lost?svg('text',{x:ex+8,y:ey+6,'font-size':18,fill:'var(--red)','font-weight':800},'✕'):svg('path',{d:'M-9 -4.5 L0 0 L-9 4.5z',fill:color,transform:`translate(${ex},${ey}) rotate(${ang})`});
+      head.style.opacity=ins?1:0; head.style.transition='opacity .2s .4s';
+      const t=svg('text',{x:(x1+x2)/2,y:(y1+y2)/2-7,'text-anchor':'middle','font-size':11,fill:color,'font-weight':700,class:'mono'},label); t.style.opacity=ins?1:0; t.style.transition='opacity .3s .2s';
+      g.append(line,head,t); dyn.appendChild(g); requestAnimationFrame(()=>{ line.style.strokeDashoffset=0; head.style.opacity=1; t.style.opacity=1; });
+    }
+    const note=(y,txt,c,ins)=>{ const t=svg('text',{x:XR+70,y,'font-size':11,fill:c||'var(--accent)','font-weight':700},txt); t.style.opacity=ins?1:0; t.style.transition='opacity .3s'; dyn.appendChild(t); requestAnimationFrame(()=>t.style.opacity=1); };
+    const lnote=(y,txt,c,ins)=>{ const t=svg('text',{x:XL-70,y,'text-anchor':'end','font-size':11,fill:c||'var(--red)','font-weight':700},txt); t.style.opacity=ins?1:0; t.style.transition='opacity .3s'; dyn.appendChild(t); requestAnimationFrame(()=>t.style.opacity=1); };
+    const D='var(--l-tr)', A='var(--l-net)', R='var(--red)';
+    Stepper('#fr-anim',{intro:'MSS 1000. 송신자가 seg 1~5(seq 1, 1001, 2001, 3001, 4001)를 연달아 보냅니다. seg 2가 유실됩니다.',autoplayMs:2000,steps:[
+      {title:'seg 1 도착 → ACK 1001',text:'정상. 수신자는 "다음은 1001"이라고 알린다.',run(i,ins){ arrow(XL,55,XR,75,'seq 1:1001',D,ins); arrow(XR,80,XL,100,'ack 1001',A,ins); }},
+      {title:'seg 2 유실',text:'seq 1001:2001이 네트워크에서 사라진다. 송신자는 아직 모른다 — 타이머만 돌고 있다.',run(i,ins){ arrow(XL,85,XR,105,'seq 1001:2001',D,ins,true); lnote(95,'유실',R,ins); }},
+      {title:'seg 3 도착 → dup ACK #1',text:'수신자는 2001:3001을 받았지만 1001이 비어 있다. 누적 ACK 규칙상 다시 <b>ack 1001</b>. (SACK가 있다면 {2001:3001}을 함께 실어 보낸다.)',run(i,ins){ arrow(XL,115,XR,135,'seq 2001:3001',D,ins); arrow(XR,140,XL,160,'ack 1001 (dup #1)',A,ins); note(150,'구멍: 1001~2000',null,ins); }},
+      {title:'seg 4 도착 → dup ACK #2',text:'또 ack 1001. 송신자는 "뭔가 뒤에 도착하고 있는데 1001은 아직"임을 알아차리기 시작한다. 하지만 순서 바뀜일 수도 있으니 기다린다.',run(i,ins){ arrow(XL,145,XR,165,'seq 3001:4001',D,ins); arrow(XR,170,XL,190,'ack 1001 (dup #2)',A,ins); }},
+      {title:'seg 5 도착 → dup ACK #3 → 빠른 재전송',text:'중복 ACK 3개. RFC 5681: 손실로 판정하고 RTO를 기다리지 않고 <b>seg 2를 즉시 재전송</b>한다. 동시에 혼잡 제어는 ssthresh=cwnd/2, cwnd=ssthresh+3·MSS로 조정(빠른 회복, 8장). 타임아웃 대비 수백 ms를 아낀다.',run(i,ins){ arrow(XL,175,XR,195,'seq 4001:5001',D,ins); arrow(XR,200,XL,220,'ack 1001 (dup #3)',A,ins); lnote(230,'3 dup ACK → 빠른 재전송!',R,ins); arrow(XL,235,XR,255,'seq 1001:2001 (재전송)',R,ins); }},
+      {title:'구멍이 메워짐 → ACK 5001',text:'1001~2000이 채워지는 순간 수신 버퍼의 2001~5000도 연속이 되어 누적 ACK가 <b>단번에 5001</b>로 점프한다. 재전송 하나로 4개 세그먼트가 확인된 것. 만약 타임아웃을 기다렸다면 RTO(≥200 ms) 동안 아무것도 못 보냈을 것이다.',run(i,ins){ arrow(XR,260,XL,280,'ack 5001',A,ins); note(275,'누적 ACK 점프 (SACK 없이도 정상 복구)','var(--l-net)',ins); lnote(300,'타임아웃 없이 ≈1 RTT 만에 복구','var(--l-net)',ins); }},
+      {title:'비교: 타임아웃 재전송이었다면',text:'윈도우가 작아 seg 3~5가 없었다면 중복 ACK가 생기지 않는다. 그러면 RTO(리눅스 최소 200 ms, 보통 SRTT의 수 배) 만료까지 기다렸다가 재전송하고, cwnd는 1 MSS로 리셋되어 slow start부터 다시 시작한다. 그래서 짧은 전송(작은 HTTP 응답)의 꼬리 손실(tail loss)이 유독 아프고, 이를 위해 TLP(Tail Loss Probe, RFC 8985)가 도입됐다.',run(i,ins){ note(330,'윈도우 < 4 세그먼트면 dup ACK 3개가 안 모임',R,ins); note(348,'→ RTO 대기 + cwnd=1 (느림)',R,ins); note(366,'→ 해법: TLP / RACK (RFC 8985)','var(--l-tr)',ins); }},
+    ],reset(){ dyn.innerHTML=''; }});
+  })();
+
+  /* ---------- 7.8 SACK 인터랙티브 ---------- */
+  (function(){
+    const box=$('#sack-box'), n=10, MSS=1000; const rcv=[true,true,false,false,true,true,false,true,true,false];
+    function render(){
+      box.innerHTML='';
+      let ack=0; while(ack<n && rcv[ack]) ack++;
+      rcv.forEach((r,i)=>{ const d=el('div',r?(i<ack?'acked':'rcv'):'',`seg ${i+1}<br><small>${i*MSS+1}:${(i+1)*MSS+1}</small>`); d.onclick=()=>{ rcv[i]=!rcv[i]; render(); }; box.appendChild(d); });
+      const blocks=[]; let i=ack; while(i<n){ if(rcv[i]){ let j=i; while(j<n&&rcv[j]) j++; blocks.push([i*MSS+1,j*MSS+1]); i=j; } else i++; }
+      const shown=blocks.slice(-3).reverse(); // 최근 블록 우선 (RFC 2018: 첫 블록은 가장 최근 수신)
+      $('#sack-out').innerHTML=`<div><b>누적 ACK</b> = ${ack*MSS+1}  <span class="small">(seg ${ack+1}부터 필요)</span></div><div style="margin-top:4px"><b>SACK 옵션</b> = ${shown.length?shown.map(b=>`{${b[0]}:${b[1]}}`).join(' '):'(없음 — 불연속 블록 없음)'}  <span class="small">옵션 길이 ${2+8*shown.length}B${blocks.length>3?' · 블록 '+blocks.length+'개 중 3개만 실림':''}</span></div><div style="margin-top:4px;color:var(--red)"><b>송신자가 재전송할 구멍</b> = ${(()=>{const h=[];let k=ack;while(k<n){if(!rcv[k]){let j=k;while(j<n&&!rcv[j])j++;h.push(`${k*MSS+1}:${j*MSS+1}`);k=j;}else k++;}return h.length?h.join(', '):'없음';})()}</div>`;
+    }
+    render();
+  })();
+
+  /* ---------- 7.11 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'ISN=1000인 연결에서 송신자가 500바이트 세그먼트 3개를 연속으로 보냈고 두 번째가 유실됐다. 세 번째 도착 후 수신자의 ACK 번호는?',options:['1001','1501','2001','2501'],answer:1,explain:'첫 세그먼트(1001~1500)까지만 연속으로 받았으므로 다음 기대 바이트 1501. 누적 ACK는 구멍 앞까지만 인정한다.'},
+    {q:'대역폭 1 Gbps, RTT 100 ms인 경로에서 링크를 가득 채우려면 송신 윈도우는 약 얼마여야 하는가?',options:['100 KB','1.25 MB','12.5 MB','64 KB'],answer:2,explain:'BDP = 1e9 bit/s × 0.1 s = 1e8 bit = 12.5 MB. 64 KB 윈도우면 활용률 0.5%. Window Scale이 필수.'},
+    {q:'RFC 6298에서 RTO 계산식은?',options:['RTO = 2 × SRTT','RTO = SRTT + 4 × RTTVAR','RTO = SRTT + RTTVAR','RTO = 마지막 RTT × 1.5'],answer:1,explain:'변동(RTTVAR)의 4배를 여유로 더한다. 변동이 큰 경로일수록 RTO가 SRTT에서 멀어져 조기 재전송을 막는다.'},
+    {q:'Karn 알고리즘이 재전송된 세그먼트의 RTT를 측정하지 않는 이유는?',options:['재전송은 항상 느려서','ACK가 원본과 재전송본 중 어느 것에 대한 것인지 구분할 수 없어서(재전송 모호성)','RTO를 줄이기 위해','커널 성능 때문에'],answer:1,explain:'모호한 샘플로 SRTT를 오염시키지 않는다. Timestamps 옵션(TSecr)이 있으면 구분 가능하므로 제한이 풀린다.'},
+    {q:'빠른 재전송이 발동하는 조건은?',options:['RTO 만료','중복 ACK 3개 수신','SACK 블록 1개 수신','수신 윈도우 0'],answer:1,explain:'1~2개는 순서 바뀜일 수 있어 3개를 손실 판정 임계로 쓴다(RFC 5681). RTO를 기다리지 않아 훨씬 빠르다.'},
+    {q:'윈도우가 2 세그먼트인 짧은 전송에서 마지막 세그먼트가 유실되면 어떻게 복구되는가?',options:['빠른 재전송으로 즉시','중복 ACK가 모이지 않아 RTO 만료 후 타임아웃 재전송','수신자가 NAK를 보냄','복구되지 않음'],answer:1,explain:'뒤따르는 세그먼트가 없어 dup ACK가 생기지 않는다. 꼬리 손실(tail loss)의 문제이며 TLP/RACK가 이를 보완한다.'},
+    {q:'수신 윈도우가 0이 된 뒤 윈도우 갱신 ACK가 유실되면 생기는 교착을 막는 메커니즘은?',options:['빠른 재전송','persist 타이머와 윈도우 프로브','SACK','Nagle 알고리즘'],answer:1,explain:'송신자가 주기적으로 1바이트 프로브를 보내 Window 필드를 다시 받아 온다.'},
+    {q:'SACK 옵션이 누적 ACK에 더해 알려 주는 정보는?',options:['수신 버퍼 크기','다음 기대 바이트 이후에 불연속적으로 수신한 바이트 블록들','RTT 측정값','재전송 횟수'],answer:1,explain:'송신자는 구멍만 골라 재전송할 수 있어 Go-Back-N식 낭비를 피한다. 양쪽이 SACK-Permitted로 합의해야 한다.'},
+    {q:'ss -ti 출력에 rtt:3.25/1.5 rto:204 가 보인다. RTO가 계산값(≈9 ms)보다 큰 이유는?',options:['지수 백오프 중','리눅스 RTO 하한(200 ms)에 걸려서','RTTVAR이 잘못 측정되어서','cwnd가 작아서'],answer:1,explain:'TCP_RTO_MIN=200 ms. 지연 ACK 등으로 인한 조기 재전송을 막기 위한 하한이며, 데이터센터에서는 incast 문제를 일으킨다.'},
+    {q:'Timestamps 옵션(RFC 7323)이 해결하는 문제가 아닌 것은?',options:['정확한 RTT 측정','재전송 모호성 해소','시퀀스 번호 순환 보호(PAWS)','수신 버퍼 크기 확장'],answer:3,explain:'수신 버퍼(윈도우) 확장은 Window Scale 옵션의 역할이다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

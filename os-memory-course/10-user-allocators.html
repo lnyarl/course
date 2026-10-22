@@ -1,0 +1,1137 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>유저 공간 할당자 malloc</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* ---- 10 전용 ---- */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 680px) { .two-col { grid-template-columns: 1fr; } }
+.mini { font-size: 13px; color: var(--muted); }
+.pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); margin: 2px 2px; font-family: var(--mono); }
+.pill.on { background: var(--accent-soft); border-color: var(--accent); }
+.gfp-expr { font-family: var(--mono); font-size: 14px; background: var(--code-bg); border-radius: 8px; padding: 8px 12px; margin: 8px 0; word-break: break-all; }
+.msg { padding: 6px 10px; border-radius: 6px; margin: 4px 0; font-size: 14px; }
+.msg.ok { background: var(--ok-soft); } .msg.warn { background: var(--warn-soft); } .msg.bad { background: var(--bad-soft); }
+
+/* 힙 레이아웃 막대 */
+.heap-wrap { min-width: 560px; }
+.heap-bar { position: relative; display: flex; height: 58px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.chunk { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 2px solid var(--bg); font-family: var(--mono); font-size: 10.5px; overflow: hidden; white-space: nowrap; transition: background .25s, box-shadow .25s; cursor: default; }
+.chunk .cl { font-size: 10px; opacity: .8; }
+.chunk.alloc { background: var(--accent-soft); color: var(--accent); cursor: pointer; }
+.chunk.free { background: var(--ok-soft); color: var(--ok); }
+.chunk.top { background: var(--surface-2); color: var(--muted); background-image: repeating-linear-gradient(45deg, transparent, transparent 6px, color-mix(in srgb, var(--muted) 12%, transparent) 6px, color-mix(in srgb, var(--muted) 12%, transparent) 12px); }
+.chunk.mmap { background: var(--violet-soft); color: var(--violet); }
+.chunk.flash { box-shadow: inset 0 0 0 3px var(--warn); }
+.chunk.justfreed { box-shadow: inset 0 0 0 3px var(--ok); }
+.heap-addr { display: flex; min-width: 560px; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+/* bins */
+.bins { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.bin-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; font-size: 13px; }
+.bin-lbl { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.bin-chunks { display: flex; flex-wrap: wrap; gap: 4px; min-height: 26px; align-items: center; }
+.bc { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); }
+.bc.tc { border-color: var(--teal); background: var(--teal-soft); color: var(--teal); }
+.bc.fast { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.bc.uns { border-color: var(--violet); background: var(--violet-soft); color: var(--violet); }
+.bc.small { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.bc.large { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+.arrow { color: var(--muted); }
+
+/* 청크 헤더 다이어그램 비트 */
+.flagbit { display: inline-block; width: 30px; text-align: center; font-family: var(--mono); font-weight: 700; border-radius: 4px; padding: 2px 0; }
+
+/* 메모리 버그 */
+.mb-cells { display: flex; gap: 3px; flex-wrap: wrap; }
+.mb-cell { width: 40px; height: 40px; border-radius: 5px; border: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; background: var(--surface-2); position: relative; }
+.mb-cell.hdr { background: var(--surface); border-style: dashed; color: var(--muted); }
+.mb-cell.A { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.mb-cell.B { background: var(--teal-soft); border-color: var(--teal); color: var(--teal); }
+.mb-cell.freed { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.mb-cell.redzone { background: var(--bad-soft); border-color: var(--bad); color: var(--bad); background-image: repeating-linear-gradient(45deg, transparent, transparent 4px, color-mix(in srgb, var(--bad) 22%, transparent) 4px, color-mix(in srgb, var(--bad) 22%, transparent) 8px); }
+.mb-cell.bad { box-shadow: 0 0 0 3px var(--bad); }
+.mb-ptr { font-size: 11px; font-family: var(--mono); color: var(--muted); }
+
+.km-tbl td.hit { background: var(--accent-soft); font-weight: 700; }
+</style>
+</head>
+<body data-chapter="10">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">심화 · Chapter 10</span>
+    <h1>유저 공간 할당자: malloc의 내부</h1>
+    <p class="lead">커널은 프로세스에게 페이지 단위의 거친 메모리(<code>brk</code>, <code>mmap</code>)만 준다. 그 안에서 <code>malloc(37)</code> 같은 바이트 단위 요청을 수백만 번 처리하고, 해제된 조각을 재활용하며, 멀티스레드 경합을 견디는 것은 전적으로 <b>라이브러리 할당자</b>의 몫이다. 이 장은 glibc의 ptmalloc2를 해부하면서 청크·bin·아레나의 구조, 단편화와 RSS 문제, 그리고 use-after-free 같은 힙 버그가 왜 생기고 어떻게 잡는지를 코드 수준에서 본다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>힙 확장 수단인 <code>brk/sbrk</code>와 <code>mmap</code>의 차이, <code>M_MMAP_THRESHOLD</code>의 동적 조정을 설명할 수 있다.</li>
+      <li>malloc 청크의 헤더(size, prev_size, P/M/A 비트)와 경계 태그 병합 원리를 그릴 수 있다.</li>
+      <li>ptmalloc2의 bin 종류(tcache, fastbins, unsorted, small, large)와 할당/해제 경로를 추적할 수 있다.</li>
+      <li>단편화로 RSS가 줄지 않는 이유와 <code>malloc_trim</code>·아레나 수 튜닝을 설명할 수 있다.</li>
+      <li>use-after-free, double free, overflow가 힙에서 어떻게 나타나는지와 ASan/Valgrind의 탐지 원리를 안다.</li>
+      <li>jemalloc/tcmalloc/mimalloc의 설계 선택(size class, thread cache, 반환 정책)을 비교할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 라이브러리 할당자가 필요한가</a></li>
+    <li><a href="#s2">힙을 넓히는 두 가지: brk와 mmap</a></li>
+    <li><a href="#s3">청크: 헤더와 경계 태그</a></li>
+    <li><a href="#s4">ptmalloc2의 bin들</a></li>
+    <li><a href="#s5">할당 시뮬레이터</a></li>
+    <li><a href="#s6">병합과 단편화</a></li>
+    <li><a href="#s7">아레나와 멀티스레드</a></li>
+    <li><a href="#s8">RSS가 안 줄어드는 문제</a></li>
+    <li><a href="#s9">힙 메모리 버그</a></li>
+    <li><a href="#s10">ASan과 Valgrind</a></li>
+    <li><a href="#s11">현대 할당자 비교</a></li>
+    <li><a href="#s12">GC 언어와의 관계, 실무 튜닝</a></li>
+  </ol></nav>
+
+  <div class="callout deep"><span class="title">이 장의 모델은 교육용 단순화다</span>
+    아래 시뮬레이터와 설명은 glibc ptmalloc2의 <b>핵심 구조를 정확히 재현</b>하되, 실제 구현의 모든 세부(정확한 정렬 규칙, 큰 bin의 skip list, tcache 카운트 한계, 최근 버전의 보안 강화 등)를 담지는 않는다. 숫자(예: tcache 16바이트 간격 64개 bin, fastbin 상한 등)는 x86-64 glibc 2.3x 기준이며 버전·튜닝에 따라 달라진다. 목표는 "할당자가 왜 이렇게 행동하는가"의 직관을 만드는 것이다.</div>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 왜 라이브러리 할당자가 필요한가</h2>
+    <p>커널의 <code>mmap</code>은 페이지(4 KiB) 단위로만 메모리를 주고, 시스템 콜이라 수백 나노초가 든다. 프로그램이 <code>malloc(24)</code>를 초당 수백만 번 부른다면 매번 시스템 콜로 페이지를 받는 것은 두 가지 이유로 불가능하다.</p>
+    <ul>
+      <li><b>속도</b>: 시스템 콜 + 페이지 폴트 비용이 24바이트 할당 하나에 수천 배다. 좋은 할당자의 fast path는 수~수십 나노초, 함수 호출 몇 번 수준이어야 한다.</li>
+      <li><b>낭비</b>: 24바이트에 4 KiB 페이지를 통째로 쓰면 170배 낭비다.</li>
+    </ul>
+    <p>그래서 할당자는 커널에서 큰 메모리 덩어리를 <b>한 번에</b> 받아(<code>brk</code>로 힙을 넓히거나 <code>mmap</code>으로 블록을 받아) 사용자에게는 그것을 잘게 쪼개 나눠 준다. 핵심 책무는 세 가지다.</p>
+    <ol>
+      <li><b>분할</b>: 큰 영역을 요청 크기에 맞는 청크로 자른다.</li>
+      <li><b>재활용</b>: <code>free</code>된 청크를 자료구조(bin)에 모아 두었다가 다음 요청에 재사용한다. 같은 크기라면 시스템 콜 없이 즉시 돌려준다.</li>
+      <li><b>병합</b>: 인접한 free 청크를 합쳐 더 큰 요청에 쓸 수 있게 하고, 단편화를 억제한다.</li>
+    </ol>
+    <p>Linux의 기본은 glibc에 내장된 <b>ptmalloc2</b>(Wolfram Gloger가 Doug Lea의 dlmalloc을 멀티스레드로 확장한 것)다. 그 설계를 축으로 보되, 11절에서 다른 철학의 할당자와 비교한다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 힙을 넓히는 두 가지: brk와 mmap</h2>
+    <p>할당자가 커널에서 메모리를 얻는 길은 둘이다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th><code>brk</code> / <code>sbrk</code> (메인 힙)</th><th><code>mmap</code> (익명 매핑)</th></tr>
+      <tr><td>구조</td><td>데이터 세그먼트 끝(program break)을 위로/아래로 옮겨 하나의 연속 영역을 키우거나 줄인다</td><td>주소 공간 아무 곳에나 독립된 매핑을 만든다</td></tr>
+      <tr><td>단위</td><td>포인터 하나(break) 이동. 할당자가 그 안을 청크로 관리</td><td>매핑 하나 = 요청 하나 (페이지 정렬)</td></tr>
+      <tr><td>해제</td><td>break를 되돌려야 커널에 반납 → 꼭대기가 free여야만 축소 가능</td><td><code>munmap</code>으로 즉시 완전 반납 (RSS 즉시 감소)</td></tr>
+      <tr><td>적합</td><td>작고 수명이 짧은 수많은 할당</td><td>크고 수명이 길거나 독립적인 할당</td></tr>
+    </table></div>
+    <p>ptmalloc2는 요청 크기가 <b><code>M_MMAP_THRESHOLD</code>(기본 128 KiB)</b> 이상이면 메인 힙을 거치지 않고 전용 <code>mmap</code> 매핑을 만든다. 이렇게 하면 그 청크를 <code>free</code>할 때 바로 <code>munmap</code>으로 커널에 반납되어 RSS가 즉시 준다(8절의 "RSS가 안 줄어드는 문제"를 큰 할당에 한해 피한다).</p>
+    <div class="callout tip"><span class="title">임계값은 고정이 아니라 학습한다</span>
+      임계값을 128 KiB에 고정하면, 100 KiB짜리를 반복 할당·해제하는 프로그램은 매번 <code>brk</code> 힙에 남겨 단편화를 키운다. 반대로 임계값이 너무 낮으면 중간 크기 할당마다 <code>mmap</code>/<code>munmap</code> 시스템 콜과 페이지 폴트를 유발한다. 그래서 glibc는 <b>동적 조정(dynamic mmap threshold)</b>을 쓴다. mmap으로 받았던 블록이 <code>free</code>될 때, 그 크기를 보고 임계값을 그 크기까지 올린다(상한 <code>DEFAULT_MMAP_THRESHOLD_MAX</code>, 64비트에서 32 MiB). "방금 해제된 이 크기는 brk 힙에서 재활용하는 편이 낫다"고 학습하는 것이다. <code>mallopt(M_MMAP_THRESHOLD, ...)</code>로 임계값을 직접 고정하면 이 학습이 꺼진다.</div>
+    <div class="widget" id="mt">
+      <div class="w-title">brk vs mmap 결정 · 동적 임계값 시뮬레이터</div>
+      <div class="w-desc">같은 크기를 반복 할당·해제하며 glibc의 동적 임계값이 어떻게 움직이는지 본다. 할당 크기가 현재 임계값 이상이면 mmap, 아니면 brk 힙으로 간다.</div>
+      <div class="controls">
+        <label>할당 크기 <input type="number" id="mt-sz" value="200" min="1" style="width:90px"> KiB</label>
+        <button class="btn primary" id="mt-malloc">malloc</button>
+        <button class="btn" id="mt-free">마지막 것 free</button>
+        <button class="btn" id="mt-lock">임계값 128K로 고정 (mallopt)</button>
+        <button class="btn" id="mt-reset">초기화</button>
+      </div>
+      <div class="stat-row" id="mt-stats"></div>
+      <div class="log" id="mt-log"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. 청크: 헤더와 경계 태그</h2>
+    <p>ptmalloc2는 힙을 <b>청크(chunk)</b>들의 연속으로 본다. 사용자가 받는 포인터(<code>mem</code>) 바로 앞에 메타데이터가 있다. 핵심 트릭은 <b>경계 태그(boundary tag)</b>다. 각 청크는 자기 크기를 헤더에 담고, 하위 3비트를 플래그로 재활용한다. 크기는 항상 8/16바이트 정렬이라 하위 비트가 어차피 0이기 때문이다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 320" role="img" aria-label="malloc 청크 구조와 size 플래그 비트">
+        <text x="12" y="20" style="font-weight:700">사용 중(allocated) 청크</text>
+        <rect x="12" y="30" width="336" height="150" rx="6" class="box"/>
+        <rect x="12" y="30" width="336" height="30" style="fill:var(--surface-2);stroke:var(--border)"/>
+        <text x="20" y="50" style="font-size:12px">prev_size <tspan class="muted">(앞 청크가 free일 때만 유효)</tspan></text>
+        <rect x="12" y="60" width="336" height="30" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="20" y="80" style="font-size:12px">size (정렬됨) | <tspan style="font-weight:700">A</tspan> <tspan style="font-weight:700">M</tspan> <tspan style="font-weight:700">P</tspan></text>
+        <rect x="12" y="90" width="336" height="76" style="fill:var(--bg);stroke:var(--accent);stroke-dasharray:4 3"/>
+        <text x="20" y="116" style="font-size:12px;font-weight:700" class="c-accent">← mem: 사용자 데이터 (payload)</text>
+        <text x="20" y="138" class="muted" style="font-size:11.5px">malloc이 돌려주는 포인터는 여기</text>
+        <text x="20" y="158" class="muted" style="font-size:11.5px">usable size = size − 헤더 (+ 다음 청크 prev_size 겹침)</text>
+
+        <text x="384" y="20" style="font-weight:700">free 청크 — payload 자리에 링크를 저장</text>
+        <rect x="384" y="30" width="324" height="240" rx="6" class="box"/>
+        <rect x="384" y="30" width="324" height="30" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="392" y="50" style="font-size:12px">prev_size</text>
+        <rect x="384" y="60" width="324" height="30" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="392" y="80" style="font-size:12px">size | A M <tspan style="font-weight:700">P=1</tspan></text>
+        <rect x="384" y="90" width="324" height="28" style="fill:var(--bg);stroke:var(--ok)"/><text x="392" y="109" style="font-size:12px;font-family:var(--mono)">fd → 다음 free 청크</text>
+        <rect x="384" y="118" width="324" height="28" style="fill:var(--bg);stroke:var(--ok)"/><text x="392" y="137" style="font-size:12px;font-family:var(--mono)">bk → 이전 free 청크</text>
+        <rect x="384" y="146" width="324" height="28" style="fill:var(--bg);stroke:var(--ok);stroke-dasharray:4 3"/><text x="392" y="165" style="font-size:11.5px;font-family:var(--mono)" class="muted">fd_nextsize / bk_nextsize (large bin만)</text>
+        <rect x="384" y="174" width="324" height="36" style="fill:var(--bg);stroke:var(--border)"/><text x="392" y="196" class="muted" style="font-size:11.5px">… (사용되지 않는 공간) …</text>
+        <rect x="384" y="210" width="324" height="30" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="392" y="230" style="font-size:12px">다음 청크의 prev_size = <tspan style="font-weight:700">이 청크 size</tspan> (경계 태그 복제)</text>
+        <text x="392" y="258" class="muted" style="font-size:11.5px">→ 다음 청크의 P 비트는 0이 되어 "앞이 free"임을 알림</text>
+
+        <g style="font-size:11px">
+          <text x="12" y="208" style="font-weight:700">하위 3비트 (size는 8의 배수라 비어 있음):</text>
+          <rect x="12" y="216" width="34" height="24" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="18" y="232" style="font-weight:700">A</text>
+          <text x="52" y="232">NON_MAIN_ARENA: 메인 아레나가 아니면 1</text>
+          <rect x="12" y="244" width="34" height="24" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="18" y="260" style="font-weight:700">M</text>
+          <text x="52" y="260">IS_MMAPPED: mmap으로 받은 청크면 1 (free 시 munmap)</text>
+          <rect x="12" y="272" width="34" height="24" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="18" y="288" style="font-weight:700">P</text>
+          <text x="52" y="288">PREV_INUSE: 바로 앞 청크가 사용 중이면 1 (가장 중요)</text>
+        </g>
+      </svg>
+      <figcaption>그림 10-1. malloc 청크. P 비트와 경계 태그(다음 청크의 prev_size) 덕분에, free 시 <b>앞·뒤 청크가 free인지 O(1)에 판정</b>해 병합할 수 있다. free 청크는 payload 자리를 fd/bk 링크로 재사용한다.</figcaption>
+    </figure>
+    <ul>
+      <li><b>prev_size 겹침</b>: 앞 청크가 <em>사용 중</em>이면 그 청크는 자기 payload를 꽉 채워 쓰므로, 뒤 청크의 <code>prev_size</code> 자리를 앞 청크가 데이터로 빌려 쓴다. 그래서 16바이트 요청이 실제로는 더 적은 오버헤드로 들어간다(usable size ≥ 요청). 앞 청크가 free가 되는 순간에만 <code>prev_size</code>가 진짜 의미를 갖는다.</li>
+      <li><b>P 비트로 앞을 본다</b>: 내 <code>size</code>의 P 비트가 0이면 "앞 청크가 free". 그러면 내 <code>prev_size</code>로 앞 청크의 시작 주소(<code>this − prev_size</code>)를 구해 병합한다.</li>
+      <li><b>size로 뒤를 본다</b>: <code>this + size</code>가 다음 청크. 그 다음다음 청크의 P 비트를 보면 "뒤 청크가 free"인지 안다.</li>
+      <li><b>최소 청크</b>: x86-64에서 32바이트(헤더 + 최소 fd/bk 공간). <code>malloc(1)</code>도 최소 청크를 받는다. 정렬은 16바이트.</li>
+    </ul>
+    <div class="widget" id="ck">
+      <div class="w-title">청크 크기 계산기</div>
+      <div class="w-desc">요청 바이트를 넣으면 실제 청크 크기, 플래그가 들어갈 size 워드, 내부 단편화를 보여 준다. (x86-64, 포인터 8바이트, 정렬 16바이트)</div>
+      <div class="controls"><label>malloc( <input type="number" id="ck-n" value="30" min="0" style="width:90px"> )</label></div>
+      <div id="ck-out"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. ptmalloc2의 bin들</h2>
+    <p>free된 청크는 크기와 상황에 따라 서로 다른 자료구조에 들어간다. 이 분류가 ptmalloc2 성능의 핵심이다. 할당 요청이 오면 <b>빠른 것부터</b> 차례로 뒤진다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>bin</th><th>크기대 (x86-64)</th><th>구조</th><th>병합</th><th>목적</th></tr>
+      <tr><td><b>tcache</b></td><td>청크 32~1040 B (요청 ≤1032 B), 64개 bin</td><td>스레드별, 단일 연결 LIFO, bin당 최대 7개</td><td>안 함</td><td>스레드 로컬·락 없는 최속 경로 (glibc 2.26+)</td></tr>
+      <tr><td><b>fastbins</b></td><td>청크 32~128 B (요청 ≤120 B, <code>M_MXFAST</code>로 조정)</td><td>아레나별, 단일 연결 LIFO</td><td>즉시 안 함 (지연)</td><td>작은 청크의 빠른 재사용</td></tr>
+      <tr><td><b>unsorted bin</b></td><td>모든 크기</td><td>이중 연결, 단일 리스트</td><td>이미 됨</td><td>free/분할 청크의 임시 대기열 (한 번의 기회)</td></tr>
+      <tr><td><b>small bins</b></td><td>청크 &lt; 1024 B, 16 B 간격 62개 bin</td><td>크기별 이중 연결, 정확히 한 크기</td><td>함</td><td>작은 청크의 크기별 정렬 보관</td></tr>
+      <tr><td><b>large bins</b></td><td>≥ 1024 B</td><td>크기 <em>범위</em>별 이중 연결, 크기 내림차순 정렬</td><td>함</td><td>큰 청크, best-fit 탐색</td></tr>
+      <tr><td><b>top chunk</b></td><td>-</td><td>힙 꼭대기의 미분할 영역</td><td>-</td><td>어느 bin도 못 주면 여기서 잘라 냄, 모자라면 brk 확장</td></tr>
+    </table></div>
+    <h3>할당 경로 (malloc)</h3>
+    <ol>
+      <li>크기가 tcache 범위면 해당 tcache bin 확인 → 있으면 즉시 반환(락 없음).</li>
+      <li>fastbin 범위면 해당 fastbin 확인 → 있으면 반환 (+ 같은 tcache bin을 채워 둠).</li>
+      <li>small bin 범위면 정확한 크기 bin 확인.</li>
+      <li>그 외에는 <b>unsorted bin을 훑으며</b> 각 청크를 제 크기의 small/large bin으로 정리(sort)한다. 지나가다 딱 맞는 게 있으면 바로 준다. large는 best-fit.</li>
+      <li>여전히 없으면 top chunk에서 잘라 내고, top도 모자라면 <code>brk</code>/<code>mmap</code>으로 확장한다.</li>
+    </ol>
+    <h3>해제 경로 (free)</h3>
+    <ol>
+      <li>mmap 청크(M 비트)면 <code>munmap</code>으로 즉시 반납.</li>
+      <li>tcache 범위이고 해당 bin에 자리(&lt;7)가 있으면 tcache에 넣고 끝(병합 안 함).</li>
+      <li>fastbin 범위면 fastbin에 넣고 끝(병합 지연).</li>
+      <li>그 외에는 앞·뒤 청크와 <b>병합</b>한 뒤 unsorted bin에 넣는다. top과 인접하면 top에 흡수된다.</li>
+    </ol>
+    <div class="callout warn"><span class="title">왜 fastbin/tcache는 병합을 미루나</span>
+      작은 할당은 "잠깐 쓰고 바로 다시 할당"되는 패턴이 많다. 그때마다 병합했다 다시 쪼개면 손해다. 그래서 작은 청크는 "같은 크기 그대로" 리스트에 꽂아 두고 즉시 재사용한다(캐시 지역성도 좋다). 대신 병합이 미뤄져 <em>단편화에 취약</em>해지고, 보안상 공격 표면이 된다. 주기적으로 <code>malloc_consolidate()</code>가 fastbin들을 모아 병합한다(큰 할당이 top을 필요로 할 때 등). 이 "성능 위해 병합을 미루는 로컬 캐시"는 9장 커널의 PCP·SLUB freelist와 정확히 같은 트레이드오프다.</div>
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 220" role="img" aria-label="malloc 할당 경로 우선순위">
+        <defs><marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <text x="12" y="18" style="font-weight:700">malloc(n) 탐색 순서 — 위에서 걸리면 즉시 반환</text>
+        <g style="font-size:12px">
+          <rect x="12" y="30" width="150" height="34" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="24" y="52">① tcache[idx]</text>
+          <rect x="182" y="30" width="150" height="34" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="194" y="52">② fastbin[idx]</text>
+          <rect x="352" y="30" width="150" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="364" y="52">③ small bin[idx]</text>
+          <rect x="522" y="30" width="186" height="34" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="534" y="52">④ unsorted 훑기 + 정리</text>
+          <line x1="162" y1="47" x2="180" y2="47" class="line" marker-end="url(#ma)"/>
+          <line x1="332" y1="47" x2="350" y2="47" class="line" marker-end="url(#ma)"/>
+          <line x1="502" y1="47" x2="520" y2="47" class="line" marker-end="url(#ma)"/>
+          <rect x="352" y="92" width="150" height="34" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="364" y="114">⑤ large bin best-fit</text>
+          <rect x="522" y="92" width="186" height="34" rx="6" class="box"/><text x="534" y="114">⑥ top chunk에서 분할</text>
+          <line x1="595" y1="64" x2="595" y2="90" class="line" marker-end="url(#ma)"/>
+          <line x1="502" y1="109" x2="520" y2="109" class="line" marker-end="url(#ma)"/>
+          <rect x="522" y="150" width="186" height="34" rx="6" class="box"/><text x="534" y="172">⑦ brk/mmap로 힙 확장</text>
+          <line x1="615" y1="126" x2="615" y2="148" class="line" marker-end="url(#ma)"/>
+          <text x="12" y="112" class="muted" style="font-size:11.5px">①②: 스레드/아레나 로컬 캐시, 병합 안 함</text>
+          <text x="12" y="132" class="muted" style="font-size:11.5px">③④⑤: 병합된 청크, 크기별 정렬</text>
+          <text x="12" y="152" class="muted" style="font-size:11.5px">④에서 unsorted의 각 청크를</text>
+          <text x="12" y="170" class="muted" style="font-size:11.5px">small/large bin으로 옮기며 지나감</text>
+          <text x="12" y="200" class="muted" style="font-size:11.5px">tcache가 있으면 ②③에서 찾은 여분을 같은 크기 tcache bin에 미리 채워 다음 호출을 가속한다.</text>
+        </g>
+      </svg>
+      <figcaption>그림 10-2. malloc 탐색 우선순위. 빠르고 지역적인 캐시(tcache/fastbin)를 먼저, 그 다음 크기별 정렬 bin, 마지막에 top과 커널.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. 할당 시뮬레이터</h2>
+    <p>실제 ptmalloc2의 동작을 단순화한 모델로 재현한다. <code>malloc</code>/<code>free</code> 시퀀스를 실행하며 힙 레이아웃, bin 상태, tcache가 어떻게 변하는지 추적한다.</p>
+    <div class="widget" id="sim">
+      <div class="w-title">ptmalloc2 힙 시뮬레이터 (tcache · fastbin · bins · 병합)</div>
+      <div class="w-desc">버튼으로 할당/해제하거나, <b>힙의 사용 중 청크(파란색)를 클릭하면 free</b>된다. tcache는 bin당 7개, fastbin은 ≤128 B, mmap은 ≥128 KiB. 초록 free 청크끼리 인접하면 병합된다(tcache/fastbin에 있는 동안은 예외).</div>
+      <div class="controls">
+        <label>malloc( <input type="number" id="sim-n" value="40" min="1" style="width:84px"> B )</label>
+        <button class="btn primary" id="sim-m">malloc</button>
+        <select id="sim-free" style="min-width:140px"></select>
+        <button class="btn" id="sim-f">free 선택</button>
+        <button class="btn" id="sim-demo">단편화 예제</button>
+        <button class="btn" id="sim-uaf">UAF 예제</button>
+        <button class="btn" id="sim-consol">malloc_consolidate</button>
+        <button class="btn" id="sim-reset">초기화</button>
+      </div>
+      <div class="stage"><div class="heap-wrap"><div class="heap-bar" id="sim-heap"></div><div class="heap-addr" id="sim-addr"></div></div></div>
+      <div class="bd-cap gfp-expr" id="sim-note"></div>
+      <h3 style="font-size:15px;margin:14px 0 6px">bin 상태</h3>
+      <div class="bins" id="sim-bins"></div>
+      <div class="two-col" style="margin-top:12px">
+        <div class="stat-row" id="sim-stats" style="flex-direction:column"></div>
+        <div class="log" id="sim-log"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. 병합과 단편화</h2>
+    <p>해제 시 병합(coalescing)은 경계 태그로 양 옆을 본다. 의사코드로:</p>
+    <pre><code>void _int_free(chunk *p) {
+    size_t size = chunksize(p);
+    // 1) 다음 청크가 free면 병합 (내 뒤)
+    chunk *next = (char*)p + size;
+    if (!inuse(next)) { unlink(next); size += chunksize(next); }
+    // 2) 앞 청크가 free면 병합 (P 비트가 0)
+    if (!prev_inuse(p)) {
+        chunk *prev = (char*)p - p->prev_size;
+        unlink(prev); size += chunksize(prev); p = prev;
+    }
+    // 3) top과 인접하면 top에 흡수, 아니면 unsorted bin에
+    if ((char*)p + size == top) { top = p; top_size += size; }
+    else { p->size = size; insert_unsorted(p); set_prev_size(next_of(p)); }
+}</code></pre>
+    <p>병합으로도 못 막는 것이 <b>외부 단편화</b>다. "free 공간의 합은 충분한데, 연속된 조각이 없어 큰 요청이 실패(또는 힙 확장)하는" 상황이다. 전형적인 시나리오: 작은 청크 A·B·C·D·E를 할당한 뒤 A·C·E만 해제하면, free 공간이 B·D 사이에 끼어 흩어진다.</p>
+    <div class="widget" id="frag">
+      <div class="w-title">단편화 스텝 애니메이션</div>
+      <div class="w-desc">10개의 64 B 청크를 할당한 뒤 짝수 번째만 해제한다. free 바이트는 많지만 연속 공간은 64 B뿐이라 320 B 요청은 top을 넓혀야 한다.</div>
+      <div class="stage"><div class="heap-wrap"><div class="heap-bar" id="frag-heap" style="height:46px"></div></div></div>
+      <div id="frag-step"></div>
+    </div>
+    <div class="callout tip"><span class="title">best-fit가 항상 좋지 않다</span>
+      "가장 꼭 맞는 free 청크"를 고르면 남는 조각이 작아져 단편화가 심해질 수 있다(쓸모없는 파편 양산). ptmalloc2는 small bin은 정확한 크기, large bin은 best-fit, 그리고 "최근에 쓴 메모리 근처를 재사용"하는 지역성 휴리스틱을 섞는다. 할당자 설계에서 "단편화 최소화"와 "속도·지역성"은 늘 충돌하며, 정답은 워크로드마다 다르다. 이것이 jemalloc·tcmalloc 같은 대안이 존재하는 이유다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 아레나와 멀티스레드 경합</h2>
+    <p>초창기 dlmalloc은 전역 락 하나로 힙을 보호했다. 스레드가 많아지면 이 락이 심각한 병목이 된다. ptmalloc2의 답은 <b>아레나(arena)</b>, 즉 독립된 힙과 bin 집합을 여러 개 두는 것이다.</p>
+    <ul>
+      <li><b>메인 아레나</b>는 <code>brk</code> 힙을 쓴다. <b>보조 아레나</b>는 <code>mmap</code>으로 큰 영역(기본 64 MiB 단위, "heap")을 받아 쓴다.</li>
+      <li>스레드가 <code>malloc</code>할 때 자기에게 연결된 아레나의 락을 <code>trylock</code>한다. 경합하면 다른 아레나를 시도하고, 전부 바쁘면 새 아레나를 만든다. 성공한 아레나를 그 스레드에 붙여 둔다.</li>
+      <li>아레나 최대 수는 <b><code>MALLOC_ARENA_MAX</code></b>로 정하며, 기본은 <b>코어 수 × 8</b>(64비트)이다. 설정하지 않으면 코어가 많은 머신에서 아레나가 폭증한다.</li>
+      <li>tcache(2.26+)가 스레드 로컬 캐시를 담당하면서, 작은 할당은 아레나 락을 아예 건드리지 않게 되어 경합이 크게 줄었다.</li>
+    </ul>
+    <div class="callout danger"><span class="title">현업 사례: 아레나로 인한 "가상 메모리 폭발"</span>
+      코어 64개 서버에서 멀티스레드 Java/JNI나 C++ 서비스가 <code>top</code>의 VIRT(또는 <code>VSZ</code>)가 수십 GiB로 치솟는데 실제 RSS는 작은 현상을 자주 겪는다. 원인은 아레나 수 = 64×8 = 512개, 각 아레나가 64 MiB씩 mmap 예약 → 32 GiB 주소 공간 예약이다(실제로 쓴 페이지만 RSS에 잡히므로 VIRT만 큰 것). 더 나쁜 경우, 각 아레나에 조금씩 남은 단편화가 합쳐져 RSS도 부푼다. <b>해법</b>: <code>export MALLOC_ARENA_MAX=2</code>(또는 4). 컨테이너에서 특히 중요한데, cgroup이 코어 수를 제대로 안 보여 주면 glibc가 호스트 코어 수로 아레나를 잡기 때문이다. 메모리 안정성을 위해 약간의 멀티스레드 할당 처리량을 포기하는 트레이드오프다.</div>
+    <figure>
+      <svg class="diagram" viewBox="0 0 720 210" role="img" aria-label="멀티스레드 아레나 구조">
+        <defs><marker id="mb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker></defs>
+        <g style="font-size:12px">
+          <rect x="12" y="12" width="90" height="30" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="30" y="32">thread 1</text>
+          <rect x="12" y="52" width="90" height="30" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="30" y="72">thread 2</text>
+          <rect x="12" y="92" width="90" height="30" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="30" y="112">thread 3</text>
+          <rect x="12" y="132" width="90" height="30" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="30" y="152">thread 4</text>
+          <text x="140" y="30" class="muted" style="font-size:11px">tcache (스레드 로컬, 락 없음)</text>
+          <rect x="140" y="38" width="80" height="18" style="fill:var(--teal-soft);stroke:var(--teal)"/><rect x="140" y="78" width="80" height="18" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+          <rect x="140" y="118" width="80" height="18" style="fill:var(--teal-soft);stroke:var(--teal)"/><rect x="140" y="158" width="80" height="18" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+
+          <rect x="300" y="20" width="180" height="70" rx="8" class="box"/><text x="316" y="42" style="font-weight:700">메인 아레나</text>
+          <text x="316" y="62" class="muted" style="font-size:11px">brk 힙 · 락 · bins</text>
+          <text x="316" y="80" class="muted" style="font-size:11px">top → sbrk</text>
+          <rect x="300" y="110" width="180" height="70" rx="8" class="box"/><text x="316" y="132" style="font-weight:700">보조 아레나 1</text>
+          <text x="316" y="152" class="muted" style="font-size:11px">mmap 힙(64 MiB) · 락 · bins</text>
+          <rect x="520" y="110" width="180" height="70" rx="8" class="box"/><text x="536" y="132" style="font-weight:700">보조 아레나 2 …</text>
+          <text x="536" y="152" class="muted" style="font-size:11px">최대 MALLOC_ARENA_MAX개</text>
+
+          <line x1="220" y1="47" x2="298" y2="47" style="stroke:var(--accent)" marker-end="url(#mb)"/>
+          <line x1="220" y1="87" x2="298" y2="130" style="stroke:var(--accent)" marker-end="url(#mb)"/>
+          <line x1="220" y1="127" x2="298" y2="145" style="stroke:var(--accent)" marker-end="url(#mb)"/>
+          <line x1="220" y1="167" x2="518" y2="150" style="stroke:var(--accent)" marker-end="url(#mb)"/>
+          <text x="300" y="200" class="muted" style="font-size:11px">tcache 미스 시에만 아레나 락 경합. 아레나가 바쁘면 다른 아레나로, 없으면 새로 생성.</text>
+        </g>
+      </svg>
+      <figcaption>그림 10-3. 스레드는 tcache로 락 없이 처리하다, 미스 시 아레나 하나를 trylock한다. 아레나 수가 경합과 메모리 사용의 트레이드오프를 결정한다.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 단편화로 RSS가 안 줄어드는 문제</h2>
+    <p>"메모리를 다 <code>free</code>했는데 왜 프로세스 RSS가 그대로인가?" 이것은 버그가 아니라 <code>brk</code> 힙의 구조적 성질이다.</p>
+    <ol>
+      <li><code>free</code>는 청크를 bin에 넣을 뿐, 커널에 페이지를 반납하지 않는다(그래야 다음 할당이 빠르다).</li>
+      <li><code>brk</code> 힙은 <b>꼭대기(top)부터만</b> 줄일 수 있다. 힙 맨 위에 살아 있는 청크가 하나라도 있으면, 그 아래가 전부 free여도 break를 내릴 수 없다. <code>free</code>가 자동으로 하는 trim도 이 꼭대기 축소뿐이다.</li>
+      <li>그래서 "오래 사는 작은 객체 하나"가 힙 꼭대기에 있으면 그 아래 수백 MiB가 자동으로는 반납되지 않는다. 명시적 <code>malloc_trim(0)</code>은 중간의 빈 페이지를 <code>madvise</code>로 돌려줄 수 있지만, 살아 있는 객체가 페이지마다 흩어져 있으면 그것도 소용없다.</li>
+    </ol>
+    <div class="widget" id="trim">
+      <div class="w-title">malloc_trim · RSS 반환 시뮬레이터</div>
+      <div class="w-desc">64 KiB 청크 8개로 힙을 채운 뒤 일부를 해제하고 비교한다. <b>자동 trim(free 시)</b>은 꼭대기 연속 free만 <code>sbrk</code>로 줄이고, <b>malloc_trim(0)</b>은 중간 구멍의 빈 페이지까지 <code>MADV_DONTNEED</code>로 반납한다.</div>
+      <div class="controls">
+        <button class="btn primary" id="tr-fill">64K 청크 8개 할당</button>
+        <button class="btn" id="tr-freetop">맨 위부터 free</button>
+        <button class="btn" id="tr-freebot">맨 아래부터 free</button>
+        <button class="btn" id="tr-trim">malloc_trim(0)</button>
+        <button class="btn" id="tr-reset">초기화</button>
+      </div>
+      <div class="stage"><div class="heap-wrap"><div class="heap-bar" id="tr-heap" style="height:44px"></div></div></div>
+      <div class="stat-row" id="tr-stats"></div>
+      <div class="log" id="tr-log"></div>
+    </div>
+    <ul>
+      <li><b><code>malloc_trim(pad)</code></b>: 꼭대기 연속 free 영역은 <code>sbrk</code> 음수로 반납하고, glibc 2.8부터는 모든 아레나의 <b>중간</b> free 청크에 걸친 <em>통째로 빈 페이지</em>도 <code>madvise(MADV_DONTNEED)</code>로 반납한다(주소 공간은 유지, RSS만 감소). 단 페이지 일부라도 사용 중이면 그 페이지는 못 돌려준다.</li>
+      <li><b><code>M_TRIM_THRESHOLD</code></b>(기본 128 KiB): top의 free가 이 값을 넘으면 <code>free</code>가 자동으로 trim한다. 이 자동 trim은 <b>꼭대기만</b> 줄인다. 중간 구멍까지 반납하려면 명시적 <code>malloc_trim(0)</code>을 불러야 한다.</li>
+      <li>tcache/fastbin에 들어간 청크는 할당자 입장에서 "사용 중"이라 trim 대상이 아니다. 작은 객체가 페이지마다 하나씩 살아 있는 패턴(희소 단편화)은 어떤 trim으로도 회수되지 않는다.</li>
+      <li>이것이 장수 서버에서 <b>jemalloc/tcmalloc</b>을 쓰는 큰 이유다. 이들은 메모리를 가상 영역(run/span) 단위로 관리하고 사용하지 않는 페이지를 <code>madvise(MADV_FREE/DONTNEED)</code>로 적극 반환해, 중간이 비어도 OS에 돌려줄 수 있다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. 힙 메모리 버그</h2>
+    <p>할당자의 메타데이터와 사용자 데이터가 같은 힙에 섞여 있다는 사실이 C/C++ 메모리 버그를 위험하게 만든다. 셋을 본다.</p>
+    <div class="two-col">
+      <div>
+        <h3>use-after-free (UAF)</h3>
+        <pre><code>char *p = malloc(64);
+free(p);              // p는 tcache bin에 들어감
+                      // ... 어딘가 strcpy(p, attacker);
+char *q = malloc(64); // 같은 청크 재사용 → q == p
+q[0] = 'X';           // p로 쓴 데이터를 덮음 / 반대도</code></pre>
+      </div>
+      <div>
+        <h3>double free</h3>
+        <pre><code>free(p);
+free(p);   // 같은 청크를 두 번 → bin 리스트에 p가 두 번
+char *a = malloc(64);  // a == p
+char *b = malloc(64);  // b == p (!!) → a와 b가 같은 메모리</code></pre>
+      </div>
+    </div>
+    <h3>heap buffer overflow</h3>
+    <pre><code>char *p = malloc(16);
+memcpy(p, src, 32);   // 다음 청크의 헤더(size 등)를 덮어씀
+free(p);              // 할당자가 오염된 메타데이터를 보고 abort하거나, 나중에 엉뚱한 곳이 깨짐</code></pre>
+    <p>이 버그들이 위험한 이유는 증상이 <b>원인과 멀리 떨어진 곳에서</b> 나타나기 때문이다. 메타데이터나 남의 데이터가 조용히 깨지고, 한참 뒤 전혀 무관한 <code>malloc</code>/<code>free</code>에서 abort하거나 데이터가 오염된다. 또한 할당자 메타데이터 오염은 보안 취약점으로 이어질 수 있어 CVE의 큰 비중을 차지한다. glibc는 흔한 오염을 조기에 감지해 즉시 중단하도록 여러 무결성 검사를 넣었다:</p>
+    <ul>
+      <li><b>tcache key</b>(2.29+): tcache 청크에 아레나별 키를 심어, double free 시 같은 키가 이미 있으면 abort.</li>
+      <li><b>safe-linking</b>(2.32+): 단일 연결 리스트(tcache/fastbin)의 포인터를 주소 기반 값과 섞어 저장해, 오염된 포인터를 쉽게 감지·무력화.</li>
+      <li>free 시 다음 청크 size의 타당성, 리스트에서 뺄 때 양방향 링크의 일관성 검사 → 실패 시 <code>free(): invalid next size</code>, <code>corrupted double-linked list</code> 등의 메시지로 abort.</li>
+    </ul>
+    <div class="widget" id="mb">
+      <div class="w-title">UAF / double free / overflow 시각화</div>
+      <div class="w-desc">시나리오를 골라 단계별로 넘기면, 포인터와 힙 바이트가 어떻게 어긋나는지 본다. 빨간 빗금은 ASan의 레드존(독성 바이트)이다.</div>
+      <div class="controls"><label>시나리오 <select id="mb-sel">
+        <option value="uaf">use-after-free</option>
+        <option value="df">double free</option>
+        <option value="of">heap overflow</option>
+      </select></label></div>
+      <div class="stage" style="padding:8px 0"><div class="mb-cells" id="mb-cells"></div></div>
+      <div id="mb-step"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. ASan과 Valgrind</h2>
+    <p>두 도구는 같은 버그를 전혀 다른 원리로 잡는다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>AddressSanitizer (ASan)</th><th>Valgrind (Memcheck)</th></tr>
+      <tr><td>동작</td><td>컴파일 시 계측(instrumentation). 모든 메모리 접근 앞에 "이 주소가 독성인가" 검사 삽입</td><td>동적 이진 번역(DBT). 프로그램을 가상 CPU에서 실행하며 모든 접근을 감시</td></tr>
+      <tr><td>핵심 자료구조</td><td><b>섀도 메모리</b>: 애플리케이션 8바이트당 1바이트 섀도. 접근 가능/레드존 여부 기록</td><td><b>V비트(valid-value) + A비트(valid-address)</b>: 모든 바이트의 초기화·접근 가능 상태 추적</td></tr>
+      <tr><td>레드존 / 격리</td><td>할당 앞뒤에 레드존(독성)을 두어 overflow 탐지. free된 청크는 <b>격리(quarantine)</b>에 두어 즉시 재사용 안 함 → UAF 탐지</td><td>자체 할당자로 레드존 + free 청크를 오래 "접근 불가"로 유지</td></tr>
+      <tr><td>초기화 안 된 읽기</td><td>기본은 못 잡음 (MSan이 별도로 담당)</td><td><b>잡음</b> (V비트로 "아직 안 쓴 바이트를 읽음" 판정)</td></tr>
+      <tr><td>속도</td><td>약 2배 느림, 메모리 2~3배. CI·개발에 상시 사용 가능</td><td>약 10~50배 느림. 재현 디버깅에 사용</td></tr>
+      <tr><td>빌드</td><td>재컴파일 필요 (<code>-fsanitize=address</code>)</td><td>재컴파일 불필요 (바이너리 그대로)</td></tr>
+    </table></div>
+    <pre><code># ASan: 컴파일 타임 계측, 빠름
+gcc -fsanitize=address -g -O1 app.c -o app && ./app
+#   → heap-use-after-free / heap-buffer-overflow / double-free 보고 + 스택
+
+# Valgrind: 바이너리 그대로, 초기화 안 된 읽기까지
+valgrind --leak-check=full --track-origins=yes ./app</code></pre>
+    <div class="callout tip"><span class="title">섀도 메모리의 핵심 아이디어</span>
+      ASan은 가상 주소를 <code>shadow = (addr &gt;&gt; 3) + offset</code>으로 매핑한다. 접근할 때마다 이 섀도 바이트를 읽어, 해당 8바이트가 전부 접근 가능하면 0, 일부만/레드존이면 음수나 부분값이다. 할당 시 레드존을 "독성"으로, free 시 청크 전체를 "독성"으로 칠하고 격리에 넣으면, 해제된 메모리에 접근하는 순간 섀도 검사가 걸린다. 이 "메타데이터를 데이터와 분리해 별도 영역에 둔다"는 발상은 9장 커널의 <code>slub_debug</code> red zone·poisoning과 같은 계보다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s11">
+    <h2>11. 현대 할당자 비교</h2>
+    <p>ptmalloc2는 범용·호환성 위주다. 처리량·단편화·메모리 반환에서 더 나은 선택이 상황별로 존재한다. 모두 <code>LD_PRELOAD</code>나 링크로 교체할 수 있다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>ptmalloc2 (glibc)</th><th>tcmalloc (Google)</th><th>jemalloc (FB/BSD)</th><th>mimalloc (MS)</th></tr>
+      <tr><td>size class</td><td>bin 경계 (fast/small/large)</td><td>수십 개 size class로 반올림</td><td>2배 구간당 4개 size class + extent</td><td>size class별 page + free list sharding</td></tr>
+      <tr><td>thread cache</td><td>tcache (bin당 7개)</td><td>신형: per-CPU 캐시(rseq) / gperftools판: 스레드 캐시 → central free list</td><td>스레드 tcache + 여러 아레나(기본 CPU 수×4)</td><td>스레드 로컬 heap</td></tr>
+      <tr><td>큰 관리 단위</td><td>brk 힙 / mmap</td><td>page span</td><td>extent(과거 chunk/run)</td><td>segment / page</td></tr>
+      <tr><td>OS 반환</td><td>소극적(자동은 꼭대기 trim, 명시적 <code>malloc_trim</code>)</td><td>백그라운드 반환, 반환 속도 조절 가능</td><td><code>dirty_decay_ms</code>/<code>muzzy_decay_ms</code>로 시간 기반 지연 반환</td><td>짧은 지연 후 purge(reset/decommit)</td></tr>
+      <tr><td>강점</td><td>호환성, 기본 제공</td><td>높은 할당 처리량, 프로파일링</td><td>낮은 단편화, 관측·통계 풍부</td><td>작은 코드·빠른 fast path, 좋은 지역성</td></tr>
+      <tr><td>전형적 선택</td><td>기본값</td><td>처리량 민감 서버</td><td>Redis·대형 장수 서비스(단편화 억제)</td><td>지연 민감·임베디드</td></tr>
+    </table></div>
+    <p>공통 설계 원칙은 뚜렷하다. <b>(1) 스레드 로컬 캐시로 락을 피하고</b>, <b>(2) 크기를 소수의 클래스로 반올림해</b> 관리를 단순화하며(대신 약간의 내부 단편화 수용), <b>(3) 큰 가상 영역을 잡아 그 안을 자체 관리하고 사용 안 하는 페이지를 <code>madvise</code>로 적극 반환</b>한다. ptmalloc2가 (3)에서 약한 것이 장수 서버에서 교체되는 주된 이유다.</p>
+    <div class="widget" id="cmp">
+      <div class="w-title">반환 정책 비교: decay 시뮬레이터</div>
+      <div class="w-desc">워크로드가 피크 후 메모리를 해제했을 때, "즉시 반환 / 지연 반환(decay) / 반환 안 함" 세 정책의 RSS 궤적을 비교한다. 지연 반환은 재할당 시 페이지 폴트를 아껴 처리량과 RSS를 절충한다.</div>
+      <div class="controls">
+        <label>decay <input type="range" id="cmp-decay" min="0" max="20" value="6" style="width:160px"><span id="cmp-decayv" class="pill"></span></label>
+        <button class="btn" id="cmp-run">재생</button>
+      </div>
+      <div class="stage"><svg id="cmp-svg" class="diagram" viewBox="0 0 680 220"></svg></div>
+      <div class="mini" id="cmp-note"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s12">
+    <h2>12. GC 언어와의 관계, 실무 튜닝</h2>
+    <h3>GC 언어와의 관계 (간략)</h3>
+    <p>Java/Go/C#/JS 같은 관리 언어도 결국 OS에서 큰 메모리 덩어리를 받아(대개 <code>mmap</code>) 그 안을 자체 할당자로 관리한다. 차이는 <b>해제를 누가 하느냐</b>다.</p>
+    <ul>
+      <li>C/C++ malloc: 프로그래머가 <code>free</code> 시점을 정한다. 즉시 재사용 가능, 하지만 UAF/leak은 사람 책임.</li>
+      <li>GC: 런타임이 도달 불가능한 객체를 찾아 회수한다. UAF가 원천 봉쇄되지만, GC가 압축(compaction)하며 객체를 옮길 수 있어(이동형 GC) <b>단편화를 능동적으로 없앤다</b>. 이는 malloc이 못 하는 일이다(C 포인터는 고정되어야 하므로).</li>
+      <li>그래서 관리 언어 힙은 malloc 힙보다 단편화에 강하지만, bump-pointer 할당 + 주기적 멈춤(또는 동시 GC의 복잡성)이라는 다른 비용을 진다. CLR/JVM GC는 별도 장(또는 과정)에서 깊게 다룬다.</li>
+    </ul>
+    <h3>실무 튜닝 레버 (glibc)</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>환경변수 / mallopt</th><th>효과</th><th>언제</th></tr>
+      <tr><td><code>MALLOC_ARENA_MAX</code></td><td>아레나 상한. 2~4로 낮추면 메모리·단편화↓, 멀티스레드 처리량 약간↓</td><td>코어 많은 서버·컨테이너에서 RSS/VIRT 폭발 시 (가장 효과 큼)</td></tr>
+      <tr><td><code>GLIBC_TUNABLES=glibc.malloc.tcache_count=…</code> / <code>tcache_max</code></td><td>tcache bin당 개수 / tcache 대상 최대 크기</td><td>특정 크기대 재사용이 많을 때 (0이면 tcache 비활성)</td></tr>
+      <tr><td><code>M_MMAP_THRESHOLD</code></td><td>mmap 직행 임계값(고정 시 동적 학습 끔)</td><td>큰 할당 패턴이 뚜렷할 때</td></tr>
+      <tr><td><code>M_TRIM_THRESHOLD</code> / <code>malloc_trim()</code></td><td>top free를 OS에 반환하는 기준 / 수동 반환</td><td>피크 후 RSS를 줄이고 싶을 때</td></tr>
+      <tr><td><code>MALLOC_PERTURB_</code></td><td>할당/해제 메모리를 특정 바이트로 채움</td><td>초기화 안 된 사용·UAF 디버깅</td></tr>
+      <tr><td><code>GLIBC_TUNABLES=glibc.malloc.*</code></td><td>위 값들을 통합 설정하는 최신 인터페이스</td><td>환경변수 여러 개 대신</td></tr>
+      <tr><td><code>LD_PRELOAD=libjemalloc.so</code></td><td>할당자 자체 교체</td><td>단편화·반환이 근본 문제일 때</td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">진단 순서</span>
+      "메모리가 계속 증가한다"면 먼저 <b>누수인지 단편화인지</b> 가른다. ① <code>/proc/PID/smaps_rollup</code>으로 RSS 구성 확인, ② <code>mallinfo2()</code> 또는 <code>malloc_info(0, stderr)</code>로 아레나별 <code>uordblks</code>(사용 중)·<code>fordblks</code>(free지만 안 반납) 비교 — fordblks가 크면 단편화·미반환, uordblks가 계속 느는데 live 객체는 안 느는 것 같으면 누수. ③ 누수는 ASan/Valgrind/heaptrack, 단편화는 <code>MALLOC_ARENA_MAX</code>↓·<code>malloc_trim</code>·할당자 교체로 대응. 지표 없이 바로 튜닝 값부터 바꾸지 말 것.</div>
+    <div class="widget" id="info">
+      <div class="w-title">malloc_info / mallinfo 해석기</div>
+      <div class="w-desc">값을 조절해 누수와 단편화를 구분하는 연습. 실제로는 <code>malloc_info(0, stderr)</code>나 <code>mallinfo2()</code>에서 이 숫자들을 얻는다.</div>
+      <div class="controls">
+        <label>uordblks(사용 중) <input type="range" id="if-u" min="0" max="1000" value="200" style="width:140px"></label>
+        <label>fordblks(free·미반납) <input type="range" id="if-f" min="0" max="1000" value="700" style="width:140px"></label>
+        <label>live 객체 추세 <select id="if-t"><option value="flat">평평</option><option value="up">증가</option></select></label>
+      </div>
+      <div id="if-out"></div>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>라이브러리 할당자는 커널에서 큰 덩어리(<code>brk</code>/<code>mmap</code>)를 받아 바이트 단위 요청으로 분할·재활용·병합한다. <code>M_MMAP_THRESHOLD</code>(기본 128 KiB)는 큰 할당을 mmap으로 직행시키고, 해제된 크기를 학습해 동적으로 올라간다.</li>
+    <li>청크는 <code>size</code> 하위 3비트에 A(non-main-arena)/M(mmapped)/P(prev-inuse)를 담고, 다음 청크의 <code>prev_size</code>를 경계 태그로 복제해 양 옆 청크의 free 여부를 O(1)에 판정·병합한다. free 청크는 payload 자리에 fd/bk 링크를 둔다.</li>
+    <li>ptmalloc2 bin: tcache(스레드 로컬·락 없음) → fastbin(병합 지연) → unsorted → small/large(병합·정렬). 작은 캐시는 성능을 위해 병합을 미루고, 그 대가로 단편화·보안 표면이 생긴다(커널 PCP/SLUB과 같은 트레이드오프).</li>
+    <li><code>brk</code> 힙은 꼭대기부터만 줄어서, 맨 위의 장수 객체 하나가 그 아래 전부의 RSS 반환을 막는다. <code>malloc_trim</code>·tcmalloc/jemalloc의 <code>madvise</code> 반환이 대책이다.</li>
+    <li>아레나는 멀티스레드 락 경합을 줄이지만, 코어 수 × 8개까지 늘어나 VIRT/RSS를 부풀린다. <code>MALLOC_ARENA_MAX=2~4</code>가 컨테이너의 단골 처방이다.</li>
+    <li>UAF·double free·overflow는 할당자 메타데이터를 오염시켜 임의 쓰기로 번진다. ASan(섀도 메모리 + 레드존 + 격리, 컴파일 계측)과 Valgrind(DBT + V/A비트, 초기화 안 된 읽기까지)가 원리를 달리해 잡는다.</li>
+    <li>현대 할당자의 공통 원칙: 스레드 로컬 캐시로 락 회피, 소수 size class로 반올림, 큰 가상 영역을 자체 관리하며 안 쓰는 페이지를 적극 반환. GC 언어는 이동형 압축으로 단편화를 능동 제거하지만 다른 비용을 진다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">청크 size 워드의 하위 비트 중 P(PREV_INUSE)가 하는 일은?</div>
+    <button class="opt">이 청크 자신이 사용 중인지 표시한다</button>
+    <button class="opt">이 청크가 mmap으로 할당되었는지 표시한다</button>
+    <button class="opt">바로 앞(낮은 주소) 청크가 사용 중인지 표시해, 0이면 prev_size로 앞 청크와 병합할 수 있게 한다</button>
+    <button class="opt">이 청크가 메인 아레나에 속하는지 표시한다</button>
+    <div class="explain">P는 <b>앞 청크</b>의 사용 여부다. 내 size의 P가 0이면 앞 청크가 free이고, 그때 내 prev_size가 유효해져 <code>this − prev_size</code>로 앞 청크를 찾아 병합한다. 자신의 사용 여부는 "다음 청크의 P 비트"에 적힌다. M은 mmap, A는 non-main-arena로 각각 다른 비트다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">glibc 기본 설정에서 <code>malloc(200000)</code>(약 195 KiB)을 한 뒤 <code>free</code>하면?</div>
+    <button class="opt">brk 힙의 top에 흡수되어 RSS는 그대로 유지된다</button>
+    <button class="opt">128 KiB 임계값을 넘으므로 전용 mmap으로 받았다가 free 시 munmap되어 RSS가 즉시 준다</button>
+    <button class="opt">fastbin에 들어가 다음 할당에 재사용된다</button>
+    <button class="opt">tcache bin에 들어간다</button>
+    <div class="explain">195 KiB ≥ 128 KiB이므로 mmap 직행이고, free 시 munmap으로 커널에 바로 반납된다. fastbin(≤128 B)·tcache(≤1032 B)는 크기가 전혀 맞지 않는다. 단, 이 크기를 반복 할당·해제하면 동적 임계값이 올라가 brk 힙 재활용으로 바뀔 수 있다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">64코어 서버의 멀티스레드 C++ 서비스가 RSS는 2 GiB인데 VIRT가 40 GiB다. 가장 먼저 시도할 것은?</div>
+    <button class="opt">물리 RAM을 늘린다</button>
+    <button class="opt">모든 malloc을 mmap으로 바꾼다</button>
+    <button class="opt">스레드 수를 줄인다</button>
+    <button class="opt">MALLOC_ARENA_MAX=2 (또는 4)를 설정한다</button>
+    <div class="explain">VIRT만 크고 RSS는 작은 것은 아레나가 코어 수×8 = 512개까지 생겨 각 64 MiB 영역을 mmap 예약한 전형적 증상이다. 실제 쓴 페이지만 RSS에 잡히므로 VIRT만 부푼다. <code>MALLOC_ARENA_MAX</code>를 낮추는 것이 표준 처방이다. RAM 증설은 문제를 안 고친다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">ASan과 Valgrind(Memcheck)에 대해 옳은 것은?</div>
+    <button class="opt">ASan은 컴파일 시 계측으로 섀도 메모리를 검사해 빠르고, Valgrind는 바이너리를 동적 번역해 초기화 안 된 읽기까지 잡지만 매우 느리다</button>
+    <button class="opt">둘 다 재컴파일이 필요하다</button>
+    <button class="opt">ASan이 Valgrind보다 느리다</button>
+    <button class="opt">Valgrind는 heap overflow를 잡지 못한다</button>
+    <button class="opt">둘 다 use-after-free를 잡지 못한다</button>
+    <div class="explain">ASan은 <code>-fsanitize=address</code> 재컴파일 + 섀도 메모리로 약 2배 느림. Valgrind는 재컴파일 없이 동적 이진 번역으로 10~50배 느리지만 V비트로 초기화 안 된 값 읽기까지 잡는다. 둘 다 overflow·UAF를 잡는다(레드존·격리 vs 접근불가 유지).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">tcache와 fastbin이 free 시 <b>병합을 하지 않는</b> 주된 이유는?</div>
+    <button class="opt">병합 코드가 아직 구현되지 않았기 때문</button>
+    <button class="opt">작은 청크는 곧 같은 크기로 재할당될 가능성이 높아, 병합·재분할 비용과 캐시 지역성 손해를 피하려고</button>
+    <button class="opt">작은 청크는 경계 태그가 없어서 병합할 수 없기 때문</button>
+    <button class="opt">병합하면 보안이 약해지기 때문</button>
+    <div class="explain">같은 크기 그대로 LIFO 리스트에 꽂아 두면 다음 같은 크기 할당을 즉시(그리고 cache-hot 상태로) 돌려줄 수 있다. 병합은 단편화를 줄이지만 작은 할당의 흔한 "할당→해제→재할당" 패턴에서는 손해다. 대신 단편화·보안 표면이 늘어 주기적 <code>malloc_consolidate</code>로 정리한다. 커널의 PCP/SLUB freelist와 동일한 선택이다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">모든 메모리를 <code>free</code>했는데도 프로세스 RSS가 거의 안 줄었다. <code>malloc_info</code>의 fordblks가 매우 크다. 맞는 해석은?</div>
+    <button class="opt">메모리 누수다. free를 빠뜨린 코드가 있다</button>
+    <button class="opt">커널 버그다</button>
+    <button class="opt">free된 메모리가 bin에 쌓여 있지만 brk 힙 꼭대기가 막혀 OS로 반납되지 못한 상태(단편화/미반환)다</button>
+    <button class="opt">fordblks는 사용 중 메모리이므로 정상이다</button>
+    <div class="explain">fordblks는 "free 되었으나 아직 OS에 반납되지 않은" 바이트다. 이것이 크면 누수가 아니라 단편화·미반납이다(누수라면 uordblks가 크다). 자동 trim은 꼭대기만 줄이므로 <code>malloc_trim(0)</code>을 시도하고, 살아 있는 객체가 페이지마다 흩어진 경우라면 <code>MALLOC_ARENA_MAX</code>↓나 jemalloc/tcmalloc 교체를 검토한다.</div>
+  </div>
+</main>
+
+<script>
+/* =================== PT-CORE-START =================== */
+/* 교육용 ptmalloc2 모델. 바이트 단위 힙을 청크 배열로 표현한다. */
+function ptNew() {
+  return {
+    seq: 1,                       // 청크 식별자
+    heap: [{ id: 0, kind: "top", size: 1 << 16, prevInuse: true }], // 낮은→높은 주소
+    mmaps: [],                    // mmap 청크
+    tcache: {},                   // key: 청크 size → 배열(최대 7)
+    fast: {},                     // key: size → 배열
+    unsorted: [],                 // [{size}] (실제 청크는 heap에)
+    smallLarge: {},               // size → count (정렬 bin 요약)
+    mmapThreshold: 128 * 1024,
+    stats: { brkTop: 1 << 16, sysMmap: 0, nFromTop: 0, nReuse: 0 },
+    log: [],
+  };
+}
+/* 요청 바이트 → 실제 청크 size (헤더 8, 정렬 16, 최소 32) */
+function reqToChunk(n) {
+  let s = n + 8;                  // size 워드 1개 (prev_size는 다음 청크와 겹침)
+  s = Math.ceil(s / 16) * 16;
+  return Math.max(32, s);
+}
+const TCACHE_MAX = 1040, TCACHE_COUNT = 7, FAST_MAX = 128, SMALL_MAX = 1024;
+function ptLog(S, t) { S.log.push(t); }
+
+/* 힙에서 bin(top 제외)에 있지 않은, 사용 중 청크 목록 */
+function liveChunks(S) { return S.heap.filter(c => c.kind === "alloc"); }
+
+
+/* malloc */
+function ptMalloc(S, n) {
+  const want = reqToChunk(n);
+  if (n >= S.mmapThreshold - 8) {
+    const c = { id: S.seq++, kind: "mmap", size: Math.ceil((n + 16) / 4096) * 4096, req: n };
+    S.mmaps.push(c);
+    S.stats.sysMmap += c.size;
+    ptLog(S, `malloc(${n}) ≥ mmap_threshold(${(S.mmapThreshold / 1024) | 0}K) → mmap ${(c.size / 1024) | 0}K, 청크 #${c.id} (M비트)`);
+    return c.id;
+  }
+  // 1) tcache
+  if (want <= TCACHE_MAX && S.tcache[want] && S.tcache[want].length) {
+    const c = S.tcache[want].pop();
+    c.kind = "alloc"; c.req = n; S.stats.nReuse++;
+    ptLog(S, `malloc(${n})→청크 ${want}B: tcache[${want}] 히트 (남은 ${S.tcache[want].length}) → #${c.id}`);
+    return c.id;
+  }
+  // 2) fastbin
+  if (want <= FAST_MAX && S.fast[want] && S.fast[want].length) {
+    const c = S.fast[want].pop();
+    c.kind = "alloc"; c.req = n; S.stats.nReuse++;
+    // tcache 채우기(남은 fast를 tcache로)
+    stashTcache(S, want);
+    ptLog(S, `malloc(${n})→${want}B: fastbin[${want}] 히트 → #${c.id} (여분을 tcache로 이동)`);
+    return c.id;
+  }
+  // 3) small/large: unsorted 훑기 (병합된 free 청크 재사용)
+  const idx = S.heap.findIndex(c => c.kind === "free" && c.size >= want);
+  if (idx >= 0) {
+    const c = S.heap[idx];
+    pullUnsorted(S, c);
+    if (c.size >= want + 32) splitChunk(S, idx, want);
+    S.heap[idx].kind = "alloc"; S.heap[idx].req = n; S.stats.nReuse++;
+    ptLog(S, `malloc(${n})→${want}B: free 청크 #${c.id}(${c.size}B) 재사용${c.size > want ? " + 분할" : ""}`);
+    return S.heap[idx].id;
+  }
+  // 4) top에서 분할
+  const topI = S.heap.length - 1, top = S.heap[topI];
+  if (top.size >= want + 32) {
+    const c = { id: S.seq++, kind: "alloc", size: want, prevInuse: true, req: n };
+    top.size -= want;
+    S.heap.splice(topI, 0, c);
+    S.stats.nFromTop++;
+    ptLog(S, `malloc(${n})→${want}B: top에서 분할 → #${c.id} (top 잔여 ${top.size}B)`);
+    return c.id;
+  }
+  // 5) 확장 (brk)
+  const grow = Math.max(132 * 1024, want + 32);
+  top.size += grow; S.stats.brkTop += grow;
+  ptLog(S, `top 부족 → brk로 ${(grow / 1024) | 0}K 확장`);
+  return ptMalloc(S, n);
+}
+function stashTcache(S, size) {
+  if (size > TCACHE_MAX) return;
+  S.tcache[size] = S.tcache[size] || [];
+  while (S.fast[size] && S.fast[size].length && S.tcache[size].length < TCACHE_COUNT) {
+    S.tcache[size].push(S.fast[size].pop());
+  }
+}
+function pullUnsorted(S, c) {
+  const i = S.unsorted.indexOf(c); if (i >= 0) S.unsorted.splice(i, 1);
+}
+function splitChunk(S, idx, want) {
+  const c = S.heap[idx];
+  const rest = c.size - want;
+  if (rest < 32) return;
+  c.size = want;
+  const r = { id: S.seq++, kind: "free", size: rest, prevInuse: true };
+  S.heap.splice(idx + 1, 0, r);
+  S.unsorted.push(r);
+}
+/* free */
+function ptFree(S, id) {
+  // mmap?
+  const mi = S.mmaps.findIndex(c => c.id === id);
+  if (mi >= 0) {
+    const c = S.mmaps[mi];
+    // 동적 임계값 학습: 해제된 mmap 청크 크기까지 임계값 상향 (상한 32 MiB)
+    S.mmapThreshold = Math.min(32 * 1024 * 1024, Math.max(S.mmapThreshold, Math.ceil((c.req + 16) / 4096) * 4096));
+    S.mmaps.splice(mi, 1);
+    S.stats.sysMmap -= c.size;
+    ptLog(S, `free(#${id}): mmap 청크 → munmap ${(c.size / 1024) | 0}K (RSS 즉시 감소). mmap_threshold ← ${(S.mmapThreshold / 1024) | 0}K`);
+    return;
+  }
+  const idx = S.heap.findIndex(c => c.id === id && c.kind === "alloc");
+  if (idx < 0) { ptLog(S, `free(#${id}): 유효하지 않은 포인터`); return; }
+  const c = S.heap[idx];
+  // tcache
+  if (c.size <= TCACHE_MAX) {
+    S.tcache[c.size] = S.tcache[c.size] || [];
+    if (S.tcache[c.size].length < TCACHE_COUNT) {
+      c.kind = "tcache";
+      S.tcache[c.size].push(c);
+      ptLog(S, `free(#${id}, ${c.size}B): tcache[${c.size}]에 삽입 (${S.tcache[c.size].length}/7, 병합 안 함)`);
+      return;
+    }
+  }
+  // fastbin
+  if (c.size <= FAST_MAX) {
+    S.fast[c.size] = S.fast[c.size] || [];
+    c.kind = "fast";
+    S.fast[c.size].push(c);
+    ptLog(S, `free(#${id}, ${c.size}B): fastbin[${c.size}]에 삽입 (병합 지연)`);
+    return;
+  }
+  // 병합
+  c.kind = "free";
+  coalesce(S, idx);
+}
+function coalesce(S, idx) {
+  let c = S.heap[idx];
+  let merged = [];
+  // 뒤(다음, 더 높은 주소)
+  if (idx + 1 < S.heap.length && S.heap[idx + 1].kind === "free") {
+    const nx = S.heap[idx + 1];
+    pullUnsorted(S, nx);
+    c.size += nx.size; merged.push("#" + nx.id);
+    S.heap.splice(idx + 1, 1);
+  }
+  // 앞
+  if (idx - 1 >= 0 && S.heap[idx - 1].kind === "free") {
+    const pv = S.heap[idx - 1];
+    pullUnsorted(S, pv);
+    pv.size += c.size; merged.push("#" + pv.id);
+    S.heap.splice(idx, 1);
+    c = pv; idx = idx - 1;
+  }
+  // top 인접?
+  if (idx + 1 < S.heap.length && S.heap[idx + 1].kind === "top") {
+    S.heap[idx + 1].size += c.size;
+    S.heap.splice(idx, 1);
+    pullUnsorted(S, c);
+    ptLog(S, `free(#${c.id}): 병합${merged.length ? " [" + merged.join(",") + "]" : ""} → top에 흡수`);
+    return;
+  }
+  if (!S.unsorted.includes(c)) S.unsorted.push(c);
+  ptLog(S, `free(#${c.id}, ${c.size}B): ${merged.length ? "병합 [" + merged.join(",") + "] → " : ""}unsorted bin`);
+}
+/* fastbin 통합 */
+function ptConsolidate(S) {
+  let moved = 0;
+  for (const k in S.fast) {
+    while (S.fast[k].length) { const c = S.fast[k].pop(); c.kind = "free"; S.unsorted.push(c); moved++; }
+  }
+  // 인접 free 병합 수행
+  for (let i = 0; i < S.heap.length; i++) {
+    if (S.heap[i].kind === "free") {
+      while (i + 1 < S.heap.length && S.heap[i + 1].kind === "free") {
+        pullUnsorted(S, S.heap[i + 1]);
+        S.heap[i].size += S.heap[i + 1].size;
+        S.heap.splice(i + 1, 1);
+      }
+      if (i + 1 < S.heap.length && S.heap[i + 1].kind === "top") {
+        S.heap[i + 1].size += S.heap[i].size;
+        pullUnsorted(S, S.heap[i]);
+        S.heap.splice(i, 1); i--;
+      }
+    }
+  }
+  ptLog(S, `malloc_consolidate(): fastbin ${moved}개를 꺼내 인접 병합`);
+}
+/* 통계 */
+function ptStat(S) {
+  let uord = 0, ford = 0;
+  S.heap.forEach(c => { if (c.kind === "alloc") uord += c.size; else if (c.kind === "free") ford += c.size; });
+  for (const k in S.tcache) ford += S.tcache[k].length * (+k);
+  for (const k in S.fast) ford += S.fast[k].length * (+k);
+  S.mmaps.forEach(c => uord += c.size);
+  const top = S.heap[S.heap.length - 1].size;
+  return { uord, ford, top, mmap: S.stats.sysMmap };
+}
+/* =================== PT-CORE-END =================== */
+
+/* ---------- 2절: 동적 임계값 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  let threshold, live, locked;
+  function reset() {
+    threshold = 128 * 1024; live = []; locked = false;
+    $("mt-log").textContent = ""; render(); log("초기화: mmap_threshold = 128 KiB (동적)");
+  }
+  function log(t) { const l = $("mt-log"); l.textContent += t + "\n"; l.scrollTop = l.scrollHeight; }
+  function render() {
+    $("mt-stats").innerHTML = [
+      ["mmap_threshold", (threshold / 1024).toFixed(0) + " KiB" + (locked ? " (고정)" : " (동적)")],
+      ["살아있는 할당", live.length],
+      ["그중 mmap", live.filter(x => x.mmap).length],
+      ["그중 brk", live.filter(x => !x.mmap).length],
+    ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:16px">${v}</div></div>`).join("");
+  }
+  $("mt-malloc").onclick = () => {
+    const kb = Math.max(1, +$("mt-sz").value | 0), b = kb * 1024;
+    const mmap = b >= threshold;
+    live.push({ kb, b, mmap });
+    log(`malloc(${kb}K): ${b}B ${mmap ? "≥" : "<"} 임계값 ${threshold}B → ${mmap ? "mmap 직행" : "brk 힙"}`);
+    render();
+  };
+  $("mt-free").onclick = () => {
+    const c = live.pop(); if (!c) return;
+    if (c.mmap) {
+      log(`free(${c.kb}K mmap): munmap → RSS 즉시 감소`);
+      if (!locked) {
+        // glibc: 임계값 ← 해제된 mmap 청크 크기(요청+헤더를 페이지 반올림), 상한 32 MiB
+        const csz = Math.ceil((c.b + 16) / 4096) * 4096;
+        if (csz > threshold && csz <= 32 * 1024 * 1024) { threshold = csz; log(`  ↳ 동적 학습: mmap_threshold ← 청크 크기 ${(csz / 1024).toFixed(0)}K (trim_threshold도 2배로). 같은 크기는 이제 brk 힙으로 간다`); }
+      }
+    } else log(`free(${c.kb}K brk): bin에 보관 (RSS 유지)`);
+    render();
+  };
+  $("mt-lock").onclick = () => { locked = true; threshold = 128 * 1024; log("mallopt(M_MMAP_THRESHOLD, 128K): 고정 → 동적 학습 꺼짐"); render(); };
+  $("mt-reset").onclick = reset;
+  reset();
+})();
+
+/* ---------- 3절: 청크 계산기 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  function run() {
+    const n = Math.max(0, +$("ck-n").value | 0);
+    const size = reqToChunk(n);
+    const usable = size - 8;          // 다음 청크 prev_size 겹침 포함(단순화: size-8)
+    const waste = usable - n;
+    const flags = "A M P";
+    $("ck-out").innerHTML = `<pre style="margin:6px 0"><code>요청 n           = ${n} B
++ 헤더(size워드)  = ${n} + 8
+정렬(16의 배수)   = <b class="c-accent">${size} B</b>  (최소 32)
+usable size      ≈ ${usable} B   (다음 청크 prev_size 8B를 빌려 씀)
+내부 단편화      = ${waste} B (${size ? (waste / size * 100).toFixed(1) : 0}%)
+
+size 워드 = ${size} | 하위 3비트 <span class="flagbit bg-bad">A</span><span class="flagbit bg-warn">M</span><span class="flagbit bg-ok">P</span>
+          = 0b${(size).toString(2)} (하위 4비트 ${(size & 15).toString(2).padStart(4, "0")} → 정렬로 0)</code></pre>
+    <div class="mini">malloc(${n})이 돌려주는 포인터 mem = 청크 포인터(prev_size 필드 위치) + 16B. ${n === 0 ? "malloc(0)도 최소 청크(32B)를 받는다(구현 정의, glibc는 유효 포인터 반환)." : ""}</div>`;
+  }
+  $("ck-n").oninput = run; run();
+})();
+
+/* ---------- 5절: 힙 시뮬레이터 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  let S, flash = null, justfreed = null;
+  function reset() { S = ptNew(); flash = justfreed = null; render(); }
+  function heapView() {
+    // 표시용: heap 배열(상위에 top) + mmap을 오른쪽에
+    const list = S.heap.map(c => ({ ...c })).concat(S.mmaps.map(c => ({ ...c, kind: "mmap" })));
+    // top은 폭을 제한
+    const widths = list.map(c => c.kind === "top" ? Math.min(c.size, 3000) : c.size);
+    const sum = widths.reduce((a, b) => a + b, 0);
+    $("sim-heap").innerHTML = list.map((c, i) => {
+      const w = Math.max(widths[i] / sum * 100, c.kind === "top" ? 6 : 3);
+      const inBin = c.kind === "tcache" ? "tcache" : c.kind === "fast" ? "fast" : "";
+      const cls = c.kind === "alloc" ? "alloc" : c.kind === "top" ? "top" : c.kind === "mmap" ? "mmap" : "free";
+      const fl = flash === c.id ? "flash" : justfreed === c.id ? "justfreed" : "";
+      const lbl = c.kind === "top" ? "top" : c.kind === "mmap" ? `mmap#${c.id}` : `#${c.id}`;
+      const sub = c.kind === "top" ? `${(c.size / 1024).toFixed(0)}K` : c.kind === "alloc" ? `${c.req || ""}→${c.size}` : c.kind === "tcache" ? "tcache" : c.kind === "fast" ? "fast" : `${c.size}B`;
+      return `<div class="chunk ${cls} ${fl}" style="width:${w}%" ${c.kind === "alloc" ? `data-id="${c.id}"` : ""} title="청크 #${c.id}, ${c.size}B, ${c.kind}">${lbl}<span class="cl">${sub}</span></div>`;
+    }).join("");
+    $("sim-addr").innerHTML = `<span>낮은 주소 (brk 시작)</span><span>top → 높은 주소</span><span style="color:var(--violet)">mmap 영역</span>`;
+  }
+  function binView() {
+    const rows = [];
+    const show = (cls, lbl, arr, getSize) => {
+      rows.push(`<div class="bin-row"><span class="bin-lbl">${lbl}</span><span class="bin-chunks">${arr.length ? arr.map(c => `<span class="bc ${cls}">#${getSize ? c : c.id}·${getSize ? getSize : c.size}B</span>`).join('<span class="arrow">→</span>') : '<span class="mini">비어 있음</span>'}</span></div>`);
+    };
+    // tcache
+    const tkeys = Object.keys(S.tcache).filter(k => S.tcache[k].length).sort((a, b) => a - b);
+    tkeys.forEach(k => rows.push(`<div class="bin-row"><span class="bin-lbl">tcache[${k}]</span><span class="bin-chunks">${S.tcache[k].map(c => `<span class="bc tc">#${c.id}</span>`).join('<span class="arrow">→</span>')} <span class="mini">(${S.tcache[k].length}/7)</span></span></div>`));
+    if (!tkeys.length) rows.push(`<div class="bin-row"><span class="bin-lbl">tcache</span><span class="bin-chunks"><span class="mini">비어 있음</span></span></div>`);
+    // fast
+    const fkeys = Object.keys(S.fast).filter(k => S.fast[k].length).sort((a, b) => a - b);
+    fkeys.forEach(k => rows.push(`<div class="bin-row"><span class="bin-lbl">fastbin[${k}]</span><span class="bin-chunks">${S.fast[k].map(c => `<span class="bc fast">#${c.id}</span>`).join('<span class="arrow">→</span>')}</span></div>`));
+    if (!fkeys.length) rows.push(`<div class="bin-row"><span class="bin-lbl">fastbins</span><span class="bin-chunks"><span class="mini">비어 있음</span></span></div>`);
+    // unsorted / small-large
+    const uns = S.unsorted;
+    rows.push(`<div class="bin-row"><span class="bin-lbl">unsorted/bins</span><span class="bin-chunks">${uns.length ? uns.map(c => `<span class="bc ${c.size < 1024 ? "small" : "large"}">#${c.id}·${c.size}B</span>`).join('<span class="arrow">→</span>') : '<span class="mini">비어 있음</span>'}</span></div>`);
+    $("sim-bins").innerHTML = rows.join("");
+  }
+  function freeSelect() {
+    const sel = $("sim-free"), keep = sel.value;
+    const opts = liveChunks(S).concat(S.mmaps);
+    sel.innerHTML = opts.map(c => `<option value="${c.id}">#${c.id} (${c.req || c.size}B${c.kind === "mmap" ? " mmap" : ""})</option>`).join("") || '<option value="">(없음)</option>';
+    if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+  }
+  function statView() {
+    const s = ptStat(S);
+    $("sim-stats").innerHTML = [
+      ["uordblks (사용 중)", MM.bytes(s.uord)],
+      ["fordblks (free·미반납)", MM.bytes(s.ford)],
+      ["top chunk", MM.bytes(s.top)],
+      ["mmap 총량", MM.bytes(s.mmap)],
+      ["top에서 분할 횟수", S.stats.nFromTop],
+      ["bin 재사용 횟수", S.stats.nReuse],
+    ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:15px">${v}</div></div>`).join("");
+    $("sim-log").textContent = S.log.slice(-40).join("\n");
+    $("sim-log").scrollTop = 1e9;
+    const last = S.log[S.log.length - 1] || "malloc/free를 실행해 보자.";
+    $("sim-note").textContent = last;
+  }
+  function render() { heapView(); binView(); freeSelect(); statView(); }
+  function doMalloc(n) { const id = ptMalloc(S, n); flash = id; justfreed = null; render(); flash = null; }
+  function doFree(id) { justfreed = id; ptFree(S, +id); render(); justfreed = null; }
+  $("sim-m").onclick = () => doMalloc(Math.max(1, +$("sim-n").value | 0));
+  $("sim-f").onclick = () => { const v = $("sim-free").value; if (v) doFree(v); };
+  $("sim-heap").addEventListener("click", e => { const t = e.target.closest("[data-id]"); if (t) doFree(t.dataset.id); });
+  $("sim-consol").onclick = () => { ptConsolidate(S); render(); };
+  $("sim-reset").onclick = reset;
+  $("sim-demo").onclick = () => {
+    reset();
+    // tcache(≤1032B) 밖 크기로 해야 free 즉시 병합 경로를 탄다
+    const ids = [1100, 1100, 1100, 1100, 1100, 1100].map(doMallocRet);
+    [ids[0], ids[2], ids[4]].forEach(id => doFree(id));
+    ptLog(S, "※ free 1120B 조각 3개(합 3360B)가 사용 중 청크 사이에 끼어 병합 불가");
+    doMalloc(2000);
+    ptLog(S, "※ malloc(2000): 어느 조각도 2016B를 못 담음 → top에서 분할 (외부 단편화)");
+    render();
+  };
+  $("sim-uaf").onclick = () => {
+    reset();
+    const a = doMallocRet(40);
+    doFree(a);
+    const b = doMallocRet(40);
+    ptLog(S, `※ 두 번째 malloc이 방금 free한 청크 #${a}를 그대로 돌려줌(${a === b ? "같은 주소" : "다른 주소"}) → free 후에도 옛 포인터를 쓰면 새 소유자의 데이터를 건드린다(UAF)`);
+    render();
+  };
+  function doMallocRet(n) { const id = ptMalloc(S, n); return id; }
+  reset();
+})();
+
+/* ---------- 6절: 단편화 스텝 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  function build() {
+    const steps = [];
+    let cells = [];
+    for (let i = 0; i < 10; i++) cells.push({ id: i + 1, st: "alloc" });
+    steps.push({ cells: cells.map(c => ({ ...c })), cap: "64 B 청크 10개를 연속 할당. 힙이 꽉 찼다.", big: 0 });
+    for (let i = 0; i < 10; i += 2) {
+      cells[i].st = "free";
+      steps.push({ cells: cells.map(c => ({ ...c })), cap: `짝수 번째 #${i + 1} 해제. free 조각이 사이사이 생긴다.`, big: 64 });
+    }
+    const freeBytes = cells.filter(c => c.st === "free").length * 64;
+    steps.push({ cells: cells.map(c => ({ ...c })), cap: `free 총 ${freeBytes}B지만 연속은 64B뿐. malloc(300)은 이 조각들을 못 쓴다 → top 확장 필요 (외부 단편화).`, big: 64, note: true });
+    // 인접 쌍이 생기도록 하나 더 해제
+    cells[1].st = "free";
+    steps.push({ cells: cells.map(c => ({ ...c })), cap: `#2도 해제 → #1·#2·#3이 연속 free가 되어 병합되면 192B 블록. 인접해야 병합된다.`, big: 192, merge: [0, 1, 2] });
+    return steps;
+  }
+  let steps = build(), st;
+  function render(i) {
+    const s = steps[i];
+    $("frag-heap").innerHTML = s.cells.map((c, k) => {
+      const inMerge = s.merge && s.merge.includes(k);
+      return `<div class="chunk ${c.st}" style="width:10%; ${inMerge ? "box-shadow:inset 0 0 0 3px var(--ok)" : ""}">${c.st === "alloc" ? "#" + c.id : "free"}<span class="cl">64B</span></div>`;
+    }).join("");
+    return s.cap + (s.big ? ` <span class="pill ${s.big >= 192 ? "on" : ""}">최대 연속 free: ${s.big}B</span>` : "");
+  }
+  $("frag-step").innerHTML = "";
+  st = MM.stepper($("frag-step"), { steps: steps.length, interval: 1100, render });
+})();
+
+/* ---------- 8절: malloc_trim ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  /* 청크 상태: alloc(사용 중) · free(bin에 있음, RSS 차지) · madv(free + MADV_DONTNEED, 주소 유지·RSS 0) · gone(sbrk로 반납) */
+  let chunks;
+  const TRIM_K = 128;            // M_TRIM_THRESHOLD 128 KiB = 64K 청크 2개
+  function log(t) { const l = $("tr-log"); l.textContent += t + "\n"; l.scrollTop = l.scrollHeight; }
+  function reset() { chunks = []; $("tr-log").textContent = ""; log("초기화: 빈 힙"); render(); }
+  function fill() { chunks = []; for (let i = 0; i < 8; i++) chunks.push({ id: i + 1, st: "alloc" }); log("64K 청크 8개 할당 → 힙 512K"); render(); }
+  function isFree(c) { return c.st === "free" || c.st === "madv"; }
+  /* 꼭대기 연속 free를 sbrk로 반납 */
+  function shrinkTop() {
+    let n = 0;
+    while (chunks.length && isFree(chunks[chunks.length - 1])) { chunks.pop(); n++; }
+    return n;
+  }
+  function freeOne(fromTop) {
+    const live = chunks.filter(c => c.st === "alloc");
+    if (!live.length) return;
+    const t = fromTop ? live[live.length - 1] : live[0];
+    t.st = "free";
+    log(`free #${t.id} (${fromTop ? "꼭대기" : "바닥"}쪽)`);
+    let topFree = 0;
+    for (let i = chunks.length - 1; i >= 0 && isFree(chunks[i]); i--) topFree += 64;
+    if (topFree > TRIM_K) {
+      const n = shrinkTop();
+      log(`  ↳ 꼭대기 free ${topFree}K > M_TRIM_THRESHOLD(${TRIM_K}K) → 자동 trim: sbrk(-${n * 64}K)`);
+    } else if (topFree) log(`  ↳ 꼭대기 free ${topFree}K ≤ ${TRIM_K}K → 자동 trim 안 함`);
+    else log(`  ↳ 꼭대기가 사용 중 → 자동 trim 불가 (RSS 유지)`);
+    render();
+  }
+  function trim() {
+    const n = shrinkTop();
+    let m = 0;
+    chunks.forEach(c => { if (c.st === "free") { c.st = "madv"; m++; } });
+    log(`malloc_trim(0): 꼭대기 ${n}개 sbrk 반납, 중간 구멍 ${m}개 MADV_DONTNEED (주소는 유지, RSS ${(n + m) * 64}K 감소)`);
+    render();
+  }
+  function render() {
+    $("tr-heap").innerHTML = chunks.map(c => {
+      const cls = c.st === "alloc" ? "alloc" : c.st === "madv" ? "top" : "free";
+      const lbl = c.st === "alloc" ? "#" + c.id : c.st === "madv" ? "madvise" : "free";
+      return `<div class="chunk ${cls}" style="width:${100 / 8}%">${lbl}<span class="cl">64K</span></div>`;
+    }).join("") || '<div class="chunk top" style="width:100%">빈 힙</div>';
+    const cnt = st => chunks.filter(c => c.st === st).length * 64;
+    $("tr-stats").innerHTML = [["힙 크기(brk)", chunks.length * 64 + "K"], ["RSS(근사)", cnt("alloc") + cnt("free") + "K"], ["사용 중", cnt("alloc") + "K"], ["free·RSS 차지", cnt("free") + "K"]]
+      .map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  }
+  $("tr-fill").onclick = fill;
+  $("tr-freetop").onclick = () => freeOne(true);
+  $("tr-freebot").onclick = () => freeOne(false);
+  $("tr-trim").onclick = trim;
+  $("tr-reset").onclick = reset;
+  reset();
+})();
+
+/* ---------- 9절: 메모리 버그 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  const SCEN = {
+    uaf: [
+      { cells: "H A A A".split(" "), ptr: { p: 1 }, cap: "p = malloc(16). A는 p의 데이터(헤더 H 뒤).", bad: -1 },
+      { cells: "H f f f".split(" "), ptr: { p: 1 }, cap: "free(p). 청크는 tcache로. 하지만 p는 여전히 그 주소를 가리킨다(댕글링).", bad: -1 },
+      { cells: "H B B B".split(" "), ptr: { p: 1, q: 1 }, cap: "q = malloc(16) → 같은 청크 재사용, q == p. 이제 q로 쓴 B를 p로 읽으면 엉뚱한 값.", bad: 1 },
+      { cells: "H B B B".split(" "), ptr: { p: 1, q: 1 }, cap: "ASan: free 시 청크를 '격리'하고 독성으로 칠해 재사용을 늦춤 → *p 접근 순간 heap-use-after-free 보고.", bad: -1, asan: true },
+    ],
+    df: [
+      { cells: "H A A A".split(" "), ptr: { p: 1 }, cap: "p = malloc(16).", bad: -1 },
+      { cells: "H f f f".split(" "), ptr: { p: 1 }, cap: "free(p): tcache[idx] = p.", bad: -1 },
+      { cells: "H f f f".split(" "), ptr: { p: 1 }, cap: "free(p) 다시! tcache에 p가 두 번 들어간다(같은 청크가 리스트에 중복).", bad: 1 },
+      { cells: "H B B B".split(" "), ptr: { a: 1, b: 1 }, cap: "a=malloc, b=malloc → a와 b가 같은 청크! 서로의 데이터를 덮어쓴다.", bad: 1 },
+      { cells: "H A A A".split(" "), ptr: {}, cap: "glibc 2.29+ tcache key: 두 번째 free에서 같은 키 발견 → 'free(): double free detected in tcache' abort.", bad: -1, asan: true },
+    ],
+    of: [
+      { cells: "H A A R H B B B".split(" "), ptr: { p: 1 }, cap: "p = malloc(16). 뒤에 레드존 R, 그 뒤 다음 청크(헤더 H + B).", bad: -1 },
+      { cells: "H A A X X B B B".split(" "), ptr: { p: 1 }, cap: "memcpy(p, src, 많이): 레드존과 다음 청크의 헤더(size/fd)를 X로 덮어씀.", bad: 3 },
+      { cells: "H A A X X B B B".split(" "), ptr: { p: 1 }, cap: "다음 free/malloc에서 glibc 무결성 검사가 오염을 발견하면 'free(): invalid next size' 등으로 abort. 못 발견하면 나중에 엉뚱한 곳에서 데이터가 깨진다.", bad: 4 },
+      { cells: "H A A R H B B B".split(" "), ptr: { p: 1 }, cap: "ASan: 레드존 R은 독성 바이트. p 경계를 넘는 쓰기 순간 heap-buffer-overflow 보고(다음 청크가 깨지기 전에).", bad: 3, asan: true },
+    ],
+  };
+  let steps = SCEN.uaf, st;
+  function render(i) {
+    const s = steps[i];
+    $("mb-cells").innerHTML = s.cells.map((c, k) => {
+      let cls = "mb-cell", lbl = c, sub = "";
+      if (c === "H") { cls += " hdr"; lbl = "hdr"; sub = "size/P"; }
+      else if (c === "A") { cls += " A"; lbl = "A"; sub = "p data"; }
+      else if (c === "B") { cls += " B"; lbl = "B"; sub = "재사용"; }
+      else if (c === "f") { cls += " freed"; lbl = "free"; sub = "fd/bk"; }
+      else if (c === "R") { cls += " redzone"; lbl = "RZ"; sub = "독성"; }
+      else if (c === "X") { cls += " bad"; lbl = "X"; sub = "덮임"; }
+      if (k === s.bad) cls += " bad";
+      return `<div class="${cls}">${lbl}<span style="font-size:8px">${sub}</span></div>`;
+    }).join("");
+    const ptrs = Object.entries(s.ptr).map(([k, v]) => `<span class="pill on">${k} →</span>`).join(" ");
+    return `<div class="mb-ptr">${Object.keys(s.ptr).length ? "포인터: " + ptrs + " (청크 데이터 시작)" : ""}</div>` +
+      `<div class="${s.asan ? "msg ok" : s.bad >= 0 ? "msg bad" : "gfp-expr"}" style="margin-top:6px">${s.cap}</div>`;
+  }
+  function mount() { $("mb-step").innerHTML = ""; st = MM.stepper($("mb-step"), { steps: steps.length, interval: 1600, render }); }
+  $("mb-sel").onchange = e => { steps = SCEN[e.target.value]; mount(); };
+  mount();
+})();
+
+/* ---------- 11절: decay 반환 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  const svg = $("cmp-svg");
+  function run() {
+    const decay = +$("cmp-decay").value;
+    $("cmp-decayv").textContent = decay === 0 ? "즉시" : decay + " 틱";
+    // 워크로드: demand가 0..30 상승 후 하락
+    const N = 60, demand = [];
+    for (let t = 0; t < N; t++) {
+      let d = t < 20 ? t * 1.5 : t < 30 ? 30 : Math.max(2, 30 - (t - 30) * 2.2);
+      demand.push(d);
+    }
+    // 세 정책의 RSS
+    const immediate = demand.slice();
+    const never = []; let peak = 0; demand.forEach(d => { peak = Math.max(peak, d); never.push(peak); });
+    const decayed = []; let held = 0, timer = 0, cur = 0;
+    for (let t = 0; t < N; t++) {
+      cur = demand[t];
+      if (cur >= held) { held = cur; timer = decay; }
+      else { if (timer > 0) timer--; else held = Math.max(cur, held - 1.5); }
+      decayed.push(Math.max(cur, held));
+    }
+    const W = 680, H = 220, pad = 30, maxY = 34;
+    const X = t => pad + t / (N - 1) * (W - 2 * pad);
+    const Y = v => H - pad - v / maxY * (H - 2 * pad);
+    const path = (arr, cls) => `<polyline points="${arr.map((v, t) => X(t) + "," + Y(v)).join(" ")}" style="fill:none;stroke:var(${cls});stroke-width:2.5"/>`;
+    svg.innerHTML = `
+      <line x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}" class="line"/>
+      <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${H - pad}" class="line"/>
+      <text x="${pad}" y="16" class="muted" style="font-size:11px">메모리</text>
+      <text x="${W - pad - 30}" y="${H - 10}" class="muted" style="font-size:11px">시간 →</text>
+      ${path(demand, "--muted")}
+      ${path(never, "--bad")}
+      ${path(decayed, "--accent")}
+      ${path(immediate, "--ok")}
+      <g style="font-size:11.5px">
+        <rect x="${W - 190}" y="24" width="12" height="4" style="fill:var(--muted)"/><text x="${W - 172}" y="29">demand(실사용)</text>
+        <rect x="${W - 190}" y="42" width="12" height="4" style="fill:var(--ok)"/><text x="${W - 172}" y="47">즉시 반환</text>
+        <rect x="${W - 190}" y="60" width="12" height="4" style="fill:var(--accent)"/><text x="${W - 172}" y="65">지연 반환(decay)</text>
+        <rect x="${W - 190}" y="78" width="12" height="4" style="fill:var(--bad)"/><text x="${W - 172}" y="83">반환 안 함</text>
+      </g>`;
+    const over = (decayed.reduce((a, b) => a + b, 0) - demand.reduce((a, b) => a + b, 0));
+    $("cmp-note").innerHTML = `즉시 반환(초록)은 RSS를 demand에 딱 맞추지만 재할당마다 페이지 폴트. 반환 안 함(빨강)은 peak에 영구 고정(ptmalloc의 brk 힙에 가까움). 지연 반환(파랑, decay=${decay})은 잠깐 들고 있다 반납 → 재사용 시 폴트를 아끼면서 결국 내려온다. decay를 올릴수록 빨강에, 내릴수록 초록에 가까워진다. jemalloc의 <code>dirty_decay_ms</code>가 이 곡선을 조절한다.`;
+  }
+  $("cmp-decay").oninput = run; $("cmp-run").onclick = run; run();
+})();
+
+/* ---------- 12절: mallinfo 해석 ---------- */
+(function () {
+  const $ = id => document.getElementById(id);
+  function run() {
+    const u = +$("if-u").value, f = +$("if-f").value, trend = $("if-t").value;
+    const ratio = f / Math.max(1, u + f);
+    let verdict, cls;
+    if (trend === "up" && u > f) { verdict = "누수 의심: 사용 중(uordblks)이 계속 증가하고 live 객체도 증가 → free 누락 코드를 ASan/heaptrack으로 찾을 것."; cls = "bad"; }
+    else if (ratio > 0.5) { verdict = "단편화/미반환 의심: free는 했지만 OS에 안 돌아간 메모리(fordblks)가 전체의 " + (ratio * 100).toFixed(0) + "%. MALLOC_ARENA_MAX↓, malloc_trim, 할당자 교체를 검토."; cls = "warn"; }
+    else { verdict = "비교적 건강: 사용 중 비중이 높고 free·미반납이 적다."; cls = "ok"; }
+    $("if-out").innerHTML = `<div class="gfp-expr">malloc_info 요약:  uordblks=${u}  fordblks=${f}  (fordblks 비율 ${(ratio * 100).toFixed(0)}%)  live추세=${trend === "up" ? "증가" : "평평"}</div>
+      <div class="msg ${cls}">${verdict}</div>
+      <div class="mini">uordblks = 애플리케이션이 쓰는 중. fordblks = 할당자가 들고 있는 free. 둘을 live 객체 수 추세와 함께 봐야 누수와 단편화가 갈린다.</div>`;
+  }
+  ["if-u", "if-f"].forEach(id => $(id).oninput = run); $("if-t").onchange = run; run();
+})();
+</script>
+</body></html>

@@ -1,0 +1,904 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TLB와 유효 접근 시간</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 04장 전용 */
+.tlb-sets { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.tlb-set { border: 1px dashed var(--border); border-radius: 8px; padding: 4px 6px 6px; background: var(--bg); }
+.tlb-set .sl { font-size: 11px; color: var(--muted); font-family: var(--mono); display: block; line-height: 1.4; }
+.tlb-set .cells { gap: 2px; }
+.tlb-set .cell { min-width: 44px; height: 26px; font-size: 11.5px; padding: 0 3px; }
+.tlb-set .cell.empty { color: var(--muted); opacity: .55; }
+.chart-svg { width: 100%; height: auto; display: block; }
+.chart-svg .grid { stroke: var(--border); stroke-width: 1; }
+.chart-svg .axis-t { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.chart-svg .l-cum { fill: none; stroke: var(--accent); stroke-width: 2.2; }
+.chart-svg .l-win { fill: none; stroke: var(--warn); stroke-width: 1.4; }
+.chart-svg .l-eat { fill: none; stroke: var(--accent); stroke-width: 2.2; }
+.chart-svg .l-ideal { fill: none; stroke: var(--ok); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.chart-svg .l-nontlb { fill: none; stroke: var(--bad); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.chart-svg .mark { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.sliders { display: grid; grid-template-columns: minmax(130px, auto) 1fr minmax(70px, auto); gap: 6px 12px; align-items: center; font-size: 14px; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.formula { font-family: var(--mono); font-size: 13.5px; background: var(--code-bg); border-radius: 8px; padding: 8px 12px; overflow-x: auto; white-space: nowrap; }
+.cmp-tbl td.num { font-family: var(--mono); text-align: right; }
+.bar-bg { height: 10px; background: var(--surface-2); border-radius: 5px; overflow: hidden; min-width: 80px; }
+.bar-fg { height: 100%; background: var(--accent); border-radius: 5px; transition: width .3s; }
+.bar-fg.ok { background: var(--ok); }
+.sd-svg { min-width: 600px; }
+.sd-svg .core { fill: var(--surface-2); stroke: var(--border); }
+.sd-svg .core.init { stroke: var(--accent); stroke-width: 2; }
+.sd-svg .tlbe { fill: var(--ok-soft); stroke: var(--ok); }
+.sd-svg .tlbe.stale { fill: var(--warn-soft); stroke: var(--warn); }
+.sd-svg .tlbe.gone { fill: var(--surface); stroke: var(--border); stroke-dasharray: 4 3; }
+.sd-svg .tlbe.other { fill: var(--teal-soft); stroke: var(--teal); }
+.sd-svg .pt { fill: var(--surface); stroke: var(--muted); }
+.sd-svg .ipi { fill: none; stroke: var(--bad); stroke-width: 2.2; }
+.sd-svg .ack { fill: none; stroke: var(--ok); stroke-width: 2.2; stroke-dasharray: 6 4; }
+.sd-svg .hide { display: none; }
+.sd-svg .small { font-size: 11.5px; }
+.sd-svg .strike { text-decoration: line-through; }
+.mono { font-family: var(--mono); }
+</style>
+</head>
+<body data-chapter="04">
+<main>
+  <header class="chapter-head">
+    <span class="label">개론 · Chapter 04</span>
+    <h1>TLB와 유효 접근 시간</h1>
+    <p class="lead">페이징은 모든 메모리 접근을 두 번 이상의 접근으로 바꿔 놓는다. TLB는 이 비용을 거의 0으로 되돌리는 작은 캐시다. 이 장에서는 TLB의 구조, 성능 모델, 그리고 멀티코어 운영체제가 TLB 일관성을 지키기 위해 치르는 비용을 다룬다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>TLB가 없으면 왜 메모리 접근이 2배(다단계라면 그 이상)가 되는지 설명하고, 유효 접근 시간(EAT)을 계산한다.</li>
+      <li>완전 연관/집합 연관 TLB의 조회 방식과 실제 CPU의 L1 dTLB·iTLB·STLB 계층을 이해한다.</li>
+      <li>접근 패턴과 교체 정책에 따라 TLB 히트율이 어떻게 달라지는지 시뮬레이션으로 확인한다.</li>
+      <li>TLB reach 개념으로 huge page가 왜 효과적인지 정량적으로 설명한다.</li>
+      <li>문맥 교환 시 TLB flush, ASID/PCID, 멀티코어 TLB shootdown의 동작과 비용을 설명한다.</li>
+      <li><code>perf</code>로 dTLB 미스를 측정하고 해석한다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 TLB가 필요한가</a></li>
+    <li><a href="#s2">TLB의 구조와 실제 CPU의 TLB 계층</a></li>
+    <li><a href="#s3">TLB 시뮬레이터: 접근 패턴과 교체 정책</a></li>
+    <li><a href="#s4">유효 접근 시간(EAT)</a></li>
+    <li><a href="#s5">TLB reach와 huge page</a></li>
+    <li><a href="#s6">문맥 교환과 TLB flush, ASID/PCID</a></li>
+    <li><a href="#s7">TLB shootdown</a></li>
+    <li><a href="#s8">소프트웨어 관리 TLB vs 하드웨어 페이지 워커</a></li>
+    <li><a href="#s9">실무: perf로 TLB 미스 측정하기</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. 왜 TLB가 필요한가</h2>
+    <p>3장에서 본 페이징의 주소 변환을 다시 떠올려 보자. CPU가 가상 주소 <code>VA</code>에 접근하면 MMU는 <code>VA</code>를 VPN(가상 페이지 번호)과 오프셋으로 나누고, <b>메모리에 있는</b> 페이지 테이블에서 VPN에 해당하는 PTE를 읽어 PFN(물리 프레임 번호)을 얻는다. 그 다음에야 실제 데이터를 읽는다. 즉 <b>프로그램이 한 번 메모리에 접근할 때마다 하드웨어는 메모리에 두 번 접근한다.</b></p>
+    <ul>
+      <li>단일 레벨 페이지 테이블: PTE 1회 + 데이터 1회 = <b>2회</b></li>
+      <li>x86-64 4단계 페이지 테이블: PML4E, PDPTE, PDE, PTE 4회 + 데이터 1회 = <b>최대 5회</b> (5장에서 자세히)</li>
+      <li>5단계(LA57): <b>최대 6회</b>. 가상 머신 안에서 2차원(nested) 페이지 워크까지 하면 최악 24회 이상이 된다 (15장).</li>
+    </ul>
+    <p>명령어 인출도 메모리 접근이므로, 이 비용을 그대로 치르면 CPU는 사실상 절반 이하 속도로 돈다. 해결책은 늘 그렇듯 <b>캐시</b>다. 최근에 사용한 <code>VPN → PFN</code> 변환 결과(와 권한 비트)를 CPU 안의 작은 연관 메모리에 저장해 두는 것, 이것이 <b>TLB(Translation Lookaside Buffer)</b>다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 290" role="img" aria-label="TLB 히트와 미스 경로">
+        <defs>
+          <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+          <marker id="ar1ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ok)"/></marker>
+          <marker id="ar1bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--bad)"/></marker>
+        </defs>
+        <rect x="10" y="30" width="110" height="60" rx="8" class="box"/>
+        <text x="65" y="56" text-anchor="middle" font-weight="700">CPU 코어</text>
+        <text x="65" y="76" text-anchor="middle" class="muted">VA = VPN | off</text>
+
+        <rect x="180" y="20" width="150" height="80" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="255" y="48" text-anchor="middle" font-weight="700">TLB</text>
+        <text x="255" y="68" text-anchor="middle" class="muted">VPN → PFN, 권한</text>
+        <text x="255" y="86" text-anchor="middle" class="muted">(~1 사이클, 병렬 비교)</text>
+        <line x1="120" y1="60" x2="176" y2="60" class="line" marker-end="url(#ar1)"/>
+
+        <rect x="420" y="30" width="120" height="60" rx="8" class="box"/>
+        <text x="480" y="56" text-anchor="middle" font-weight="700">PA</text>
+        <text x="480" y="76" text-anchor="middle" class="muted">PFN | off</text>
+        <line x1="330" y1="60" x2="416" y2="60" style="stroke:var(--ok);stroke-width:2" marker-end="url(#ar1ok)"/>
+        <text x="373" y="52" text-anchor="middle" class="c-ok" style="fill:var(--ok)" font-weight="700">히트</text>
+
+        <rect x="580" y="20" width="90" height="80" rx="8" class="box"/>
+        <text x="625" y="52" text-anchor="middle" font-weight="700">캐시 /</text>
+        <text x="625" y="72" text-anchor="middle" font-weight="700">DRAM</text>
+        <line x1="540" y1="60" x2="576" y2="60" class="line" marker-end="url(#ar1)"/>
+
+        <rect x="180" y="170" width="150" height="70" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="255" y="198" text-anchor="middle" font-weight="700">페이지 워커</text>
+        <text x="255" y="218" text-anchor="middle" class="muted">(HW 또는 OS 핸들러)</text>
+        <line x1="255" y1="100" x2="255" y2="166" style="stroke:var(--bad);stroke-width:2" marker-end="url(#ar1bad)"/>
+        <text x="265" y="138" style="fill:var(--bad)" font-weight="700">미스</text>
+
+        <rect x="420" y="160" width="250" height="90" rx="8" class="box"/>
+        <text x="545" y="184" text-anchor="middle" font-weight="700">메모리의 페이지 테이블</text>
+        <text x="545" y="206" text-anchor="middle" class="muted">CR3(TTBR) → … → PTE</text>
+        <text x="545" y="228" text-anchor="middle" class="muted">레벨마다 메모리 접근 1회</text>
+        <line x1="330" y1="195" x2="416" y2="195" class="line" marker-end="url(#ar1)"/>
+        <line x1="416" y1="220" x2="334" y2="220" class="line" marker-end="url(#ar1)"/>
+        <text x="373" y="244" text-anchor="middle" class="muted">PTE</text>
+        <path d="M180,205 C120,205 120,110 200,102" class="line" style="stroke-dasharray:5 4" marker-end="url(#ar1)"/>
+        <text x="96" y="160" text-anchor="middle" class="muted">TLB 채움 후</text>
+        <text x="96" y="178" text-anchor="middle" class="muted">재조회</text>
+        <text x="340" y="282" text-anchor="middle" class="muted">권한 위반이나 present=0이면 여기서 페이지 폴트 예외(6장)</text>
+      </svg>
+      <figcaption>그림 4-1. TLB 히트면 변환은 사실상 공짜다. 미스일 때만 페이지 테이블을 걷는다(page walk).</figcaption>
+    </figure>
+
+    <p>TLB가 잘 동작하는 이유는 캐시와 같다: <b>지역성(locality)</b>. 4KB 페이지 하나에는 64바이트 캐시 라인이 64개 들어 있으므로, 순차 접근이라면 캐시 미스 64번에 TLB 미스는 1번뿐이다. 실제 프로그램의 TLB 히트율은 보통 99% 이상이다. 하지만 "보통"에서 벗어나는 워크로드(대형 해시 테이블, 그래프 순회, 인메모리 DB, JVM 대형 힙)에서는 TLB 미스가 실행 시간의 수십 %를 차지하기도 한다. 이 장의 후반부가 바로 그 이야기다.</p>
+
+    <div class="callout deep"><span class="title">왜 "Lookaside"인가</span>
+    TLB는 변환 경로 "옆에서(lookaside)" 먼저 들여다보는 버퍼라는 뜻이다. 현대 CPU에서는 L1 데이터 캐시가 VIPT(가상 인덱스, 물리 태그) 구조여서, 캐시 세트 인덱싱(페이지 오프셋 비트만 사용)과 TLB 조회가 <b>병렬로</b> 진행된다. 그래서 L1 캐시 히트 지연(4~5 사이클)에 TLB 조회 시간이 숨는다. 32KB 8-way L1D가 흔한 이유도 여기 있다: 32KB / 8-way = 4KB = 페이지 크기, 즉 인덱스 비트가 페이지 오프셋 안에 들어간다.</div>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. TLB의 구조와 실제 CPU의 TLB 계층</h2>
+    <h3>2.1 TLB 엔트리에 들어 있는 것</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>필드</th><th>의미</th><th>비고</th></tr>
+      <tr><td>VPN 태그</td><td>어떤 가상 페이지의 변환인지</td><td>집합 연관이면 VPN의 상위 비트만 태그로 저장</td></tr>
+      <tr><td>PFN</td><td>물리 프레임 번호</td><td>변환 결과</td></tr>
+      <tr><td>권한 비트</td><td>R/W, U/S(사용자/커널), NX(실행 금지)</td><td>TLB 히트여도 권한 검사는 매번 수행</td></tr>
+      <tr><td>Dirty / Accessed 관련</td><td>쓰기 발생 여부 등</td><td>x86은 D가 0인 엔트리에 쓰면 워커가 PTE의 D를 세팅</td></tr>
+      <tr><td>페이지 크기</td><td>4KB / 2MB / 1GB</td><td>크기별로 별도 TLB를 두는 설계가 많음</td></tr>
+      <tr><td>ASID / PCID</td><td>어느 주소 공간의 엔트리인지</td><td>문맥 교환 시 flush 회피 (6절)</td></tr>
+      <tr><td>Global(G)</td><td>모든 주소 공간에서 유효</td><td>커널 매핑용. CR3 교체에도 남음</td></tr>
+      <tr><td>메모리 타입</td><td>캐시 가능 여부(PAT/MAIR 인덱스)</td><td>MMIO 영역은 uncacheable</td></tr>
+    </table></div>
+
+    <h3>2.2 완전 연관 vs 집합 연관</h3>
+    <p>TLB도 캐시이므로 캐시와 똑같은 설계 공간을 가진다.</p>
+    <ul>
+      <li><b>완전 연관(fully associative)</b>: 어떤 VPN이든 어느 엔트리에나 들어갈 수 있다. 조회 시 모든 엔트리의 태그를 <b>동시에</b> 비교(CAM)해야 하므로 엔트리 수가 늘면 면적·전력·지연이 급증한다. 그래서 작은 L1 TLB(수십 엔트리)에 쓰인다.</li>
+      <li><b>집합 연관(N-way set associative)</b>: VPN의 하위 비트로 세트를 고르고, 그 세트 안의 N개만 비교한다. 엔트리 수를 1,000~3,000개로 키울 수 있지만 <b>충돌 미스(conflict miss)</b>가 생긴다. 특정 간격(stride)으로 접근하면 같은 세트로만 몰려 TLB가 텅 비어 있어도 미스가 난다.</li>
+    </ul>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 680 300" role="img" aria-label="4-way 집합 연관 TLB 조회" style="min-width:560px">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <text x="20" y="22" font-weight="700">가상 주소 (4KB 페이지, 16세트 × 4-way TLB = 64 엔트리)</text>
+        <rect x="20" y="34" width="250" height="32" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <rect x="270" y="34" width="80" height="32" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <rect x="350" y="34" width="150" height="32" style="fill:var(--surface-2);stroke:var(--border)"/>
+        <text x="145" y="55" text-anchor="middle">태그 (VPN 상위 비트)</text>
+        <text x="310" y="55" text-anchor="middle">세트 4비트</text>
+        <text x="425" y="55" text-anchor="middle">오프셋 12비트</text>
+        <text x="260" y="84" text-anchor="middle" class="muted">← VPN →</text>
+        <line x1="310" y1="66" x2="310" y2="112" class="line" marker-end="url(#ar2)"/>
+        <!-- sets -->
+        <g>
+          <text x="40" y="132" class="muted">set 0</text>
+          <text x="40" y="160" class="muted">…</text>
+          <text x="40" y="188" class="muted">set k</text>
+          <text x="40" y="216" class="muted">…</text>
+          <text x="40" y="244" class="muted">set 15</text>
+          <rect x="100" y="118" width="420" height="22" class="box"/>
+          <rect x="100" y="174" width="420" height="22" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:2"/>
+          <rect x="100" y="230" width="420" height="22" class="box"/>
+          <line x1="205" y1="118" x2="205" y2="140" class="line"/><line x1="310" y1="118" x2="310" y2="140" class="line"/><line x1="415" y1="118" x2="415" y2="140" class="line"/>
+          <line x1="205" y1="174" x2="205" y2="196" class="line"/><line x1="310" y1="174" x2="310" y2="196" class="line"/><line x1="415" y1="174" x2="415" y2="196" class="line"/>
+          <line x1="205" y1="230" x2="205" y2="252" class="line"/><line x1="310" y1="230" x2="310" y2="252" class="line"/><line x1="415" y1="230" x2="415" y2="252" class="line"/>
+          <text x="152" y="190" text-anchor="middle" class="small" style="font-size:11px">tag|PFN</text>
+          <text x="257" y="190" text-anchor="middle" style="font-size:11px">tag|PFN</text>
+          <text x="362" y="190" text-anchor="middle" style="font-size:11px">tag|PFN</text>
+          <text x="467" y="190" text-anchor="middle" style="font-size:11px">tag|PFN</text>
+          <text x="152" y="112" text-anchor="middle" class="muted" style="font-size:11px">way 0</text>
+          <text x="257" y="112" text-anchor="middle" class="muted" style="font-size:11px">way 1</text>
+          <text x="362" y="112" text-anchor="middle" class="muted" style="font-size:11px">way 2</text>
+          <text x="467" y="112" text-anchor="middle" class="muted" style="font-size:11px">way 3</text>
+        </g>
+        <!-- comparators -->
+        <rect x="560" y="160" width="100" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="610" y="182" text-anchor="middle" font-weight="700">비교기 ×4</text>
+        <text x="610" y="200" text-anchor="middle" class="muted" style="font-size:11px">태그 일치?</text>
+        <line x1="520" y1="185" x2="556" y2="185" class="line" marker-end="url(#ar2)"/>
+        <path d="M145,66 C145,96 600,90 610,156" class="line" style="stroke:var(--violet);stroke-dasharray:5 4" marker-end="url(#ar2)"/>
+        <line x1="610" y1="210" x2="610" y2="262" class="line" marker-end="url(#ar2)"/>
+        <text x="610" y="282" text-anchor="middle" font-weight="700">히트 → PFN | 오프셋</text>
+      </svg>
+      </div>
+      <figcaption>그림 4-2. 집합 연관 TLB 조회. 세트 비트가 같은 VPN끼리만 경쟁하므로 VPN이 16의 배수 간격으로 증가하는 접근은 한 세트에만 몰린다.</figcaption>
+    </figure>
+
+    <h3>2.3 실제 CPU의 TLB 계층 (대략적인 수치)</h3>
+    <p>현대 CPU는 캐시처럼 TLB도 계층화한다. 파이프라인 단계와 함께 조회돼야 하는 <b>L1 TLB</b>는 명령어용(iTLB)과 데이터용(dTLB)으로 나뉘고 작고 빠르다. 그 뒤에 명령어/데이터 공용의 큰 <b>L2 TLB</b>(Intel은 STLB, Second-level TLB라고 부른다)가 있다. 아래는 공개 문서에 나온 대표 수치이며 세대마다 바뀐다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>마이크로아키텍처</th><th>L1 dTLB</th><th>L1 iTLB</th><th>L2 TLB (STLB)</th></tr>
+      <tr><td>Intel Skylake (클라이언트)</td><td>4KB: 64개 4-way<br>2M/4M: 32개 4-way<br>1GB: 4개</td><td>4KB: 128개 8-way<br>2M/4M: 스레드당 8개</td><td>4KB+2MB 공용 1536개 12-way<br>1GB: 16개 4-way</td></tr>
+      <tr><td>AMD Zen 2 / Zen 3</td><td>64개 완전 연관 (모든 크기)</td><td>64개 완전 연관</td><td>데이터 2048개, 명령어 512개</td></tr>
+      <tr><td>Arm Cortex-A76</td><td>48개 완전 연관</td><td>48개 완전 연관</td><td>1280개 공용</td></tr>
+    </table></div>
+    <p>숫자를 외울 필요는 없다. 기억할 것은 <b>규모 감각</b>이다: L1 TLB는 수십 엔트리, L2 TLB는 1~3천 엔트리. 4KB 페이지 기준으로 L2 TLB 전체가 덮는 메모리는 <b>고작 수 MB</b>에 불과하다. L3 캐시(수십 MB)보다도 작다. 이것이 5절의 TLB reach 문제다.</p>
+    <div class="callout tip"><span class="title">확인하는 방법</span>
+    Linux에서 <code>cpuid -1 | grep -i tlb</code>(cpuid 패키지) 또는 <code>x86info -c</code>로 TLB 구성을 볼 수 있다. ARM에서는 TRM(Technical Reference Manual)을 참고한다. 최근 Intel CPU는 CPUID leaf 0x18로 TLB 정보를 보고한다.</div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. TLB 시뮬레이터: 접근 패턴과 교체 정책</h2>
+    <p>TLB가 가득 찼을 때 새 변환을 넣으려면 기존 엔트리 하나를 쫓아내야 한다. 실제 하드웨어는 진짜 LRU 대신 의사 LRU(tree-PLRU 등)나 랜덤에 가까운 정책을 쓴다. 진짜 LRU는 way 수가 늘면 상태 비트와 갱신 논리가 비싸기 때문이다. 아래 시뮬레이터로 <b>접근 패턴 × TLB 크기 × 연관도 × 교체 정책</b>의 상호작용을 직접 확인해 보자. 페이지는 4KB로 가정한다.</p>
+
+    <div class="widget" id="w-sim">
+      <div class="w-title">TLB 시뮬레이터</div>
+      <div class="w-desc">설정을 바꾸면 새로 시작한다. 각 칸은 TLB 엔트리(VPN을 16진수로 표시)다. 초록 = 방금 히트, 빨강 = 방금 미스로 채워진 엔트리. 아래 차트는 누적 히트율(파랑)과 최근 64회 히트율(주황)이다.</div>
+      <div class="controls">
+        <label>엔트리 <select id="sim-n"><option>8</option><option selected>16</option><option>32</option><option>64</option></select></label>
+        <label>연관도 <select id="sim-w"><option value="0" selected>완전 연관</option><option value="4">4-way</option><option value="2">2-way</option><option value="1">직접 사상</option></select></label>
+        <label>교체 <select id="sim-p"><option value="lru" selected>LRU</option><option value="fifo">FIFO</option><option value="rand">Random</option></select></label>
+      </div>
+      <div class="controls">
+        <label>패턴 <select id="sim-pat">
+          <option value="seq" selected>순차 (256B 간격)</option>
+          <option value="rand">랜덤</option>
+          <option value="stride">스트라이드</option>
+          <option value="loop">루프 (핫 페이지 + 배열)</option>
+        </select></label>
+        <label id="sim-stride-l">간격 <select id="sim-stride"><option value="1024">1KB</option><option value="4096" selected>4KB</option><option value="8192">8KB</option><option value="65536">64KB</option></select></label>
+        <label>작업 페이지 <input type="range" id="sim-ws" min="4" max="128" value="24"> <b id="sim-ws-v" class="mono">24</b></label>
+      </div>
+      <div class="controls">
+        <button class="btn" id="sim-step">1회 접근</button>
+        <button class="btn primary" id="sim-play">▶ 재생</button>
+        <button class="btn" id="sim-end">끝까지</button>
+        <button class="btn" id="sim-reset">리셋 (새 시드)</button>
+        <label>속도 <select id="sim-speed"><option value="slow">느리게</option><option value="mid" selected>보통</option><option value="fast">빠르게</option></select></label>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">접근</div><div class="v" id="sim-acc">0</div></div>
+        <div class="stat"><div class="k">히트</div><div class="v c-ok" id="sim-hit">0</div></div>
+        <div class="stat"><div class="k">미스</div><div class="v c-bad" id="sim-miss">0</div></div>
+        <div class="stat"><div class="k">누적 히트율</div><div class="v" id="sim-rate">–</div></div>
+        <div class="stat"><div class="k">최근 64회</div><div class="v" id="sim-wrate">–</div></div>
+      </div>
+      <div class="tlb-sets" id="sim-tlb"></div>
+      <svg class="chart-svg" id="sim-chart" viewBox="0 0 600 200" role="img" aria-label="히트율 차트"></svg>
+      <div class="legend"><span><i style="background:var(--accent)"></i>누적 히트율</span><span><i style="background:var(--warn)"></i>최근 64회 히트율</span></div>
+      <div class="log" id="sim-log" style="margin-top:10px;max-height:140px"></div>
+      <div class="controls" style="margin-top:12px">
+        <button class="btn" id="sim-cmp">같은 접근열로 정책 비교 (OPT 포함)</button>
+      </div>
+      <div id="sim-cmp-out"></div>
+    </div>
+
+    <div class="callout tip"><span class="title">해볼 실험</span>
+    <ol style="margin:4px 0 0;padding-left:20px">
+      <li><b>순차</b> 패턴: 작업 페이지를 늘려도 히트율이 15/16 ≈ 93.8% 근처에서 멈춘다. 페이지당 16번 접근하므로 첫 번째만 미스. 실제로는 8바이트씩 순회하면 512번 중 1번 미스다.</li>
+      <li><b>스트라이드 4KB</b>, 엔트리 16, 완전 연관, 작업 페이지 <b>17</b>: LRU와 FIFO는 히트율 0%가 된다. 순환 접근에서 LRU는 "곧 다시 쓸 페이지"를 정확히 골라 쫓아낸다. Random은 일부 히트를 건진다. 정책 비교 버튼으로 OPT(벨라디 최적)와 비교해 보라.</li>
+      <li>같은 설정에서 작업 페이지 <b>16</b>: 처음 16번만 미스, 이후 100% 히트. 작업 집합이 TLB에 "딱 들어가느냐"가 절벽(cliff)을 만든다.</li>
+      <li><b>스트라이드 64KB</b>(=16페이지 간격), 엔트리 16, <b>4-way</b>(4세트), 작업 페이지 64: 사용하는 페이지는 4개뿐인데 모두 VPN이 16의 배수라 set 0 하나에 몰린다. 그래도 4-way라 들어간다. <b>직접 사상</b>으로 바꾸면 히트율 0%: 전형적인 충돌 미스다.</li>
+    </ol></div>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 유효 접근 시간(EAT)</h2>
+    <p>TLB 히트율을 <i>α</i>, TLB 조회 시간을 <i>ε</i>, 메모리 접근 1회 시간을 <i>m</i>, 페이지 테이블 레벨 수를 <i>L</i>이라 하자. 히트면 TLB 조회 후 데이터 접근 1회, 미스면 TLB 조회 후 레벨마다 1회씩 페이지 테이블을 읽고 데이터에 접근한다.</p>
+    <div class="formula">EAT = α·(ε + m) + (1 − α)·(ε + (L + 1)·m)</div>
+    <p>교과서의 단일 레벨(L = 1)에서는 <code>EAT = α(ε+m) + (1−α)(ε+2m)</code>이다. 예: α = 80%, ε = 20ns, m = 100ns라면 0.8×120 + 0.2×220 = <b>140ns</b>. 즉 40% 느려진다. 히트율이 98%면 122ns로 줄어든다.</p>
+
+    <div class="widget" id="w-eat">
+      <div class="w-title">EAT 계산기</div>
+      <div class="w-desc">슬라이더를 움직이면 EAT와 그래프가 즉시 갱신된다. 그래프의 x축은 히트율, 점은 현재 설정이다.</div>
+      <div class="sliders">
+        <label for="eat-a">TLB 히트율 α</label><input type="range" id="eat-a" min="50" max="100" step="0.1" value="98"><output id="eat-a-v">98.0%</output>
+        <label for="eat-e">TLB 시간 ε</label><input type="range" id="eat-e" min="0" max="20" step="0.5" value="1"><output id="eat-e-v">1.0 ns</output>
+        <label for="eat-m">메모리 시간 m</label><input type="range" id="eat-m" min="10" max="150" step="5" value="100"><output id="eat-m-v">100 ns</output>
+        <label for="eat-l">페이지 테이블 레벨 L</label><select id="eat-l"><option value="1">1 (교과서)</option><option value="2">2 (32비트 x86)</option><option value="4" selected>4 (x86-64)</option><option value="5">5 (LA57)</option></select><span></span>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">EAT</div><div class="v" id="eat-out">–</div></div>
+        <div class="stat"><div class="k">항상 히트 대비</div><div class="v" id="eat-slow">–</div></div>
+        <div class="stat"><div class="k">TLB 없을 때</div><div class="v c-bad" id="eat-none">–</div></div>
+        <div class="stat"><div class="k">미스 1회 페널티</div><div class="v" id="eat-pen">–</div></div>
+      </div>
+      <div class="formula" id="eat-formula"></div>
+      <svg class="chart-svg" id="eat-chart" viewBox="0 0 600 220" role="img" aria-label="히트율에 따른 EAT" style="margin-top:10px"></svg>
+      <div class="legend"><span><i style="background:var(--accent)"></i>EAT(α)</span><span><i style="background:var(--ok)"></i>항상 히트(ε+m)</span><span><i style="background:var(--bad)"></i>TLB 없음(ε+(L+1)m)</span></div>
+    </div>
+
+    <div class="callout warn"><span class="title">모델의 한계 — 실제로는 이보다 덜 나쁘다</span>
+    이 식은 페이지 워크의 매 단계가 DRAM까지 간다고 가정한 <b>상한</b>이다. 실제로는 (1) 페이지 테이블 엔트리도 일반 데이터처럼 L1/L2/L3 캐시에 올라가고, (2) 상위 레벨 엔트리는 <b>페이지 워크 캐시(paging-structure cache)</b>에 따로 캐시되며(5장), (3) 비순차 실행 코어가 워크 지연의 일부를 다른 명령으로 가린다. 그래서 STLB 미스 한 번의 실측 비용은 대개 수십 사이클, 상위 엔트리까지 캐시 미스면 수백 사이클이다. 반대로 이 식에는 <b>미스가 연속으로 몰릴 때</b> 페이지 워커가 포화되는 효과가 없다.</div>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. TLB reach와 huge page</h2>
+    <p><b>TLB reach</b> = (TLB 엔트리 수) × (페이지 크기). TLB 미스 없이 접근할 수 있는 메모리의 최대 크기다. 작업 집합이 reach보다 크고 접근이 흩어져 있으면 미스율은 구조적으로 높을 수밖에 없다.</p>
+    <ul>
+      <li>1536 엔트리 × 4KB = <b>6MB</b> — 현대 서버의 수백 GB 메모리에 비하면 극히 작다.</li>
+      <li>1536 엔트리 × 2MB = <b>3GB</b> — 같은 엔트리로 512배를 덮는다.</li>
+      <li>1GB 페이지 16 엔트리 = <b>16GB</b>.</li>
+    </ul>
+    <p>지난 수십 년간 메모리 용량은 수천 배 늘었지만 TLB 엔트리 수는 수십 배밖에 늘지 않았다. 엔트리를 늘리면 조회 지연과 전력이 늘기 때문이다. 그래서 reach를 늘리는 현실적인 방법은 <b>페이지를 키우는 것</b>, 즉 huge page다. huge page는 5장에서 볼 것처럼 페이지 테이블 워크를 중간 레벨(PD 또는 PDPT)에서 끝내므로 <b>미스 비용도 한 단계 이상 줄인다.</b></p>
+
+    <div class="widget" id="w-reach">
+      <div class="w-title">TLB reach 계산기</div>
+      <div class="w-desc">Skylake 수치를 기본값으로 했다. 작업 집합 크기를 바꿔 보며 각 페이지 크기에서 TLB가 얼마나 덮는지 비교하라. "균일 랜덤 접근 시 히트율 상한"은 min(1, reach/작업 집합)으로 근사한 값이다.</div>
+      <div class="sliders">
+        <label for="rc-ws">작업 집합</label><input type="range" id="rc-ws" min="0" max="16" step="1" value="8"><output id="rc-ws-v">256 MiB</output>
+      </div>
+      <div class="tbl-wrap"><table class="cmp-tbl" id="rc-tbl"></table></div>
+    </div>
+
+    <div class="callout danger"><span class="title">huge page는 공짜가 아니다</span>
+    <ul style="margin:4px 0 0;padding-left:20px">
+      <li><b>내부 단편화</b>: 2MB 페이지에 10KB만 쓰면 나머지는 낭비. 메모리 사용량(RSS)이 늘어 보인다.</li>
+      <li><b>할당 지연</b>: 연속된 2MB 물리 메모리가 필요하므로, 단편화된 시스템에서는 컴팩션(compaction)이 일어나 지연 스파이크가 생긴다. Redis, MongoDB 등 여러 DB가 문서에서 THP를 <code>never</code> 또는 <code>madvise</code>로 두라고 권장하는 이유다.</li>
+      <li><b>페이지 폴트·COW 비용 증가</b>: 2MB를 한 번에 0으로 채우거나 복사해야 한다.</li>
+    </ul>
+    Linux의 두 경로: <code>hugetlbfs</code>(미리 예약, <code>vm.nr_hugepages</code>, <code>MAP_HUGETLB</code>)와 THP(Transparent Huge Pages, <code>/sys/kernel/mm/transparent_hugepage/enabled</code>, <code>madvise(MADV_HUGEPAGE)</code>). 자세한 내용은 13장.</div>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 문맥 교환과 TLB flush, ASID/PCID</h2>
+    <p>TLB 엔트리 <code>VPN 0x400 → PFN 0x1A2</code>는 <b>특정 프로세스의 페이지 테이블에서만</b> 참이다. 프로세스 B로 전환한 뒤에도 이 엔트리가 남아 있으면 B가 A의 메모리를 읽게 된다. 가장 단순한 해법은 <b>문맥 교환 때 TLB를 전부 비우는 것(flush)</b>이다. 실제로 x86에서 PCID를 쓰지 않으면 <code>CR3</code>에 새 페이지 테이블 주소를 쓰는 순간 G 비트가 없는 모든 엔트리가 무효화된다.</p>
+    <p>문제는 비용이다. flush 자체는 빠르지만 그 뒤 TLB가 다시 채워질 때까지 <b>연속된 미스</b>가 난다. 스레드 전환이 잦은 서버, 시스템 콜·인터럽트가 잦은 워크로드에서 이 손실이 누적된다.</p>
+
+    <h3>6.1 첫 번째 완화책: Global 페이지</h3>
+    <p>커널 매핑은 모든 프로세스에서 같다. 그래서 x86은 PTE에 <b>G(Global) 비트</b>(bit 8, <code>CR4.PGE</code>가 켜져 있을 때 유효)를 두어 CR3를 바꿔도 이 엔트리는 남게 한다. 2018년 Meltdown 대응으로 도입된 <b>KPTI</b>(Kernel Page-Table Isolation)는 유저 모드용 페이지 테이블에서 커널 매핑 대부분을 없앴고, 커널 진입·복귀마다 CR3를 바꾼다. 이 때문에 시스템 콜마다 TLB가 날아갈 뻔했고, 이를 막아 준 것이 다음의 PCID다.</p>
+
+    <h3>6.2 근본 해법: TLB 엔트리에 주소 공간 ID를 태그</h3>
+    <p>엔트리마다 "어느 주소 공간의 변환인지"를 나타내는 ID를 붙이면, 조회 시 <code>(현재 ID, VPN)</code>이 모두 맞아야 히트로 처리된다. 그러면 문맥 교환 때 flush하지 않아도 된다. 다른 프로세스의 엔트리는 그대로 남아 있다가 돌아왔을 때 다시 히트한다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>아키텍처</th><th>이름</th><th>폭</th><th>위치·제어</th></tr>
+      <tr><td>x86-64</td><td>PCID (Process-Context ID)</td><td>12비트 (4096개)</td><td><code>CR4.PCIDE</code>로 활성화, <code>CR3[11:0]</code>에 PCID. CR3에 쓸 때 bit 63을 1로 하면 해당 PCID 엔트리를 flush하지 않음. <code>INVPCID</code> 명령으로 선택적 무효화</td></tr>
+      <tr><td>ARMv8-A (AArch64)</td><td>ASID</td><td>8 또는 16비트</td><td><code>TTBR0_EL1</code>/<code>TTBR1_EL1</code>의 상위 비트(<code>TCR_EL1.A1</code>이 어느 쪽인지 결정). 디스크립터의 <code>nG</code> 비트가 0이면 global</td></tr>
+      <tr><td>MIPS32</td><td>ASID</td><td>8비트</td><td><code>EntryHi</code> 레지스터의 ASID 필드</td></tr>
+      <tr><td>RISC-V</td><td>ASID</td><td>Sv39/48에서 최대 16비트</td><td><code>satp</code> 레지스터. <code>SFENCE.VMA</code>로 무효화</td></tr>
+    </table></div>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 680 250" role="img" aria-label="PCID 유무에 따른 문맥 교환 후 TLB" style="min-width:560px">
+        <text x="20" y="22" font-weight="700">프로세스 A → B → A 로 전환할 때 TLB 내용</text>
+        <text x="20" y="62" class="muted">PCID 없음</text>
+        <text x="20" y="162" class="muted">PCID 사용</text>
+        <!-- no pcid row -->
+        <g>
+          <rect x="120" y="40" width="160" height="40" rx="6" class="box"/>
+          <text x="200" y="58" text-anchor="middle" style="font-size:12px">A: 0x400 0x401 0x7ff</text>
+          <text x="200" y="74" text-anchor="middle" class="muted" style="font-size:11px">A 실행 중</text>
+          <rect x="300" y="40" width="160" height="40" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+          <text x="380" y="58" text-anchor="middle" style="font-size:12px">B: 0x600 (미스로 채움)</text>
+          <text x="380" y="74" text-anchor="middle" class="muted" style="font-size:11px">CR3 교체 → 전부 flush</text>
+          <rect x="480" y="40" width="180" height="40" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+          <text x="570" y="58" text-anchor="middle" style="font-size:12px">A: 0x400 (다시 미스)</text>
+          <text x="570" y="74" text-anchor="middle" class="muted" style="font-size:11px">또 flush → 처음부터</text>
+        </g>
+        <!-- with pcid row -->
+        <g>
+          <rect x="120" y="130" width="160" height="60" rx="6" class="box"/>
+          <text x="200" y="152" text-anchor="middle" style="font-size:12px">[A] 0x400 0x401 0x7ff</text>
+          <text x="200" y="176" text-anchor="middle" class="muted" style="font-size:11px">PCID=1</text>
+          <rect x="300" y="130" width="160" height="60" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="380" y="152" text-anchor="middle" style="font-size:12px">[A] 0x400 0x401 0x7ff</text>
+          <text x="380" y="170" text-anchor="middle" style="font-size:12px">[B] 0x600</text>
+          <text x="380" y="186" text-anchor="middle" class="muted" style="font-size:11px">CR3 교체, flush 없음</text>
+          <rect x="480" y="130" width="180" height="60" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="570" y="152" text-anchor="middle" style="font-size:12px">[A] 0x400 ← 즉시 히트</text>
+          <text x="570" y="170" text-anchor="middle" style="font-size:12px">[B] 0x600 (보존)</text>
+          <text x="570" y="186" text-anchor="middle" class="muted" style="font-size:11px">현재 PCID=1만 매칭</text>
+        </g>
+        <text x="200" y="225" text-anchor="middle" class="muted">A 실행</text>
+        <text x="380" y="225" text-anchor="middle" class="muted">B로 전환</text>
+        <text x="570" y="225" text-anchor="middle" class="muted">A로 복귀</text>
+        <line x1="120" y1="235" x2="660" y2="235" class="line"/>
+      </svg>
+      </div>
+      <figcaption>그림 4-3. 주소 공간 ID 태그가 있으면 전환 후에도 이전 프로세스의 엔트리가 살아남는다.</figcaption>
+    </figure>
+
+    <details class="deep"><summary>심화: Linux는 4096개 PCID를 어떻게 쓰는가</summary><div>
+      <p>PCID가 4096개라고 해서 프로세스마다 고정 PCID를 주지는 않는다. 그러려면 프로세스가 4096개를 넘을 때 재활용 문제가 생기고, PCID를 다른 프로세스에 재배정할 때 <b>모든 CPU</b>에서 해당 PCID 엔트리를 지워야 하기 때문이다. Linux x86(<code>arch/x86/mm/tlb.c</code>)은 대신 <b>CPU별로 최근 사용한 소수의 mm에만 동적으로 ASID를 배정</b>한다(<code>TLB_NR_DYN_ASIDS</code>, 현재 6). CPU마다 "어느 슬롯에 어느 mm이 있었고, 그 mm의 TLB 세대(<code>tlb_gen</code>)가 몇이었는지"를 기억해 두고, 다시 그 mm으로 전환할 때 세대가 같으면 flush 없이 CR3만 바꾼다.</p>
+      <p>KPTI가 켜져 있으면 mm 하나에 커널용/유저용 PCID 쌍이 붙어서 시스템 콜 진입·복귀 시 CR3 전환이 flush 없이 이뤄진다. PCID가 없는 오래된 CPU에서 KPTI 성능 저하가 유독 컸던 이유다.</p>
+      <p>ARM64 Linux(<code>arch/arm64/mm/context.c</code>)는 ASID 공간 전체를 전역 비트맵으로 관리하며, 다 소진되면 <b>세대(generation)</b>를 올리고 모든 CPU의 TLB를 한 번에 비운 뒤 재배정하는 롤오버 방식을 쓴다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. TLB shootdown</h2>
+    <p>TLB는 <b>코어마다 따로</b> 있고, 데이터 캐시와 달리 하드웨어가 자동으로 일관성을 맞춰 주지 않는다(x86 기준). 같은 프로세스의 스레드가 코어 0, 1, 2에서 돌고 있을 때 코어 0이 <code>munmap()</code>으로 페이지를 해제하면, 코어 1과 2의 TLB에는 <b>이미 사라진 매핑</b>이 남아 있다. 이 상태에서 그 물리 프레임이 다른 용도로 재사용되면 코어 1은 남의 데이터를 읽거나 덮어쓴다. 보안 사고이자 메모리 오염이다.</p>
+    <p>그래서 운영체제는 페이지 테이블에서 매핑을 <b>없애거나 권한을 줄일 때</b>(<code>munmap</code>, <code>mprotect</code>, <code>madvise(MADV_DONTNEED)</code>, 페이지 회수·마이그레이션, COW 해제 등) 다른 코어들의 TLB까지 무효화해야 한다. 이 과정을 <b>TLB shootdown</b>이라고 한다. x86에서는 IPI(Inter-Processor Interrupt)로 이뤄진다.</p>
+
+    <div class="widget" id="w-sd">
+      <div class="w-title">TLB shootdown 단계별 애니메이션 (x86, 4코어)</div>
+      <div class="w-desc">CPU 0~2는 같은 프로세스(mm A)의 스레드를 실행 중이고, CPU 3은 다른 프로세스(mm B)를 실행 중이다. CPU 0의 스레드가 페이지 X를 munmap 한다.</div>
+      <div class="stage"><svg class="diagram sd-svg" id="sd-svg" viewBox="0 0 640 330" role="img" aria-label="TLB shootdown"></svg></div>
+    </div>
+
+    <h3>7.1 왜 비싼가, 그리고 현업에서 어떻게 보이나</h3>
+    <ul>
+      <li><b>동기적이다</b>: 시작한 코어는 모든 대상 코어의 응답을 기다린다. 대상 코어 수가 늘수록, 그리고 대상 코어가 인터럽트를 막고 있는 구간에 있으면 지연이 늘어난다. 대략 수 μs 단위다.</li>
+      <li><b>대상 코어도 방해받는다</b>: 하던 일을 멈추고 인터럽트 핸들러를 실행하며, 무효화 후에는 TLB 미스가 따라온다.</li>
+      <li><b>증상</b>: 스레드가 많은 프로세스에서 <code>munmap</code>/<code>madvise</code>가 잦으면 <code>/proc/interrupts</code>의 <code>TLB</code>(TLB shootdowns) 카운터가 급증하고 시스템 시간(sys%)이 오른다. 메모리를 OS에 자주 반환하는 할당자 설정(예: jemalloc/tcmalloc의 공격적 purge)에서 흔하다.</li>
+    </ul>
+    <p>Linux의 완화책: (1) <b>배치</b> — <code>mmu_gather</code>로 여러 페이지 해제를 모아 한 번에 flush, (2) <b>범위 vs 전체</b> — 페이지가 많으면 <code>INVLPG</code> 반복 대신 전체 flush(<code>tlb_single_page_flush_ceiling</code>, 기본 33), (3) <b>lazy TLB</b> — 커널 스레드를 실행 중인 코어는 이전 mm을 빌려 쓰므로 IPI 대신 나중에 확인, (4) <code>mm_cpumask</code>로 그 mm을 실제로 실행한 적 있는 코어에만 IPI. 관련 함수는 <code>flush_tlb_mm_range()</code>와 <code>native_flush_tlb_multi()</code>(구 버전 <code>native_flush_tlb_others()</code>)다.</p>
+    <div class="callout deep"><span class="title">ARM64는 다르다: 하드웨어 브로드캐스트</span>
+    ARMv8은 <code>TLBI VAE1IS</code>처럼 접미사 <b>IS(Inner Shareable)</b>가 붙은 TLB 무효화 명령을 제공한다. 이 명령은 인터커넥트를 통해 같은 공유 도메인의 <b>모든 코어</b>에 무효화를 브로드캐스트하고, 뒤따르는 <code>DSB ISH</code>가 완료를 보장한다. IPI도 인터럽트 핸들러도 필요 없다. 대신 브로드캐스트는 관계없는 코어에도 전달되므로 코어가 아주 많은 서버에서는 인터커넥트 부하가 이슈가 된다. 최근 x86에도 비슷한 기능이 들어오고 있다(AMD의 <code>INVLPGB</code>/<code>TLBSYNC</code>).</div>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 소프트웨어 관리 TLB vs 하드웨어 페이지 워커</h2>
+    <p>TLB 미스가 났을 때 <b>누가</b> 페이지 테이블을 걷는가? 두 가지 설계가 있다.</p>
+    <h3>8.1 하드웨어 관리 (x86, ARM64, RISC-V 대부분)</h3>
+    <p>MMU 안의 <b>페이지 워커(page miss handler)</b>가 CR3/TTBR에서 시작해 페이지 테이블을 직접 읽는다. 따라서 페이지 테이블 형식은 <b>아키텍처가 정한다</b>. OS는 그 형식에 맞춰 테이블을 만들어 둘 뿐이다. 장점은 빠르다는 것이다. 예외가 없으니 파이프라인을 비우지 않고, 비순차 실행 중에 워크를 진행하며, 최근 코어는 여러 워크를 동시에 처리하고 다음 페이지를 미리 워크하기도 한다. x86 워커는 PTE의 Accessed/Dirty 비트도 하드웨어로 세팅한다(ARM64는 ARMv8.1의 선택 기능 <code>TCR_EL1.HA/HD</code>).</p>
+    <h3>8.2 소프트웨어 관리 (MIPS, 초기 SPARC, Alpha의 PALcode 등)</h3>
+    <p>MIPS의 TLB 미스는 <b>예외</b>다. 하드웨어는 미스난 가상 주소를 <code>BadVAddr</code>와 <code>Context</code>/<code>EntryHi</code>에 넣고 <b>TLB Refill 예외 벡터</b>로 점프한다. OS의 핸들러(수십 명령)가 자기 마음대로 정한 페이지 테이블을 조회해 <code>EntryLo0</code>/<code>EntryLo1</code>에 값을 넣고 <code>tlbwr</code>(Random 레지스터가 가리키는 슬롯에 쓰기)를 실행한 뒤 <code>eret</code>로 복귀한다. MIPS TLB 엔트리는 짝수/홀수 <b>인접한 두 페이지</b>를 한 번에 매핑한다(VPN2). Linux MIPS는 이 refill 핸들러를 부팅 시 CPU 특성에 맞춰 <b>즉석에서 기계어로 생성</b>한다(<code>arch/mips/mm/tlbex.c</code>).</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>하드웨어 페이지 워커</th><th>소프트웨어 관리 TLB</th></tr>
+      <tr><td>페이지 테이블 형식</td><td>ISA가 고정 (래딕스 트리)</td><td>OS 자유 (해시, 역 페이지 테이블 등)</td></tr>
+      <tr><td>미스 비용</td><td>낮음, 예외 없음, 다른 명령과 겹쳐 실행</td><td>예외 진입·복귀, 파이프라인 flush, 핸들러 명령 수십 개</td></tr>
+      <tr><td>하드웨어 복잡도</td><td>높음 (워커, 워크 캐시)</td><td>낮음 (TLB + 몇 개 레지스터)</td></tr>
+      <tr><td>A/D 비트 관리</td><td>하드웨어가 세팅 (x86)</td><td>OS가 페이지 보호 트릭으로 에뮬레이션</td></tr>
+      <tr><td>가상화</td><td>2차원 워크(EPT/Stage-2)로 하드웨어 지원</td><td>하이퍼바이저가 미스마다 개입해야 해 불리</td></tr>
+    </table></div>
+    <p>역사는 하드웨어 워커가 이겼다. 핸들러 실행 비용이 메모리 지연에 비해 상대적으로 커졌고, 가상화가 보편화되면서 "TLB 미스마다 소프트웨어 개입"이 감당하기 어려워졌기 때문이다. 다만 소프트웨어 관리 TLB의 아이디어(OS가 변환 구조를 선택한다)는 연구와 일부 특수 프로세서에 남아 있다.</p>
+  </section>
+
+  <!-- ============================== S9 ============================== -->
+  <section id="s9">
+    <h2>9. 실무: perf로 TLB 미스 측정하기</h2>
+    <p>아래 프로그램은 256MB 배열을 <code>stride</code> 바이트 간격으로 순환하며 읽는다. stride가 64면 한 페이지에서 64번 연속 읽으므로 TLB 미스는 64번에 한 번이다. stride가 4096이면 매 접근이 새 페이지이고, 65,536개 페이지(256MB/4KB)는 STLB reach(수 MB)를 훨씬 넘는다.</p>
+<pre><code>// tlbtest.c — gcc -O2 tlbtest.c -o tlbtest
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+int main(int argc, char **argv) {
+    size_t size = 256UL &lt;&lt; 20, stride = strtoul(argv[1], 0, 10);
+    char *a = aligned_alloc(1 &lt;&lt; 21, size);
+    memset(a, 1, size);                       /* 미리 폴트 처리 (6장) */
+    size_t idx = 0; long sum = 0;
+    for (long i = 0; i &lt; 100000000; i++) {   /* 1억 번 로드 */
+        sum += a[idx];
+        idx = (idx + stride) &amp; (size - 1);
+    }
+    printf("%ld\n", sum);
+}</code></pre>
+<pre><code>$ perf stat -e dTLB-loads,dTLB-load-misses ./tlbtest 64
+     1xx,xxx,xxx      dTLB-loads
+       1,6xx,xxx      dTLB-load-misses   #    ~1.5% of all dTLB cache accesses
+
+$ perf stat -e dTLB-loads,dTLB-load-misses ./tlbtest 4096
+     1xx,xxx,xxx      dTLB-loads
+     1xx,xxx,xxx      dTLB-load-misses   #   ~100% of all dTLB cache accesses</code></pre>
+    <p>위 출력은 형태를 보여 주기 위한 예시이며 실제 숫자는 CPU, 커널, 컴파일러에 따라 다르다. 해석할 때 주의할 점:</p>
+    <ul>
+      <li><b>범용 이벤트의 의미는 CPU마다 다르다.</b> <code>dTLB-load-misses</code>가 L1 dTLB 미스인지, STLB 미스(=페이지 워크 발생)인지는 perf가 마이크로아키텍처 이벤트로 매핑하는 방식에 달렸다. 정밀하게 보려면 <code>perf list | grep -i tlb</code>로 원시 이벤트를 찾는다. Intel이라면 <code>dtlb_load_misses.walk_completed</code>(워크 완료 수)와 <code>dtlb_load_misses.walk_active</code>(워크 진행 중인 사이클 수) 같은 이벤트가 있다. <b>walk_active / cycles</b>가 "TLB 미스로 날린 시간 비율"에 가장 가까운 지표다.</li>
+      <li><b>TLB 미스와 캐시 미스는 같이 온다.</b> stride 4096은 캐시 미스도 매번 일으키므로, 실행 시간 차이를 전부 TLB 탓으로 돌리면 안 된다. huge page를 켜고 같은 실험을 반복해 차이를 분리하라.</li>
+      <li><b>huge page 효과 확인</b>: 위 코드에서 <code>memset</code> 앞에 <code>madvise(a, size, MADV_HUGEPAGE)</code>를 넣고(<code>&lt;sys/mman.h&gt;</code>), <code>grep AnonHugePages /proc/meminfo</code>로 THP 적용 여부를 확인한 뒤 다시 측정한다. stride 4096에서 dTLB 미스가 급감한다(256MB = 2MB 페이지 128개).</li>
+      <li><b>iTLB도 있다</b>: 코드가 수백 MB인 대형 바이너리(브라우저, DB, 대형 C++ 서버)에서는 <code>iTLB-load-misses</code>가 문제가 된다. 코드 영역을 huge page로 올리는 기법(예: 링커로 핫 코드를 모으고 2MB 정렬, 런타임에 재매핑)이 실제 프로덕션에서 쓰인다.</li>
+    </ul>
+    <div class="callout tip"><span class="title">TLB 관점의 성능 체크리스트</span>
+    <ol style="margin:4px 0 0;padding-left:20px">
+      <li>작업 집합이 STLB reach(4KB 기준 수 MB)를 넘는가? 넘는다면 접근이 랜덤한가?</li>
+      <li>THP 상태(<code>always</code>/<code>madvise</code>/<code>never</code>)와 <code>AnonHugePages</code> 확인.</li>
+      <li>데이터 구조의 메모리 밀도: 포인터 추적 구조(연결 리스트, 트리)는 노드가 페이지 전역에 흩어지기 쉽다. 아레나 할당으로 모으면 TLB와 캐시 모두 이득.</li>
+      <li>스레드 많은 프로세스에서 <code>/proc/interrupts</code>의 TLB shootdown 증가율.</li>
+      <li>가상 머신이라면 미스 비용이 2차원 워크로 몇 배 커진다(15장). 게스트와 호스트 모두 huge page를 쓰는 것이 효과적이다.</li>
+    </ol></div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>페이징은 메모리 접근 1회를 (레벨 수 + 1)회로 늘린다. TLB는 VPN → PFN 변환을 캐시해 이 비용을 히트 시 거의 0으로 만든다.</li>
+    <li>L1 TLB는 작고(수십 엔트리) 완전 연관 또는 고연관, L2 TLB(STLB)는 1~3천 엔트리의 집합 연관이 일반적이다. 집합 연관에서는 특정 stride가 충돌 미스를 만든다.</li>
+    <li><code>EAT = α(ε+m) + (1−α)(ε+(L+1)m)</code>. 이 식은 상한이며, 실제 워크는 데이터 캐시와 페이지 워크 캐시 덕분에 더 싸다.</li>
+    <li>LRU는 TLB 크기보다 한 페이지 큰 순환 접근에서 히트율 0%가 된다. 작업 집합이 TLB에 들어가느냐가 성능 절벽을 만든다.</li>
+    <li>TLB reach = 엔트리 수 × 페이지 크기. 4KB 기준 수 MB에 불과하며, huge page(2MB/1GB)가 reach를 512배·26만 배로 늘리는 가장 현실적인 수단이다.</li>
+    <li>문맥 교환 시 TLB flush를 피하기 위해 x86은 PCID(12비트), ARM64·MIPS·RISC-V는 ASID를 쓴다. 커널 매핑은 Global 비트로 보존한다(KPTI 이전).</li>
+    <li>매핑 제거·권한 축소 시 다른 코어의 TLB를 비우는 shootdown이 필요하다. x86은 IPI 기반이라 비싸고, ARM64는 TLBI…IS 브로드캐스트로 하드웨어가 처리한다.</li>
+    <li>MIPS 같은 소프트웨어 관리 TLB는 OS가 페이지 테이블 형식을 자유롭게 정하지만 미스 비용이 크다. 현대 주류는 하드웨어 페이지 워커다.</li>
+    <li>측정은 <code>perf stat -e dTLB-loads,dTLB-load-misses</code>로 시작하고, 정밀 분석은 워크 사이클 이벤트(Intel의 <code>dtlb_load_misses.walk_active</code> 등)로 한다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">단일 레벨 페이지 테이블, TLB 히트율 80%, TLB 조회 20ns, 메모리 접근 100ns일 때 유효 접근 시간은?</div>
+    <button class="opt">120ns</button>
+    <button class="opt">130ns</button>
+    <button class="opt">140ns</button>
+    <button class="opt">180ns</button>
+    <div class="explain">0.8 × (20 + 100) + 0.2 × (20 + 100 + 100) = 96 + 44 = 140ns. 미스일 때는 TLB 조회 후 PTE 읽기 1회와 데이터 읽기 1회가 필요하다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">16엔트리 완전 연관 TLB(LRU)에서 17개 페이지를 0,1,…,16,0,1,…처럼 순환하며 계속 접근한다. 장기적인 TLB 히트율은?</div>
+    <button class="opt">약 94% (16/17)</button>
+    <button class="opt">0%</button>
+    <button class="opt">약 50%</button>
+    <button class="opt">100%</button>
+    <div class="explain">페이지 16을 넣을 때 LRU는 가장 오래전에 쓴 페이지 0을 쫓아낸다. 그런데 다음 접근이 바로 0이다. 0을 넣으면서 1을 쫓아내고, 다음이 1이다. 이렇게 매번 미스가 난다. 이런 상황에서는 Random 정책이나 OPT가 낫다. 시뮬레이터에서 직접 확인해 보라.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">STLB가 1536 엔트리일 때, 4KB 페이지와 2MB 페이지의 TLB reach는 각각 얼마인가?</div>
+    <button class="opt">1.5MB / 768MB</button>
+    <button class="opt">6MB / 1.5GB</button>
+    <button class="opt">1536KB / 3GB</button>
+    <button class="opt">6MB / 3GB</button>
+    <div class="explain">1536 × 4KB = 6144KB = 6MB, 1536 × 2MB = 3072MB = 3GB. 같은 엔트리 수로 512배를 덮는다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">x86-64에서 PCID를 사용하는 주된 목적은?</div>
+    <button class="opt">CR3를 바꿀 때 다른 주소 공간의 TLB 엔트리를 flush하지 않고 보존하기 위해</button>
+    <button class="opt">TLB 엔트리 수를 늘리기 위해</button>
+    <button class="opt">다른 코어의 TLB를 자동으로 무효화하기 위해</button>
+    <button class="opt">페이지 테이블 레벨 수를 줄이기 위해</button>
+    <div class="explain">PCID는 TLB 엔트리에 주소 공간 태그를 붙여 문맥 교환·KPTI의 CR3 전환 시 flush를 피하게 한다. 다른 코어 무효화(shootdown)는 여전히 OS가 IPI로 해야 한다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">스레드 32개가 여러 코어에서 실행되는 프로세스에서 <code>madvise(MADV_DONTNEED)</code> 호출이 아주 잦을 때, 가장 먼저 의심할 오버헤드는?</div>
+    <button class="opt">L3 캐시 용량 부족</button>
+    <button class="opt">페이지 테이블 레벨 증가</button>
+    <button class="opt">IPI 기반 TLB shootdown과 그 이후의 TLB 미스</button>
+    <button class="opt">PCID 고갈</button>
+    <div class="explain">매핑을 제거하면 해당 mm을 실행 중인(했던) 모든 코어의 TLB를 무효화해야 하므로 IPI가 날아가고, 시작한 코어는 응답을 기다린다. <code>/proc/interrupts</code>의 TLB 카운터와 sys 시간으로 확인한다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">MIPS 같은 소프트웨어 관리 TLB에서 TLB 미스가 발생하면?</div>
+    <button class="opt">MMU의 하드웨어 워커가 CR3부터 페이지 테이블을 걷는다</button>
+    <button class="opt">TLB Refill 예외가 발생하고 OS 핸들러가 페이지 테이블을 조회해 <code>tlbwr</code> 등으로 TLB에 직접 써 넣는다</button>
+    <button class="opt">즉시 SIGSEGV가 전달된다</button>
+    <button class="opt">디스크에서 페이지를 읽어 온다</button>
+    <div class="explain">소프트웨어 관리 TLB에서 TLB 미스는 곧 예외다. 핸들러는 OS가 정한 형식의 페이지 테이블을 읽어 EntryLo 레지스터를 채우고 TLB 쓰기 명령을 실행한다. 페이지 자체가 메모리에 없으면 그때 일반 페이지 폴트 경로로 넘어간다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">16엔트리 TLB를 4-way(4세트)로 구성하고 세트 = VPN mod 4라 하자. VPN 0, 4, 8, 12, 16을 순환 접근하면?</div>
+    <button class="opt">5개 페이지가 모두 set 0에 몰려 4-way를 넘으므로, LRU라면 계속 미스가 난다</button>
+    <button class="opt">16엔트리 중 5개만 쓰므로 처음 5번 이후 모두 히트한다</button>
+    <button class="opt">세트가 4개이므로 페이지가 고르게 분산된다</button>
+    <button class="opt">직접 사상보다 항상 나쁘다</button>
+    <div class="explain">TLB 전체에는 자리가 남아 있어도 세트 하나의 용량(4)을 넘으면 충돌 미스가 난다. 2의 거듭제곱 stride로 접근하는 코드(큰 행렬의 열 방향 순회 등)에서 실제로 나타나는 현상이다.</div>
+  </div>
+</main>
+
+<script>
+(function () {
+  // ==CORE== (DOM에 의존하지 않는 핵심 로직: node로 검증 가능)
+  function rng(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const ARR_BASE = 0x7f000, CODE_VPN = 0x00401, STACK_VPN = 0x7ffe0, DATA_VPN = 0x00603;
+  // 접근열(VPN 배열) 생성
+  function makeTrace(pattern, n, W, strideBytes, rand) {
+    const out = new Array(n);
+    const PAGE = 4096, region = W * PAGE;
+    for (let i = 0; i < n; i++) {
+      let v;
+      if (pattern === "seq") v = ARR_BASE + Math.floor(((i * 256) % region) / PAGE);
+      else if (pattern === "rand") v = ARR_BASE + Math.floor(rand() * W);
+      else if (pattern === "stride") v = ARR_BASE + Math.floor(((i * strideBytes) % region) / PAGE);
+      else { // loop: 반복마다 code, stack, 배열 원소(256B씩 전진), 4번째마다 전역 데이터
+        const it = Math.floor(i / 3), k = i % 3;
+        if (k === 0) v = CODE_VPN;
+        else if (k === 1) v = (it % 4 === 3) ? DATA_VPN : STACK_VPN;
+        else v = ARR_BASE + Math.floor(((it * 256) % region) / PAGE);
+      }
+      out[i] = v;
+    }
+    return out;
+  }
+  // 다음 사용 위치 (OPT용)
+  function nextUses(trace) {
+    const nx = new Array(trace.length), last = new Map();
+    for (let i = trace.length - 1; i >= 0; i--) {
+      nx[i] = last.has(trace[i]) ? last.get(trace[i]) : Infinity;
+      last.set(trace[i], i);
+    }
+    return nx;
+  }
+  // TLB 모델: entries, ways(0 = 완전 연관), policy: lru|fifo|rand|opt
+  function makeTLB(entries, ways, policy, rand, nx) {
+    const W = (ways === 0 || ways >= entries) ? entries : ways;
+    const nsets = entries / W;
+    const sets = Array.from({ length: nsets }, () => []);
+    let clock = 0;
+    return {
+      nsets, ways: W, sets,
+      access(vpn, pos) {
+        clock++;
+        const si = vpn % nsets, set = sets[si];
+        for (let s = 0; s < set.length; s++) {
+          if (set[s].vpn === vpn) {
+            set[s].used = clock;
+            if (nx) set[s].next = nx[pos];
+            return { hit: true, set: si, slot: s };
+          }
+        }
+        const ent = { vpn, used: clock, ins: clock, next: nx ? nx[pos] : 0 };
+        if (set.length < W) { set.push(ent); return { hit: false, set: si, slot: set.length - 1, victim: null }; }
+        let slot = 0;
+        if (policy === "rand") slot = Math.floor(rand() * W);
+        else {
+          const key = policy === "lru" ? "used" : policy === "fifo" ? "ins" : "next";
+          for (let s = 1; s < W; s++) {
+            if (policy === "opt" ? set[s].next > set[slot].next : set[s][key] < set[slot][key]) slot = s;
+          }
+        }
+        const victim = set[slot].vpn;
+        set[slot] = ent;
+        return { hit: false, set: si, slot, victim };
+      }
+    };
+  }
+  function runAll(trace, entries, ways, policy, seed) {
+    const nx = policy === "opt" ? nextUses(trace) : null;
+    const t = makeTLB(entries, ways, policy, rng(seed), nx);
+    let h = 0;
+    for (let i = 0; i < trace.length; i++) if (t.access(trace[i], i).hit) h++;
+    return h;
+  }
+  function eat(a, e, m, L) { return a * (e + m) + (1 - a) * (e + (L + 1) * m); }
+  function reach(entries, pageBytes) { return entries * pageBytes; }
+  // ==/CORE==
+
+  // ------------------------------------------------------------------
+  // 위젯 1: TLB 시뮬레이터
+  const $ = id => document.getElementById(id);
+  const N_ACC = 1500, WIN = 64;
+  const SPEED = { slow: [1, 300], mid: [1, 40], fast: [12, 16] };
+  const sim = {};
+  let simTimer = null, seed = 12345;
+
+  function simReset(newSeed) {
+    if (newSeed) seed = (Math.random() * 1e9) >>> 0;
+    stopSim();
+    const n = +$("sim-n").value, w = +$("sim-w").value, p = $("sim-p").value;
+    const pat = $("sim-pat").value, W = +$("sim-ws").value, st = +$("sim-stride").value;
+    $("sim-stride-l").style.display = pat === "stride" ? "" : "none";
+    $("sim-ws-v").textContent = W;
+    sim.trace = makeTrace(pat, N_ACC, W, st, rng(seed));
+    sim.tlb = makeTLB(n, w, p, rng(seed ^ 0x5bd1e995));
+    sim.i = 0; sim.hits = 0; sim.hist = []; sim.cum = []; sim.win = []; sim.last = null; sim.winHits = 0;
+    sim.logLines = [];
+    $("sim-cmp-out").innerHTML = "";
+    drawTLB(); drawStats(); drawChart(); $("sim-log").textContent = "준비됨. 접근열 길이 " + N_ACC + "회.";
+  }
+  function simStep(render) {
+    if (sim.i >= N_ACC) return false;
+    const vpn = sim.trace[sim.i];
+    const r = sim.tlb.access(vpn, sim.i);
+    sim.i++;
+    if (r.hit) sim.hits++;
+    sim.hist.push(r.hit ? 1 : 0);
+    sim.winHits += r.hit ? 1 : 0;
+    if (sim.hist.length > WIN) sim.winHits -= sim.hist[sim.hist.length - 1 - WIN];
+    sim.cum.push(sim.hits / sim.i);
+    sim.win.push(sim.winHits / Math.min(WIN, sim.i));
+    sim.last = r;
+    const line = `#${sim.i} VPN ${vpn.toString(16)} → ` + (r.hit ? `HIT (set ${r.set})` : `MISS (set ${r.set}` + (r.victim != null ? `, ${r.victim.toString(16)} 축출)` : ", 빈 칸에 적재)"));
+    sim.logLines.push(line);
+    if (sim.logLines.length > 40) sim.logLines.shift();
+    if (render) { drawTLB(); drawStats(); drawChart(); drawLog(); }
+    return true;
+  }
+  function drawLog() { const l = $("sim-log"); l.textContent = sim.logLines.slice(-12).join("\n"); l.scrollTop = l.scrollHeight; }
+  function drawTLB() {
+    const t = sim.tlb, box = $("sim-tlb");
+    let html = "";
+    for (let s = 0; s < t.nsets; s++) {
+      html += `<div class="tlb-set">${t.nsets > 1 ? `<span class="sl">set ${s}</span>` : ""}<div class="cells">`;
+      for (let k = 0; k < t.ways; k++) {
+        const e = t.sets[s][k];
+        let cls = "cell";
+        if (sim.last && sim.last.set === s && sim.last.slot === k) cls += sim.last.hit ? " hit" : " miss";
+        html += e ? `<span class="${cls}" title="VPN 0x${e.vpn.toString(16)}">${e.vpn.toString(16)}</span>` : `<span class="cell empty">—</span>`;
+      }
+      html += "</div></div>";
+    }
+    box.innerHTML = html;
+  }
+  function pct(x) { return (x * 100).toFixed(1) + "%"; }
+  function drawStats() {
+    $("sim-acc").textContent = sim.i;
+    $("sim-hit").textContent = sim.hits;
+    $("sim-miss").textContent = sim.i - sim.hits;
+    $("sim-rate").textContent = sim.i ? pct(sim.hits / sim.i) : "–";
+    $("sim-wrate").textContent = sim.i ? pct(sim.win[sim.win.length - 1]) : "–";
+  }
+  const CX0 = 44, CX1 = 590, CY0 = 12, CY1 = 178;
+  function chartFrame(yLabel) {
+    let g = "";
+    for (let p = 0; p <= 100; p += 25) {
+      const y = CY1 - (CY1 - CY0) * p / 100;
+      g += `<line class="grid" x1="${CX0}" y1="${y}" x2="${CX1}" y2="${y}"/><text class="axis-t" x="${CX0 - 6}" y="${y + 4}" text-anchor="end">${yLabel(p)}</text>`;
+    }
+    return g;
+  }
+  function drawChart() {
+    let g = chartFrame(p => p + "%");
+    for (let k = 0; k <= N_ACC; k += 300) {
+      const x = CX0 + (CX1 - CX0) * k / N_ACC;
+      g += `<text class="axis-t" x="${x}" y="196" text-anchor="middle">${k}</text>`;
+    }
+    const pts = arr => arr.map((v, i) => (CX0 + (CX1 - CX0) * (i + 1) / N_ACC).toFixed(1) + "," + (CY1 - (CY1 - CY0) * v).toFixed(1)).join(" ");
+    if (sim.cum.length) {
+      g += `<polyline class="l-win" points="${pts(sim.win)}"/><polyline class="l-cum" points="${pts(sim.cum)}"/>`;
+    }
+    $("sim-chart").innerHTML = g;
+  }
+  function stopSim() { if (simTimer) clearInterval(simTimer); simTimer = null; $("sim-play").textContent = "▶ 재생"; }
+  function playSim() {
+    if (sim.i >= N_ACC) simReset(false);
+    const [per, ms] = SPEED[$("sim-speed").value];
+    $("sim-play").textContent = "⏸ 정지";
+    simTimer = setInterval(() => {
+      let ok = true;
+      for (let k = 0; k < per && ok; k++) ok = simStep(false);
+      drawTLB(); drawStats(); drawChart(); drawLog();
+      if (!ok || sim.i >= N_ACC) stopSim();
+    }, ms);
+  }
+  ["sim-n", "sim-w", "sim-p", "sim-pat", "sim-stride"].forEach(id => $(id).addEventListener("change", () => simReset(false)));
+  $("sim-ws").addEventListener("input", () => simReset(false));
+  $("sim-speed").addEventListener("change", () => { if (simTimer) { stopSim(); playSim(); } });
+  $("sim-step").onclick = () => { stopSim(); simStep(true); };
+  $("sim-play").onclick = () => simTimer ? stopSim() : playSim();
+  $("sim-end").onclick = () => { stopSim(); while (simStep(false)); drawTLB(); drawStats(); drawChart(); drawLog(); };
+  $("sim-reset").onclick = () => simReset(true);
+  $("sim-cmp").onclick = () => {
+    const n = +$("sim-n").value, w = +$("sim-w").value;
+    const rows = [["lru", "LRU"], ["fifo", "FIFO"], ["rand", "Random"], ["opt", "OPT (벨라디, 미래를 아는 이론적 최적)"]];
+    let html = `<div class="tbl-wrap"><table class="cmp-tbl"><tr><th>정책</th><th>히트</th><th>히트율</th><th style="width:40%"></th></tr>`;
+    rows.forEach(([p, name]) => {
+      const h = runAll(sim.trace, n, w, p, seed ^ 0x5bd1e995);
+      const r = h / sim.trace.length;
+      html += `<tr><td>${name}</td><td class="num">${h}</td><td class="num">${pct(r)}</td><td><div class="bar-bg"><div class="bar-fg${p === "opt" ? " ok" : ""}" style="width:${(r * 100).toFixed(1)}%"></div></div></td></tr>`;
+    });
+    html += `</table></div><p style="font-size:13.5px;color:var(--muted);margin:4px 0 0">같은 접근열 ${sim.trace.length}회에 대한 결과. OPT는 미래 접근을 알아야 하므로 실제 하드웨어로 구현할 수 없고, 다른 정책의 상한선 역할을 한다.</p>`;
+    $("sim-cmp-out").innerHTML = html;
+  };
+  simReset(false);
+
+  // ------------------------------------------------------------------
+  // 위젯 2: EAT 계산기
+  function eatUpdate() {
+    const a = +$("eat-a").value / 100, e = +$("eat-e").value, m = +$("eat-m").value, L = +$("eat-l").value;
+    $("eat-a-v").textContent = (a * 100).toFixed(1) + "%";
+    $("eat-e-v").textContent = e.toFixed(1) + " ns";
+    $("eat-m-v").textContent = m + " ns";
+    const v = eat(a, e, m, L), ideal = e + m, none = e + (L + 1) * m;
+    $("eat-out").textContent = v.toFixed(1) + " ns";
+    $("eat-slow").textContent = "+" + ((v / ideal - 1) * 100).toFixed(1) + "%";
+    $("eat-none").textContent = none.toFixed(0) + " ns";
+    $("eat-pen").textContent = (L * m) + " ns";
+    $("eat-formula").textContent = `${a.toFixed(3)}×(${e}+${m}) + ${(1 - a).toFixed(3)}×(${e}+${L + 1}×${m}) = ${v.toFixed(2)} ns`;
+    // 차트: x = α 50..100, y = 0..none
+    const yMax = Math.ceil(none / 50) * 50;
+    const X = al => CX0 + (CX1 - CX0) * (al - 0.5) / 0.5;
+    const Y = t => CY1 - (CY1 - CY0) * t / yMax;
+    let g = chartFrame(p => Math.round(yMax * p / 100) + "");
+    for (let al = 50; al <= 100; al += 10) g += `<text class="axis-t" x="${X(al / 100)}" y="196" text-anchor="middle">${al}%</text>`;
+    g += `<text class="axis-t" x="${CX1}" y="214" text-anchor="end">히트율 α</text><text class="axis-t" x="${CX0}" y="214" text-anchor="start">ns</text>`;
+    let pts = [];
+    for (let k = 0; k <= 100; k++) { const al = 0.5 + 0.5 * k / 100; pts.push(X(al).toFixed(1) + "," + Y(eat(al, e, m, L)).toFixed(1)); }
+    g += `<line class="l-ideal" x1="${CX0}" y1="${Y(ideal)}" x2="${CX1}" y2="${Y(ideal)}"/>`;
+    g += `<line class="l-nontlb" x1="${CX0}" y1="${Y(none)}" x2="${CX1}" y2="${Y(none)}"/>`;
+    g += `<polyline class="l-eat" points="${pts.join(" ")}"/>`;
+    g += `<circle class="mark" cx="${X(a)}" cy="${Y(v)}" r="6"/>`;
+    $("eat-chart").innerHTML = g;
+  }
+  ["eat-a", "eat-e", "eat-m", "eat-l"].forEach(id => { $(id).addEventListener("input", eatUpdate); $(id).addEventListener("change", eatUpdate); });
+  eatUpdate();
+
+  // ------------------------------------------------------------------
+  // 위젯 3: TLB reach 계산기 (Skylake 수치)
+  const KB = 1024, MB = KB * KB, GB = MB * KB;
+  const REACH_ROWS = [
+    { name: "4KB", page: 4 * KB, l1: 64, l2: 1536 },
+    { name: "2MB", page: 2 * MB, l1: 32, l2: 1536 },
+    { name: "1GB", page: GB, l1: 4, l2: 16 },
+  ];
+  function fmtSize(b) {
+    if (b >= GB) return (b / GB % 1 ? (b / GB).toFixed(1) : b / GB) + " GiB";
+    if (b >= MB) return (b / MB % 1 ? (b / MB).toFixed(1) : b / MB) + " MiB";
+    return (b / KB) + " KiB";
+  }
+  function reachUpdate() {
+    const ws = MB * Math.pow(2, +$("rc-ws").value); // 1MiB .. 64GiB
+    $("rc-ws-v").textContent = fmtSize(ws);
+    let h = `<tr><th>페이지</th><th>L1 dTLB reach</th><th>STLB reach</th><th>작업 집합 대비 (STLB)</th><th>필요 페이지 수</th></tr>`;
+    REACH_ROWS.forEach(r => {
+      const r1 = reach(r.l1, r.page), r2 = reach(r.l2, r.page);
+      const cov = Math.min(1, r2 / ws);
+      h += `<tr><td><b>${r.name}</b></td><td class="num">${fmtSize(r1)} <span style="color:var(--muted)">(${r.l1})</span></td>` +
+        `<td class="num">${fmtSize(r2)} <span style="color:var(--muted)">(${r.l2})</span></td>` +
+        `<td><div class="bar-bg"><div class="bar-fg${cov >= 1 ? " ok" : ""}" style="width:${(cov * 100).toFixed(1)}%"></div></div><span class="mono" style="font-size:12.5px">${(cov * 100).toFixed(cov < 0.01 ? 3 : 1)}%</span></td>` +
+        `<td class="num">${Math.ceil(ws / r.page).toLocaleString()}</td></tr>`;
+    });
+    $("rc-tbl").innerHTML = h;
+  }
+  $("rc-ws").addEventListener("input", reachUpdate);
+  reachUpdate();
+
+  // ------------------------------------------------------------------
+  // 위젯 4: TLB shootdown 스텝 애니메이션
+  const SD_CAPS = [
+    "<b>초기 상태.</b> CPU 0·1·2는 mm A의 스레드를 실행 중이며, 모두 페이지 X(VA 0x7f3a1000 → PFN 0x1a2b)의 변환을 TLB에 갖고 있다. CPU 3은 mm B를 실행 중이므로 해당 엔트리가 없다.",
+    "<b>① munmap(X).</b> CPU 0이 시스템 콜로 커널에 진입해 페이지 테이블 락을 잡고 PTE를 지운다(present=0). <b>하지만 이 순간에도 CPU 1·2의 TLB는 여전히 옛 변환을 갖고 있다</b>(주황). 이들은 PTE를 다시 읽지 않으므로 계속 X에 접근할 수 있다.",
+    "<b>② 로컬 무효화.</b> CPU 0은 자기 TLB에서 X를 <code>INVLPG</code>로 지운다. (페이지가 많으면 전체 flush가 더 싸다.)",
+    "<b>③ 대상 코어 선정.</b> mm A의 <code>mm_cpumask</code>를 읽어 이 mm을 실행 중이거나 TLB에 엔트리가 있을 수 있는 코어를 찾는다: {1, 2}. CPU 3은 다른 mm을 실행 중이라 제외된다. 대상을 줄이는 것이 성능의 핵심이다.",
+    "<b>④ IPI 전송.</b> CPU 0이 로컬 APIC를 통해 CPU 1·2에 함수 호출 IPI를 보낸다(Linux: <code>native_flush_tlb_multi()</code> → <code>smp_call_function_many_cond()</code>). 무효화할 범위 정보는 공유 메모리에 둔다.",
+    "<b>⑤ 원격 무효화.</b> CPU 1·2는 하던 일을 중단하고 인터럽트 핸들러(<code>flush_tlb_func()</code>)에서 해당 엔트리를 무효화한다. 사용자 스레드 입장에서는 이유 모를 지연이다.",
+    "<b>⑥ 완료 대기.</b> CPU 1·2가 완료를 알릴 때까지 CPU 0은 <b>스핀하며 기다린다</b>. 대상 코어가 인터럽트를 막고 있는 구간에 있으면 그만큼 지연된다. 코어가 많을수록 꼬리 지연이 커진다.",
+    "<b>⑦ 완료.</b> 이제 어떤 코어도 X의 옛 변환을 갖고 있지 않으므로 PFN 0x1a2b를 안전하게 페이지 할당자에 반납한다. <b>순서가 중요하다</b>: shootdown 완료 전에 프레임을 반납하면 재사용된 프레임에 옛 변환으로 접근하는 use-after-free가 된다.",
+  ];
+  // 각 단계의 코어별 TLB 상태: v=유효(정상), s=stale(위험), g=제거됨, o=다른 mm
+  const SD_STATE = [
+    ["v", "v", "v", "o"], ["s", "s", "s", "o"], ["g", "s", "s", "o"], ["g", "s", "s", "o"],
+    ["g", "s", "s", "o"], ["g", "g", "g", "o"], ["g", "g", "g", "o"], ["g", "g", "g", "o"],
+  ];
+  function sdRender(i) {
+    const st = SD_STATE[i];
+    const cx = k => 14 + k * 156;
+    let g = `<defs>
+      <marker id="sdA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--bad)"/></marker>
+      <marker id="sdK" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ok)"/></marker></defs>`;
+    for (let k = 0; k < 4; k++) {
+      const x = cx(k);
+      const isTarget = i >= 3 && (k === 1 || k === 2);
+      g += `<rect class="core${k === 0 && i >= 1 ? " init" : ""}" x="${x}" y="14" width="142" height="118" rx="10" ${isTarget ? 'style="stroke:var(--warn);stroke-width:2"' : ""}/>`;
+      g += `<text x="${x + 71}" y="36" text-anchor="middle" font-weight="700">CPU ${k}</text>`;
+      g += `<text x="${x + 71}" y="54" text-anchor="middle" class="muted small">${k < 3 ? "스레드 T" + (k + 1) + " (mm A)" : "프로세스 (mm B)"}</text>`;
+      let sub = "";
+      if (k === 0 && i >= 1 && i <= 6) sub = i === 6 ? "ACK 대기 (spin)" : "munmap 처리 중";
+      if ((k === 1 || k === 2) && i === 5) sub = "IPI 핸들러 실행";
+      if (sub) g += `<text x="${x + 71}" y="72" text-anchor="middle" class="small" style="fill:var(--accent)">${sub}</text>`;
+      const s = st[k];
+      const cls = s === "v" ? "tlbe" : s === "s" ? "tlbe stale" : s === "g" ? "tlbe gone" : "tlbe other";
+      g += `<rect class="${cls}" x="${x + 10}" y="84" width="122" height="36" rx="6"/>`;
+      const txt = s === "o" ? "TLB: X 없음" : s === "g" ? "X 무효화됨" : "X → 0x1a2b";
+      g += `<text x="${x + 71}" y="100" text-anchor="middle" class="small${s === "g" ? " strike" : ""}">${txt}</text>`;
+      g += `<text x="${x + 71}" y="114" text-anchor="middle" class="muted small">${s === "s" ? "옛 변환 (위험)" : s === "v" ? "유효" : s === "o" ? "mm B 엔트리만" : ""}</text>`;
+    }
+    // IPI / ACK 화살표
+    const ipiOn = i === 4 || i === 5;
+    const ackOn = i === 6;
+    [1, 2].forEach(k => {
+      const x0 = cx(0) + 100, x1 = cx(k) + 50 + (k === 2 ? 10 : 0);
+      const ymid = 150 + k * 22;
+      g += `<path class="ipi${ipiOn ? "" : " hide"}" d="M${x0},132 Q${(x0 + x1) / 2},${ymid + 30} ${x1},134" marker-end="url(#sdA)"/>`;
+      g += `<path class="ack${ackOn ? "" : " hide"}" d="M${x1 + 20},134 Q${(x0 + x1) / 2 + 20},${ymid + 40} ${x0 + 20},134" marker-end="url(#sdK)"/>`;
+    });
+    if (ipiOn) g += `<text x="250" y="210" text-anchor="middle" style="fill:var(--bad)" font-weight="700">IPI (TLB flush 요청)</text>`;
+    if (ackOn) g += `<text x="250" y="222" text-anchor="middle" style="fill:var(--ok)" font-weight="700">완료 응답</text>`;
+    if (i === 3) g += `<text x="320" y="170" text-anchor="middle" style="fill:var(--warn)" font-weight="700">mm_cpumask(A) = {0, 1, 2} → 원격 대상 {1, 2}</text>`;
+    // 페이지 테이블 & 프레임
+    const pteGone = i >= 1;
+    g += `<rect class="pt" x="150" y="240" width="250" height="74" rx="8"/>`;
+    g += `<text x="275" y="262" text-anchor="middle" font-weight="700">mm A 페이지 테이블</text>`;
+    g += `<text x="275" y="284" text-anchor="middle" class="small${pteGone ? " strike" : ""}" ${pteGone ? 'style="fill:var(--bad)"' : ""}>PTE(X): PFN 0x1a2b, P=1</text>`;
+    g += `<text x="275" y="302" text-anchor="middle" class="muted small">${pteGone ? "P=0 (제거됨)" : "present"}</text>`;
+    g += `<rect class="pt" x="430" y="240" width="196" height="74" rx="8" ${i === 7 ? 'style="stroke:var(--ok);stroke-width:2"' : ""}/>`;
+    g += `<text x="528" y="262" text-anchor="middle" font-weight="700">물리 프레임 0x1a2b</text>`;
+    g += `<text x="528" y="286" text-anchor="middle" class="small" style="fill:${i === 7 ? "var(--ok)" : "var(--muted)"}">${i === 7 ? "할당자에 반납 (안전)" : "아직 반납 불가"}</text>`;
+    $("sd-svg").innerHTML = g;
+    return SD_CAPS[i];
+  }
+  MM.stepper($("w-sd"), { steps: SD_CAPS.length, interval: 2200, render: sdRender });
+})();
+</script>
+</body>
+</html>

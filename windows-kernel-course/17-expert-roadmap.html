@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>전문가 로드맵과 실습 랩</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .lab-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .lab-prog { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; font-size: .88rem; color: var(--muted); }
+  .lab-prog .bar { flex: 1; height: 8px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line); overflow: hidden; }
+  .lab-prog .bar i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
+  .lab-list { display: grid; gap: 8px; }
+  .lab-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel2); }
+  .lab-item.done { border-color: var(--ok); background: var(--ok-bg); }
+  .lab-item .hd { display: flex; gap: 10px; align-items: flex-start; }
+  .lab-item .hd input { margin-top: 4px; width: 17px; height: 17px; accent-color: var(--ok); flex: none; cursor: pointer; }
+  .lab-item .hd label { cursor: pointer; flex: 1; }
+  .lab-item .ch { font: 700 .75rem var(--mono); color: var(--acc); margin-right: 6px; }
+  .lab-item .t { font-weight: 700; color: var(--head); }
+  .lab-item .lv { font-size: .72rem; margin-left: 6px; }
+  .lab-item .body { font-size: .88rem; margin: 6px 0 0 27px; }
+  .lab-item .body p { margin: 4px 0; }
+  .lab-item .body b { color: var(--head); }
+  .lab-item details { margin: 6px 0 0; padding: 6px 12px; background: var(--panel); }
+  .lab-item details > summary { font-size: .85rem; }
+  .skill-row { display: grid; grid-template-columns: 170px repeat(4, minmax(0,1fr)); gap: 6px; align-items: stretch; margin-bottom: 6px; }
+  .skill-row .area { font-weight: 700; color: var(--head); font-size: .88rem; display: flex; align-items: center; }
+  .skill-row button { text-align: left; font-size: .78rem; line-height: 1.35; padding: 7px 9px; font-weight: 500; }
+  .skill-row button b { display: block; font-size: .75rem; color: var(--muted); margin-bottom: 2px; }
+  .skill-row button.on b { color: var(--acc); }
+  .skill-head { display: grid; grid-template-columns: 170px repeat(4, minmax(0,1fr)); gap: 6px; font-size: .78rem; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+  @media (max-width: 860px) { .skill-row, .skill-head { grid-template-columns: 1fr 1fr; } .skill-row .area { grid-column: 1 / -1; } .skill-head { display: none; } }
+  .skill-out { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); gap: 16px; margin-top: 14px; }
+  @media (max-width: 760px) { .skill-out { grid-template-columns: 1fr; } }
+  .skill-out .rec { font-size: .9rem; }
+  .skill-out .rec h4 { margin: 0 0 6px; }
+  .res-card { font-size: .9rem; }
+  .res-card .meta { font-size: .78rem; color: var(--muted); margin-bottom: 4px; }
+</style>
+</head>
+<body data-chapter="17">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part V · Chapter 17</div>
+  <h1>전문가 로드맵과 실습 랩</h1>
+  <p class="sub">읽은 것을 손으로 확인하는 단계입니다. 안전한 실습 환경을 만들고, 챕터별 랩으로 지식을 검증하고, 진로 트랙에 맞는 프로젝트로 전문성을 증명합니다.</p>
+  <div class="meta"><span class="pill lv-expert">전문가</span><span class="pill">⏱ 약 60분 (+ 랩 수행 시간)</span><span class="pill">선수: 01–16장</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>개발 VM과 타깃 VM 두 대로 KDNET 커널 디버깅, 심볼, WDK 빌드, 테스트 서명 배포 환경을 직접 구축할 수 있다.</li>
+    <li>챕터별 랩을 수행하고 "검증 방법"으로 스스로 결과를 확인할 수 있다.</li>
+    <li>8개 역량 영역에서 자신의 수준을 진단하고 다음에 공부할 곳을 고를 수 있다.</li>
+    <li>드라이버 개발·장애 분석·보안 연구 중 하나를 골라 포트폴리오가 될 프로젝트를 계획할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="mindset">전문가는 무엇이 다른가</h2>
+<p>
+  커널 지식은 넓고, Windows는 소스가 공개되지 않았으며, 구조체와 내부 동작은 빌드마다 바뀝니다.
+  그래서 전문가를 가르는 것은 암기량보다 <b>검증하는 습관</b>입니다. 문서나 책의 설명을 디버거로 확인하고,
+  확인할 수 없는 것은 "확인하지 못함"이라고 구분해 말할 줄 압니다.
+</p>
+<div class="grid3">
+  <div class="card kernel"><h4>재현한다</h4><p>현상을 VM에서 다시 일으킬 수 있어야 원인을 말할 수 있습니다. 스냅숏과 자동화가 재현 비용을 낮춥니다.</p></div>
+  <div class="card user"><h4>확인한다</h4><p><code>dt</code>, <code>u</code>, <code>!pte</code>, <code>!irp</code>로 책의 주장을 현재 빌드에서 직접 봅니다. 오프셋은 외우지 않고 매번 확인합니다.</p></div>
+  <div class="card hv"><h4>설명한다</h4><p>분석 결과를 다른 사람이 따라 할 수 있는 단계로 기록합니다. 블로그, 사내 위키, 덤프 분석 보고서가 곧 포트폴리오입니다.</p></div>
+</div>
+
+<h2 id="env">실습 환경 구축</h2>
+<p>
+  커널 실습은 반드시 <b>가상 머신</b>에서 합니다. 버그체크는 일상이고, 테스트 서명이나 디버그 모드는 시스템의 보안 수준을 낮추기 때문입니다.
+  권장 구성은 <b>개발/디버거 VM</b> 한 대와 <b>타깃(디버기) VM</b> 한 대입니다. 호스트 OS를 개발 머신으로 쓰고 타깃 VM 하나만 둘 수도 있지만,
+  두 VM 구성은 호스트를 깨끗하게 유지하고 환경 전체를 스냅숏으로 되돌릴 수 있다는 장점이 있습니다.
+</p>
+
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 420" role="img" aria-label="실습 환경 구축 단계">
+    <rect class="zone hw" x="10" y="10" width="860" height="400" rx="12"/>
+    <text x="26" y="34" class="b">호스트 · 하이퍼바이저 (Hyper-V / VMware 등)</text>
+
+    <g data-hl="1"><rect class="box user" x="30" y="50" width="370" height="250" rx="10"/>
+      <text x="46" y="74" class="lg">VM A · 개발 / 디버거</text></g>
+    <g data-hl="1"><rect class="box kernel" x="480" y="50" width="370" height="250" rx="10"/>
+      <text x="496" y="74" class="lg">VM B · 타깃 (디버기)</text></g>
+
+    <g data-on="2" data-hl="2"><rect class="box plain" x="46" y="90" width="338" height="34" rx="6"/><text x="58" y="112" class="mono">VS 2022 + SDK + WDK + WinDbg</text></g>
+    <g data-on="3" data-hl="3"><rect class="box plain" x="496" y="90" width="338" height="34" rx="6"/><text x="508" y="112" class="mono">Secure Boot OFF · 스냅숏 clean</text></g>
+    <g data-on="4" data-hl="4"><rect class="box plain" x="496" y="134" width="338" height="34" rx="6"/><text x="508" y="156" class="mono">kdnet.exe 10.0.0.1 50000 → Key</text></g>
+    <g data-on="5" data-hl="5"><rect class="box plain" x="46" y="134" width="338" height="34" rx="6"/><text x="58" y="156" class="mono">windbg -k net:port=50000,key=…</text></g>
+    <g data-on="6" data-hl="6"><rect class="box plain" x="46" y="178" width="338" height="34" rx="6"/><text x="58" y="200" class="mono">.symfix+ C:\symbols · .reload</text></g>
+    <g data-on="7" data-hl="7"><rect class="box plain" x="496" y="178" width="338" height="34" rx="6"/><text x="508" y="200" class="mono">bcdedit /set testsigning on</text></g>
+    <g data-on="7" data-hl="7"><rect class="box plain" x="46" y="222" width="338" height="34" rx="6"/><text x="58" y="244" class="mono">MyDrv.sys + MyDrv.pdb (테스트 서명)</text></g>
+    <g data-on="7" data-hl="7"><rect class="box plain" x="496" y="222" width="338" height="34" rx="6"/><text x="508" y="244" class="mono">sc create / sc start MyDrv</text></g>
+    <g data-on="8" data-hl="8"><rect class="box ok" x="496" y="262" width="338" height="30" rx="6"/><text x="665" y="282" text-anchor="middle">스냅숏 debug-ready · Verifier</text></g>
+
+    <g data-on="1"><rect class="box acc" x="200" y="322" width="480" height="30" rx="8"/><text x="440" y="342" text-anchor="middle">가상 스위치 (내부/사설 네트워크, 같은 서브넷)</text></g>
+    <path class="ln noarr" d="M215 300 L215 322" data-on="1"/><path class="ln noarr" d="M665 300 L665 322" data-on="1"/>
+    <path class="ln acc flow" d="M384 151 L496 151" data-on="5"/>
+    <text x="440" y="143" text-anchor="middle" class="sm c-acc" data-on="5">KDNET (UDP)</text>
+    <path class="ln kernel" d="M384 239 L496 239" data-on="7"/>
+    <text x="440" y="231" text-anchor="middle" class="sm" data-on="7">복사</text>
+
+    <g data-on="6"><rect class="box hw" x="30" y="366" width="370" height="34" rx="8"/><text x="215" y="388" text-anchor="middle" class="mono">msdl.microsoft.com/download/symbols</text></g>
+    <path class="ln dash" d="M120 366 C 0 330, 0 210, 46 195" data-on="6"/>
+  </svg>
+  <ol class="steps">
+    <li><b>VM 두 대</b>: 개발 VM(A)과 타깃 VM(B)을 만들고 같은 가상 스위치에 연결합니다. 타깃에는 멀티프로세서 문제를 관찰할 수 있도록 vCPU를 2개 이상 주세요. 타깃의 Windows 빌드를 기록해 둡니다(<code>winver</code>).</li>
+    <li><b>개발 도구</b>: VM A에 Visual Studio(C++ 데스크톱 워크로드), Windows SDK, 그리고 <b>버전이 맞는</b> WDK를 설치합니다. WinDbg는 Microsoft Store/공식 설치 프로그램으로, KDNET 도구(<code>kdnet.exe</code>, <code>VerifiedNICList.xml</code>)는 Windows Kits의 <code>Debuggers\x64</code> 폴더에 있습니다.</li>
+    <li><b>타깃 준비</b>: 타깃 VM의 Secure Boot를 끕니다(Hyper-V 2세대 VM은 VM 설정의 보안 항목). Secure Boot가 켜져 있으면 디버그·테스트 서명 BCD 설정이 정책으로 막힙니다. 이 상태에서 깨끗한 스냅숏을 하나 만듭니다.</li>
+    <li><b>KDNET 설정</b>: 타깃에 <code>kdnet.exe</code>와 <code>VerifiedNICList.xml</code>을 복사하고, 인자 없이 실행해 NIC 지원 여부를 확인한 뒤 <code>kdnet.exe &lt;호스트IP&gt; &lt;포트&gt;</code>로 설정합니다. 출력된 <b>Key</b>를 기록하고 재부팅합니다. 포트는 문서가 권장하는 50000–50039 범위에서 고릅니다.</li>
+    <li><b>디버거 연결</b>: VM A의 WinDbg에서 File → Attach to kernel → Net에 포트와 키를 입력하거나 <code>windbg -k net:port=50000,key=…</code>로 시작합니다. 방화벽이 WinDbg의 UDP 수신을 허용해야 합니다. 타깃이 부팅하면 연결 메시지가 나타납니다.</li>
+    <li><b>심볼</b>: <code>.symfix+ C:\symbols</code>로 Microsoft 공용 심볼 서버와 로컬 캐시를 설정하고, 자신의 드라이버 PDB 경로를 <code>.sympath+</code>로 추가한 뒤 <code>.reload</code>합니다. 환경 변수 <code>_NT_SYMBOL_PATH</code>로 고정해 두면 편합니다.</li>
+    <li><b>빌드와 배포</b>: 타깃에서 <code>bcdedit /set testsigning on</code> 후 재부팅합니다. VS의 드라이버 프로젝트는 기본적으로 테스트 인증서로 서명합니다. <code>.sys</code>를 타깃에 복사하고, 레거시(비PnP) 드라이버는 <code>sc create … type= kernel</code>/<code>sc start</code>로, PnP 드라이버는 INF와 <code>pnputil</code>로 설치합니다.</li>
+    <li><b>안전장치</b>: 디버거 연결까지 확인된 상태로 스냅숏(debug-ready)을 만듭니다. 새 드라이버는 처음부터 <code>verifier /standard /driver MyDrv.sys</code>로 검사하며 실행합니다. 부팅 루프에 빠지면 스냅숏으로 되돌립니다.</li>
+  </ol>
+  <figcaption><b>그림 17-1.</b> 2-VM 실습 환경 구축 순서. IP·포트·경로는 예시입니다.</figcaption>
+</figure>
+
+<div class="tabs">
+  <div class="tab-bar"><button>타깃 VM</button><button>개발 VM · WinDbg</button><button>드라이버 배포</button><button>대안 · 문제 해결</button></div>
+  <div class="tab-panel">
+<pre data-title="타깃 VM · 관리자 명령 프롬프트"><code class="lang-ps">C:\&gt; mkdir C:\KDNET &amp; cd C:\KDNET
+REM 개발 VM의 ...\Windows Kits\10\Debuggers\x64 에서 kdnet.exe, VerifiedNICList.xml 복사
+C:\KDNET&gt; kdnet.exe
+REM "Network debugging is supported on the following NICs" 류의 출력 확인
+C:\KDNET&gt; kdnet.exe 10.0.0.1 50000
+Key=...   (이 키를 디버거에 입력)
+C:\&gt; bcdedit /set testsigning on
+C:\&gt; bcdedit /dbgsettings
+C:\&gt; shutdown /r /t 0</code></pre>
+    <p class="muted" style="font-size:.88rem">출력 문구는 도구 버전에 따라 다릅니다. <code>bcdedit /dbgsettings</code>로 key·hostip·port가 저장됐는지 확인하세요. 재부팅 후 바탕화면 오른쪽 아래에 "테스트 모드" 워터마크가 보이면 테스트 서명이 켜진 것입니다.</p>
+  </div>
+  <div class="tab-panel">
+<pre data-title="개발 VM"><code class="lang-ps">C:\&gt; setx _NT_SYMBOL_PATH "srv*C:\symbols*https://msdl.microsoft.com/download/symbols"
+C:\&gt; windbg -k net:port=50000,key=1.2.3.4</code></pre>
+<pre data-title="WinDbg"><code class="lang-windbg">kd> .symfix+ C:\symbols
+kd> .sympath+ C:\src\MyDrv\x64\Debug
+kd> .reload /f
+kd> !sym noisy               $$ 심볼 로드 문제 추적 시
+kd> lm m nt                  $$ (pdb symbols) 표시 확인
+kd> vertarget                $$ 타깃 빌드 확인
+kd> !sym quiet</code></pre>
+    <p>Microsoft 공용 심볼은 <b>public</b> 심볼이라 지역 변수, 소스 줄 정보, 많은 내부 정적 함수 정보가 없습니다. 반면 자신의 드라이버 PDB는 private 심볼이므로 지역 변수와 소스 단계 실행이 가능합니다.</p>
+  </div>
+  <div class="tab-panel">
+<pre data-title="타깃 VM · 관리자"><code class="lang-ps">REM 레거시(비PnP) 드라이버
+C:\&gt; sc create MyDrv type= kernel binPath= C:\drv\MyDrv.sys
+C:\&gt; sc start MyDrv
+C:\&gt; sc stop MyDrv
+C:\&gt; sc delete MyDrv
+REM PnP / KMDF 드라이버 패키지
+C:\&gt; pnputil /add-driver C:\drv\MyDrv.inf /install
+REM Driver Verifier (재부팅 후 적용)
+C:\&gt; verifier /standard /driver MyDrv.sys
+C:\&gt; verifier /query
+C:\&gt; verifier /reset</code></pre>
+    <p><code>sc</code>의 <code>type=</code> 뒤 공백은 필수입니다. PnP 설치 시 서명 경고를 피하려면 테스트 인증서를 타깃의 "신뢰할 수 있는 루트 인증 기관"과 "신뢰할 수 있는 게시자" 저장소에 넣으라는 것이 Microsoft 문서의 권고입니다.</p>
+  </div>
+  <div class="tab-panel">
+    <ul>
+      <li><b>KDNET이 안 붙을 때</b>: 타깃 NIC가 지원 목록에 있는지(<code>kdnet.exe</code> 출력), 호스트 IP가 디버거 VM의 IP인지, 방화벽, 키 오타, 두 VM이 같은 서브넷인지 순서로 확인합니다.</li>
+      <li><b>시리얼(가상 COM) 대안</b>: Hyper-V에서는 <code>Set-VMComPort -VMName Target -Number 1 -Path \\.\pipe\kd</code>로 명명된 파이프를 연결하고 <code>bcdedit /dbgsettings serial debugport:1 baudrate:115200</code>을 씁니다. 느리지만 NIC 문제와 무관합니다.</li>
+      <li><b>VBS/HVCI를 실습하려면</b>: 타깃 VM 안에서 하이퍼바이저가 돌아야 하므로 중첩 가상화가 필요합니다. Hyper-V는 <code>Set-VMProcessor -VMName Target -ExposeVirtualizationExtensions $true</code>(VM 정지 상태에서).</li>
+      <li><b>로컬 커널 디버깅</b>: 디버거 VM 없이 관찰만 할 때는 <code>bcdedit /debug on</code> 후 WinDbg의 Local 커널 연결이나 Sysinternals LiveKD를 쓸 수 있습니다. 브레이크포인트·단계 실행은 불가합니다.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">실습 환경 원칙</div>
+  <p>테스트 서명, 디버그 모드, Secure Boot 비활성화는 <b>격리된 실습 VM에만</b> 적용합니다. 업무용·개인용 실제 PC에 적용하지 마세요. 실습 VM은 중요한 계정으로 로그인하지 않고, 필요할 때만 네트워크에 연결합니다.</p>
+</div>
+
+<h3>개발 루프 지도</h3>
+<p>드라이버를 한 번 고치고 확인하는 사이클입니다. 이 루프가 빠를수록 실험을 많이 할 수 있습니다. 각 단계를 클릭하면 사용하는 도구와 흔한 실수가 표시됩니다.</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="드라이버 개발 루프">
+    <g data-info="build"><rect class="box user" x="40" y="40" width="200" height="66" rx="10"/><text x="140" y="68" text-anchor="middle" class="b">① 빌드</text><text x="140" y="88" text-anchor="middle" class="sm">MSBuild · WDK · SDV/CodeQL</text></g>
+    <g data-info="sign"><rect class="box user" x="340" y="40" width="200" height="66" rx="10"/><text x="440" y="68" text-anchor="middle" class="b">② 서명</text><text x="440" y="88" text-anchor="middle" class="sm">테스트 인증서 · signtool</text></g>
+    <g data-info="deploy"><rect class="box kernel" x="640" y="40" width="200" height="66" rx="10"/><text x="740" y="68" text-anchor="middle" class="b">③ 배포</text><text x="740" y="88" text-anchor="middle" class="sm">복사 · sc / pnputil</text></g>
+    <g data-info="load"><rect class="box kernel" x="640" y="220" width="200" height="66" rx="10"/><text x="740" y="248" text-anchor="middle" class="b">④ 로드 · 실행</text><text x="740" y="268" text-anchor="middle" class="sm">DriverEntry · Verifier</text></g>
+    <g data-info="debug"><rect class="box hv" x="340" y="220" width="200" height="66" rx="10"/><text x="440" y="248" text-anchor="middle" class="b">⑤ 디버깅</text><text x="440" y="268" text-anchor="middle" class="sm">bp · dx · !irp · 소스 단계</text></g>
+    <g data-info="analyze"><rect class="box hv" x="40" y="220" width="200" height="66" rx="10"/><text x="140" y="248" text-anchor="middle" class="b">⑥ 분석 · 기록</text><text x="140" y="268" text-anchor="middle" class="sm">!analyze · 덤프 · 노트</text></g>
+    <path class="ln acc flow" d="M240 73 L340 73"/>
+    <path class="ln acc flow" d="M540 73 L640 73"/>
+    <path class="ln acc flow" d="M740 106 L740 220"/>
+    <path class="ln acc flow" d="M640 253 L540 253"/>
+    <path class="ln acc flow" d="M340 253 L240 253"/>
+    <path class="ln acc flow" d="M140 220 L140 106"/>
+    <g data-info="snap"><rect class="box ok" x="330" y="140" width="220" height="44" rx="22"/><text x="440" y="167" text-anchor="middle" class="b c-ok">스냅숏 · 되돌리기</text></g>
+    <path class="ln ok dash" d="M640 240 C 600 220, 580 190, 550 170"/>
+  </svg>
+  <template data-key="build">
+    <h4>① 빌드</h4>
+    <p>VS의 KMDF/WDM 템플릿이나 Microsoft의 <code>Windows-driver-samples</code>에서 시작합니다. 경고 수준을 높이고(<code>/W4</code>, 경고를 오류로), 코드 분석을 켭니다. Static Driver Verifier(SDV)와 드라이버용 CodeQL 쿼리는 IRQL 규칙 위반, 잘못된 IRP 처리 같은 커널 특유의 버그를 빌드 단계에서 잡아 줍니다.</p>
+    <p><b>흔한 실수</b>: 타깃 OS보다 높은 버전 전용 API 사용, Debug/Release 구성 혼동, PDB를 보관하지 않음(덤프 분석이 불가능해짐).</p>
+  </template>
+  <template data-key="sign">
+    <h4>② 서명</h4>
+    <p>실습에서는 VS가 만든 테스트 인증서 서명과 타깃의 테스트 서명 모드를 씁니다. 수동으로는 <code>signtool sign /fd sha256 /a /s PrivateCertStore /n "인증서 이름" MyDrv.sys</code> 형식을 씁니다. 실제 배포용 커널 드라이버는 Microsoft의 하드웨어 개발자 센터를 통한 서명이 필요합니다(14장).</p>
+    <p><b>흔한 실수</b>: 테스트 서명 모드를 켜지 않고 테스트 서명 드라이버를 로드 → <code>StartService</code>가 서명 오류(ERROR_INVALID_IMAGE_HASH 계열)로 실패.</p>
+  </template>
+  <template data-key="deploy">
+    <h4>③ 배포</h4>
+    <p>공유 폴더, <code>Copy-VMFile</code>(Hyper-V 게스트 서비스), 또는 VS의 원격 배포 기능을 씁니다. 레거시 드라이버는 <code>sc create</code>, PnP 드라이버는 INF + <code>pnputil</code>. 같은 이름의 드라이버가 이미 로드돼 있으면 파일이 잠기므로 먼저 <code>sc stop</code>합니다.</p>
+    <p><b>흔한 실수</b>: 언로드 루틴이 없어 <code>sc stop</code>이 실패 → 재부팅 필요. 개발 중에는 반드시 <code>DriverUnload</code>를 구현하세요.</p>
+  </template>
+  <template data-key="load">
+    <h4>④ 로드 · 실행</h4>
+    <p>Driver Verifier를 처음부터 켜고 실행합니다. 풀 손상, IRQL 위반, 잘못된 락 사용 등을 일으킨 순간 <code>DRIVER_VERIFIER_DETECTED_VIOLATION</code>(0xC4) 등으로 즉시 멈추게 해, 증상이 나중에 엉뚱한 곳에서 나타나는 것을 막아 줍니다. 디버거가 붙어 있으면 그 자리에서 분석할 수 있습니다.</p>
+  </template>
+  <template data-key="debug">
+    <h4>⑤ 디버깅</h4>
+    <p><code>sxe ld:MyDrv.sys</code>로 로드 시점에 멈추고, <code>bu MyDrv!DriverEntry</code>, <code>bp</code>, <code>p</code>/<code>t</code>로 단계 실행합니다. <code>dx</code>와 <code>dt</code>로 구조체를, <code>!irp</code>, <code>!devobj</code>, <code>!drvobj</code>로 I/O 상태를 봅니다. 커널 디버거가 멈추면 타깃 전체가 멈춘다는 점을 기억하세요(타이머·네트워크 타임아웃이 발생할 수 있음).</p>
+  </template>
+  <template data-key="analyze">
+    <h4>⑥ 분석 · 기록</h4>
+    <p>크래시 덤프(<code>%SystemRoot%\MEMORY.DMP</code>)는 <code>!analyze -v</code>에서 시작하되, 결론은 스택·인자·구조체를 직접 확인해서 내립니다. 실험마다 "무엇을 바꿨고, 무엇을 기대했고, 무엇이 일어났는지"를 한 줄이라도 기록합니다. 이 기록이 나중에 블로그 글과 포트폴리오가 됩니다.</p>
+  </template>
+  <template data-key="snap">
+    <h4>스냅숏 전략</h4>
+    <p>최소 두 개를 유지합니다: <b>clean</b>(OS 설치 직후)과 <b>debug-ready</b>(KDNET·테스트 서명·도구 설정 완료). Boot/System 시작 드라이버를 실험하다 부팅 루프에 빠지면 debug-ready로 되돌리는 것이 가장 빠릅니다. 메모리 상태까지 포함한 체크포인트는 "특정 상황 직전"을 반복 재현하는 데도 유용합니다.</p>
+  </template>
+  <figcaption><b>그림 17-2.</b> 드라이버 개발 루프. 각 단계를 클릭하세요.</figcaption>
+</figure>
+
+<h2 id="labs">챕터별 실습 랩</h2>
+<p>
+  각 랩은 <b>목표 · 힌트 · 검증 방법</b>으로 구성됩니다. 힌트는 막혔을 때만 펼치세요. 완료 체크는 이 브라우저에 저장됩니다(저장이 막힌 환경에서는 새로 고침하면 초기화됩니다).
+  모든 랩은 앞에서 만든 실습 VM에서 수행합니다.
+</p>
+
+<div class="sim" id="labSim">
+  <div class="sim-title">랩 체크리스트</div>
+  <div class="lab-toolbar">
+    <button class="btn on" data-f="all">전체</button>
+    <button class="btn" data-f="basic">입문</button>
+    <button class="btn" data-f="core">핵심</button>
+    <button class="btn" data-f="adv">심화</button>
+    <button class="btn" data-f="expert">전문가</button>
+    <button class="btn" data-f="todo">미완료만</button>
+    <span style="flex:1"></span>
+    <button class="btn" data-act="reset">체크 초기화</button>
+  </div>
+  <div class="lab-prog"><span class="cnt">0 / 0</span><span class="bar"><i></i></span><span class="pct">0%</span></div>
+  <div class="lab-list"></div>
+</div>
+
+<h2 id="roadmap">단계별 로드맵</h2>
+<p>이 코스의 챕터를 네 단계로 묶은 학습 경로입니다. 각 단계의 "졸업 기준"을 만족하면 다음 단계로 넘어가세요. 기간은 개인차가 크므로 제시하지 않습니다.</p>
+
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 345" role="img" aria-label="입문에서 전문가까지의 로드맵">
+    <path class="ln noarr" d="M142 70 L298 70 M362 70 L518 70 M582 70 L738 70" style="stroke-width:3"/>
+    <path class="ln acc" d="M142 70 L296 70" data-on="2" style="stroke-width:3"/>
+    <path class="ln acc" d="M362 70 L516 70" data-on="3" style="stroke-width:3"/>
+    <path class="ln acc" d="M582 70 L736 70" data-on="4" style="stroke-width:3"/>
+
+    <g data-hl="1"><circle class="box ok" cx="110" cy="70" r="30"/><text x="110" y="75" text-anchor="middle" class="b">입문</text></g>
+    <g data-hl="2" data-dim="1"><circle class="box acc" cx="330" cy="70" r="30"/><text x="330" y="75" text-anchor="middle" class="b">핵심</text></g>
+    <g data-hl="3" data-dim="1-2"><circle class="box kernel" cx="550" cy="70" r="30"/><text x="550" y="75" text-anchor="middle" class="b">심화</text></g>
+    <g data-hl="4" data-dim="1-3"><circle class="box hv" cx="770" cy="70" r="30"/><text x="770" y="75" text-anchor="middle" class="b">전문가</text></g>
+
+    <g data-hl="1"><rect class="box plain" x="20" y="120" width="190" height="160" rx="10"/>
+      <text x="34" y="144" class="sm b">챕터 01 · 02 · 03</text>
+      <text x="34" y="168" class="sm">모드 전환과 시스템 콜</text>
+      <text x="34" y="188" class="sm">부팅 순서와 구성요소</text>
+      <text x="34" y="208" class="sm">WinDbg 기본 명령</text>
+      <text x="34" y="240" class="sm b c-ok">졸업 기준</text>
+      <text x="34" y="260" class="sm">KDNET 환경을 혼자 구축</text></g>
+    <g data-hl="2" data-dim="1"><rect class="box plain" x="240" y="120" width="190" height="160" rx="10"/>
+      <text x="254" y="144" class="sm b">챕터 04 · 05 · 08 · 10</text>
+      <text x="254" y="168" class="sm">EPROCESS / ETHREAD</text>
+      <text x="254" y="188" class="sm">스케줄링 · 주소 변환</text>
+      <text x="254" y="208" class="sm">객체와 핸들</text>
+      <text x="254" y="240" class="sm b c-acc">졸업 기준</text>
+      <text x="254" y="260" class="sm">덤프에서 구조체를 직접 탐색</text></g>
+    <g data-hl="3" data-dim="1-2"><rect class="box plain" x="460" y="120" width="190" height="160" rx="10"/>
+      <text x="474" y="144" class="sm b">챕터 06 · 07 · 09 · 11–14</text>
+      <text x="474" y="168" class="sm">IRQL · 동기화 · MM 내부</text>
+      <text x="474" y="188" class="sm">IRP · 파일 시스템 · 보안</text>
+      <text x="474" y="208" class="sm">드라이버 작성</text>
+      <text x="474" y="240" class="sm b c-kernel">졸업 기준</text>
+      <text x="474" y="260" class="sm">내 드라이버가 Verifier 통과</text></g>
+    <g data-hl="4" data-dim="1-3"><rect class="box plain" x="680" y="120" width="190" height="160" rx="10"/>
+      <text x="694" y="144" class="sm b">챕터 15 · 16 + 트랙</text>
+      <text x="694" y="168" class="sm">실전 크래시 분석</text>
+      <text x="694" y="188" class="sm">완화 기법 · VBS</text>
+      <text x="694" y="208" class="sm">리버싱으로 검증</text>
+      <text x="694" y="240" class="sm b c-hv">졸업 기준</text>
+      <text x="694" y="260" class="sm">남의 문제를 근거로 해결</text></g>
+
+    <path class="ln hv flow" d="M800 290 C 760 314, 140 314, 110 290" data-on="5" style="stroke:var(--hv)"/>
+    <text x="440" y="334" text-anchor="middle" class="sm b c-hv" data-on="5">새 빌드 · 새 기능마다 다시 확인하는 순환</text>
+    <g data-at="1:0,0|2:220,0|3:440,0|4:660,0|5:660,0"><circle class="token" cx="110" cy="30" r="8"/></g>
+  </svg>
+  <ol class="steps">
+    <li><b>입문</b>: 유저/커널 경계, 시스템 콜, 부팅 순서를 그림으로 그릴 수 있어야 합니다. WinDbg의 <code>lm</code>, <code>x</code>, <code>dt</code>, <code>!process</code>, <code>k</code>에 익숙해집니다. 졸업 기준: 문서를 보며 2-VM KDNET 환경을 혼자 구축하고 초기 브레이크를 걸 수 있다.</li>
+    <li><b>핵심</b>: 프로세스·스레드·스케줄링·가상 메모리·객체 관리자의 핵심 구조체를 디버거에서 직접 따라갑니다. 졸업 기준: 임의의 프로세스에 대해 EPROCESS → 핸들 테이블 → 객체 헤더, 가상 주소 → PTE → 물리 페이지를 손으로 따라갈 수 있다.</li>
+    <li><b>심화</b>: IRQL·동기화 규칙을 지키는 드라이버를 작성하고, IRP 흐름과 파일 시스템 스택, 보안 검사를 이해합니다. 졸업 기준: IOCTL 드라이버(또는 미니필터)를 작성해 Driver Verifier 표준 옵션과 SDV/코드 분석을 통과시킨다.</li>
+    <li><b>전문가</b>: 처음 보는 크래시 덤프를 근거를 들어 설명하고, 커널 보안 메커니즘의 설계 의도와 한계를 말할 수 있습니다. 졸업 기준: 다른 사람의 실제 문제(덤프, 성능 문제, 호환성 문제)를 재현 가능한 근거로 해결하고 문서화한다.</li>
+    <li><b>지속</b>: Windows는 계속 바뀝니다. 새 빌드가 나오면 관심 구조체를 <code>dt</code>로 비교하고, 새 보안 기능의 공식 문서를 읽고, 배운 것을 글로 남깁니다. 전문가는 도착점이 아니라 이 순환을 유지하는 상태입니다.</li>
+  </ol>
+  <figcaption><b>그림 17-3.</b> 입문 → 핵심 → 심화 → 전문가 로드맵과 단계별 졸업 기준.</figcaption>
+</figure>
+
+<h2 id="matrix">역량 자가진단</h2>
+<p>각 영역에서 <b>지금 실제로 할 수 있는 것</b>에 가장 가까운 칸을 고르세요. "읽어 봤다"가 아니라 "디버거 앞에서 혼자 해낼 수 있다"가 기준입니다. 결과는 이 브라우저에 저장됩니다.</p>
+
+<div class="sim" id="skillSim">
+  <div class="sim-title">역량 매트릭스</div>
+  <div class="skill-head"><span>영역</span><span>1 · 입문</span><span>2 · 핵심</span><span>3 · 심화</span><span>4 · 전문가</span></div>
+  <div class="skill-rows"></div>
+  <div class="skill-out">
+    <div><svg class="dia" viewBox="0 0 440 300" role="img" aria-label="영역별 수준 막대 그래프"></svg></div>
+    <div class="rec"></div>
+  </div>
+  <div class="sim-controls" style="margin:10px 0 0"><button class="btn" data-act="skill-reset">진단 초기화</button></div>
+</div>
+
+<h2 id="resources">추천 자료</h2>
+<p>모두 실제로 존재하는 자료입니다. 판본·URL은 바뀔 수 있으니 최신 판을 확인하세요. 책의 내용은 집필 당시 빌드를 기준으로 하므로, 항상 현재 빌드에서 다시 확인하는 습관을 함께 가지세요.</p>
+
+<div class="tabs">
+  <div class="tab-bar"><button>도서</button><button>공식 문서</button><button>소스 · 레퍼런스</button><button>도구 · 커뮤니티</button></div>
+  <div class="tab-panel">
+    <div class="grid2">
+      <div class="card kernel res-card"><h4>Windows Internals, 7th Edition, Part 1</h4><div class="meta">Pavel Yosifovich, Alex Ionescu, Mark E. Russinovich, David A. Solomon · Microsoft Press (2017)</div><p>아키텍처, 프로세스와 잡, 스레드와 스케줄링, 메모리 관리, I/O 시스템, 보안. 이 코스의 Part I–IV 대부분과 대응합니다.</p></div>
+      <div class="card kernel res-card"><h4>Windows Internals, 7th Edition, Part 2</h4><div class="meta">Andrea Allievi, Mark E. Russinovich, Alex Ionescu, David A. Solomon · Microsoft Press (2021)</div><p>시스템 메커니즘(트랩, 동기화, 객체 관리자, ALPC 등), 가상화 기술(Hyper-V, VBS), 관리·진단·추적(레지스트리, 서비스, ETW), 캐시와 파일 시스템, 부팅과 종료.</p></div>
+      <div class="card user res-card"><h4>Windows Kernel Programming</h4><div class="meta">Pavel Yosifovich · 초판 2019, 이후 2판 출간</div><p>드라이버 기본 구조, 커널 메모리와 동기화, 프로세스·스레드·이미지 로드·레지스트리 콜백, 미니필터 등 실습 중심. 14·16장과 보안 트랙의 직접적인 다음 단계입니다.</p></div>
+      <div class="card user res-card"><h4>Developing Drivers with the Windows Driver Foundation</h4><div class="meta">Penny Orwick, Guy Smith · Microsoft Press (2007)</div><p>KMDF/UMDF의 설계 원리를 설명한 원전. 오래됐지만 WDF 객체 모델과 I/O 큐 개념 이해에 여전히 유효합니다.</p></div>
+      <div class="card hv res-card"><h4>Inside Windows Debugging</h4><div class="meta">Tarik Soulami · Microsoft Press (2012)</div><p>디버거 동작 원리, 커널 디버깅, 추적을 체계적으로 설명. 15장 이후 디버깅 실력을 넓힐 때.</p></div>
+      <div class="card hv res-card"><h4>Advanced Windows Debugging</h4><div class="meta">Mario Hewardt, Daniel Pravat · Addison-Wesley (2007)</div><p>힙 손상, 데드락, 리소스 누수 등 문제 유형별 디버깅 기법. 사례 중심이라 장애 분석 트랙에 적합합니다.</p></div>
+      <div class="card hw res-card"><h4>The Art of Memory Forensics</h4><div class="meta">Michael Hale Ligh, Andrew Case, Jamie Levy, AAron Walters · Wiley (2014)</div><p>메모리 이미지에서 커널 구조체를 해석해 프로세스·드라이버·네트워크 흔적을 복원하는 방법. 보안 트랙(방어·포렌식)에 유용합니다.</p></div>
+      <div class="card hw res-card"><h4>Practical Reverse Engineering</h4><div class="meta">Bruce Dang, Alexandre Gazet, Elias Bachaalany · Wiley (2014)</div><p>x86/x64/ARM 리버싱과 Windows 커널 장. 공개 심볼만으로 내부 동작을 확인해야 할 때 필요한 기초 체력.</p></div>
+    </div>
+  </div>
+  <div class="tab-panel">
+    <ul>
+      <li><b>Windows 드라이버 문서</b> (Microsoft Learn, <code>learn.microsoft.com/windows-hardware/drivers/</code>) — WDK 설치, KMDF/WDM 설계 가이드, 커널 모드 API 레퍼런스. 함수의 <b>IRQL 요구 사항</b> 항목을 습관적으로 확인하세요.</li>
+      <li><b>Windows 디버깅 도구 문서</b> (같은 사이트의 debugger 섹션) — WinDbg 명령, KDNET 설정, 심볼 경로, 디버거 확장 명령 레퍼런스.</li>
+      <li><b>버그 검사 코드 참조</b> (Bug Check Code Reference) — 각 버그체크 코드의 매개변수 의미와 원인. 덤프 분석 시 <code>!analyze</code> 출력과 함께 반드시 대조.</li>
+      <li><b>Driver Verifier, Static Driver Verifier, CodeQL for drivers 문서</b> — 드라이버 품질 도구와 각 규칙의 의미.</li>
+      <li><b>Windows 보안 문서</b> — Secure Boot, BitLocker, VBS, HVCI(메모리 무결성), Credential Guard, 드라이버 차단 목록 등 16장 관련 기능의 공식 설명과 요구 사항.</li>
+    </ul>
+  </div>
+  <div class="tab-panel">
+    <ul>
+      <li><b>Windows-driver-samples</b> (<code>github.com/microsoft/Windows-driver-samples</code>) — Microsoft 공식 드라이버 예제. 미니필터(<code>filesys/miniFilter</code>), 일반 드라이버, WFP 등. 실습 프로젝트의 출발점으로 가장 좋습니다.</li>
+      <li><b>ReactOS</b> (<code>reactos.org</code>) — NT 아키텍처와 호환을 목표로 독립 구현된 오픈소스 OS. Ob/Io/Mm 같은 구성요소가 어떤 모양으로 구현될 수 있는지 감을 잡는 데 유용하지만, <b>Windows의 실제 코드가 아니며</b> 대상 버전도 오래된 NT 계열이라 현대 Windows와 다른 점이 많습니다.</li>
+      <li><b>Geoff Chappell, Software Analyst</b> (<code>geoffchappell.com</code>) — 비공개 커널 구조체와 API의 버전별 변화를 꼼꼼하게 정리한 연구 사이트.</li>
+      <li><b>Vergilius Project</b> (<code>vergiliusproject.com</code>) — 공개 심볼에서 추출한 Windows 빌드별 커널 구조체 정의. 빌드 간 비교에 편리하지만, 최종 확인은 대상 시스템의 <code>dt</code>로 합니다.</li>
+      <li><b>phnt</b> (<code>github.com/winsiderss/phnt</code>) — System Informer 프로젝트의 네이티브 API 헤더 모음. 비공식 정의이므로 근거로 인용할 때 주의합니다.</li>
+    </ul>
+  </div>
+  <div class="tab-panel">
+    <ul>
+      <li><b>WinDbg</b> — 커널 디버깅과 덤프 분석의 기본. <code>dx</code>와 데이터 모델, JavaScript 확장, Time Travel Debugging(유저 모드)까지 익혀 두면 좋습니다.</li>
+      <li><b>Sysinternals</b> — Process Explorer, Process Monitor, WinObj, LiveKD, NotMyFault(의도적 크래시 생성), Autoruns 등.</li>
+      <li><b>System Informer</b>(구 Process Hacker) — 커널 객체·핸들·서비스를 깊게 들여다보는 오픈소스 도구.</li>
+      <li><b>Windows Performance Recorder / Analyzer</b> — ETW 기반 성능 분석. DPC/ISR 지연, 부팅 추적, CPU 사용 분석.</li>
+      <li><b>Ghidra / IDA</b> — 공개 심볼과 함께 커널 바이너리를 읽어 문서화되지 않은 동작을 확인할 때.</li>
+      <li><b>Volatility 3</b> — 메모리 포렌식 프레임워크. 커널 구조체 해석을 코드로 확인할 수 있습니다.</li>
+      <li><b>OSR</b> (<code>osr.com</code>) — 드라이버 개발 커뮤니티 NTDEV 포럼과 기술 글. 오래되고 깊은 실무 토론이 쌓여 있습니다.</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="tracks">진로 트랙별 프로젝트</h2>
+<p>세 트랙은 같은 기반 위에 서 있지만 매일 하는 일이 다릅니다. 하나를 골라 프로젝트를 순서대로 진행하고, 결과를 공개 저장소나 글로 남기세요. 각 프로젝트는 "무엇을 만들었다"보다 <b>"무엇을 검증했는가"</b>가 드러나도록 정리하는 것이 핵심입니다.</p>
+
+<div class="tabs">
+  <div class="tab-bar"><button>드라이버 개발</button><button>장애 분석</button><button>보안 연구 (방어)</button></div>
+  <div class="tab-panel">
+    <p class="muted">디바이스·필터·가상화 드라이버를 만드는 일. 필요 역량: 07·11·12·14장, IRQL 규칙, WDF, 품질 도구.</p>
+    <ol>
+      <li><b>IOCTL 정보 드라이버</b> — <code>METHOD_BUFFERED</code> IOCTL로 커널 정보를 유저 모드 클라이언트에 반환하는 레거시 드라이버. 입력 길이 검증, <code>DriverUnload</code>, Verifier 통과까지. 이후 같은 기능을 KMDF로 다시 작성해 차이를 정리합니다.</li>
+      <li><b>미니필터 감사 로거</b> — 특정 폴더의 쓰기·이름 변경을 기록하고, <code>FltCreateCommunicationPort</code>로 유저 모드 서비스에 이벤트를 전달. 고도(altitude) 선택 이유와 성능 영향(사후 콜백 최소화)을 문서화합니다.</li>
+      <li><b>WFP 콜아웃</b> — Windows Filtering Platform으로 연결 이벤트를 관찰하는 드라이버. 네트워크 스택 계층(레이어)과 콜아웃 등록 흐름을 이해합니다.</li>
+      <li><b>품질 마무리</b> — SDV, CodeQL, Driver Verifier(풀 추적·IRQL 검사 포함)를 통과하고, HVCI 활성 환경에서 로드되는지 확인합니다. 결과 리포트를 저장소에 함께 올립니다.</li>
+    </ol>
+  </div>
+  <div class="tab-panel">
+    <p class="muted">블루스크린·행·성능 저하의 근본 원인을 찾는 일. 필요 역량: 05·06·07·09·15장, 덤프 분석, ETW.</p>
+    <ol>
+      <li><b>버그체크 도감</b> — NotMyFault와 직접 만든 버그 드라이버로 대표 버그체크(0xA, 0xD1, 0x50, 0xC4, 0x133 등)를 실습 VM에서 일으키고, 덤프마다 "근거 → 결론" 형식의 분석 노트를 작성합니다.</li>
+      <li><b>행 분석</b> — 의도적으로 두 락의 획득 순서를 뒤집은 드라이버로 데드락을 만들고, <code>!locks</code>, <code>!stacks</code>, <code>!thread</code>, <code>!ready</code>로 대기 체인을 재구성합니다. Verifier의 데드락 감지가 어떻게 잡는지도 비교합니다.</li>
+      <li><b>풀 누수 추적</b> — 의도적으로 해제하지 않는 할당을 만들고 <code>poolmon</code>, <code>!poolused</code>, 풀 태그로 범인을 찾습니다. 태그 설계가 왜 중요한지 정리합니다.</li>
+      <li><b>지연 분석</b> — WPR로 추적을 수집하고 WPA에서 DPC/ISR 지속 시간을 드라이버별로 분석합니다. 오디오 끊김·입력 지연 같은 증상과 연결해 설명하는 보고서를 씁니다.</li>
+    </ol>
+  </div>
+  <div class="tab-panel">
+    <p class="muted">탐지·방어 제품과 플랫폼 보안을 만드는 일. 필요 역량: 04·10·13·16장, 커널 콜백, ETW, 메모리 포렌식.</p>
+    <ol>
+      <li><b>텔레메트리 드라이버</b> — <code>PsSetCreateProcessNotifyRoutineEx</code>, 스레드·이미지 로드 콜백, <code>CmRegisterCallbackEx</code>, <code>ObRegisterCallbacks</code>로 이벤트를 모아 유저 모드에 전달합니다(일부 콜백은 링커 <code>/INTEGRITYCHECK</code> 필요). 각 콜백이 호출되는 IRQL과 문맥, 그리고 놓치는 이벤트를 문서화합니다.</li>
+      <li><b>ETW 소비자</b> — 커널 공급자(프로세스, 이미지 로드 등)를 구독하는 유저 모드 도구를 만들고, 1번 드라이버의 데이터와 비교해 각 방식의 장단점을 정리합니다.</li>
+      <li><b>메모리 포렌식 교차 검증</b> — 실습 VM의 메모리 이미지를 Volatility 3로 분석해, 여러 출처(프로세스 리스트, 핸들 테이블, 스레드)를 교차 비교하는 방식으로 이상 징후를 찾는 원리를 정리합니다.</li>
+      <li><b>내 드라이버 견고성 검사</b> — 1번 드라이버의 IOCTL 인터페이스에 비정상 입력을 자동 생성해 넣는 퍼저를 만들고 Verifier와 함께 돌려, 입력 검증 버그를 스스로 찾아 고칩니다.</li>
+      <li><b>버그 클래스 연구 노트</b> — Microsoft 보안 업데이트 가이드와 공개 분석 글을 읽고, 커널 버그 클래스(입력 길이 미검증, 이중 페치/TOCTOU, 참조 카운트 오류 등)와 그에 대응하는 완화 기법을 정리합니다.</li>
+    </ol>
+    <div class="callout warn">
+      <div class="callout-title">연구 윤리</div>
+      <p>분석과 테스트는 자신이 소유하거나 명시적으로 허가받은 시스템에서만 합니다. 취약점을 발견하면 공개 전에 해당 공급업체(Microsoft의 경우 MSRC)에 조율된 공개 절차로 보고하세요.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="lab">실습</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 17-1 · 환경 검증 체크</div>
+  <p>그림 17-1의 환경을 구축한 뒤, 아래 명령이 모두 기대한 결과를 내는지 확인하세요. 하나라도 실패하면 "대안 · 문제 해결" 탭을 참고합니다.</p>
+</div>
+<pre data-title="WinDbg"><code class="lang-windbg">kd> vertarget                         $$ 타깃 빌드 · 가동 시간
+kd> lm m nt                           $$ (pdb symbols) 확인
+kd> dt nt!_EPROCESS ImageFileName     $$ 공용 심볼로 구조체 조회
+kd> !process 0 0 System
+kd> sxe ld:MyDrv.sys
+kd> g
+$$ 타깃에서 sc start MyDrv
+kd> lm m MyDrv                        $$ private symbols 로드 확인
+kd> bu MyDrv!DriverEntry
+kd> .reboot                           $$ 재부팅 후에도 디버거가 다시 붙는지 확인</code></pre>
+<ol>
+  <li>타깃의 <code>bcdedit /dbgsettings</code>와 WinDbg 연결 설정(포트·키)이 일치하는지 비교하세요.</li>
+  <li>debug-ready 스냅숏을 만든 뒤, 일부러 <code>verifier /standard /driver MyDrv.sys</code>를 켜고 버그가 있는 빌드를 로드해 0xC4가 발생하는지 확인하고, 스냅숏으로 되돌려 보세요.</li>
+  <li>랩 체크리스트에서 이번 주에 할 랩 세 개를 고르고, 역량 매트릭스에서 가장 낮은 영역의 챕터를 다시 읽으세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">타깃 VM에서 <code>bcdedit /set testsigning on</code>을 실행했더니 "Secure Boot 정책으로 보호되어 수정할 수 없다"는 오류가 납니다. 실습 환경에서 올바른 조치는?</p>
+  <ol class="opts">
+    <li>레지스트리의 BCD 하이브를 직접 수정한다</li>
+    <li data-correct>실습 VM의 설정에서 Secure Boot를 끈 뒤 다시 실행한다</li>
+    <li>드라이버를 Boot 시작 타입으로 바꾼다</li>
+    <li>관리자 권한 없이 다시 실행한다</li>
+  </ol>
+  <div class="explain">Secure Boot가 켜져 있으면 testsigning·debug 같은 신뢰 수준을 낮추는 BCD 값이 정책으로 보호됩니다. 실습 VM에서는 펌웨어(VM 설정)에서 Secure Boot를 끄는 것이 문서화된 방법입니다. BCD를 직접 편집하는 것은 해결책이 아니며 위험합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">KDNET 연결에서 디버거가 입력해야 하는 값의 조합으로 옳은 것은?</p>
+  <ol class="opts">
+    <li>타깃 IP와 타깃 컴퓨터 이름</li>
+    <li data-correct>타깃에서 설정한 포트 번호와 <code>kdnet.exe</code>/<code>bcdedit</code>가 생성한 키</li>
+    <li>심볼 서버 URL과 PDB 경로</li>
+    <li>VM의 MAC 주소</li>
+  </ol>
+  <div class="explain">KDNET은 타깃이 디버거(호스트 IP)로 연결해 오는 구조입니다. 디버거는 포트에서 기다리고, 공유된 키로 세션을 인증·암호화합니다. 그래서 타깃 설정에는 디버거 머신의 IP가, 디버거 설정에는 포트와 키가 들어갑니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>dt nt!_EPROCESS</code>는 잘 되는데 <code>nt</code> 함수의 지역 변수는 보이지 않습니다. 이유는?</p>
+  <ol class="opts">
+    <li>심볼 캐시 폴더가 손상되었다</li>
+    <li>커널 디버깅에서는 지역 변수를 볼 수 없다</li>
+    <li data-correct>Microsoft 공용 심볼은 public 심볼이라 지역 변수·소스 줄 정보가 제거되어 있다</li>
+    <li>KDNET 대역폭이 부족하다</li>
+  </ol>
+  <div class="explain">공용 심볼 서버는 함수·전역 변수와 일부 타입 정보를 제공하지만 private 정보는 제거되어 있습니다. 자신이 빌드한 드라이버의 PDB는 private 심볼이라 지역 변수와 소스 단계 실행이 가능합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">새 드라이버를 개발할 때 Driver Verifier를 처음부터 켜 두는 가장 큰 이유는?</p>
+  <ol class="opts">
+    <li>드라이버 실행 속도가 빨라진다</li>
+    <li>서명 없이 드라이버를 로드할 수 있다</li>
+    <li data-correct>규칙 위반(풀 손상, IRQL 위반 등)이 일어난 그 자리에서 버그체크를 일으켜, 증상이 나중에 다른 곳에서 나타나는 것을 막는다</li>
+    <li>PatchGuard를 비활성화한다</li>
+  </ol>
+  <div class="explain">커널 버그의 가장 큰 어려움은 원인과 증상의 거리입니다. Verifier는 추가 검사로 위반 시점에 <code>DRIVER_VERIFIER_DETECTED_VIOLATION</code>(0xC4) 등으로 멈추게 해 원인 근처의 스택을 남깁니다. 실행 속도는 오히려 느려집니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">책에 적힌 <code>_EPROCESS</code> 필드 오프셋을 내 실습 VM에서 쓰려 합니다. 가장 신뢰할 수 있는 확인 방법은?</p>
+  <ol class="opts">
+    <li>책의 오프셋을 그대로 사용한다</li>
+    <li>가장 최근 블로그 글의 값을 쓴다</li>
+    <li data-correct>대상 시스템에 맞는 심볼을 로드하고 <code>dt nt!_EPROCESS</code>로 직접 확인한다</li>
+    <li>ReactOS 소스의 구조체 정의를 따른다</li>
+  </ol>
+  <div class="explain">구조체 레이아웃은 빌드마다 바뀝니다. Vergilius 같은 레퍼런스는 비교에 편리하지만, 최종 근거는 대상 빌드의 심볼로 직접 확인한 값입니다. ReactOS는 독립 구현이라 레이아웃이 다릅니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>실습은 개발 VM + 타깃 VM 구성에서 한다. 타깃은 Secure Boot 끔 → KDNET(포트·키) → 테스트 서명 → 스냅숏 순으로 준비한다.</li>
+    <li>심볼은 <code>.symfix+</code>로 공용 심볼과 캐시를, <code>.sympath+</code>로 내 드라이버 PDB를 더한다. 공용 심볼에는 private 정보가 없다.</li>
+    <li>개발 루프는 빌드 → 서명 → 배포 → 로드(Verifier) → 디버깅 → 기록이며, 스냅숏이 루프를 빠르게 만든다.</li>
+    <li>챕터별 랩은 "검증 방법"으로 스스로 확인하고, 역량 매트릭스로 약한 영역을 골라 보강한다.</li>
+    <li>트랙(드라이버 개발·장애 분석·보안 연구)별 프로젝트는 "무엇을 검증했는가"가 드러나게 기록해 포트폴리오로 만든다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  // 저장소: 반드시 try/catch로 감싼다 (저장 불가 환경에서도 동작)
+  function load(key, def) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch (e) { return def; }
+  }
+  function save(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* 저장 불가 환경: 무시 */ }
+  }
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const LV = { basic: ['입문', 'lv-basic'], core: ['핵심', 'lv-core'], adv: ['심화', 'lv-adv'], expert: ['전문가', 'lv-expert'] };
+
+  // ---------------- 랩 체크리스트 ----------------
+  // 텍스트에 <code>를 쓰는 항목은 HTML로 신뢰된 정적 문자열
+  const LABS = [
+    { id: 'l01', ch: '01', lv: 'basic', t: '커널 모듈 지도 만들기',
+      goal: '로드된 커널 모듈을 나열하고 nt, hal, ci, 파일 시스템, 네트워크 드라이버를 구성요소 지도(01장 그림 1-1)에 배치한다.',
+      hint: '<code>lm</code>, <code>lm m nt</code>, <code>!lmi nt</code>. <code>x nt!Mi*</code>와 <code>x nt!Mm*</code>의 개수를 비교해 보라.',
+      verify: '모듈 15개 이상을 구성요소별로 분류한 표가 있고, 각 모듈의 역할을 한 줄로 설명할 수 있다.' },
+    { id: 'l02', ch: '02', lv: 'basic', t: '시스템 콜 번호에서 커널 함수까지',
+      goal: '<code>ntdll!NtReadFile</code> 스텁에서 시스템 콜 번호를 읽고, SSDT에서 해당 커널 함수 주소를 직접 계산한다.',
+      hint: '유저 프로세스 문맥(<code>.process /i</code> 또는 <code>.process /r /p</code>)에서 <code>u ntdll!NtReadFile</code>. x64 SSDT 엔트리는 32비트 상대 오프셋이며 하위 4비트를 제외해야 한다: <code>nt!KiServiceTable + (dwo(nt!KiServiceTable + 4*n) &gt;&gt; 4)</code>.',
+      verify: '계산한 주소에 <code>ln</code>을 실행하면 <code>nt!NtReadFile</code>이 나온다.' },
+    { id: 'l03', ch: '03', lv: 'core', t: '부팅 초기의 로더 블록 관찰',
+      goal: '초기 브레이크로 부팅 중 커널을 멈추고 <code>LOADER_PARAMETER_BLOCK</code>의 이미지 목록과 부트 드라이버 목록을 확인한다.',
+      hint: '<code>dt nt!_LOADER_PARAMETER_BLOCK poi(nt!KeLoaderBlock)</code>. 부팅 완료 후에는 NULL이므로 초기 브레이크가 필요하다.',
+      verify: '부트 드라이버 목록이 레지스트리의 Start=0 드라이버 목록과 일치함을 대조표로 보여줄 수 있다.' },
+    { id: 'l04', ch: '04', lv: 'core', t: 'EPROCESS에서 PEB까지',
+      goal: 'notepad.exe의 EPROCESS → PEB → 로드된 DLL 목록 → 명령줄을 디버거로 따라간다.',
+      hint: '<code>!process 0 7 notepad.exe</code>, <code>.process /p /r &lt;EPROCESS&gt;</code>, <code>!peb</code>, <code>dt nt!_EPROCESS &lt;주소&gt; ImageFileName UniqueProcessId Peb</code>.',
+      verify: '<code>!peb</code>의 명령줄이 작업 관리자에 보이는 명령줄과 일치한다.' },
+    { id: 'l05', ch: '05', lv: 'core', t: '우선순위와 레디 큐 관찰',
+      goal: 'CPU를 계속 쓰는 스레드를 여러 개 만들고 우선순위를 바꿔 가며 레디 큐와 실행 상태를 관찰한다.',
+      hint: '테스트 프로그램에서 <code>SetThreadPriority</code>. 디버거에서 <code>!ready</code>, <code>!running</code>, <code>!thread</code>로 Priority·State를 확인.',
+      verify: '동적 우선순위 부스트가 일어난 스레드와 그렇지 않은 스레드를 근거와 함께 구분할 수 있다.' },
+    { id: 'l06', ch: '06', lv: 'adv', t: 'IDT와 DPC 큐 읽기',
+      goal: '인터럽트 벡터와 처리 루틴, 프로세서별 DPC 큐와 타이머를 확인한다.',
+      hint: '<code>!idt</code>, <code>!irql</code>, <code>!dpcs</code>, <code>!timer</code>. 키보드/마우스 입력 시 해당 ISR에 브레이크포인트.',
+      verify: '특정 장치의 ISR 주소가 어느 드라이버에 속하는지와 그 DPC가 어떤 IRQL에서 실행되는지 설명할 수 있다.' },
+    { id: 'l07', ch: '07', lv: 'adv', t: '락 순서 위반 잡기',
+      goal: '두 스핀락을 서로 다른 순서로 획득하는 테스트 드라이버를 만들고 Driver Verifier가 위반을 탐지하는 과정을 관찰한다.',
+      hint: 'Verifier의 데드락 감지 옵션을 켠다. 버그체크 후 <code>!analyze -v</code>와 <code>!deadlock</code>.',
+      verify: 'Verifier가 보고한 두 획득 경로(스택)를 소스 코드의 해당 줄과 연결해 설명할 수 있다.' },
+    { id: 'l08', ch: '08', lv: 'core', t: '가상 주소를 손으로 변환하기',
+      goal: '임의의 유저 가상 주소를 PML4 → PDPT → PD → PT 인덱스로 분해하고 물리 주소까지 직접 따라간다.',
+      hint: '인덱스는 각 9비트(비트 47–39, 38–30, 29–21, 20–12). <code>!pte</code>, <code>!dq</code>(물리 메모리 읽기), 프로세스의 DirectoryTableBase.',
+      verify: '손으로 구한 물리 주소가 <code>!vtop</code> 결과와 같고, <code>!db</code>로 읽은 내용이 가상 주소 쪽 <code>db</code> 결과와 같다.' },
+    { id: 'l09', ch: '09', lv: 'adv', t: 'VAD와 PFN 탐색',
+      goal: '프로세스의 VAD 트리에서 이미지·매핑·private 영역을 구분하고, 한 페이지의 PFN 엔트리 상태를 해석한다.',
+      hint: '<code>!vad</code>, <code>!pte</code>로 PFN 번호를 얻은 뒤 <code>!pfn</code>. 페이지 리스트 상태는 <code>!memusage</code>(느릴 수 있음).',
+      verify: '선택한 페이지가 워킹셋에 있는지, 공유되는지, 어떤 리스트에 있는지를 출력 근거로 설명할 수 있다.' },
+    { id: 'l10', ch: '10', lv: 'core', t: '핸들에서 객체 헤더까지',
+      goal: '프로세스의 파일 핸들 하나를 골라 핸들 테이블 엔트리 → OBJECT_HEADER → 객체 타입 → 참조 카운트를 확인한다.',
+      hint: '<code>!handle &lt;핸들&gt; 7 &lt;EPROCESS&gt;</code>, <code>!object</code>, <code>dt nt!_OBJECT_HEADER</code>, <code>!object \\Device</code>.',
+      verify: '파일을 하나 더 열고 닫을 때 HandleCount·PointerCount 변화를 예측하고 실제 값으로 확인했다.' },
+    { id: 'l11', ch: '11', lv: 'adv', t: 'IRP 따라가기',
+      goal: '파일 읽기 요청 IRP를 붙잡아 스택 로케이션과 디바이스 스택을 해석한다.',
+      hint: '<code>!drvobj</code>, <code>!devstack</code>, <code>!irp</code>. 드라이버의 디스패치 루틴에 브레이크포인트를 걸고 현재 스택 로케이션 확인.',
+      verify: 'IRP의 각 스택 로케이션이 어떤 디바이스 객체에 대응하는지 표로 그릴 수 있다.' },
+    { id: 'l12', ch: '12', lv: 'adv', t: '미니필터 고도와 콜백',
+      goal: 'Microsoft 예제 미니필터를 빌드해 설치하고, 고도와 필터 순서, 콜백 호출을 확인한다.',
+      hint: '<code>Windows-driver-samples</code>의 <code>filesys/miniFilter</code> 예제. <code>fltmc filters</code>, <code>fltmc instances</code>, 디버거에서 <code>!fltkd.filters</code>.',
+      verify: '내 필터의 고도가 백신 필터보다 높은지 낮은지, 그것이 사전 콜백 순서에 어떤 의미인지 설명할 수 있다.' },
+    { id: 'l13', ch: '13', lv: 'adv', t: '토큰과 접근 검사',
+      goal: '일반 사용자와 관리자 프로세스의 토큰(그룹, 특권, 무결성 수준)을 비교하고, 파일의 보안 설명자로 접근 결과를 예측한다.',
+      hint: '<code>!token</code>, <code>!sd</code>, <code>whoami /all</code>, <code>icacls</code>.',
+      verify: '예측한 접근 허용/거부 결과가 실제 열기 시도 결과와 일치한다.' },
+    { id: 'l14', ch: '14', lv: 'adv', t: '첫 IOCTL 드라이버',
+      goal: '<code>DriverEntry</code>/<code>DriverUnload</code>, 디바이스와 심볼릭 링크, <code>METHOD_BUFFERED</code> IOCTL 하나를 갖춘 드라이버와 유저 모드 클라이언트를 작성한다.',
+      hint: '<code>IoCreateDevice</code>, <code>IoCreateSymbolicLink</code>, <code>IRP_MJ_DEVICE_CONTROL</code>. 입력/출력 버퍼 길이를 반드시 검증.',
+      verify: 'Verifier 표준 옵션을 켠 채로 로드·사용·언로드를 반복해도 버그체크와 풀 누수가 없다.' },
+    { id: 'l15', ch: '15', lv: 'expert', t: '덤프 분석 보고서',
+      goal: 'NotMyFault로 서로 다른 버그체크 세 가지를 일으키고 각각 근거 기반 분석 보고서를 작성한다.',
+      hint: '<code>!analyze -v</code> → 버그체크 인자 문서 대조 → <code>.trap</code>/<code>.cxr</code> → <code>kv</code> → 관련 구조체 확인.',
+      verify: '보고서만 읽은 다른 사람이 같은 결론에 이르는 명령 순서를 재현할 수 있다.' },
+    { id: 'l16', ch: '16', lv: 'expert', t: '보안 기능 상태 점검',
+      goal: '실습 VM에서 VBS·HVCI·Credential Guard 상태를 확인하고, 중첩 가상화를 켠 VM에서 HVCI를 활성화해 내 드라이버의 호환성을 시험한다.',
+      hint: '<code>msinfo32</code>의 가상화 기반 보안 항목, PowerShell <code>Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\\Microsoft\\Windows\\DeviceGuard</code>.',
+      verify: 'HVCI 활성 상태에서 내 드라이버가 로드되고, 비호환 패턴(예: 쓰기+실행 메모리 요청)이 없음을 확인했다.' },
+    { id: 'l17', ch: '16', lv: 'expert', t: '프로세스 생성 감시 드라이버',
+      goal: '<code>PsSetCreateProcessNotifyRoutineEx</code>로 프로세스 생성을 기록하는 드라이버를 만들고, 콜백이 실행되는 문맥을 관찰한다.',
+      hint: '링커 옵션 <code>/INTEGRITYCHECK</code>가 없으면 등록이 <code>STATUS_ACCESS_DENIED</code>로 실패한다. 콜백에서 <code>PsGetCurrentProcessId</code>와 생성되는 프로세스 ID를 비교.',
+      verify: '콜백이 어느 프로세스·스레드 문맥에서 호출되는지, 언로드 시 콜백 제거를 빠뜨리면 어떤 일이 생기는지 설명할 수 있다.' },
+    { id: 'l18', ch: '17', lv: 'expert', t: '환경 재구축 자동화',
+      goal: '실습 환경 구축 과정을 스크립트(PowerShell 등)와 문서로 정리해, 새 VM에서 30분 안에 debug-ready 상태를 재현한다.',
+      hint: 'VM 생성, Secure Boot 해제, kdnet 설정, 테스트 서명, 도구 설치, 스냅숏을 단계별로 분리.',
+      verify: '다른 사람이 문서만 보고 같은 환경을 구축해 디버거 연결에 성공했다.' },
+  ];
+  const LKEY = 'wk-17-labs';
+  const labSim = document.getElementById('labSim');
+  const list = labSim.querySelector('.lab-list');
+  let done = load(LKEY, {});
+  if (!done || typeof done !== 'object') done = {};
+  let filter = 'all';
+
+  function renderLabs() {
+    const items = LABS.filter(l => filter === 'all' || (filter === 'todo' ? !done[l.id] : l.lv === filter));
+    list.innerHTML = items.map(l => {
+      const [lvName, lvCls] = LV[l.lv];
+      return `<div class="lab-item${done[l.id] ? ' done' : ''}" data-id="${l.id}">
+        <div class="hd"><input type="checkbox" id="cb-${l.id}"${done[l.id] ? ' checked' : ''}>
+          <label for="cb-${l.id}"><span class="ch">CH ${l.ch}</span><span class="t">${esc(l.t)}</span><span class="pill ${lvCls} lv">${lvName}</span></label></div>
+        <div class="body">
+          <p><b>목표</b> ${l.goal}</p>
+          <details><summary>힌트</summary><p>${l.hint}</p></details>
+          <p><b>검증</b> ${l.verify}</p>
+        </div></div>`;
+    }).join('') || '<p class="muted">해당하는 랩이 없습니다.</p>';
+    const n = LABS.filter(l => done[l.id]).length;
+    const pct = Math.round(n / LABS.length * 100);
+    labSim.querySelector('.cnt').textContent = `${n} / ${LABS.length} 완료`;
+    labSim.querySelector('.pct').textContent = pct + '%';
+    labSim.querySelector('.lab-prog .bar i').style.width = pct + '%';
+  }
+  list.addEventListener('change', e => {
+    const item = e.target.closest('.lab-item'); if (!item) return;
+    const id = item.dataset.id;
+    if (e.target.checked) done[id] = 1; else delete done[id];
+    save(LKEY, done);
+    renderLabs();
+  });
+  labSim.querySelector('.lab-toolbar').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.f) {
+      filter = b.dataset.f;
+      labSim.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('on', x === b));
+    }
+    if (b.dataset.act === 'reset') { done = {}; save(LKEY, done); }
+    renderLabs();
+  });
+  renderLabs();
+
+  // ---------------- 역량 매트릭스 ----------------
+  const AREAS = [
+    { k: 'arch', n: '아키텍처 · 시스템 콜', ch: '01 · 02 · 03', d: [
+      '유저/커널 모드와 NT 계층을 그림으로 설명', 'syscall 경로와 PreviousMode를 디버거로 추적', 'SSDT·트랩 프레임·부팅 단계를 직접 확인', '새 빌드의 시스템 콜/부팅 변화를 스스로 분석'] },
+    { k: 'proc', n: '프로세스 · 스케줄링', ch: '04 · 05', d: [
+      'EPROCESS/ETHREAD의 역할을 안다', '!process·!thread로 상태를 해석', '우선순위 부스트·컨텍스트 스위치를 관찰로 설명', '스케줄링 관련 성능 문제를 추적으로 진단'] },
+    { k: 'irql', n: 'IRQL · 동기화', ch: '06 · 07', d: [
+      'IRQL과 락이 왜 필요한지 설명', 'IRQL별 허용 작업과 락 종류를 고를 수 있다', 'DPC/APC·데드락을 디버거로 분석', '락 설계를 리뷰하고 경합·순서 문제를 예측'] },
+    { k: 'mem', n: '메모리', ch: '08 · 09', d: [
+      '가상 주소 공간과 페이징 개념', '주소 변환을 손으로 수행(!pte)', 'VAD·PFN·워킹셋·풀을 해석', '메모리 손상·누수를 근거로 원인 특정'] },
+    { k: 'io', n: 'I/O · 드라이버', ch: '10 · 11 · 12 · 14', d: [
+      '드라이버/디바이스 객체 개념', '간단한 드라이버를 빌드·로드', 'IRP 흐름·미니필터를 구현', 'Verifier/SDV 통과 수준의 드라이버 설계·리뷰'] },
+    { k: 'dbg', n: '디버깅 · 덤프 분석', ch: '15', d: [
+      'WinDbg 기본 명령 사용', 'KDNET 구성, !analyze 해석', '스택·트랩 프레임으로 원인 추적', '처음 보는 덤프를 근거 기반으로 결론'] },
+    { k: 'sec', n: '보안 메커니즘', ch: '13 · 16', d: [
+      '토큰·ACL 기본 개념', 'DSE·PPL·무결성 수준을 설명', 'VBS/HVCI·커널 콜백 동작을 확인', '완화 기법의 설계 의도와 한계를 평가'] },
+    { k: 'rev', n: '리버싱 · 도구', ch: '01 · 15 · 17', d: [
+      'x64 어셈블리를 읽을 수 있다', '공개 심볼로 함수 흐름 파악', '디스어셈블러로 비공개 동작 확인', '검증 절차를 문서화해 다른 사람이 재현 가능'] },
+  ];
+  const SKEY = 'wk-17-skills';
+  const skillSim = document.getElementById('skillSim');
+  const rows = skillSim.querySelector('.skill-rows');
+  const svg = skillSim.querySelector('svg');
+  const rec = skillSim.querySelector('.rec');
+  let sk = load(SKEY, {});
+  if (!sk || typeof sk !== 'object') sk = {};
+
+  rows.innerHTML = AREAS.map(a => `<div class="skill-row" data-k="${a.k}"><div class="area">${esc(a.n)}</div>` +
+    a.d.map((t, i) => `<button class="btn" data-v="${i + 1}"><b>${i + 1} · ${['입문', '핵심', '심화', '전문가'][i]}</b>${esc(t)}</button>`).join('') + '</div>').join('');
+
+  const COLORS = ['var(--ok)', 'var(--acc)', 'var(--kernel)', 'var(--hv)'];
+  function renderSkill() {
+    rows.querySelectorAll('.skill-row').forEach(r => {
+      const v = sk[r.dataset.k] || 0;
+      r.querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.v === v));
+    });
+    // 막대 그래프 (SVG, 테마 변수 색)
+    const x0 = 150, w = 270, bh = 22, gap = 12, y0 = 22;
+    let g = [1, 2, 3, 4].map(i => `<text x="${x0 + w / 4 * i}" y="14" text-anchor="middle" class="sm">${i}</text>`).join('');
+    for (let i = 0; i <= 4; i++) g += `<line x1="${x0 + w / 4 * i}" y1="18" x2="${x0 + w / 4 * i}" y2="${y0 + AREAS.length * (bh + gap)}" style="stroke:var(--line)"/>`;
+    AREAS.forEach((a, i) => {
+      const v = sk[a.k] || 0, y = y0 + i * (bh + gap);
+      g += `<text x="${x0 - 8}" y="${y + 15}" text-anchor="end" style="font-size:11.5px">${esc(a.n)}</text>`;
+      g += `<rect x="${x0}" y="${y}" width="${w}" height="${bh}" rx="5" class="box plain"/>`;
+      if (v) g += `<rect x="${x0}" y="${y}" width="${w / 4 * v}" height="${bh}" rx="5" style="fill:${COLORS[v - 1]};opacity:.75"/>`;
+      else g += `<text x="${x0 + 8}" y="${y + 15}" class="sm">미선택</text>`;
+    });
+    svg.innerHTML = g;
+    // 추천
+    const picked = AREAS.filter(a => sk[a.k]);
+    if (!picked.length) { rec.innerHTML = '<h4>진단 결과</h4><p class="muted">각 영역에서 한 칸씩 골라 보세요.</p>'; return; }
+    const vals = picked.map(a => sk[a.k]);
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const min = Math.min(...vals);
+    const lvName = ['입문', '핵심', '심화', '전문가'][Math.max(0, Math.floor(avg + 1e-9) - 1)];
+    const weak = picked.filter(a => sk[a.k] === min);
+    const missing = AREAS.filter(a => !sk[a.k]);
+    let html = `<h4>진단 결과</h4><p>선택한 ${picked.length}개 영역 평균 <b>${avg.toFixed(1)}</b> → 전반적으로 <b>${lvName}</b> 단계에 가깝습니다.</p>`;
+    html += `<p><b>가장 먼저 보강할 영역</b>: ${weak.map(a => `${esc(a.n)} (CH ${a.ch})`).join(', ')}</p>`;
+    if (Math.max(...vals) - min >= 2) html += `<p class="muted">영역 간 편차가 큽니다. 전문가 수준의 분석은 약한 영역에서 막히는 경우가 많으니 낮은 영역부터 끌어올리세요.</p>`;
+    const nextLabs = LABS.filter(l => !done[l.id] && weak.some(a => a.ch.includes(l.ch))).slice(0, 3);
+    if (nextLabs.length) html += `<p><b>추천 랩</b>: ${nextLabs.map(l => `CH ${l.ch} ${esc(l.t)}`).join(' · ')}</p>`;
+    if (missing.length) html += `<p class="muted">미선택 영역: ${missing.map(a => esc(a.n)).join(', ')}</p>`;
+    if (min >= 4) html += `<p>모든 영역이 전문가 수준입니다. 진로 트랙의 프로젝트를 공개하고, 새 빌드의 변화를 글로 남겨 보세요.</p>`;
+    rec.innerHTML = html;
+  }
+  rows.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const k = b.closest('.skill-row').dataset.k;
+    const v = +b.dataset.v;
+    if (sk[k] === v) delete sk[k]; else sk[k] = v;
+    save(SKEY, sk);
+    renderSkill();
+  });
+  skillSim.querySelector('[data-act="skill-reset"]').addEventListener('click', () => { sk = {}; save(SKEY, sk); renderSkill(); });
+  // 랩 체크가 바뀌면 추천 랩도 갱신
+  list.addEventListener('change', renderSkill);
+  labSim.querySelector('.lab-toolbar').addEventListener('click', renderSkill);
+  renderSkill();
+})();
+</script>
+</body>
+</html>

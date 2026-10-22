@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13. 성능 분석과 도구 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.calc{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:760px){.calc{grid-template-columns:1fr}}
+.calc .inputs label{display:grid;grid-template-columns:150px 1fr 70px;gap:8px;align-items:center;margin:6px 0;font-size:.88rem}
+.calc .inputs label .v{font-family:var(--mono);text-align:right;color:var(--primary-text)}
+.delaybar{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--border);margin:10px 0}
+.delaybar div{display:grid;place-items:center;color:#fff;font-size:.72rem;font-weight:700;transition:flex .4s;min-width:0;overflow:hidden;white-space:nowrap}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:.8rem}
+.legend span::before{content:"";display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;background:var(--c)}
+.tcpd{font-family:var(--mono);font-size:.78rem;background:#0b0f18;color:#cfe3c8;border-radius:10px;border:1px solid #1e2636;overflow:auto}
+.tcpd .ln{padding:5px 12px;cursor:pointer;white-space:pre;border-left:3px solid transparent}
+.tcpd .ln:hover{background:#141a28}
+.tcpd .ln.sel{background:#182238;border-left-color:var(--primary)}
+.tcpd .ln .t{color:#8a93a6}.tcpd .ln .a{color:#7cc4ff}.tcpd .ln .f{color:#ffd166;font-weight:700}.tcpd .ln .s{color:#7ee787}.tcpd .ln .o{color:#c9a8ff}
+.tcpd-desc{background:var(--surface-2);border-radius:8px;padding:12px 14px;margin-top:8px;font-size:.9rem;min-height:80px}
+.tcpd-desc table{font-size:.82rem;margin:.4rem 0}
+.wf{font-size:.75rem}
+.wf text{font-size:10px}
+.wf .lbl{font-weight:600}
+.flow-sel{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.diag-steps{list-style:none;padding:0;margin:0}
+.diag-steps li{display:grid;grid-template-columns:32px 1fr;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin:8px 0;background:var(--surface)}
+.diag-steps li .k{width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;display:grid;place-items:center;font-weight:700;font-size:.8rem}
+.diag-steps li code{display:inline-block;margin-top:3px}
+.diag-steps li .cause{margin-top:6px;font-size:.84rem;color:var(--text-2)}
+.stack-svg text{font-size:11px}
+.seqd text{font-size:11px}
+.seqd .msg{transition:opacity .4s}
+</style>
+</head>
+<body data-chapter="13">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 2 · 심화 — CHAPTER 13</div>
+  <h1>성능 분석과 도구</h1>
+  <p class="lead">"느리다"는 말은 진단이 아닙니다. 지연이 어디서 생기는지 분해하고, 처리량을 제한하는 요인(RTT? 손실? 윈도우? 대역폭?)을 수식으로 추정하고, tcpdump·Wireshark·ss로 가설을 검증하는 과정이 성능 분석입니다. 이 장은 그 도구 상자를 채웁니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 90분</span><span class="chip l-tr">전송</span><span class="chip l-net">인터넷</span><span class="chip l-app">응용</span><span class="chip">도구</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>지연을 전파·전송·처리·큐잉 네 성분으로 분해하고 각각을 계산할 수 있다.</li>
+    <li>RTT·손실률·윈도우가 TCP 처리량을 제한하는 방식을 Mathis 공식과 BDP로 설명할 수 있다.</li>
+    <li>tcpdump 출력의 한 줄을 읽고 플래그·시퀀스·윈도우·옵션의 의미를 말할 수 있다.</li>
+    <li>Wireshark의 <code>tcp.analysis</code> 필터로 재전송·중복 ACK·제로 윈도우를 찾을 수 있다.</li>
+    <li>리눅스 커널 네트워크 경로를 그리고, 각 지점의 관측 도구와 sysctl 튜닝 항목을 설명할 수 있다.</li>
+    <li>QUIC이 TCP+TLS 대비 무엇을 바꿨는지 핸드셰이크 수준에서 설명할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="delay"><span class="num">13.1</span>지연의 분해: 네 가지 성분 <small>(계산기)</small></h2>
+<p>패킷 하나가 한 링크를 지나는 데 걸리는 시간은 네 성분의 합입니다. 각각 <b>원인이 다르고, 해결책도 다릅니다</b>.</p>
+<table>
+  <thead><tr><th>성분</th><th>공식</th><th>무엇에 의존</th><th>줄이는 방법</th></tr></thead>
+  <tbody>
+    <tr><td><b>전파 지연</b> d<sub>prop</sub></td><td>거리 / 전파 속도 (광섬유 ≈ 2×10<sup>8</sup> m/s, 빛의 약 2/3)</td><td>물리적 거리</td><td>더 가까이(CDN, 엣지). 물리 법칙이라 다른 방법 없음</td></tr>
+    <tr><td><b>전송 지연</b> d<sub>trans</sub></td><td>패킷 길이(bit) / 링크 대역폭(bit/s)</td><td>패킷 크기, 링크 속도</td><td>더 빠른 링크, 더 작은 패킷(헤더 오버헤드 트레이드오프)</td></tr>
+    <tr><td><b>처리 지연</b> d<sub>proc</sub></td><td>헤더 검사·라우팅 조회·체크섬 (µs 단위)</td><td>장비 성능, 홉 수</td><td>하드웨어 포워딩(ASIC), 홉 줄이기</td></tr>
+    <tr><td><b>큐잉 지연</b> d<sub>queue</sub></td><td>큐 대기 시간 — 이용률 ρ가 1에 가까워지면 급증 (≈ ρ/(1−ρ) × d<sub>trans</sub>)</td><td>트래픽 부하, 버퍼 크기</td><td>혼잡 제어·AQM·과도한 버퍼 제거(8장 bufferbloat)</td></tr>
+  </tbody>
+</table>
+<div class="card">
+  <div class="calc">
+    <div class="inputs">
+      <label><span>거리 (km)</span><input type="range" id="d-dist" min="1" max="20000" value="9000"><span class="v" id="d-dist-v"></span></label>
+      <label><span>링크 대역폭 (Mbps)</span><input type="range" id="d-bw" min="1" max="10000" value="100"><span class="v" id="d-bw-v"></span></label>
+      <label><span>패킷 크기 (byte)</span><input type="range" id="d-len" min="64" max="9000" value="1500"><span class="v" id="d-len-v"></span></label>
+      <label><span>경유 홉 수</span><input type="range" id="d-hops" min="1" max="30" value="12"><span class="v" id="d-hops-v"></span></label>
+      <label><span>링크 이용률 ρ</span><input type="range" id="d-rho" min="0" max="98" value="50"><span class="v" id="d-rho-v"></span></label>
+      <p class="small">서울↔미국 서부 ≈ 9,000 km. 처리 지연은 홉당 20 µs로 가정. 큐잉은 M/M/1 근사(홉마다 같은 ρ).</p>
+    </div>
+    <div>
+      <div class="delaybar" id="d-bar"></div>
+      <div class="legend"><span style="--c:var(--l-net)">전파</span><span style="--c:var(--l-tr)">전송</span><span style="--c:var(--l-app)">처리</span><span style="--c:var(--accent)">큐잉</span></div>
+      <dl class="kv" id="d-out" style="margin-top:12px"></dl>
+    </div>
+  </div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 대역폭을 늘려도 작은 파일은 빨라지지 않는다</div><p>위 계산기에서 대역폭을 100 Mbps → 10 Gbps로 올려 보세요. 전송 지연은 120 µs → 1.2 µs로 줄지만, 9,000 km의 전파 지연 45 ms는 그대로입니다. 웹 페이지 로드는 "DNS 1 RTT + TCP 1 RTT + TLS 1 RTT + 요청 1 RTT + Slow Start 몇 라운드"처럼 <b>RTT의 배수</b>로 결정됩니다. 100 KB 파일은 1 Gbps에서 전송에 0.8 ms밖에 안 걸리지만 Slow Start로 4라운드(IW10: 14.6K → 29K → 58K → 117K)가 필요하므로 RTT 90 ms라면 360 ms가 걸립니다. 이것이 "지연이 대역폭을 지배한다(latency dominates bandwidth)"는 명제이며, CDN·커넥션 재사용·0-RTT·IW 증가가 모두 <b>RTT 횟수를 줄이려는</b> 기법입니다.</p></div>
+
+<h2 id="throughput"><span class="num">13.2</span>대역폭 · 처리량 · Goodput</h2>
+<div class="grid-3">
+  <div class="card tight"><h4 style="margin-top:0">대역폭 (bandwidth)</h4><p class="small">링크의 <b>최대</b> 비트 전송률. 물리적 용량. 1 Gbps 이더넷.</p></div>
+  <div class="card tight"><h4 style="margin-top:0">처리량 (throughput)</h4><p class="small">실제로 단위 시간에 전달된 비트. 경로의 <b>병목 링크</b>, 손실, 윈도우, 혼잡 제어에 의해 대역폭보다 낮다.</p></div>
+  <div class="card tight"><h4 style="margin-top:0">Goodput</h4><p class="small">응용이 실제로 받은 <b>유용한</b> 데이터율. 헤더(Ethernet 18 + IP 20 + TCP 32 ≈ 1500 중 4.7%)·재전송·TLS 레코드 오버헤드를 뺀 값.</p></div>
+</div>
+<p>1500바이트 프레임 기준 TCP goodput 상한은 대략 대역폭의 <b>94–95 %</b>입니다. 1 Gbps 링크에서 iperf3가 ~940 Mbps를 보고하면 정상이고, 그 이하라면 다른 제한 요인을 찾아야 합니다. 처리량을 제한하는 요인은 보통 다음 네 가지 중 하나입니다.</p>
+<table>
+  <thead><tr><th>제한 요인</th><th>상한 공식</th><th>증상</th><th>확인</th></tr></thead>
+  <tbody>
+    <tr><td>수신/송신 윈도우</td><td>rwnd / RTT</td><td>RTT가 길수록 처리량 감소, 손실 없음</td><td><code>ss -ti</code>의 rcv_space, wscale; Wireshark "Window Full"</td></tr>
+    <tr><td>패킷 손실 + 혼잡 제어</td><td>Mathis: (MSS/RTT)·(C/√p)</td><td>cwnd 톱니, 재전송</td><td><code>ss -ti</code> retrans, <code>nstat</code> TcpRetransSegs</td></tr>
+    <tr><td>병목 대역폭</td><td>min(link<sub>i</sub>)</td><td>큐잉 지연 증가, 평평한 처리량</td><td>iperf3, 인터페이스 카운터</td></tr>
+    <tr><td>응용/CPU</td><td>—</td><td>송신 버퍼가 비어 있음 (app-limited)</td><td><code>ss -ti</code> app_limited, top/perf</td></tr>
+  </tbody>
+</table>
+
+<h2 id="waterfall"><span class="num">13.3</span>웹 요청 워터폴 <small>(인터랙티브)</small></h2>
+<p>브라우저 개발자 도구의 워터폴을 직접 만들어 봅니다. RTT·대역폭·리소스 수를 조절하고 프로토콜을 바꿔 보세요. 각 바는 <b>RTT 단위</b>의 핸드셰이크 비용과 <b>대역폭 단위</b>의 전송 비용으로 나뉩니다.</p>
+<div class="card">
+  <div class="row" style="margin-bottom:8px">
+    <label>RTT <input type="range" id="w-rtt" min="5" max="300" value="80" style="width:120px"> <span class="mono" id="w-rtt-v"></span></label>
+    <label>대역폭 <input type="range" id="w-bw" min="1" max="1000" value="50" style="width:120px"> <span class="mono" id="w-bw-v"></span></label>
+    <label>부가 리소스 수 <input type="range" id="w-n" min="0" max="24" value="12" style="width:100px"> <span class="mono" id="w-n-v"></span></label>
+    <label>리소스 크기 <input type="range" id="w-size" min="5" max="500" value="60" style="width:100px"> <span class="mono" id="w-size-v"></span></label>
+  </div>
+  <div class="flow-sel" id="w-proto">
+    <button class="btn sm active" data-p="h1">HTTP/1.1 (TCP+TLS 1.3, 6 연결)</button>
+    <button class="btn sm" data-p="h2">HTTP/2 (단일 연결 멀티플렉싱)</button>
+    <button class="btn sm" data-p="h3">HTTP/3 (QUIC, 1-RTT 핸드셰이크)</button>
+  </div>
+  <div class="figure" style="margin:8px 0"><svg id="wf-svg" class="wf" viewBox="0 0 860 420"></svg></div>
+  <div class="legend"><span style="--c:#6b7280">DNS</span><span style="--c:var(--l-link)">TCP 연결</span><span style="--c:var(--l-app)">TLS/QUIC 핸드셰이크</span><span style="--c:var(--l-tr)">요청 → 첫 바이트(TTFB)</span><span style="--c:var(--l-net)">콘텐츠 다운로드</span></div>
+  <p class="small" id="wf-summary" style="margin-top:8px"></p>
+</div>
+<div class="callout"><div class="t">📌 모델의 가정</div><p>DNS 1 RTT, TCP 1 RTT, TLS 1.3 1 RTT, 요청/TTFB 1 RTT + 서버 처리 20 ms. 다운로드는 Slow Start(IW10, 1460 B MSS)로 필요한 라운드 수 × RTT에 전송 시간(크기/대역폭)을 더한 근사. HTTP/1.1은 연결 6개가 각각 핸드셰이크를 치르고, 리소스를 6개씩 묶어 순차 처리합니다. HTTP/2·3은 연결 하나에서 모든 리소스가 동시에 흐르며 대역폭을 나눕니다. 실제 브라우저는 우선순위·preconnect·캐시로 더 복잡하지만, <b>핸드셰이크 RTT가 얼마나 지배적인지</b>를 보기엔 충분합니다.</p></div>
+
+<h2 id="mathis"><span class="num">13.4</span>손실이 처리량을 깎는 방식: Mathis 공식 <small>(계산기)</small></h2>
+<p>Mathis 등(1997)은 Reno 계열 AIMD에서 무작위 손실률 p일 때 평균 처리량의 상한을 유도했습니다.</p>
+<div class="card" style="text-align:center;font-size:1.15rem;font-family:var(--mono)">Throughput ≤ (MSS / RTT) × (C / √p) ,  C ≈ 1.22 (지연 ACK 없을 때)</div>
+<p>직관: cwnd가 W에서 손실로 W/2가 되고 다시 W까지 RTT마다 1 MSS씩 회복하는 톱니 한 주기에 약 (3/8)W² 개의 세그먼트가 흐르고, 그 사이 손실이 1개 → p = 8/(3W²) → W = √(8/3p). 평균 윈도우 (3/4)W를 RTT로 나누면 위 식이 나옵니다.</p>
+<div class="card">
+  <div class="calc">
+    <div class="inputs">
+      <label><span>MSS (byte)</span><input type="range" id="m-mss" min="536" max="8960" step="8" value="1460"><span class="v" id="m-mss-v"></span></label>
+      <label><span>RTT (ms)</span><input type="range" id="m-rtt" min="1" max="300" value="50"><span class="v" id="m-rtt-v"></span></label>
+      <label><span>손실률 p (log)</span><input type="range" id="m-p" min="-6" max="-1" step="0.1" value="-3"><span class="v" id="m-p-v"></span></label>
+      <dl class="kv" id="m-out" style="margin-top:10px"></dl>
+    </div>
+    <div><canvas id="m-canvas" width="440" height="280" style="width:100%;max-width:440px"></canvas><p class="small">x: 손실률(log), y: 처리량(log). 세 곡선은 RTT 10/50/200 ms. 점은 현재 값.</p></div>
+  </div>
+</div>
+<div class="callout warn"><div class="t">⚠️ 해석 주의</div><p>이 공식은 Reno 계열·무작위 손실·충분히 큰 윈도우를 가정합니다. CUBIC은 지수가 다르고(≈ p<sup>−0.75</sup>, 큰 BDP에서 더 공격적), BBR은 손실에 거의 반응하지 않으므로 적용되지 않습니다. 그래도 "손실률이 100배 늘면 처리량은 10배 준다", "RTT가 10배면 처리량은 1/10"이라는 <b>크기 감각</b>을 주는 데는 여전히 가장 쓸모 있는 식입니다. 0.1 % 손실이 "작은 손실"이 아닌 이유가 여기 있습니다.</p></div>
+
+<h2 id="tcpdump"><span class="num">13.5</span>tcpdump 읽는 법 <small>(인터랙티브)</small></h2>
+<p>tcpdump는 libpcap으로 커널에서 프레임을 복사해 한 줄로 요약합니다. 옵션과 BPF 필터만 익히면 어떤 서버에서도 쓸 수 있는 가장 보편적인 도구입니다.</p>
+<div class="grid-2">
+  <div>
+    <h4>자주 쓰는 옵션</h4>
+    <table>
+      <tr><th>옵션</th><th>의미</th></tr>
+      <tr><td><code>-i eth0</code> / <code>-i any</code></td><td>인터페이스 선택 (any: 모든 인터페이스, Linux cooked 헤더)</td></tr>
+      <tr><td><code>-n</code> / <code>-nn</code></td><td>이름 해석 안 함 (호스트 / 호스트+포트). <b>항상 켜라</b> — DNS 역질의가 캡처를 지연시킴</td></tr>
+      <tr><td><code>-e</code></td><td>링크 계층 헤더(MAC, VLAN) 표시</td></tr>
+      <tr><td><code>-S</code></td><td>시퀀스 번호를 절대값으로 (기본은 SYN 이후 상대값)</td></tr>
+      <tr><td><code>-X</code> / <code>-xx</code></td><td>hex+ASCII 덤프 / 링크 헤더 포함 hex</td></tr>
+      <tr><td><code>-v -vv</code></td><td>TTL, id, 체크섬 검증 등 상세</td></tr>
+      <tr><td><code>-w f.pcap</code> / <code>-r f.pcap</code></td><td>파일 저장 / 읽기. 운영 서버에서는 <code>-w</code>로 저장해 Wireshark로 분석</td></tr>
+      <tr><td><code>-s 0</code> / <code>-s 96</code></td><td>snaplen. 헤더만 필요하면 96~128로 줄여 부하 감소</td></tr>
+      <tr><td><code>-c 1000</code> / <code>-G 60 -W 10</code></td><td>개수 제한 / 60초마다 파일 회전, 10개 유지</td></tr>
+    </table>
+  </div>
+  <div>
+    <h4>BPF 필터 문법</h4>
+    <table>
+      <tr><th>필터</th><th>의미</th></tr>
+      <tr><td><code>host 10.0.0.5</code></td><td>출발지 또는 목적지가 해당 IP</td></tr>
+      <tr><td><code>src net 10.0.0.0/24</code></td><td>출발지 네트워크</td></tr>
+      <tr><td><code>tcp port 443</code></td><td>TCP 443 (src 또는 dst)</td></tr>
+      <tr><td><code>tcp dst port 80 and not host 1.2.3.4</code></td><td>논리 결합 (and/or/not)</td></tr>
+      <tr><td><code>'tcp[tcpflags] &amp; (tcp-syn|tcp-fin) != 0'</code></td><td>SYN 또는 FIN 플래그 세트 (연결 시작/끝만)</td></tr>
+      <tr><td><code>'tcp[tcpflags] == tcp-syn'</code></td><td>순수 SYN (SYN-ACK 제외) — 새 연결 시도 보기</td></tr>
+      <tr><td><code>'tcp[tcpflags] &amp; tcp-rst != 0'</code></td><td>RST — 거부·강제 종료 추적</td></tr>
+      <tr><td><code>icmp</code> / <code>'icmp[icmptype] == icmp-unreach'</code></td><td>ICMP 전체 / Destination Unreachable (PMTUD 문제)</td></tr>
+      <tr><td><code>vlan 100 and ip</code></td><td>VLAN 태그 100 (태그 뒤 오프셋 자동 조정)</td></tr>
+      <tr><td><code>'ip[2:2] &gt; 1400'</code></td><td>IP 총 길이 &gt; 1400 (큰 패킷만)</td></tr>
+      <tr><td><code>less 100</code> / <code>greater 1000</code></td><td>프레임 길이 조건</td></tr>
+    </table>
+  </div>
+</div>
+<h3 id="tcpdump-read">한 줄씩 읽기 — 클릭해 보세요</h3>
+<p>아래는 <code>tcpdump -nn -i eth0 tcp port 443</code>의 출력입니다(10.0.0.5 → 93.184.216.34). 핸드셰이크, 데이터, 종료가 모두 들어 있습니다.</p>
+<div class="tcpd" id="tcpd"></div>
+<div class="tcpd-desc" id="tcpd-desc"><span class="small">줄을 클릭하면 각 필드의 의미를 풀어줍니다.</span></div>
+<div class="callout tip"><div class="t">💡 읽는 순서</div><p>① 방향(누가 누구에게) → ② Flags → ③ seq/ack(상대값: 1부터 시작) → ④ win(스케일 적용 전 값!) → ⑤ options(SYN에만 mss/wscale/sackOK, 매 세그먼트 TS) → ⑥ length(페이로드 바이트). 시간 열의 <b>차이</b>가 RTT와 지연 ACK, 서버 처리 시간을 드러냅니다.</p></div>
+
+<h2 id="wireshark"><span class="num">13.6</span>Wireshark 핵심 기능</h2>
+<div class="grid-2">
+  <div class="card tight"><h4 style="margin-top:0">캡처 필터 vs 디스플레이 필터</h4><p class="small"><b>캡처 필터</b>는 BPF 문법(tcpdump와 같음)으로 커널에서 걸러 <i>저장 자체를 줄임</i>. <b>디스플레이 필터</b>는 Wireshark 고유 문법(<code>ip.addr==10.0.0.5 &amp;&amp; tcp.port==443</code>)으로 이미 캡처한 것을 보여줄지 결정. 분석할 때는 넓게 캡처하고 디스플레이 필터로 좁히는 편이 안전.</p></div>
+  <div class="card tight"><h4 style="margin-top:0">Follow TCP Stream</h4><p class="small">패킷 우클릭 → Follow → TCP Stream. 한 연결(4-tuple, <code>tcp.stream == N</code>)의 양방향 페이로드를 대화처럼 재조립. HTTP/1.1 평문 디버깅에 필수. TLS는 <code>SSLKEYLOGFILE</code>로 키를 기록하면 복호화 가능.</p></div>
+  <div class="card tight"><h4 style="margin-top:0">Expert Info</h4><p class="small">Analyze → Expert Information. 재전송·순서 뒤바뀜·제로 윈도우·체크섬 오류 같은 이상을 심각도별로 모아 보여줌. 캡처 열면 가장 먼저 볼 곳.</p></div>
+  <div class="card tight"><h4 style="margin-top:0">Statistics</h4><p class="small">Conversations(누가 누구와 얼마나), I/O Graph(시간별 처리량, 필터별 겹쳐 그리기), TCP Stream Graphs → Time-Sequence(Stevens)와 Window Scaling 그래프로 cwnd/rwnd 병목을 눈으로 확인.</p></div>
+</div>
+<h4>tcp.analysis.* 디스플레이 필터</h4>
+<table>
+  <thead><tr><th>필터</th><th>의미</th><th>해석</th></tr></thead>
+  <tbody>
+    <tr><td><code>tcp.analysis.retransmission</code></td><td>이미 본 시퀀스 범위를 다시 보냄 (RTO 기반)</td><td>손실 또는 ACK 손실. 비율 &gt; 0.1 %면 조사</td></tr>
+    <tr><td><code>tcp.analysis.fast_retransmission</code></td><td>3 dup ACK 직후 재전송</td><td>단발성 손실, 혼잡 제어 반감 발생</td></tr>
+    <tr><td><code>tcp.analysis.spurious_retransmission</code></td><td>수신 측이 이미 ACK한 데이터 재전송</td><td>ACK 손실 또는 RTO 너무 짧음</td></tr>
+    <tr><td><code>tcp.analysis.duplicate_ack</code></td><td>같은 ack 번호 반복</td><td>수신 측에 구멍(hole) 발생, 순서 뒤바뀜 또는 손실</td></tr>
+    <tr><td><code>tcp.analysis.out_of_order</code></td><td>기대보다 큰 seq가 먼저 도착</td><td>다중 경로(ECMP/LAG) 또는 재전송</td></tr>
+    <tr><td><code>tcp.analysis.zero_window</code></td><td>수신 윈도우 0 광고</td><td><b>수신 응용이 읽지 않음</b> — 네트워크 문제 아님</td></tr>
+    <tr><td><code>tcp.analysis.window_full</code></td><td>송신자가 rwnd를 다 채움</td><td>수신 버퍼/윈도우 스케일 제한, LFN 문제</td></tr>
+    <tr><td><code>tcp.analysis.window_update</code></td><td>데이터 없이 윈도우만 갱신</td><td>zero window에서 회복</td></tr>
+    <tr><td><code>tcp.analysis.keep_alive</code></td><td>seq-1 로 보내는 1바이트/0바이트 프로브</td><td>유휴 연결 유지 확인</td></tr>
+    <tr><td><code>tcp.analysis.flags</code></td><td>위 모든 분석 플래그가 있는 패킷</td><td>이상 징후 전체 보기</td></tr>
+    <tr><td><code>tcp.flags.reset == 1</code></td><td>RST</td><td>거부(포트 닫힘), 방화벽, 비정상 종료</td></tr>
+    <tr><td><code>tcp.time_delta &gt; 1</code></td><td>같은 스트림 내 이전 패킷과 1초 이상 간격</td><td>어느 쪽이 멈췄는지(서버 처리 vs 네트워크) 구분</td></tr>
+  </tbody>
+</table>
+
+<h2 id="tools"><span class="num">13.7</span>리눅스 도구 상자</h2>
+<table>
+  <thead><tr><th>도구</th><th>용도</th><th>핵심 명령</th></tr></thead>
+  <tbody>
+    <tr><td><b>ss</b></td><td>소켓 상태·TCP 내부 변수 (netstat 대체, 훨씬 빠름)</td><td><code>ss -tanp</code> (모든 TCP+프로세스), <code>ss -ti dst 1.2.3.4</code> (cwnd/rtt/retrans), <code>ss -tan state time-wait | wc -l</code>, <code>ss -ltn</code> (리스닝 + accept 큐 Recv-Q/Send-Q)</td></tr>
+    <tr><td><b>netstat</b></td><td>레거시. 통계 요약은 아직 유용</td><td><code>netstat -s | grep -i -E 'retrans|listen|overflow'</code></td></tr>
+    <tr><td><b>nstat</b></td><td>/proc/net/snmp·netstat 카운터의 <b>증분</b> 표시</td><td><code>nstat -az TcpRetransSegs TcpExtListenOverflows TcpExtTCPSynRetrans</code>, <code>nstat</code> (이전 호출 이후 변화량)</td></tr>
+    <tr><td><b>ip</b></td><td>인터페이스·주소·라우팅·이웃</td><td><code>ip -s link</code> (드롭/오류 카운터), <code>ip route get 8.8.8.8</code> (실제 선택 경로·출발지), <code>ip neigh</code></td></tr>
+    <tr><td><b>ethtool</b></td><td>NIC 설정·오프로드·링 버퍼·통계</td><td><code>ethtool -k eth0</code> (오프로드), <code>ethtool -g eth0</code> (ring), <code>ethtool -S eth0 | grep -i drop</code>, <code>ethtool -i</code> (드라이버)</td></tr>
+    <tr><td><b>mtr</b></td><td>traceroute + ping 연속 측정. 홉별 손실·지연 분포</td><td><code>mtr -n -T -P 443 example.com</code> (TCP SYN 모드), <code>mtr -rwc 100 host</code> (보고서)</td></tr>
+    <tr><td><b>iperf3</b></td><td>처리량 측정 (메모리→메모리)</td><td>서버 <code>iperf3 -s</code>; 클라 <code>iperf3 -c srv -t 30 -P 4</code> (4 스트림), <code>-R</code> (역방향), <code>-u -b 500M</code> (UDP, 손실·지터)</td></tr>
+    <tr><td><b>tc</b></td><td>큐 규칙·지연/손실 주입(실험)</td><td><code>tc qdisc add dev eth0 root netem delay 100ms loss 1%</code>, <code>tc -s qdisc show</code> (드롭 확인)</td></tr>
+    <tr><td><b>conntrack</b></td><td>NAT/방화벽 상태 테이블</td><td><code>conntrack -L | wc -l</code>, <code>sysctl net.netfilter.nf_conntrack_max</code></td></tr>
+    <tr><td><b>bpftrace / bcc</b></td><td>커널 함수 수준 추적</td><td><code>tcpretrans</code>, <code>tcpconnlat</code>, <code>tcplife</code> (bcc-tools)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="stack"><span class="num">13.8</span>커널 네트워크 스택 경로와 NIC 오프로드</h2>
+<p>패킷은 NIC에서 응용까지 여러 큐와 계층을 지납니다. 각 지점마다 <b>드롭 카운터와 관측 도구</b>가 따로 있으므로, "어디서 떨어졌는가"를 찾으려면 경로를 알아야 합니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 860 330" class="stack-svg" id="stack-svg"></svg>
+  <div class="cap">수신(RX) 경로. 송신(TX)은 역순이며 qdisc(tc)가 TX 쪽에 있다. 노란 박스는 해당 지점을 관측하는 명령.</div>
+</div>
+<h4>NIC 오프로드</h4>
+<table>
+  <thead><tr><th>기능</th><th>동작</th><th>효과·주의</th></tr></thead>
+  <tbody>
+    <tr><td><b>TSO</b> (TCP Segmentation Offload)</td><td>커널이 64 KB짜리 "거대 세그먼트"를 NIC에 넘기면 NIC가 MSS 크기로 쪼개 전송</td><td>CPU 절감. tcpdump로 보면 MTU보다 큰 세그먼트가 보임(캡처가 NIC 이전이므로)</td></tr>
+    <tr><td><b>GSO</b> (Generic SO)</td><td>TSO의 소프트웨어 버전. 스택을 큰 단위로 통과한 뒤 드라이버 직전에 분할</td><td>NIC 지원 없이도 스택 오버헤드 감소</td></tr>
+    <tr><td><b>LRO / GRO</b></td><td>수신 시 연속 세그먼트를 하나로 합쳐 스택에 전달 (LRO는 NIC, GRO는 커널)</td><td>수신 CPU 절감. LRO는 헤더 정보를 잃어 라우터/브리지에서는 꺼야 함; GRO가 표준</td></tr>
+    <tr><td><b>Checksum offload</b></td><td>IP/TCP/UDP 체크섬을 NIC가 계산·검증</td><td>송신 캡처에서 "incorrect checksum"이 보이는 원인 — 캡처 시점에 아직 계산 전(14장)</td></tr>
+    <tr><td><b>RSS</b> (Receive Side Scaling)</td><td>4-tuple 해시로 흐름을 여러 RX 큐·CPU에 분산</td><td>멀티코어 확장. <code>ethtool -l</code>, <code>/proc/interrupts</code>로 분포 확인</td></tr>
+    <tr><td><b>RPS / RFS</b></td><td>RSS의 소프트웨어 버전 / 응용이 돌고 있는 CPU로 흐름을 보냄</td><td>캐시 지역성 향상</td></tr>
+  </tbody>
+</table>
+
+<h2 id="sysctl"><span class="num">13.9</span>리눅스 TCP sysctl 튜닝</h2>
+<p>기본값은 대부분 합리적입니다. 튜닝은 <b>측정으로 병목을 확인한 뒤</b> 해당 항목만 바꾸세요. 값은 <code>/etc/sysctl.d/*.conf</code>에 두고 <code>sysctl -p</code>로 적용합니다.</p>
+<table>
+  <thead><tr><th>항목</th><th>기본 (최근 커널)</th><th>의미</th><th>언제 바꾸나</th></tr></thead>
+  <tbody>
+    <tr><td><code>net.ipv4.tcp_rmem</code> / <code>tcp_wmem</code></td><td>4096 131072 6291456 / 4096 16384 4194304</td><td>소켓 수신/송신 버퍼 min default <b>max</b>. 자동 튜닝이 max까지 키움</td><td>BDP가 max보다 클 때(LFN). 예: 10 Gbps × 50 ms = 62.5 MB → max를 64–128 MB로. <code>net.core.rmem_max</code>도 함께</td></tr>
+    <tr><td><code>net.ipv4.tcp_congestion_control</code></td><td>cubic</td><td>혼잡 제어 알고리즘</td><td>장거리·손실 링크에서 bbr 검토. <code>tcp_available_congestion_control</code>로 확인</td></tr>
+    <tr><td><code>net.core.default_qdisc</code></td><td>fq_codel (fq 권장 with BBR)</td><td>기본 큐 규칙</td><td>BBR 사용 시 <code>fq</code> (pacing 지원)</td></tr>
+    <tr><td><code>net.ipv4.tcp_fastopen</code></td><td>1 (클라이언트만)</td><td>TFO 활성 비트: 1 클라, 2 서버, 3 양쪽</td><td>자체 서비스 간 반복 연결에서 1 RTT 절약 (중간 장비 호환 확인)</td></tr>
+    <tr><td><code>net.core.somaxconn</code></td><td>4096</td><td>accept 큐 최대 (listen backlog 상한)</td><td>ListenOverflows 증가 시. 응용의 listen(backlog)도 같이 키워야 함</td></tr>
+    <tr><td><code>net.ipv4.tcp_max_syn_backlog</code></td><td>4096 (메모리 비례)</td><td>SYN 큐(반개방) 크기</td><td>SYN flood·연결 폭주. tcp_syncookies=1(기본)과 함께</td></tr>
+    <tr><td><code>net.ipv4.tcp_tw_reuse</code></td><td>2 (loopback만)</td><td>TIME_WAIT 소켓을 <b>발신</b> 연결에 재사용 (timestamps 필요)</td><td>클라이언트 측 포트 고갈. 1로 설정. <code>tcp_tw_recycle</code>은 삭제됨(NAT 깨뜨림)</td></tr>
+    <tr><td><code>net.ipv4.ip_local_port_range</code></td><td>32768 60999</td><td>임시 포트 범위 (~28K)</td><td>같은 목적지로 초당 수백 연결 → 1024 65535로 확장</td></tr>
+    <tr><td><code>net.ipv4.tcp_notsent_lowat</code></td><td>4294967295 (off)</td><td>미전송 데이터가 이 값 이하일 때만 쓰기 가능 신호 → 커널 버퍼 적체 제한</td><td>HTTP/2 우선순위, 저지연 스트리밍: 16384 등으로</td></tr>
+    <tr><td><code>net.ipv4.tcp_slow_start_after_idle</code></td><td>1</td><td>유휴(RTO 이상) 후 cwnd를 초기값으로 리셋</td><td>keep-alive 연결의 간헐 요청이 매번 느리면 0 (RFC 2581 위반이지만 흔한 설정)</td></tr>
+    <tr><td><code>net.ipv4.tcp_mtu_probing</code></td><td>0</td><td>ICMP 없이도 PMTU 탐색(RFC 4821)</td><td>ICMP를 막는 경로에서 블랙홀 회피: 1 (블랙홀 감지 시만)</td></tr>
+    <tr><td><code>net.ipv4.tcp_keepalive_time/intvl/probes</code></td><td>7200 / 75 / 9</td><td>유휴 2시간 후 75초 간격 9회 프로브</td><td>NAT/LB 타임아웃보다 짧게(예: 600/30/5). 응용이 SO_KEEPALIVE를 켜야 동작</td></tr>
+    <tr><td><code>net.ipv4.tcp_fin_timeout</code></td><td>60</td><td>FIN_WAIT_2 유지 시간 (TIME_WAIT 아님!)</td><td>반쯤 닫힌 연결 누적 시 30</td></tr>
+    <tr><td><code>net.core.netdev_max_backlog</code></td><td>1000</td><td>softirq 처리 전 per-CPU 백로그 큐</td><td><code>/proc/net/softnet_stat</code> 2열(drop) 증가 시 키움</td></tr>
+    <tr><td><code>net.ipv4.tcp_sack</code> / <code>tcp_timestamps</code> / <code>tcp_window_scaling</code></td><td>1 / 1 / 1</td><td>RFC 2018 / 7323 옵션</td><td>절대 끄지 말 것. 끄면 LFN 성능·PAWS·RTT 측정이 무너짐</td></tr>
+  </tbody>
+</table>
+<div class="callout deep"><div class="t">🔬 깊이 보기: Incast — 데이터센터의 동시 응답 붕괴</div><p>분산 스토리지나 MapReduce에서 한 클라이언트가 100개 서버에 동시에 요청하면, 100개 응답이 <b>같은 순간</b> 같은 ToR 스위치 포트로 몰립니다. 스위치 버퍼(수백 KB)가 순식간에 넘쳐 다수 흐름이 동시에 손실을 겪고, 각각 RTO(최소 200 ms — 데이터센터 RTT 100 µs의 2,000배)를 기다립니다. 처리량은 링크 용량의 몇 %로 추락합니다. 대응: RTO 최소값 축소(µs 단위, <code>ip route … rto_min</code>), DCTCP/ECN으로 손실 전에 신호, 응답을 작은 단위로 쪼개거나 지터를 넣어 동시성 완화, 깊은 버퍼 스위치. 이 문제는 "손실 기반 혼잡 제어 + 큰 RTO 최소값 + 얕은 버퍼"의 조합이 만든 구조적 결과입니다.</p></div>
+
+<h2 id="quic"><span class="num">13.10</span>QUIC / HTTP/3 vs TCP + TLS <small>(애니메이션)</small></h2>
+<p>QUIC(RFC 9000)은 UDP 위에서 TCP의 신뢰성·혼잡 제어와 TLS 1.3을 <b>하나로 합친</b> 전송 프로토콜입니다. 설계 동기는 TCP의 세 가지 한계였습니다: 핸드셰이크 RTT, 스트림 간 HOL blocking, 그리고 커널·중간 장비에 묶여 진화가 느리다는 점(ossification).</p>
+<div class="anim" id="quic-anim">
+  <div class="stage"><svg viewBox="0 0 860 330" class="seqd" id="quic-svg"></svg></div>
+</div>
+<table>
+  <thead><tr><th>항목</th><th>TCP + TLS 1.3</th><th>QUIC (HTTP/3)</th></tr></thead>
+  <tbody>
+    <tr><td>첫 연결 핸드셰이크</td><td>TCP 1 RTT + TLS 1 RTT = <b>2 RTT</b> 후 요청</td><td>전송+암호 통합 <b>1 RTT</b></td></tr>
+    <tr><td>재연결</td><td>TLS 세션 재개 + 0-RTT 데이터 가능하나 TCP 1 RTT는 남음 (TFO로 제거 가능하지만 보급 낮음)</td><td><b>0 RTT</b>: 첫 패킷에 요청 포함 (재생 공격 주의, 멱등 요청만)</td></tr>
+    <tr><td>HOL blocking</td><td>한 연결의 한 세그먼트 손실이 모든 HTTP/2 스트림을 막음</td><td>스트림별 독립 전달. 손실은 해당 스트림만 지연</td></tr>
+    <tr><td>연결 식별</td><td>4-tuple. IP 바뀌면(Wi‑Fi→LTE) 연결 끊김</td><td>Connection ID. <b>연결 마이그레이션</b>으로 주소가 바뀌어도 유지</td></tr>
+    <tr><td>암호화 범위</td><td>페이로드만. 헤더(seq, flags)는 평문 → 중간 장비가 간섭</td><td>헤더 대부분 암호화. 중간 장비가 볼 수 있는 건 거의 없음 (ossification 방지)</td></tr>
+    <tr><td>구현 위치</td><td>커널. 변경에 OS 업데이트 필요</td><td>사용자 공간 라이브러리(quiche, msquic…). 앱 배포로 갱신. CPU 비용 높음(암호화·UDP 경로)</td></tr>
+    <tr><td>혼잡 제어</td><td>CUBIC/BBR(커널)</td><td>동일 알고리즘을 라이브러리에서. ACK에 손실·지연 정보 풍부(ACK ranges, ack delay)</td></tr>
+    <tr><td>네트워크 호환</td><td>어디서나</td><td>UDP 443 차단 환경에서는 TCP 폴백 필요(Alt-Svc)</td></tr>
+  </tbody>
+</table>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 지연 ACK와 Nagle이 벤치마크를 망치는 사례</div><p>요청-응답형 RPC를 작성해 "왜 호출당 40 ms나 걸리지?"라고 묻는 질문은 20년째 반복됩니다. 원인: 클라이언트가 헤더(write 1)와 본문(write 2)을 따로 쓰면 Nagle이 두 번째 작은 쓰기를 <b>첫 쓰기의 ACK가 올 때까지</b> 보류하고, 서버의 지연 ACK는 데이터가 더 오거나 40 ms(Linux 최소)가 지나야 ACK를 보냅니다. 둘이 서로를 기다리는 교착이 40 ms마다 풀립니다. 처리량 벤치마크에서는 안 보이고 <b>작은 요청의 지연 벤치마크</b>에서만 나타나는 것이 특징입니다. 해결은 <code>TCP_NODELAY</code>(사실상 모든 RPC 라이브러리 기본) 또는 writev/단일 write로 합치기. 반대로 대량 전송에서 TCP_NODELAY를 켜고 1바이트씩 쓰면 패킷 수가 폭증하므로, 선택이 아니라 <b>쓰기 패턴에 맞게</b> 결정해야 합니다(9장).</p></div>
+
+<h2 id="diagnose"><span class="num">13.11</span>성능 문제 진단 플로차트</h2>
+<p>증상을 고르면 확인 순서와 각 단계에서 의심할 원인을 보여줍니다. 핵심은 <b>"네트워크냐 호스트냐"를 먼저 가르는 것</b>입니다.</p>
+<div class="card">
+  <div class="flow-sel" id="diag-sel">
+    <button class="btn sm active" data-s="slow">🐢 느리다 (처리량·지연)</button>
+    <button class="btn sm" data-s="flaky">📉 간헐적으로 끊기거나 멈춘다</button>
+    <button class="btn sm" data-s="fail">⛔ 연결이 안 된다</button>
+  </div>
+  <ol class="diag-steps" id="diag-steps"></ol>
+</div>
+
+<h2 id="practice"><span class="num">13.12</span>실습</h2>
+<ol class="steps">
+  <li><b>핸드셰이크 캡처 후 Wireshark로 열기</b>
+<pre><code>sudo tcpdump -i any -nn -s 128 'tcp port 443' -w /tmp/https.pcap &amp;
+curl -s -o /dev/null https://example.com
+sudo kill %1
+# Wireshark에서: tcp.flags.syn==1 로 핸드셰이크만, Statistics → Conversations</code></pre></li>
+  <li><b>tshark로 통계 뽑기</b> (GUI 없이)
+<pre><code>tshark -r /tmp/https.pcap -q -z conv,tcp            # 대화 목록·바이트 수
+tshark -r /tmp/https.pcap -q -z io,stat,0.1           # 0.1초 단위 처리량
+tshark -r /tmp/https.pcap -Y 'tcp.analysis.retransmission' | wc -l
+tshark -r /tmp/https.pcap -T fields -e frame.time_delta_displayed -e tcp.flags.str -e tcp.len</code></pre></li>
+  <li><b>ss -ti 해석</b>
+<div class="term"><span class="p">$ ss -ti dst 93.184.216.34</span>
+ESTAB 0 0 10.0.0.5:51234 93.184.216.34:443
+	 cubic wscale:7,7 rto:204 rtt:3.2/1.1 ato:40 mss:1448 pmtu:1500 rcvmss:1448 advmss:1448
+	 cwnd:10 bytes_sent:1234 bytes_acked:1234 segs_out:12 segs_in:11 data_segs_out:3
+	 send 36.2Mbps lastsnd:120 lastrcv:118 lastack:118 pacing_rate 72.4Mbps delivery_rate 29.0Mbps
+	 app_limited busy:9ms rcv_space:14600 rcv_ssthresh:64076 minrtt:2.9</div>
+<p class="small"><code>rto:204</code> = RTO 204 ms(최소 200 + ...). <code>rtt:3.2/1.1</code> = SRTT 3.2 ms / RTTVAR 1.1 ms. <code>cwnd:10</code> 세그먼트(아직 slow start 직후). <code>send 36.2Mbps</code> = cwnd×mss/rtt로 계산한 현재 가능 송신률. <code>app_limited</code> = 응용이 보낼 게 없어 네트워크가 병목이 아님. <code>retrans:0/5</code>가 보이면 현재 미복구/누적 재전송 수. <code>wscale:7,7</code> = 양쪽 윈도우 스케일.</p></li>
+  <li><b>iperf3 양방향 + 손실 주입</b>
+<pre><code># 서버: iperf3 -s
+iperf3 -c SERVER -t 20 -P 4            # 정방향 4 스트림
+iperf3 -c SERVER -t 20 -R              # 역방향(서버→클라)
+iperf3 -c SERVER -t 20 --bidir         # 동시 양방향
+# 실험: 클라이언트에 1% 손실·50 ms 지연 주입 후 처리량이 Mathis 예측과 비슷한지 비교
+sudo tc qdisc add dev eth0 root netem delay 50ms loss 1%
+iperf3 -c SERVER -t 20 ; sudo tc qdisc del dev eth0 root</code></pre></li>
+  <li><b>워터폴 실측</b>: <code>curl -w '@-' -o /dev/null -s https://example.com &lt;&lt;&lt; 'dns %{time_namelookup} tcp %{time_connect} tls %{time_appconnect} ttfb %{time_starttransfer} total %{time_total}\n'</code> 로 13.3의 모델과 비교.</li>
+</ol>
+
+<h2 id="quiz"><span class="num">13.13</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>지연 = 전파 + 전송 + 처리 + 큐잉. 장거리에서는 전파(RTT)가, 혼잡에서는 큐잉이 지배한다.</li>
+    <li>작은 파일·웹 요청은 RTT 횟수가 결정한다. 대역폭 증가보다 핸드셰이크·Slow Start 라운드 줄이기가 효과적.</li>
+    <li>Mathis: 처리량 ∝ MSS/(RTT·√p). 손실 0.1 %는 작지 않다.</li>
+    <li>tcpdump는 -nn으로, 상대 seq를 기억하고, 시간 차로 RTT·지연 ACK·서버 처리를 읽는다.</li>
+    <li>Wireshark Expert Info와 <code>tcp.analysis.*</code>로 재전송·dup ACK·zero window를 먼저 걸러낸다.</li>
+    <li>리눅스: ss -ti, nstat, ethtool -S, softnet_stat로 경로상 각 지점의 드롭을 찾는다. sysctl은 측정 후 해당 항목만.</li>
+    <li>QUIC은 1-RTT/0-RTT 핸드셰이크, 스트림 독립성, 연결 마이그레이션, 헤더 암호화로 TCP의 구조적 한계를 우회한다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz, fmtNum} = TCPIP;
+  const fmtMs = v => v >= 1 ? v.toFixed(2)+' ms' : (v*1000).toFixed(1)+' µs';
+
+  /* ---------- 13.1 지연 계산기 ---------- */
+  function delayCalc(){
+    const dist=+$('#d-dist').value, bw=+$('#d-bw').value, len=+$('#d-len').value, hops=+$('#d-hops').value, rho=+$('#d-rho').value/100;
+    $('#d-dist-v').textContent=fmtNum(dist)+' km'; $('#d-bw-v').textContent=bw>=1000?(bw/1000)+' Gbps':bw+' Mbps'; $('#d-len-v').textContent=len+' B'; $('#d-hops-v').textContent=hops; $('#d-rho-v').textContent=Math.round(rho*100)+'%';
+    const prop = dist*1000/2e8*1000;               // ms
+    const trans = len*8/(bw*1e6)*1000*hops;         // 각 홉에서 다시 전송 (store-and-forward)
+    const proc = 0.02*hops;
+    const queue = (rho/(1-rho))*(len*8/(bw*1e6)*1000)*hops;
+    const total = prop+trans+proc+queue;
+    const bar=$('#d-bar'); bar.innerHTML='';
+    [['전파',prop,'var(--l-net)'],['전송',trans,'var(--l-tr)'],['처리',proc,'var(--l-app)'],['큐잉',queue,'var(--accent)']].forEach(([n,v,c])=>{
+      const d=el('div','',v/total>0.08?`${n} ${Math.round(v/total*100)}%`:''); d.style.flex=Math.max(v/total,0.002); d.style.background=c; d.title=`${n} ${fmtMs(v)}`; bar.appendChild(d);
+    });
+    $('#d-out').innerHTML=`<dt>전파 지연</dt><dd>${fmtMs(prop)}</dd><dt>전송 지연 (×${hops}홉)</dt><dd>${fmtMs(trans)}</dd><dt>처리 지연</dt><dd>${fmtMs(proc)}</dd><dt>큐잉 지연</dt><dd>${fmtMs(queue)}</dd><dt><b>편도 합계</b></dt><dd><b>${fmtMs(total)}</b></dd><dt>RTT (≈ 2배)</dt><dd>${fmtMs(total*2)}</dd>`;
+  }
+  ['d-dist','d-bw','d-len','d-hops','d-rho'].forEach(id=>$('#'+id).addEventListener('input',delayCalc)); delayCalc();
+
+  /* ---------- 13.3 워터폴 ---------- */
+  let wProto='h1';
+  $$('#w-proto button').forEach(b=>b.onclick=()=>{ $$('#w-proto button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); wProto=b.dataset.p; waterfall(); });
+  function ssRounds(bytes){ const IW=10*1460; let r=0, sent=0, w=IW; while(sent<bytes){ sent+=w; w*=2; r++; } return r; }
+  function dlTime(bytes, rtt, bwMbps, share=1){ return ssRounds(bytes)*rtt + bytes*8/(bwMbps*1e6/share)*1000; }
+  function waterfall(){
+    const rtt=+$('#w-rtt').value, bw=+$('#w-bw').value, n=+$('#w-n').value, size=+$('#w-size').value*1024;
+    $('#w-rtt-v').textContent=rtt+' ms'; $('#w-bw-v').textContent=bw+' Mbps'; $('#w-n-v').textContent=n; $('#w-size-v').textContent=(size/1024)+' KB';
+    const SRV=20, mainSize=40*1024;
+    const rows=[]; // {label, segs:[{k,start,dur}]}
+    const C={dns:'#6b7280',tcp:'var(--l-link)',tls:'var(--l-app)',ttfb:'var(--l-tr)',dl:'var(--l-net)'};
+    let t=0; const seg=(k,s,d)=>({k,start:s,dur:d});
+    const hs = wProto==='h3' ? [seg('tls',rtt,rtt)] : [seg('tcp',rtt,rtt),seg('tls',2*rtt,rtt)];
+    const hsEnd = wProto==='h3' ? 2*rtt : 3*rtt;
+    const mainDl = dlTime(mainSize,rtt,bw);
+    rows.push({label:'index.html',segs:[seg('dns',0,rtt),...hs,seg('ttfb',hsEnd,rtt+SRV),seg('dl',hsEnd+rtt+SRV,mainDl)]});
+    const mainEnd = hsEnd+rtt+SRV+mainDl;
+    let total=mainEnd;
+    if(n>0){
+      if(wProto==='h1'){
+        const conns=6; const waves=Math.ceil(n/conns);
+        for(let i=0;i<n;i++){
+          const c=i%conns, w=Math.floor(i/conns);
+          let s = mainEnd; const segs=[];
+          if(c===0 && w===0){ /* 기존 연결 재사용 */ }
+          else if(w===0){ segs.push(seg('tcp',s,rtt)); segs.push(seg('tls',s+rtt,rtt)); s+=2*rtt; }
+          else { s = rows[rows.length-conns].end; }
+          const dl = dlTime(size,rtt,bw,Math.min(n-w*conns,conns));
+          segs.push(seg('ttfb',s,rtt+SRV)); segs.push(seg('dl',s+rtt+SRV,dl));
+          const end=s+rtt+SRV+dl; rows.push({label:`res${i+1}.js`,segs,end}); total=Math.max(total,end);
+        }
+      } else {
+        const dl = dlTime(size,rtt,bw,n);
+        for(let i=0;i<n;i++){ const s=mainEnd; const end=s+rtt+SRV+dl; rows.push({label:`res${i+1}.js`,segs:[seg('ttfb',s,rtt+SRV),seg('dl',s+rtt+SRV,dl)],end}); total=Math.max(total,end); }
+      }
+    }
+    const S=$('#wf-svg'); S.innerHTML='';
+    const H=Math.max(120, 30+rows.length*15+10); S.setAttribute('viewBox',`0 0 860 ${H}`);
+    const x0=110, W=730, sc=W/total;
+    // 눈금
+    const tick = total>2000?500: total>800?200: total>300?100:50;
+    for(let ms=0; ms<=total; ms+=tick){ const x=x0+ms*sc; S.appendChild(svg('line',{x1:x,y1:18,x2:x,y2:H-8,stroke:'var(--border)','stroke-dasharray':'2 3'})); S.appendChild(svg('text',{x,y:12,'text-anchor':'middle',class:'muted'},ms+' ms')); }
+    rows.forEach((r,i)=>{
+      const y=24+i*15;
+      S.appendChild(svg('text',{x:x0-6,y:y+10,'text-anchor':'end',class:'lbl'},r.label));
+      r.segs.forEach(sg=>{ const g=svg('rect',{x:x0+sg.start*sc,y,width:Math.max(sg.dur*sc,1),height:12,rx:2,fill:C[sg.k]}); g.appendChild(svg('title',{},`${sg.k} ${sg.dur.toFixed(1)} ms`)); S.appendChild(g); });
+    });
+    S.appendChild(svg('line',{x1:x0+total*sc,y1:18,x2:x0+total*sc,y2:H-8,stroke:'var(--red)','stroke-width':2}));
+    const hsRtt = wProto==='h3'?2:3;
+    $('#wf-summary').innerHTML=`총 소요 <b>${total.toFixed(0)} ms</b> = RTT ${rtt} ms × ${(total/rtt).toFixed(1)}배. 첫 바이트까지 ${hsRtt+1} RTT (DNS 1 + ${wProto==='h3'?'QUIC 1':'TCP 1 + TLS 1'} + 요청 1). ${wProto==='h1'?'HTTP/1.1은 추가 연결 5개가 각각 2 RTT를 더 치르고, 6개 단위로 순차 처리.':wProto==='h2'?'HTTP/2는 연결 하나로 모든 리소스를 동시에 요청 — 추가 핸드셰이크 없음. 단 손실 시 HOL blocking.':'HTTP/3은 핸드셰이크 1 RTT 절감 + 스트림 독립. 재연결 시 0-RTT도 가능.'}`;
+  }
+  ['w-rtt','w-bw','w-n','w-size'].forEach(id=>$('#'+id).addEventListener('input',waterfall)); waterfall();
+
+  /* ---------- 13.4 Mathis ---------- */
+  function mathis(){
+    const mss=+$('#m-mss').value, rtt=+$('#m-rtt').value, lp=+$('#m-p').value, p=Math.pow(10,lp);
+    $('#m-mss-v').textContent=mss; $('#m-rtt-v').textContent=rtt+' ms'; $('#m-p-v').textContent=(p*100).toPrecision(2)+' %';
+    const thr = (mss*8/(rtt/1000))*1.22/Math.sqrt(p);
+    const fmt = b => b>=1e9?(b/1e9).toFixed(2)+' Gbps':b>=1e6?(b/1e6).toFixed(2)+' Mbps':(b/1e3).toFixed(1)+' kbps';
+    const W = Math.sqrt(8/(3*p));
+    $('#m-out').innerHTML=`<dt>처리량 상한</dt><dd><b>${fmt(thr)}</b></dd><dt>평균 cwnd</dt><dd>${(0.75*W).toFixed(1)} MSS ≈ ${((0.75*W*mss)/1024).toFixed(0)} KB</dd><dt>손실 간격</dt><dd>약 ${Math.round(1/p).toLocaleString()} 세그먼트마다 1개</dd>`;
+    const cv=$('#m-canvas'), ctx=cv.getContext('2d'); const Wc=cv.width, Hc=cv.height; ctx.clearRect(0,0,Wc,Hc);
+    const css = getComputedStyle(document.documentElement);
+    const col = v => css.getPropertyValue(v).trim();
+    const L=50,R=10,T=10,B=30; const xr=[-6,-1], yr=[4,10]; // log10 bps 10kbps..10Gbps
+    const X=v=>L+(v-xr[0])/(xr[1]-xr[0])*(Wc-L-R), Y=v=>T+(yr[1]-v)/(yr[1]-yr[0])*(Hc-T-B);
+    ctx.strokeStyle=col('--border'); ctx.fillStyle=col('--muted'); ctx.font='10px sans-serif'; ctx.lineWidth=1;
+    for(let e=xr[0];e<=xr[1];e++){ ctx.beginPath(); ctx.moveTo(X(e),T); ctx.lineTo(X(e),Hc-B); ctx.stroke(); ctx.textAlign='center'; ctx.fillText('1e'+e,X(e),Hc-B+14); }
+    for(let e=yr[0];e<=yr[1];e++){ ctx.beginPath(); ctx.moveTo(L,Y(e)); ctx.lineTo(Wc-R,Y(e)); ctx.stroke(); ctx.textAlign='right'; ctx.fillText(['10k','100k','1M','10M','100M','1G','10G'][e-4],L-4,Y(e)+3); }
+    [[10,col('--green')],[50,col('--primary')],[200,col('--red')]].forEach(([r,c])=>{
+      ctx.strokeStyle=c; ctx.lineWidth=2; ctx.beginPath();
+      for(let lp2=xr[0]; lp2<=xr[1]; lp2+=0.05){ const t=(mss*8/(r/1000))*1.22/Math.sqrt(Math.pow(10,lp2)); const y=Math.log10(t); const px=X(lp2), py=Y(Math.min(Math.max(y,yr[0]),yr[1])); lp2===xr[0]?ctx.moveTo(px,py):ctx.lineTo(px,py); }
+      ctx.stroke(); ctx.fillStyle=c; ctx.textAlign='left'; ctx.fillText(r+' ms',X(xr[0])+4,Y(Math.min(Math.log10((mss*8/(r/1000))*1.22/Math.sqrt(1e-6)),yr[1]))+12);
+    });
+    ctx.fillStyle=col('--accent'); ctx.beginPath(); ctx.arc(X(lp),Y(Math.min(Math.max(Math.log10(thr),yr[0]),yr[1])),5,0,7); ctx.fill();
+  }
+  ['m-mss','m-rtt','m-p'].forEach(id=>$('#'+id).addEventListener('input',mathis)); mathis();
+  document.getElementById('theme-btn')?.addEventListener('click',()=>setTimeout(mathis,50));
+
+  /* ---------- 13.5 tcpdump 인터랙티브 ---------- */
+  const C='10.0.0.5.51234', Sv='93.184.216.34.443';
+  const lines=[
+    {t:'12:00:01.000123',d:`${C} > ${Sv}`,f:'[S]',rest:'seq 1736541234, win 65535, options [mss 1460,nop,wscale 7,nop,nop,TS val 1234 ecr 0,sackOK,eol], length 0',
+     desc:`<b>클라이언트의 SYN (능동 열기)</b><table><tr><th>Flags [S]</th><td>SYN만 설정. 새 연결 요청</td></tr><tr><th>seq 1736541234</th><td><b>절대</b> ISN. tcpdump는 SYN 줄에서만 절대값을 보여주고 이후엔 이 값을 0으로 삼아 상대값을 출력(-S로 바꿀 수 있음)</td></tr><tr><th>win 65535</th><td>초기 수신 윈도우. SYN에는 스케일이 적용되지 않음(RFC 7323)</td></tr><tr><th>mss 1460</th><td>내가 받을 수 있는 최대 세그먼트. MTU 1500 − 40</td></tr><tr><th>wscale 7</th><td>이후 내 win 값에 2^7=128을 곱하라</td></tr><tr><th>TS val 1234 ecr 0</th><td>타임스탬프. 첫 패킷이라 echo reply는 0</td></tr><tr><th>sackOK</th><td>SACK 지원</td></tr><tr><th>length 0</th><td>페이로드 없음</td></tr></table>`},
+    {t:'12:00:01.030456',d:`${Sv} > ${C}`,f:'[S.]',rest:'seq 2987654321, ack 1736541235, win 65160, options [mss 1460,sackOK,TS val 55 ecr 1234,nop,wscale 7], length 0',
+     desc:`<b>서버의 SYN-ACK</b> — 30.3 ms 뒤 도착 = <b>RTT ≈ 30 ms</b><table><tr><th>Flags [S.]</th><td>S=SYN, "."=ACK. 점은 ACK 플래그 표기</td></tr><tr><th>seq 2987654321</th><td>서버의 ISN(절대)</td></tr><tr><th>ack 1736541235</th><td>클라 ISN + 1. SYN이 시퀀스 1바이트를 소비</td></tr><tr><th>win 65160</th><td>서버 초기 윈도우(스케일 전)</td></tr><tr><th>wscale 7, sackOK, mss 1460</th><td>서버도 같은 옵션 합의. 양쪽 모두 보내야 활성</td></tr><tr><th>TS val 55 ecr 1234</th><td>ecr=1234: 클라 SYN의 TS를 되돌려줌 → 클라가 RTT 계산</td></tr></table>`},
+    {t:'12:00:01.030512',d:`${C} > ${Sv}`,f:'[.]',rest:'ack 1, win 2058, options [nop,nop,TS val 1264 ecr 55], length 0',
+     desc:`<b>클라이언트의 ACK — 핸드셰이크 완료, 양쪽 ESTABLISHED</b><table><tr><th>ack 1</th><td>여기부터 <b>상대값</b>. 서버 ISN+1을 1로 표시</td></tr><tr><th>seq 없음</th><td>데이터가 없는 순수 ACK라 seq 생략</td></tr><tr><th>win 2058</th><td>스케일 적용 전 값. 실제 = 2058 × 128 = <b>263,424 바이트</b>. 핸드셰이크 뒤 값이 작아 보이는 이유</td></tr><tr><th>TS val 1264 ecr 55</th><td>56 µs 만에 응답(커널이 자동 처리)</td></tr></table>`},
+    {t:'12:00:01.031000',d:`${C} > ${Sv}`,f:'[P.]',rest:'seq 1:518, ack 1, win 2058, options [nop,nop,TS val 1264 ecr 55], length 517',
+     desc:`<b>클라이언트 요청 데이터 (TLS ClientHello 517바이트)</b><table><tr><th>Flags [P.]</th><td>PSH+ACK. PSH = 버퍼링하지 말고 바로 응용에 전달(송신 버퍼의 마지막 조각에 자동 설정)</td></tr><tr><th>seq 1:518</th><td>바이트 1부터 517까지 (끝 번호 518은 배타적). length 517과 일치</td></tr><tr><th>ack 1</th><td>서버로부터 받은 데이터 없음</td></tr></table>`},
+    {t:'12:00:01.061200',d:`${Sv} > ${C}`,f:'[.]',rest:'ack 518, win 507, options [nop,nop,TS val 85 ecr 1264], length 0',
+     desc:`<b>서버의 순수 ACK</b> — 30.2 ms 뒤<table><tr><th>ack 518</th><td>517바이트 모두 받음, 다음 기대 바이트 518</td></tr><tr><th>win 507</th><td>507×128 = 64,896 B. 서버 수신 윈도우가 아직 크지 않음(자동 튜닝 전)</td></tr><tr><th>왜 즉시 ACK?</th><td>지연 ACK라면 40 ms 기다렸겠지만, 서버가 곧바로 응답 데이터를 보낼 것이므로 커널이 ACK만 먼저 보냈거나(quickack 모드: 연결 초기엔 지연 ACK 비활성), 다음 줄 데이터에 합쳐질 수도 있음</td></tr></table>`},
+    {t:'12:00:01.062000',d:`${Sv} > ${C}`,f:'[P.]',rest:'seq 1:1449, ack 518, win 507, options [nop,nop,TS val 85 ecr 1264], length 1448',
+     desc:`<b>서버 응답 첫 세그먼트 (TLS ServerHello…)</b><table><tr><th>seq 1:1449</th><td>1448바이트 = MSS 1460 − 12(타임스탬프 옵션 10 + NOP 2). 옵션 때문에 1460이 아님</td></tr><tr><th>0.8 ms 뒤</th><td>ACK 뒤 0.8 ms = 서버 처리 시간(TLS 키 교환 계산). 이 간격이 크면 서버 측 병목</td></tr></table>`},
+    {t:'12:00:01.062100',d:`${C} > ${Sv}`,f:'[.]',rest:'ack 1449, win 2047, options [nop,nop,TS val 1296 ecr 85], length 0',
+     desc:`<b>클라 ACK</b><table><tr><th>ack 1449</th><td>1448 B 수신 완료</td></tr><tr><th>win 2047</th><td>2058→2047: 응용이 아직 읽지 않아 버퍼가 1448 B(≈11×128) 줄었다. win이 계속 줄어 0에 가까워지면 <b>응용이 느린 것</b></td></tr></table>`},
+    {t:'12:00:05.100000',d:`${C} > ${Sv}`,f:'[F.]',rest:'seq 518, ack 1449, win 2047, options [nop,nop,TS val 5334 ecr 85], length 0',
+     desc:`<b>클라이언트 FIN — 능동 종료</b><table><tr><th>Flags [F.]</th><td>FIN+ACK. 더 보낼 데이터 없음. 클라 → FIN_WAIT_1</td></tr><tr><th>seq 518</th><td>FIN도 시퀀스 1바이트 소비. 다음 ACK는 519를 기대</td></tr><tr><th>4초 간격</th><td>데이터 교환 후 4초 유휴 → keep-alive 타임아웃 또는 응용이 close()</td></tr></table>`},
+    {t:'12:00:05.130000',d:`${Sv} > ${C}`,f:'[F.]',rest:'seq 1449, ack 519, win 507, options [nop,nop,TS val 4123 ecr 5334], length 0',
+     desc:`<b>서버 FIN+ACK (수동 종료)</b><table><tr><th>ack 519</th><td>클라의 FIN을 ACK (518+1)</td></tr><tr><th>FIN 동시</th><td>서버가 ACK와 FIN을 한 세그먼트로 합침 → 4-way가 3개 세그먼트로 보임. 서버 → LAST_ACK</td></tr></table>`},
+    {t:'12:00:05.130100',d:`${C} > ${Sv}`,f:'[.]',rest:'ack 1450, win 2047, options [nop,nop,TS val 5364 ecr 4123], length 0',
+     desc:`<b>마지막 ACK</b><table><tr><th>ack 1450</th><td>서버 FIN(1449) ACK. 서버 → CLOSED</td></tr><tr><th>클라 상태</th><td><b>TIME_WAIT</b> 60초(Linux). <code>ss -tan state time-wait</code>에서 보임. 캡처에는 더 이상 패킷 없음</td></tr></table>`},
+  ];
+  const box=$('#tcpd');
+  lines.forEach((l,i)=>{
+    const d=el('div','ln'); d.innerHTML=`<span class="t">${l.t}</span> IP <span class="a">${l.d}</span>: Flags <span class="f">${l.f}</span>, <span class="s">${l.rest.replace(/(options \[[^\]]*\])/,'<span class="o">$1</span>')}</span>`;
+    d.onclick=()=>{ $$('.ln',box).forEach(x=>x.classList.remove('sel')); d.classList.add('sel'); $('#tcpd-desc').innerHTML=l.desc; };
+    box.appendChild(d);
+  });
+
+  /* ---------- 13.8 커널 스택 도식 ---------- */
+  (function(){
+    const S=$('#stack-svg');
+    const stages=[
+      ['NIC','RX ring 버퍼 → DMA','ethtool -S / -g\nrx_dropped, rx_missed'],
+      ['드라이버 / IRQ','하드 인터럽트 → NAPI poll','/proc/interrupts\nethtool -c (coalescing)'],
+      ['softirq (NET_RX)','per-CPU backlog, GRO, XDP','/proc/net/softnet_stat\n(2열 = drop)'],
+      ['netfilter / 브리지','PREROUTING, conntrack','iptables -vnL\nconntrack -S'],
+      ['IP','라우팅 조회, 재조립, INPUT','nstat IpInDiscards\nip -s route'],
+      ['TCP / UDP','소켓 조회, 재조립, ACK','nstat Tcp*\nss -ti'],
+      ['소켓 수신 버퍼','sk_rmem, rwnd','ss -tm (skmem)\nRecv-Q'],
+      ['응용','read()/recv()','strace, perf\napp_limited'],
+    ];
+    const bw=98, gap=8, x0=12;
+    stages.forEach((s,i)=>{
+      const x=x0+i*(bw+gap);
+      S.appendChild(svg('rect',{x,y:60,width:bw,height:70,rx:8,class:'node'}));
+      S.appendChild(svg('text',{x:x+bw/2,y:82,'text-anchor':'middle','font-weight':'700','font-size':11},s[0]));
+      s[1].split(', ').forEach((t,j)=>S.appendChild(svg('text',{x:x+bw/2,y:100+j*13,'text-anchor':'middle','font-size':9.5,class:'muted'},t)));
+      if(i<stages.length-1) S.appendChild(svg('path',{d:`M${x+bw} 95 l${gap} 0`,stroke:'var(--muted)','stroke-width':2,'marker-end':'url(#stk-ar)'}));
+      S.appendChild(svg('line',{x1:x+bw/2,y1:130,x2:x+bw/2,y2:160,stroke:'var(--accent)','stroke-dasharray':'3 3'}));
+      S.appendChild(svg('rect',{x,y:160,width:bw,height:50,rx:6,fill:'var(--accent-soft)',stroke:'var(--accent)'}));
+      s[2].split('\n').forEach((t,j)=>S.appendChild(svg('text',{x:x+bw/2,y:178+j*14,'text-anchor':'middle','font-size':9,class:'mono'},t)));
+    });
+    S.insertBefore(svg('defs',{},svg('marker',{id:'stk-ar',viewBox:'0 0 10 10',refX:'8',refY:'5',markerWidth:'6',markerHeight:'6',orient:'auto'},svg('path',{d:'M0 0L10 5 0 10z',fill:'var(--muted)'}))),S.firstChild);
+    S.appendChild(svg('text',{x:12,y:40,'font-size':12,'font-weight':'700'},'RX 경로 (패킷 → 응용)'));
+    S.appendChild(svg('text',{x:12,y:250,'font-size':11,'font-weight':'700'},'TX 경로에만 있는 것:'));
+    S.appendChild(svg('text',{x:12,y:268,'font-size':10.5,class:'muted'},'응용 write() → 소켓 송신 버퍼(sk_wmem, Send-Q) → TCP 혼잡/흐름 제어 → IP → qdisc(tc: fq_codel/fq, pacing) → 드라이버 TX ring → NIC(TSO)'));
+    S.appendChild(svg('text',{x:12,y:286,'font-size':10.5,class:'muted'},'드롭 확인: tc -s qdisc show (dropped/overlimits), ethtool -S (tx_*), ss -tm, nstat TcpOutSegs/TcpRetransSegs'));
+    S.appendChild(svg('text',{x:12,y:312,'font-size':10.5,class:'muted'},'캡처 위치: tcpdump(AF_PACKET)는 드라이버와 스택 사이 — RX는 GRO 뒤, TX는 TSO 앞. 그래서 캡처에 MTU보다 큰 세그먼트가 보인다.'));
+  })();
+
+  /* ---------- 13.10 QUIC vs TCP+TLS 핸드셰이크 ---------- */
+  (function(){
+    const S=$('#quic-svg');
+    const col=(x,label,sub)=>{ S.appendChild(svg('line',{x1:x,y1:50,x2:x,y2:310,stroke:'var(--border)','stroke-width':2})); S.appendChild(svg('text',{x,y:30,'text-anchor':'middle','font-weight':'700'},label)); S.appendChild(svg('text',{x,y:44,'text-anchor':'middle',class:'muted','font-size':10},sub)); };
+    S.appendChild(svg('text',{x:215,y:14,'text-anchor':'middle','font-weight':'700',fill:'var(--l-tr)'},'TCP + TLS 1.3'));
+    S.appendChild(svg('text',{x:645,y:14,'text-anchor':'middle','font-weight':'700',fill:'var(--purple)'},'QUIC (HTTP/3)'));
+    col(80,'클라이언트',''); col(350,'서버',''); col(510,'클라이언트',''); col(780,'서버','');
+    S.appendChild(svg('line',{x1:430,y1:10,x2:430,y2:320,stroke:'var(--border)','stroke-dasharray':'4 4'}));
+    const msgs=[];
+    const arrow=(x1,x2,y,text,color,id)=>{ const g=svg('g',{class:'msg',id,opacity:0}); g.appendChild(svg('line',{x1,y1:y,x2,y2:y,stroke:color,'stroke-width':2,'marker-end':'url(#qa)'})); g.appendChild(svg('text',{x:(x1+x2)/2,y:y-5,'text-anchor':'middle','font-size':10.5,fill:color},text)); S.appendChild(g); msgs.push(g); return g; };
+    S.insertBefore(svg('defs',{},svg('marker',{id:'qa',viewBox:'0 0 10 10',refX:'9',refY:'5',markerWidth:'7',markerHeight:'7',orient:'auto'},svg('path',{d:'M0 0L10 5 0 10z',fill:'context-stroke'}))),S.firstChild);
+    const rttLabel=(x,y,t)=>{ const g=svg('g',{class:'msg',opacity:0}); g.appendChild(svg('text',{x,y,'font-size':10,'font-weight':'700',fill:'var(--muted)'},t)); S.appendChild(g); msgs.push(g); return g; };
+    const T=[ arrow(85,345,80,'SYN','var(--l-tr)'), arrow(345,85,110,'SYN+ACK','var(--l-tr)'), rttLabel(140,135,'← 1 RTT (TCP) →'),
+      arrow(85,345,150,'ACK + TLS ClientHello','var(--l-app)'), arrow(345,85,185,'ServerHello, EncryptedExtensions, Cert, Finished','var(--l-app)'), rttLabel(140,205,'← 1 RTT (TLS) →'),
+      arrow(85,345,225,'Finished + HTTP 요청 (암호화)','var(--green)'), arrow(345,85,260,'HTTP 응답','var(--green)'), rttLabel(100,290,'요청 데이터까지 2 RTT · 응답 수신 3 RTT') ];
+    const Q=[ arrow(515,775,80,'Initial [CRYPTO: ClientHello] (+ 0-RTT 데이터 가능)','var(--purple)'), arrow(775,515,115,'Initial [ServerHello] + Handshake [EE, Cert, Finished]','var(--purple)'), rttLabel(570,140,'← 1 RTT (전송+암호 동시) →'),
+      arrow(515,775,165,'Handshake [Finished] + 1-RTT [HTTP 요청]','var(--green)'), arrow(775,515,200,'1-RTT [HTTP 응답]','var(--green)'), rttLabel(540,230,'요청 데이터까지 1 RTT · 응답 수신 2 RTT'), rttLabel(540,250,'재연결: 0-RTT → 첫 패킷에 요청 포함'), rttLabel(540,290,'Connection ID로 주소 변경에도 연결 유지') ];
+    const show=g=>g.setAttribute('opacity',1);
+    const steps=[
+      {title:'TCP 3-way handshake 시작',text:'SYN → SYN+ACK. 아직 암호 협상은 시작도 못 했다.',run(){show(T[0]);show(T[1]);show(T[2]);}},
+      {title:'QUIC: 첫 패킷에 암호 핸드셰이크 포함',text:'QUIC Initial 패킷은 연결 수립과 TLS 1.3 ClientHello를 <b>동시에</b> 운반한다. 전송 계층 핸드셰이크가 따로 없다.',run(){show(Q[0]);}},
+      {title:'TLS 1.3 핸드셰이크 (TCP 위)',text:'TCP 수립 후 ClientHello → ServerHello…Finished. 1 RTT 추가. TLS 1.2라면 2 RTT.',run(){show(T[3]);show(T[4]);show(T[5]);}},
+      {title:'QUIC: 서버 응답에 키 교환 완료',text:'ServerHello + Handshake 패킷이 한 번에 돌아온다. 이 시점에 클라이언트는 1-RTT 키를 갖는다.',run(){show(Q[1]);show(Q[2]);}},
+      {title:'요청 전송',text:'TCP+TLS: Finished와 함께 요청을 보내므로 <b>2 RTT</b> 뒤 요청이 서버에 도착. QUIC: Finished와 함께 요청 → <b>1 RTT</b> 뒤 도착.',run(){show(T[6]);show(Q[3]);}},
+      {title:'응답 수신과 총합',text:'응답이 돌아오는 데 각각 1 RTT 더. TCP+TLS 3 RTT vs QUIC 2 RTT. 재연결 시 QUIC 0-RTT는 첫 패킷에 요청을 실어 1 RTT 만에 응답. 또 QUIC은 Connection ID로 IP가 바뀌어도 연결이 유지된다.',run(){show(T[7]);show(T[8]);show(Q[4]);show(Q[5]);show(Q[6]);show(Q[7]);}},
+    ];
+    Stepper('#quic-anim',{steps,intro:'첫 연결에서 HTTP 응답을 받기까지의 왕복 횟수를 나란히 비교합니다.',reset(){msgs.forEach(g=>g.setAttribute('opacity',0));}});
+  })();
+
+  /* ---------- 13.11 진단 플로차트 ---------- */
+  const DIAG={
+    slow:[
+      ['호스트인가 네트워크인가','<code>ss -ti</code>에서 <code>app_limited</code>, 송신 Send-Q가 비어 있으면 응용/CPU 병목. <code>top</code>, <code>perf top</code>','응용이 느림, 단일 스레드 포화, 디스크 I/O'],
+      ['RTT와 경로 확인','<code>mtr -n -T -P 443 host</code> 로 홉별 RTT·손실. <code>ip route get</code>으로 실제 경로','경로 우회, ISP 피어링 혼잡, 지리적 거리'],
+      ['손실·재전송 비율','<code>nstat -az TcpRetransSegs TcpOutSegs</code> 전후 비교, Wireshark <code>tcp.analysis.retransmission</code>','0.1 % 이상 손실 → Mathis로 처리량 상한 추정. 케이블/듀플렉스/버퍼 드롭'],
+      ['윈도우 제한','<code>ss -ti</code> wscale·rcv_space, Wireshark <code>tcp.analysis.window_full</code> / <code>zero_window</code>','rwnd 부족(LFN, tcp_rmem max), 응용이 읽지 않음(zero window), 윈도우 스케일 비활성'],
+      ['병목 대역폭','<code>iperf3 -P 4</code> 로 메모리→메모리 처리량. 단일 vs 다중 스트림 차이','단일 흐름이 느리면 윈도우/손실, 다중도 느리면 링크 용량·셰이핑'],
+      ['RTT 횟수 문제 (작은 요청)','<code>curl -w</code> 시간 분해. DNS·TCP·TLS 각 단계','커넥션 재사용 안 함, DNS 느림, TLS 1.2, Nagle+지연 ACK'],
+      ['호스트 스택 드롭','<code>ethtool -S | grep -i drop</code>, <code>/proc/net/softnet_stat</code>, <code>ss -ltn</code> Recv-Q','ring 버퍼 부족, softirq 포화(단일 CPU), accept 큐 오버플로'],
+    ],
+    flaky:[
+      ['패턴 파악','언제(주기적? 부하 시?), 얼마나(수 초? 수 분?), 어떤 연결(장기 유휴?)','유휴 타임아웃형 vs 부하형 구분'],
+      ['유휴 연결 끊김','NAT/방화벽/LB 세션 타임아웃보다 keepalive가 긴지. <code>ss -tao</code> 타이머','NAT 테이블 만료(보통 5–30분) → RST 또는 조용히 drop. keepalive_time 단축'],
+      ['간헐 손실','<code>mtr</code> 100회 이상, 특정 홉에서만 손실이면 그 홉 ICMP 제한일 수도(마지막 홉까지 손실이 이어지는지 확인)','링크 플래핑, 무선 간섭, ECMP 한 경로만 불량'],
+      ['비대칭·상태 기반 장비','양쪽에서 동시 캡처해 어느 구간에서 사라지는지. SYN은 가는데 SYN-ACK 안 옴?','방화벽 conntrack 테이블 가득(<code>nf_conntrack: table full</code>), 비대칭 경로로 상태 불일치'],
+      ['DNS 간헐 지연','<code>dig</code> 반복 + <code>resolv.conf</code> timeout/attempts. 5초 정확히 걸리면 UDP 손실 재시도','리졸버 응답 손실, IPv6 AAAA 먼저 시도 후 실패, 검색 도메인 다중 시도'],
+      ['PMTUD 블랙홀','작은 요청은 되고 큰 응답만 멈춤. <code>ping -M do -s 1472</code>, <code>tracepath</code>','경로 어딘가 MTU 1500 미만(터널/VPN) + ICMP 차단. MSS clamp 또는 tcp_mtu_probing'],
+      ['호스트 자원','<code>dmesg</code> (link down/up, out of memory), <code>nstat TcpExtListenDrops</code>','NIC 리셋, 메모리 부족으로 소켓 버퍼 드롭, accept 큐 오버플로'],
+    ],
+    fail:[
+      ['이름 해석','<code>dig host</code> / <code>getent hosts host</code>. 결과 IP가 기대와 같은가','DNS 실패, 잘못된 레코드, /etc/hosts 오버라이드, AAAA만 있고 IPv6 미지원'],
+      ['경로 존재','<code>ip route get IP</code>. 기본 경로·출발지 인터페이스 확인','라우트 없음, 잘못된 게이트웨이, 소스 IP 선택 오류'],
+      ['L2 도달','같은 서브넷이면 <code>ip neigh</code>에서 FAILED/INCOMPLETE 확인','ARP 응답 없음(VLAN 불일치, 상대 다운), 중복 IP'],
+      ['SYN이 나가는가','<code>tcpdump -nn host IP and port P</code>. SYN 재전송만 반복(1s, 2s, 4s…)?','SYN drop: 방화벽(조용히 버림), 라우팅 블랙홀. RST가 오면: 포트 닫힘/거부'],
+      ['서버 측 리스닝','서버에서 <code>ss -ltnp</code>. 0.0.0.0인가 127.0.0.1인가','바인드 주소 오류, 서비스 다운, 다른 포트'],
+      ['accept 큐·SYN 큐','<code>nstat TcpExtListenOverflows TcpExtListenDrops</code>, <code>ss -ltn</code> Recv-Q = 현재 큐 길이','백로그 포화 → SYN 무시(클라가 재전송), somaxconn·listen backlog 증설'],
+      ['중간 장비·정책','보안 그룹/NACL/방화벽 규칙, conntrack, LB 헬스체크 상태','클라우드 보안 그룹, 상태 테이블 가득, 헬스체크 실패로 백엔드 제외'],
+    ]
+  };
+  function renderDiag(k){ const ol=$('#diag-steps'); ol.innerHTML=''; DIAG[k].forEach(([t,c,cause],i)=>{ const li=el('li'); li.innerHTML=`<div class="k">${i+1}</div><div><b>${t}</b><div class="small">${c}</div><div class="cause">의심 원인: ${cause}</div></div>`; ol.appendChild(li); }); }
+  $$('#diag-sel button').forEach(b=>b.onclick=()=>{ $$('#diag-sel button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); renderDiag(b.dataset.s); }); renderDiag('slow');
+
+  /* ---------- 13.13 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'서울–LA 구간(약 9,000 km, 광섬유)의 편도 전파 지연에 가장 가까운 값은?',options:['0.45 ms','4.5 ms','45 ms','450 ms'],answer:2,explain:'9×10⁶ m ÷ 2×10⁸ m/s = 0.045 s = 45 ms. 대역폭과 무관한 물리 한계다.'},
+    {q:'1 Gbps 링크에서 1,500바이트 프레임의 전송 지연은?',options:['1.2 µs','12 µs','120 µs','1.2 ms'],answer:1,explain:'1500×8 = 12,000 bit ÷ 10⁹ bit/s = 12 µs.'},
+    {q:'Mathis 공식에 따르면 손실률이 100배 증가하면 Reno 처리량은 대략?',options:['1/100','1/10','1/2','변화 없음'],answer:1,explain:'처리량 ∝ 1/√p. √100 = 10이므로 1/10.'},
+    {q:'tcpdump 출력에서 <code>Flags [S.]</code>의 의미는?',options:['SYN만','SYN+ACK','SYN+PSH','SYN+FIN'],answer:1,explain:'점(.)은 ACK 플래그를 뜻한다. [S.] = SYN-ACK, [P.] = PSH+ACK, [F.] = FIN+ACK, [.] = 순수 ACK.'},
+    {q:'tcpdump가 SYN 이후 세그먼트에 <code>ack 1</code>처럼 작은 숫자를 보여주는 이유는?',options:['서버가 ISN을 0으로 선택했기 때문','tcpdump가 기본적으로 상대 시퀀스 번호를 출력하기 때문','ACK 번호는 항상 1부터 시작하기 때문','옵션 -S가 기본으로 켜져 있기 때문'],answer:1,explain:'tcpdump는 SYN에서 본 ISN을 기준으로 상대값을 출력한다. 절대값은 -S 옵션.'},
+    {q:'캡처의 <code>win 2058</code>, SYN의 <code>wscale 7</code>일 때 실제 수신 윈도우 바이트는?',options:['2,058','14,406','263,424','65,535'],answer:2,explain:'2058 × 2⁷ = 2058 × 128 = 263,424 바이트. tcpdump는 스케일 적용 전 값을 보여준다.'},
+    {q:'Wireshark에서 <code>tcp.analysis.zero_window</code>가 많이 보일 때 가장 가능성 높은 원인은?',options:['네트워크 경로의 패킷 손실','수신 측 응용이 소켓 버퍼를 읽지 않음','송신 측 cwnd 부족','MTU 불일치'],answer:1,explain:'제로 윈도우는 수신 버퍼가 가득 찼다는 뜻이며, 이는 응용이 데이터를 소비하지 못하는 호스트 문제다.'},
+    {q:'tcpdump 캡처에서 MTU(1500)보다 큰 TCP 세그먼트(예: 64 KB)가 보이는 이유는?',options:['점보 프레임이 활성화됨','캡처 지점이 TSO/GSO 분할 전·GRO 병합 후이기 때문','IP 단편화가 일어남','캡처 오류'],answer:1,explain:'AF_PACKET 캡처는 드라이버와 스택 사이에서 일어난다. TX는 NIC가 분할(TSO)하기 전, RX는 커널이 병합(GRO)한 후라 큰 세그먼트가 보인다.'},
+    {q:'<code>ss -ti</code> 출력의 <code>app_limited</code>가 의미하는 것은?',options:['수신 윈도우가 제한됨','응용이 보낼 데이터가 없어 네트워크가 병목이 아님','cwnd가 ssthresh에 도달','RTO가 발생함'],answer:1,explain:'송신 버퍼가 비어 전송률이 응용에 의해 제한되는 상태. 처리량 문제를 네트워크에서 찾으면 안 된다는 신호.'},
+    {q:'HTTP/3(QUIC)이 첫 연결에서 TCP+TLS 1.3보다 절약하는 왕복 횟수는?',options:['0 RTT','1 RTT','2 RTT','3 RTT'],answer:1,explain:'TCP 1 RTT + TLS 1 RTT = 2 RTT vs QUIC 1 RTT. 재연결에서는 0-RTT로 더 줄어든다.'},
+    {q:'<code>net.ipv4.tcp_tw_reuse=1</code>의 올바른 설명은?',options:['TIME_WAIT 지속 시간을 1초로 줄인다','발신 연결에서 TIME_WAIT 소켓을 재사용하며 timestamps가 필요하다','수신 연결의 TIME_WAIT를 건너뛴다','NAT 뒤 클라이언트 연결을 끊는다'],answer:1,explain:'tw_reuse는 클라이언트(발신) 측 포트 고갈 대책이다. timestamps로 안전성을 확보한다. NAT를 깨뜨린 것은 삭제된 tw_recycle.'},
+    {q:'데이터센터 Incast 문제의 핵심 원인 조합은?',options:['긴 RTT + 큰 버퍼','동시 응답으로 인한 버퍼 오버플로 + 큰 RTO 최소값','IPv6 + 점보 프레임','NAT + 방화벽'],answer:1,explain:'많은 서버의 응답이 동시에 한 포트로 몰려 얕은 버퍼가 넘치고, 손실 후 200 ms RTO를 기다리는 동안 링크가 비어 처리량이 붕괴한다.'},
+    {q:'작은 RPC 요청마다 약 40 ms 지연이 생기고 처리량 테스트에서는 정상일 때 가장 의심할 것은?',options:['DNS 캐시','Nagle 알고리즘과 지연 ACK의 상호작용','PMTUD 블랙홀','SYN 큐 오버플로'],answer:1,explain:'작은 쓰기 두 번 + 지연 ACK 40 ms(Linux 최소)의 교착. TCP_NODELAY 또는 쓰기 합치기로 해결.'},
+    {q:'커널 수신 경로에서 softirq 백로그 드롭을 확인하는 파일은?',options:['/proc/net/snmp','/proc/net/softnet_stat','/proc/interrupts','/proc/net/dev'],answer:1,explain:'softnet_stat의 2번째 열이 per-CPU 백로그 큐 drop 수다. netdev_max_backlog를 키우거나 RSS/RPS로 분산한다.'},
+  ]);
+})();
+</script>
+</body>
+</html>

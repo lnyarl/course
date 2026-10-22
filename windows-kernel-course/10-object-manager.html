@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>객체 관리자와 핸들</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .life-wrap { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; align-items: start; }
+  @media (max-width: 860px) { .life-wrap { grid-template-columns: 1fr; } }
+  .counters { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+  .counter { flex: 1; min-width: 120px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; text-align: center; }
+  .counter .v { font: 800 1.7rem var(--mono); color: var(--head); line-height: 1.1; }
+  .counter.ptr .v { color: var(--kernel); }
+  .counter.hnd .v { color: var(--user); }
+  .counter .k { font-size: .78rem; color: var(--muted); margin-top: 2px; }
+  .obj-state { margin: 8px 0; font-weight: 700; }
+  .obj-state.alive { color: var(--ok); }
+  .obj-state.dead { color: var(--bad); }
+  .handle-list { display: flex; flex-direction: column; gap: 4px; }
+  .handle-list .h { display: flex; justify-content: space-between; gap: 8px; font: .82rem var(--mono); background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; }
+  .handle-list .h .x { color: var(--muted); cursor: pointer; }
+  .handle-list .h .x:hover { color: var(--bad); }
+  .ns-tree { font: .9rem var(--mono); }
+  .ns-tree .row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+  .ns-tree .row:hover { background: var(--panel2); }
+  .ns-tree .row.sel { background: var(--acc-bg); outline: 1px solid var(--acc); }
+  .ns-tree .tw { color: var(--muted); width: 1.1em; display: inline-block; text-align: center; }
+  .ns-tree .nm { color: var(--head); }
+  .ns-tree .nm.dir { color: var(--kernel); font-weight: 700; }
+  .ns-tree .nm.link { color: var(--hv); }
+  .ns-tree .tag { font-size: .72rem; color: var(--muted); margin-left: auto; }
+  .ns-detail { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-height: 6em; margin-top: 8px; }
+  .ns-detail h4 { margin: 0 0 6px; }
+  .infomask-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .infomask-grid .btn { font: .8rem var(--mono); }
+</style>
+</head>
+<body data-chapter="10">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part IV · Chapter 10</div>
+  <h1>객체 관리자와 핸들</h1>
+  <p class="sub">파일, 프로세스, 이벤트, 레지스트리 키 — 겉모습이 다른 이 모든 자원을 커널은 하나의 추상 <strong>객체</strong>로 다룹니다. 그 통일된 세계를 만드는 것이 객체 관리자(Object Manager)입니다.</p>
+  <div class="meta"><span class="pill lv-core">핵심</span><span class="pill">⏱ 약 90분</span><span class="pill">선수: 01 아키텍처, 04 프로세스/스레드</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>객체의 물리적 구조(<code>OBJECT_HEADER</code> + 본문 + 선택적 헤더)와 <code>InfoMask</code>로 선택적 헤더 위치를 계산하는 방식을 설명할 수 있다.</li>
+    <li>객체 타입(<code>OBJECT_TYPE</code>)과 타입별 프로시저(Open/Close/Delete/Parse/Security)가 객체 수명과 열기 과정에서 언제 호출되는지 안다.</li>
+    <li>핸들 값이 핸들 테이블을 거쳐 객체로 변환되는 과정과, 핸들 수·포인터(참조) 수가 객체 수명을 어떻게 결정하는지 추적할 수 있다.</li>
+    <li>객체 네임스페이스(<code>\Device</code>, <code>\??</code>, <code>\BaseNamedObjects</code> 등)와 심볼릭 링크를 통해 이름 기반 열기가 파싱되는 흐름을 그릴 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="why">왜 "객체"로 통일하는가</h2>
+<p>
+  커널이 관리하는 자원은 종류가 많습니다 — 프로세스, 스레드, 파일, 이벤트, 세마포어, 섹션(메모리 매핑), 레지스트리 키, 토큰, 타이머, 잡(Job)….
+  이들을 제각각 다루면 <b>이름 짓기, 보안 검사, 수명 관리, 핸들 부여</b>를 자원마다 새로 구현해야 합니다.
+  NT는 이 공통 관심사를 <strong>객체 관리자(Object Manager, <code>Ob*</code>)</strong> 한 곳으로 모았습니다.
+</p>
+<p>
+  덕분에 <code>CloseHandle</code> 하나로 어떤 종류의 핸들이든 닫을 수 있고, <code>\BaseNamedObjects\MyEvent</code>처럼 모든 객체에 같은 규칙으로 이름을 붙일 수 있으며,
+  모든 열기(open)가 동일한 접근 검사(13장)를 거칩니다. 객체 관리자는 NT를 <b>객체 기반 운영체제</b>로 만드는 중심 축입니다.
+</p>
+
+<div class="callout expert">
+  <div class="callout-title">전문가 관점</div>
+  <p>EDR·루트킷·익스플로잇의 상당수가 이 계층에서 벌어집니다. 핸들 복제로 LSASS 메모리에 접근하거나(<code>PROCESS_VM_READ</code>), 이름 충돌로 권한 상승을 노리거나,
+  참조 카운트 불균형(누수/UAF)으로 커널 메모리를 조작합니다. 객체 수명과 네임스페이스를 정확히 이해하는 것은 공격·방어 양쪽의 기본기입니다.</p>
+</div>
+
+<h2 id="layout">객체의 메모리 레이아웃</h2>
+<p>
+  하나의 객체는 메모리에서 <strong>[선택적 헤더들] → <code>OBJECT_HEADER</code> → 객체 본문</strong> 순으로 놓입니다.
+  <code>ObReferenceObjectByHandle</code> 같은 함수가 반환하는 "객체 포인터"는 <b>본문의 시작 주소</b>를 가리킵니다.
+  그래서 <code>OBJECT_HEADER</code>는 본문 <b>바로 앞</b>에 있고, 선택적 헤더들은 그보다 더 앞(낮은 주소)에 역순으로 쌓입니다.
+</p>
+
+<figure class="fig explore" id="hdrMap">
+  <svg class="dia" viewBox="0 0 880 440" role="img" aria-label="객체 메모리 레이아웃">
+    <text x="40" y="26" class="sm c-muted">낮은 주소 ↑</text>
+    <text x="40" y="430" class="sm c-muted">높은 주소 ↓</text>
+
+    <g data-info="creator"><rect class="box plain" x="150" y="36" width="580" height="34" rx="7" style="stroke:var(--hv);stroke-dasharray:4 4"/>
+      <text x="440" y="58" text-anchor="middle" class="sm">선택: CreatorInfo · Name · HandleInfo · Quota · Padding …</text></g>
+
+    <g data-info="header"><rect class="box kernel" x="150" y="84" width="580" height="150" rx="8" style="stroke-width:2.4"/>
+      <text x="440" y="106" text-anchor="middle" class="b">OBJECT_HEADER</text>
+      <text x="170" y="132" class="sm mono">PointerCount   — 참조(포인터) 수</text>
+      <text x="170" y="154" class="sm mono">HandleCount    — 핸들 수</text>
+      <text x="170" y="176" class="sm mono">TypeIndex      — (난독화된) 타입 인덱스</text>
+      <text x="170" y="198" class="sm mono">InfoMask       — 어떤 선택적 헤더가 있는가</text>
+      <text x="170" y="220" class="sm mono">SecurityDescriptor · Body(=여기 끝 +0)</text></g>
+
+    <g data-info="body"><rect class="box user" x="150" y="248" width="580" height="150" rx="8"/>
+      <text x="440" y="270" text-anchor="middle" class="b">객체 본문 (Object Body)</text>
+      <text x="440" y="296" text-anchor="middle" class="sm">타입마다 다른 실제 구조체</text>
+      <text x="440" y="320" text-anchor="middle" class="sm mono">_EPROCESS · _FILE_OBJECT · _KEVENT · _ETHREAD …</text>
+      <text x="440" y="352" text-anchor="middle" class="sm c-acc">◀ Ob*가 반환하는 "객체 포인터"는 여기(본문 시작)를 가리킴</text></g>
+
+    <path class="ln acc" d="M120 263 L120 90" />
+    <text x="96" y="180" class="sm c-acc" text-anchor="middle" transform="rotate(-90 96 180)">헤더는 본문 앞</text>
+  </svg>
+
+  <template data-key="creator">
+    <h4>선택적(Optional) 헤더</h4>
+    <p>모든 객체가 전부 갖는 것이 아니라 <b>필요할 때만</b> 붙는 헤더들입니다. 종류: <code>ObjectCreatorInfo</code>(생성 프로세스 추적), <code>ObjectName</code>(네임스페이스에 이름이 있을 때), <code>ObjectHandleInfo</code>, <code>ObjectQuota</code>, <code>ObjectProcessInfo</code>, <code>ObjectAuditInfo</code>, <code>ObjectExtendedInfo</code> 등.</p>
+    <p>이들은 <code>OBJECT_HEADER</code> <b>앞쪽(낮은 주소)</b>에 고정된 순서로 배치됩니다. 어떤 헤더가 존재하는지는 <code>InfoMask</code> 비트로 나타내고, 각 헤더까지의 거리는 <code>ObpInfoMaskToOffset</code> 테이블로 계산합니다.</p>
+  </template>
+  <template data-key="header">
+    <h4>OBJECT_HEADER</h4>
+    <p>모든 객체가 공통으로 갖는 머리말입니다. 핵심 필드:</p>
+    <ul>
+      <li><code>PointerCount</code> / <code>HandleCount</code> — 수명 관리의 두 카운터(아래 참조).</li>
+      <li><code>TypeIndex</code> — 객체 타입 배열(<code>ObTypeIndexTable</code>)의 인덱스. Win10+에서는 헤더 주소·<code>ObHeaderCookie</code>와 XOR로 <b>난독화</b>되어 저장됩니다(익스플로잇 완화).</li>
+      <li><code>InfoMask</code> — 어떤 선택적 헤더가 붙어 있는가.</li>
+      <li><code>SecurityDescriptor</code> — 보안 설명자 포인터(13장). <code>EX_FAST_REF</code> 형식이라 하위 비트가 참조 카운트로 쓰이므로 마스킹해야 실제 주소가 됩니다.</li>
+    </ul>
+    <p>정확한 오프셋은 빌드마다 다릅니다 — <code>dt nt!_OBJECT_HEADER</code>로 확인하세요.</p>
+  </template>
+  <template data-key="body">
+    <h4>객체 본문</h4>
+    <p>타입별 실제 데이터입니다. 프로세스면 <code>_EPROCESS</code>, 파일이면 <code>_FILE_OBJECT</code>, 이벤트면 <code>_KEVENT</code>. <code>OpenProcess</code>가 돌려준 핸들을 <code>ObReferenceObjectByHandle</code>로 변환하면 이 본문의 주소를 받습니다.</p>
+    <p>본문 주소에서 <code>sizeof(OBJECT_HEADER)</code>만큼 빼면 헤더로 갈 수 있고, 이를 매크로 <code>OBJECT_TO_OBJECT_HEADER</code>가 해 줍니다.</p>
+  </template>
+  <figcaption><b>그림 10-1.</b> 객체의 레이아웃. 상자를 클릭해 각 부분의 역할을 확인하세요.</figcaption>
+</figure>
+
+<div class="callout note">
+  <div class="callout-title">InfoMask — 가변 헤더를 찾는 법</div>
+  <p><code>InfoMask</code>는 비트맵입니다. 어떤 선택적 헤더가 존재하는지 비트로 표시하고, 커널은 원하는 헤더의 비트와 그보다 <b>낮은 비트들만 남긴 값</b>(<code>InfoMask &amp; ((Bit &lt;&lt; 1) - 1)</code>)으로 <code>ObpInfoMaskToOffset</code> 테이블을 인덱싱해, <b>그 헤더가 OBJECT_HEADER로부터 얼마나 앞에 있는지</b>를 상수 시간에 구합니다. 즉 낮은 비트의 헤더(CreatorInfo)일수록 OBJECT_HEADER에 가깝습니다. 아래 시뮬레이터로 비트를 켜고 끄며 레이아웃이 어떻게 바뀌는지 보세요.</p>
+</div>
+
+<div class="sim" id="infoSim">
+  <div class="sim-title">InfoMask 레이아웃 계산기</div>
+  <div class="sim-controls">
+    <span>선택적 헤더 토글:</span>
+    <div class="infomask-grid"></div>
+  </div>
+  <div class="console" id="infoOut">헤더를 켜거나 꺼서 메모리 배치를 확인하세요.</div>
+  <p class="muted" style="font-size:.85rem;margin:8px 0 0">※ 헤더 크기는 교육용 근사치입니다. 실제 구조체 크기는 <code>dt nt!_OBJECT_HEADER_NAME_INFO</code> 등으로 확인하세요. 중요한 것은 "InfoMask 비트 → 오프셋 테이블"이라는 메커니즘입니다.</p>
+</div>
+
+<h2 id="type">객체 타입과 타입별 프로시저</h2>
+<p>
+  같은 "열기/닫기/삭제"라도 파일과 이벤트는 동작이 다릅니다. 이 타입별 차이를 담는 것이 <strong><code>OBJECT_TYPE</code></strong> 구조체이며,
+  그 안의 <code>TypeInfo</code>에는 <b>타입 프로시저</b> 함수 포인터들이 들어 있습니다. 객체 관리자는 공통 뼈대를 돌리다가 "이 타입만의 동작"이 필요한 지점에서 이 콜백들을 호출합니다.
+</p>
+
+<div class="grid2">
+  <div class="card kernel"><h4>OBJECT_TYPE의 핵심</h4>
+    <ul>
+      <li><code>Name</code> — "Process", "File", "Event" 등 타입 이름.</li>
+      <li><code>TotalNumberOfObjects/Handles</code> — 현재 인스턴스 수(진단용).</li>
+      <li><code>TypeInfo</code> — 풀 타입, 기본 접근권, 유효 접근 마스크(<code>ValidAccessMask</code>), 그리고 아래 프로시저들.</li>
+      <li><code>Key</code> — 풀 태그(예: <code>Proc</code>, <code>File</code>, <code>Even</code>).</li>
+    </ul>
+  </div>
+  <div class="card user"><h4>타입 프로시저 (선택적 콜백)</h4>
+    <ul>
+      <li><code>OpenProcedure</code> — 핸들을 새로 만들 때(생성·열기·복제·상속).</li>
+      <li><code>CloseProcedure</code> — 핸들을 닫을 때.</li>
+      <li><code>DeleteProcedure</code> — 마지막 참조가 사라져 객체를 파괴할 때.</li>
+      <li><code>ParseProcedure</code> — 이름 경로에 남은 부분을 넘겨 해석하게 할 때.</li>
+      <li><code>SecurityProcedure</code> — 보안 설명자 질의/설정.</li>
+      <li><code>QueryNameProcedure</code> — 이름을 역으로 조회할 때.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout tip">
+  <div class="callout-title">Parse 프로시저가 네임스페이스를 "확장"한다</div>
+  <p><code>\Device\HarddiskVolume3\dir\file.txt</code>에서 객체 관리자는 <code>\Device\HarddiskVolume3</code>(디바이스 객체)까지만 알고, 그 뒤 <code>\dir\file.txt</code>는 모릅니다.
+  디바이스 타입의 <b>Parse 프로시저(<code>IopParseDevice</code>)</b>가 나머지 경로를 받아 파일 시스템 드라이버에게 넘기죠. 레지스트리 키(<code>CmpParseKey</code>)도 같은 방식입니다. 즉 객체 관리자 네임스페이스는 Parse를 통해 파일시스템·레지스트리 같은 <b>다른 네임스페이스로 이어집니다</b>.</p>
+</div>
+
+<h2 id="handle">핸들 테이블</h2>
+<p>
+  유저 모드 코드는 객체의 커널 주소를 직접 만질 수 없습니다. 대신 <strong>핸들(HANDLE)</strong> — 프로세스별 핸들 테이블의 <b>인덱스</b> — 을 받습니다.
+  <code>CreateFileW</code>가 돌려주는 <code>0x1a4</code> 같은 값이 그것이고, 이는 "내 프로세스 핸들 테이블에서 몇 번째 칸"이라는 뜻입니다.
+</p>
+
+<p>
+  핸들 테이블은 메모리를 아끼기 위해 <b>최대 3단계</b>의 트리로 구성됩니다. 핸들이 몇 개 없으면 1단계만, 많아지면 2·3단계로 확장됩니다.
+  각 테이블 페이지는 여러 개의 <code>HANDLE_TABLE_ENTRY</code>를 담습니다.
+</p>
+
+<figure class="fig stepper" data-interval="2800" id="htStep">
+  <svg class="dia" viewBox="0 0 880 420" role="img" aria-label="핸들 값 → 객체 변환">
+    <g data-hl="1"><rect class="box user" x="40" y="30" width="300" height="52" rx="8"/>
+      <text x="190" y="52" text-anchor="middle" class="b">핸들 값 = 0x1A4</text>
+      <text x="190" y="72" text-anchor="middle" class="sm mono" data-text="1:0x1A4|2:인덱스 비트 분해">0x1A4</text></g>
+
+    <g data-on="2" data-hl="2"><rect class="box plain" x="40" y="100" width="300" height="46" rx="7"/>
+      <text x="190" y="121" text-anchor="middle" class="sm">하위 2비트는 태그 비트(무시)</text>
+      <text x="190" y="139" text-anchor="middle" class="sm mono">인덱스 = 0x1A4 &gt;&gt; 2 = 0x69</text></g>
+
+    <g data-on="3" data-hl="3"><rect class="box kernel" x="420" y="30" width="190" height="46" rx="7"/>
+      <text x="515" y="51" text-anchor="middle" class="b sm">TableCode → 레벨(0~2)</text>
+      <text x="515" y="68" text-anchor="middle" class="sm mono">인덱스로 각 단계 탐색</text></g>
+
+    <g data-on="4" data-hl="4"><rect class="box kernel" x="420" y="100" width="190" height="60" rx="7"/>
+      <text x="515" y="124" text-anchor="middle" class="b">HANDLE_TABLE_ENTRY</text>
+      <text x="515" y="146" text-anchor="middle" class="sm mono">ObjectPointerBits | Access</text></g>
+
+    <g data-on="5" data-hl="5"><rect class="box plain" x="420" y="180" width="190" height="58" rx="7"/>
+      <text x="515" y="203" text-anchor="middle" class="sm">엔트리에 인코딩된</text>
+      <text x="515" y="223" text-anchor="middle" class="sm mono">객체 헤더 포인터 복원</text></g>
+
+    <g data-on="6" data-hl="6"><rect class="box user" x="680" y="100" width="170" height="60" rx="8"/>
+      <text x="765" y="124" text-anchor="middle" class="b">_FILE_OBJECT</text>
+      <text x="765" y="146" text-anchor="middle" class="sm">(객체 본문)</text></g>
+
+    <path class="ln acc flow" d="M340 56 L420 53" data-on="3" />
+    <path class="ln acc flow" d="M515 76 L515 100" data-on="4" />
+    <path class="ln acc flow" d="M515 160 L515 180" data-on="5" />
+    <path class="ln acc flow" d="M610 130 L680 130" data-on="6" />
+
+    <g data-on="6" data-hl="6">
+      <rect class="box ok" x="420" y="300" width="430" height="46" rx="8"/>
+      <text x="635" y="328" text-anchor="middle" class="sm">접근 마스크 확인 후 PointerCount++ → 객체 포인터 반환</text>
+    </g>
+    <text x="40" y="320" class="sm c-muted">ObReferenceObjectByHandle(h, DesiredAccess, …)</text>
+    <text x="40" y="342" class="sm c-muted">→ 요청 접근이 엔트리의 GrantedAccess에 포함돼야 함</text>
+  </svg>
+  <ol class="steps">
+    <li>유저가 넘긴 핸들 값 <code>0x1A4</code>를 받습니다. 이 값은 그 프로세스의 핸들 테이블 안에서만 의미가 있습니다(다른 프로세스에선 전혀 다른 객체).</li>
+    <li>핸들 값은 4의 배수로 발급되며, 하위 2비트는 애플리케이션이 쓸 수 있는 <b>태그 비트</b>(<code>OBJ_HANDLE_TAGBITS</code>)라 커널이 무시합니다. 2비트 오른쪽으로 밀어 실제 인덱스를 얻습니다. (상속·감사 같은 핸들 속성은 핸들 값이 아니라 <b>엔트리</b> 안에 저장됩니다.)</li>
+    <li><code>HANDLE_TABLE.TableCode</code>의 하위 2비트가 현재 트리 레벨(0=단일, 1=2단계, 2=3단계)을 나타냅니다. 인덱스를 단계별 조각으로 나눠 상위 테이블 → 하위 테이블 순으로 내려갑니다. 핸들이 늘면 테이블이 동적으로 한 단계씩 확장됩니다.</li>
+    <li>해당 칸의 <code>HANDLE_TABLE_ENTRY</code>를 읽습니다. 여기에 객체 헤더 포인터와 <b>이 핸들에 부여된 접근 마스크(GrantedAccess)</b>가 인코딩돼 있습니다.</li>
+    <li>엔트리의 비트에서 객체 헤더 포인터를 복원합니다(상위 비트 부호 확장 등 인코딩 해제).</li>
+    <li><code>ObReferenceObjectByHandle</code>이 (AccessMode가 UserMode면) 요청 접근권이 부여 접근권에 포함되는지 확인하고, <code>ObjectType</code> 인자가 주어졌다면 타입도 맞는지 검사한 뒤, <b>PointerCount를 1 올린 뒤</b> 객체 본문 포인터를 반환합니다. 사용이 끝나면 <code>ObDereferenceObject</code>로 내려야 합니다.</li>
+  </ol>
+  <figcaption><b>그림 10-2.</b> 핸들 값이 객체 포인터로 변환되는 과정.</figcaption>
+</figure>
+
+<details>
+  <summary>가짜 핸들(pseudo handle)과 커널 핸들</summary>
+  <p><code>GetCurrentProcess()</code>는 실제 핸들이 아니라 <code>(HANDLE)-1</code>이라는 <b>가짜 핸들</b>을 돌려줍니다. 커널은 이 특수 값을 "현재 프로세스"로 해석합니다(<code>-2</code>는 현재 스레드). 테이블을 거치지 않으므로 빠르고 닫을 필요도 없습니다.</p>
+  <p>핸들의 최상위 비트가 켜지면(<code>OBJ_KERNEL_HANDLE</code>) <b>커널 핸들 테이블</b>(System 프로세스, PID 4)에 속합니다. 유저 모드에서 접근할 수 없어, 드라이버가 자신의 핸들을 유저가 건드리지 못하게 보호할 때 씁니다(<code>OBJ_KERNEL_HANDLE</code> 플래그).</p>
+</details>
+
+<h2 id="life">객체 수명: 핸들 수 vs 포인터 수</h2>
+<p>
+  객체는 언제 사라질까요? "아무도 안 쓸 때"입니다. 그런데 "쓴다"에는 두 가지가 있습니다.
+</p>
+<div class="grid2">
+  <div class="card user"><h4>HandleCount (핸들 수)</h4>
+    <p>유저/커널 코드가 이 객체에 대해 열어 둔 <b>핸들</b>의 개수. <code>CreateX</code>/<code>OpenX</code>로 늘고 <code>CloseHandle</code>로 줍니다. 핸들을 하나 만들면 보통 PointerCount도 함께 올라갑니다.</p>
+  </div>
+  <div class="card kernel"><h4>PointerCount (참조 수)</h4>
+    <p>핸들 참조 + 커널 코드가 포인터로 직접 잡고 있는 <b>참조</b>의 합. <code>ObReferenceObject*</code>로 늘고 <code>ObDereferenceObject</code>로 줍니다. 핸들이 전혀 없어도 커널이 포인터로 붙잡고 있으면 객체는 살아 있습니다.</p>
+  </div>
+</div>
+<p>
+  <b>객체는 PointerCount가 0이 될 때 파괴됩니다</b> — HandleCount가 아니라. HandleCount가 0이 되면 <code>CloseProcedure</code>가 돌고, 이름이 있던 객체라면 네임스페이스에서 떨어져 나오지만,
+  커널이 여전히 참조를 들고 있으면 메모리는 유지됩니다. 마지막 참조까지 풀려 PointerCount=0이 되면 <code>DeleteProcedure</code>가 호출되고 메모리가 반환됩니다.
+</p>
+
+<div class="callout warn">
+  <div class="callout-title">참조 카운트 버그 = 커널 취약점</div>
+  <p><b>참조 누수</b>(dereference를 빼먹음)는 객체가 영원히 살아 메모리를 잠식합니다. 반대로 <b>과다 해제</b>(dereference를 한 번 더)는 PointerCount가 조기에 0이 되어 <b>Use-After-Free</b>를 만들고, 공격자가 그 자리에 가짜 객체를 심으면 커널 권한 탈취로 이어집니다. 드라이버 리뷰에서 ref/deref 짝 맞추기는 1순위 점검 항목입니다.</p>
+</div>
+
+<div class="life-wrap">
+  <div class="sim" id="lifeSim" style="margin:0">
+    <div class="sim-title">객체 수명 시뮬레이터 — 이벤트 객체 \BaseNamedObjects\Demo</div>
+    <div class="counters">
+      <div class="counter hnd"><div class="v" id="cHandle">0</div><div class="k">HandleCount</div></div>
+      <div class="counter ptr"><div class="v" id="cPtr">0</div><div class="k">PointerCount</div></div>
+    </div>
+    <div class="obj-state dead" id="objState">객체 없음 — CreateEvent로 생성하세요</div>
+    <div class="sim-controls">
+      <button class="btn primary" data-act="create">CreateEvent (핸들 생성)</button>
+      <button class="btn" data-act="open">OpenEvent (이름으로 열기)</button>
+      <button class="btn" data-act="dup">DuplicateHandle</button>
+      <button class="btn" data-act="ref">ObReferenceObject (커널 참조 +1)</button>
+      <button class="btn" data-act="deref">ObDereferenceObject (−1)</button>
+    </div>
+    <div class="console" id="lifeOut" style="min-height:7em">버튼을 눌러 핸들과 참조의 변화를 관찰하세요.</div>
+  </div>
+  <div>
+    <h4 style="margin:0 0 8px">열린 핸들</h4>
+    <div class="handle-list" id="handleList"><p class="muted" style="font-size:.85rem">아직 핸들이 없습니다.</p></div>
+    <p class="muted" style="font-size:.82rem;margin-top:10px">핸들의 <span style="color:var(--bad)">✕</span>를 눌러 <code>CloseHandle</code>을 호출하세요. HandleCount가 0이 되어도 커널 참조가 남아 있으면 객체는 살아 있습니다.</p>
+  </div>
+</div>
+
+<h2 id="namespace">객체 네임스페이스</h2>
+<p>
+  객체 관리자는 파일 시스템처럼 <b>계층형 이름 공간</b>을 유지합니다. 루트는 <code>\</code>이고, 디렉터리 객체(<code>\Device</code>, <code>\Driver</code> 등)와
+  심볼릭 링크 객체로 트리를 이룹니다. 이 트리는 <b>Sysinternals WinObj</b>로 눈으로 볼 수 있습니다. 아래 탐색기로 주요 가지를 둘러보세요.
+</p>
+
+<div class="life-wrap">
+  <figure class="fig" style="margin:0">
+    <div class="ns-tree" id="nsTree"></div>
+  </figure>
+  <div>
+    <div class="ns-detail" id="nsDetail"><span class="muted">왼쪽 트리에서 항목을 클릭하면 설명이 나옵니다.</span></div>
+  </div>
+</div>
+
+<div class="callout note">
+  <div class="callout-title">\?? 와 DOS 디바이스 맵 — "C:"의 정체</div>
+  <p><code>C:</code>, <code>COM1</code>, <code>\\.\PhysicalDrive0</code> 같은 <b>DOS 장치 이름</b>은 실제 디바이스 객체가 아니라 <code>\??</code> 아래의 <b>심볼릭 링크</b>입니다.
+  예: <code>\??\C:</code> → <code>\Device\HarddiskVolume3</code>. 과거엔 <code>\DosDevices</code>로 불렸고 지금도 별칭으로 존재합니다.</p>
+  <p>중요한 점: <code>\??</code>는 <b>세션·로그온별로 다릅니다</b>. 각 로그온 세션은 전역 <code>\GLOBAL??</code>에 자기만의 드라이브 매핑(예: 네트워크 드라이브 <code>Z:</code>)을 덧씌운 <b>프로세스별 DOS 디바이스 맵</b>을 봅니다. 그래서 서비스(세션 0)에서 보이는 <code>Z:</code>와 사용자 세션의 <code>Z:</code>가 다를 수 있습니다 — 서비스 개발의 흔한 함정입니다.</p>
+</div>
+
+<h2 id="open">이름으로 객체 열기 — 파싱 흐름</h2>
+<p>
+  <code>\??\C:\Users\me\a.txt</code>를 여는 과정을 따라가 봅시다. 객체 관리자(<code>ObpLookupObjectName</code>)가 경로를 <b>한 조각씩</b> 내려가며 디렉터리를 뒤지고,
+  심볼릭 링크를 만나면 치환하고, Parse 프로시저가 있는 객체를 만나면 <b>나머지 경로를 통째로 넘깁니다</b>.
+</p>
+
+<figure class="fig stepper" data-interval="3000" id="openStep">
+  <svg class="dia" viewBox="0 0 880 400" role="img" aria-label="이름 기반 열기 파싱">
+    <text x="20" y="40" class="sm b c-kernel">ObpLookupObjectName</text>
+    <g data-hl="1"><rect class="box plain" x="150" y="22" width="700" height="38" rx="7"/>
+      <text x="166" y="46" class="mono sm">경로: \??\C:\Users\me\a.txt  (잔여 경로를 왼쪽부터 소비)</text></g>
+
+    <g data-on="2" data-hl="2"><rect class="box kernel" x="150" y="78" width="330" height="44" rx="7"/>
+      <text x="315" y="100" text-anchor="middle" class="sm b">\?? 디렉터리에서 "C:" 검색</text>
+      <text x="315" y="117" text-anchor="middle" class="sm mono">→ 심볼릭 링크 객체 발견</text></g>
+
+    <g data-on="3" data-hl="3"><rect class="box hv" x="500" y="78" width="350" height="44" rx="7"/>
+      <text x="675" y="100" text-anchor="middle" class="sm b">링크 치환</text>
+      <text x="675" y="117" text-anchor="middle" class="sm mono">C: → \Device\HarddiskVolume3</text></g>
+
+    <g data-on="4" data-hl="4"><rect class="box kernel" x="150" y="140" width="330" height="44" rx="7"/>
+      <text x="315" y="162" text-anchor="middle" class="sm b">\Device 에서 HarddiskVolume3 검색</text>
+      <text x="315" y="179" text-anchor="middle" class="sm mono">→ DEVICE_OBJECT (타입=Device)</text></g>
+
+    <g data-on="5" data-hl="5"><rect class="box warn" x="500" y="140" width="350" height="44" rx="7"/>
+      <text x="675" y="162" text-anchor="middle" class="sm b">Device 타입은 ParseProcedure 보유</text>
+      <text x="675" y="179" text-anchor="middle" class="sm mono">잔여 \Users\me\a.txt 를 넘김</text></g>
+
+    <g data-on="6" data-hl="6"><rect class="box kernel" x="150" y="202" width="700" height="44" rx="7"/>
+      <text x="500" y="224" text-anchor="middle" class="sm b">IopParseDevice → IRP_MJ_CREATE 생성 → FltMgr → NTFS</text>
+      <text x="500" y="241" text-anchor="middle" class="sm mono">여기서 SeAccessCheck(접근 검사, 13장) 수행</text></g>
+
+    <g data-on="7" data-hl="7"><rect class="box ok" x="150" y="264" width="700" height="44" rx="7"/>
+      <text x="500" y="286" text-anchor="middle" class="sm b">FILE_OBJECT 생성 → 핸들 테이블에 엔트리 → HANDLE 반환</text>
+      <text x="500" y="303" text-anchor="middle" class="sm mono">PointerCount/HandleCount 증가</text></g>
+
+    <path class="ln acc flow" d="M480 100 L500 100" data-on="3" />
+    <path class="ln flow" d="M675 122 L675 132 L315 132 L315 140" data-on="4" />
+    <path class="ln acc flow" d="M480 162 L500 162" data-on="5" />
+    <path class="ln flow" d="M675 184 L675 192 L500 192 L500 202" data-on="6" />
+    <path class="ln ok flow" d="M500 246 L500 264" data-on="7" />
+  </svg>
+  <ol class="steps">
+    <li>시작 경로 <code>\??\C:\Users\me\a.txt</code>. 객체 관리자는 왼쪽부터 한 조각씩 소비합니다. 절대 경로이므로 루트 디렉터리에서 출발합니다.</li>
+    <li><code>\??</code>(프로세스별 DOS 디바이스 맵) 디렉터리에서 <code>C:</code>를 찾습니다. 이것은 심볼릭 링크 객체입니다.</li>
+    <li>심볼릭 링크를 따라 대상 문자열 <code>\Device\HarddiskVolume3</code>로 경로를 치환합니다. 남은 경로는 <code>\Device\HarddiskVolume3\Users\me\a.txt</code>.</li>
+    <li><code>\Device</code> 디렉터리에서 <code>HarddiskVolume3</code>(디바이스 객체)를 찾습니다. 타입은 Device입니다.</li>
+    <li>Device 타입에는 <b>ParseProcedure(<code>IopParseDevice</code>)</b>가 있습니다. 객체 관리자는 더 내려가지 않고 잔여 경로 <code>\Users\me\a.txt</code>를 이 프로시저에 통째로 넘깁니다.</li>
+    <li><code>IopParseDevice</code>가 <code>IRP_MJ_CREATE</code> IRP를 만들어 볼륨의 파일 시스템 스택(미니필터 → NTFS)으로 보냅니다. 이 과정에서 접근 검사(<code>SeAccessCheck</code>)가 수행됩니다(13장).</li>
+    <li>성공하면 <code>FILE_OBJECT</code>가 만들어지고, 핸들 테이블에 엔트리가 생기며 핸들 값이 유저 모드로 반환됩니다. 카운트가 증가합니다.</li>
+  </ol>
+  <figcaption><b>그림 10-3.</b> 이름 기반 열기. 객체 관리자는 "아는 데까지"만 내려가고 나머지는 Parse에 위임합니다.</figcaption>
+</figure>
+
+<div class="callout expert">
+  <div class="callout-title">이름 충돌과 BaseNamedObjects — 스쿼팅 공격</div>
+  <p><code>CreateMutex(L"Global\\MyApp")</code>는 <code>\BaseNamedObjects\MyApp</code>에 객체를 만들려 합니다(<code>Global\</code> 접두사 없이는 세션별 <code>\Sessions\N\BaseNamedObjects</code>). 권한 낮은 공격자가 <b>먼저</b> 같은 이름의 객체를 선점하고 약한 DACL을 걸면, 나중에 그 이름을 여는 특권 서비스가 공격자 객체를 쓰게 될 수 있습니다(name squatting). 방어: 전용 디렉터리 + 강한 DACL, 또는 <code>CreateXxx</code> 성공 시 <code>GetLastError()==ERROR_ALREADY_EXISTS</code> 확인, Private Namespace(<code>CreatePrivateNamespace</code>) 사용.</p>
+</div>
+
+<h2 id="lab">실습: WinDbg로 객체 세계 들여다보기</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 10-1 · 객체·핸들·네임스페이스 관찰</div>
+  <p>로컬 커널 디버깅 또는 VM 환경에서(설정은 15장). 사용자 모드만 있으면 <b>WinObj</b>, <b>Process Explorer</b>(하단 핸들 보기), <b>handle.exe</b>로도 많은 것을 볼 수 있습니다.</p>
+</div>
+
+<pre data-title="WinDbg"><code class="lang-windbg">$$ 루트 디렉터리의 자식(Device, Driver, BaseNamedObjects, GLOBAL??, Sessions …) 나열
+lkd> !object \
+
+$$ \Device 디렉터리의 디바이스 객체들
+lkd> !object \Device
+
+$$ 심볼릭 링크 → 대상(\Device\HarddiskVolumeN) 확인
+lkd> !object \GLOBAL??\C:
+
+$$ 객체 헤더 필드. 아래 오프셋은 Win10/11 x64 예시 — 빌드마다 dt로 직접 확인
+lkd> dt nt!_OBJECT_HEADER &lt;헤더 주소&gt;
+   +0x000 PointerCount     : Int8B
+   +0x008 HandleCount      : Int8B
+   +0x018 TypeIndex        : UChar   $$ Win10+는 난독화된 값
+   +0x01a InfoMask         : UChar
+   +0x030 Body             : _QUAD
+
+$$ 특정 프로세스의 핸들 전체(타입·GrantedAccess 포함)
+lkd> !handle 0 3 &lt;EPROCESS 또는 PID&gt;
+
+$$ 핸들 하나의 상세
+lkd> !handle 0x1a4 f &lt;EPROCESS 또는 PID&gt;</code></pre>
+
+<pre data-title="WinDbg"><code class="lang-windbg">lkd> !object ffffe00a`12345678
+$$ 객체 포인터 → 타입·이름·카운트 역추적
+
+lkd> !obja <OBJECT_ATTRIBUTES 주소>
+$$ OBJECT_ATTRIBUTES(이름·루트디렉터리·속성 플래그) 해석
+
+lkd> dt nt!_OBJECT_TYPE poi(nt!ObTypeIndexTable + 8*<idx>)
+$$ 타입 구조체와 TypeInfo.*Procedure 함수 포인터 확인</code></pre>
+
+<ol>
+  <li><code>!object \</code>로 루트를 보고 <code>Device</code>, <code>Driver</code>, <code>BaseNamedObjects</code>, <code>GLOBAL??</code>, <code>Sessions</code>를 확인하세요. <code>??</code>는 목록에 없는 특수 접두사입니다.</li>
+  <li>Process Explorer에서 <code>explorer.exe</code>의 핸들 목록을 보고, 같은 파일을 여러 프로세스가 열었을 때 PointerCount/HandleCount가 어떻게 다른지 생각해 보세요.</li>
+  <li><code>!handle 0 2 &lt;lsass의 PID&gt;</code>로 토큰·키 핸들을 관찰하세요(13장의 보안 객체와 연결됩니다).</li>
+  <li>WinObj로 <code>\GLOBAL??\C:</code>가 가리키는 대상을 확인하고, 네트워크 드라이브가 <code>\??</code>에만 있고 <code>\GLOBAL??</code>엔 없음을 확인하세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">객체가 메모리에서 실제로 파괴(<code>DeleteProcedure</code> 호출)되는 시점은?</p>
+  <ol class="opts">
+    <li>HandleCount가 0이 될 때</li>
+    <li data-correct>PointerCount가 0이 될 때</li>
+    <li>마지막 CloseHandle이 호출될 때 항상</li>
+    <li>프로세스가 종료될 때만</li>
+  </ol>
+  <div class="explain">핸들이 모두 닫혀 HandleCount=0이 되어도 커널이 <code>ObReferenceObject</code>로 참조를 들고 있으면 PointerCount&gt;0이라 객체는 살아 있습니다. <b>PointerCount가 0</b>이 되어야 삭제됩니다. 핸들 참조도 PointerCount에 포함되므로, 핸들도 참조도 없을 때 비로소 0이 됩니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>\??\C:</code>의 정체로 가장 정확한 것은?</p>
+  <ol class="opts">
+    <li>디스크 컨트롤러 디바이스 객체</li>
+    <li>NTFS 볼륨의 루트 디렉터리 파일</li>
+    <li data-correct>프로세스별 DOS 디바이스 맵의 심볼릭 링크 객체 (→ <code>\Device\HarddiskVolumeN</code>)</li>
+    <li>레지스트리 키</li>
+  </ol>
+  <div class="explain"><code>C:</code>는 심볼릭 링크입니다. <code>\??</code>는 세션/로그온별로 달라지며, 전역 매핑은 <code>\GLOBAL??</code>에 있습니다. 그래서 서비스와 사용자 세션의 드라이브 문자가 다를 수 있습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">객체 관리자가 <code>\Device\HarddiskVolume3\dir\a.txt</code>에서 <code>\dir\a.txt</code> 부분을 처리하는 방법은?</p>
+  <ol class="opts">
+    <li>객체 디렉터리 트리를 계속 내려가며 각 조각을 디렉터리로 검색한다</li>
+    <li data-correct>디바이스 타입의 ParseProcedure(<code>IopParseDevice</code>)에 잔여 경로를 넘겨 파일 시스템이 해석하게 한다</li>
+    <li>심볼릭 링크로 재귀 치환한다</li>
+    <li>SecurityProcedure가 경로를 해석한다</li>
+  </ol>
+  <div class="explain">객체 관리자 네임스페이스는 디바이스 객체까지만 알고, 그 아래 파일 경로는 모릅니다. Parse 프로시저가 네임스페이스를 파일시스템으로 확장합니다. 레지스트리 키의 <code>CmpParseKey</code>도 동일한 패턴입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">핸들 값 <code>0x1A4</code>에서 "인덱스"를 얻으려면?</p>
+  <ol class="opts">
+    <li>그대로 사용한다</li>
+    <li data-correct>하위 2비트(태그 비트)를 버린다 — 오른쪽으로 2비트 시프트</li>
+    <li>최상위 비트를 제거한다</li>
+    <li>객체 헤더 크기를 뺀다</li>
+  </ol>
+  <div class="explain">핸들 값의 하위 2비트는 태그 비트로 커널이 무시합니다. 실제 테이블 인덱스는 <code>handle &gt;&gt; 2</code>입니다. 다단계 테이블의 레벨은 핸들 값이 아니라 <code>HANDLE_TABLE.TableCode</code>의 하위 비트가 알려 줍니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">드라이버가 객체에 대한 참조를 <code>ObReferenceObjectByHandle</code>로 얻은 뒤 작업을 끝냈습니다. 빠뜨리면 안 되는 것은?</p>
+  <ol class="opts">
+    <li>CloseHandle로 핸들을 닫는다</li>
+    <li data-correct>ObDereferenceObject로 참조를 1 내린다</li>
+    <li>객체 메모리를 ExFreePool로 해제한다</li>
+    <li>아무것도 필요 없다 — 커널이 자동 정리한다</li>
+  </ol>
+  <div class="explain"><code>ObReferenceObjectByHandle</code>은 PointerCount를 올립니다. 짝이 되는 <code>ObDereferenceObject</code>를 호출하지 않으면 참조 누수로 객체가 영원히 남습니다. 객체 메모리를 직접 해제하는 것은 절대 금물입니다(과다 해제 → UAF).</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>OBJECT_HEADER.TypeIndex</code>가 Windows 10 이후 XOR로 난독화된 주된 이유는?</p>
+  <ol class="opts">
+    <li>메모리를 절약하려고</li>
+    <li data-correct>타입 혼동(type confusion) 익스플로잇을 어렵게 하려고 — 타입 인덱스를 임의로 덮어쓰기 힘들게</li>
+    <li>다국어 지원을 위해</li>
+    <li>캐시 성능을 위해</li>
+  </ol>
+  <div class="explain">공격자가 객체 헤더를 덮어써 타입을 바꾸면(예: Event를 Process로 둔갑) 엉뚱한 타입 프로시저가 호출돼 권한 상승이 가능합니다. <code>TypeIndex</code>를 헤더 주소·전역 <code>ObHeaderCookie</code>와 XOR해 저장하면, 유효한 값을 위조하기 어려워집니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>객체 = (선택적 헤더들) + <code>OBJECT_HEADER</code> + 본문. <code>InfoMask</code>가 어떤 선택적 헤더가 있는지 나타내고 오프셋 테이블로 위치를 구한다.</li>
+    <li><code>OBJECT_TYPE</code>의 타입 프로시저(Open/Close/Delete/Parse/Security)가 공통 뼈대에 타입별 동작을 끼워 넣는다. 특히 Parse가 네임스페이스를 파일시스템·레지스트리로 확장한다.</li>
+    <li>핸들 값 → (플래그 제거) → 다단계 핸들 테이블 인덱스 → <code>HANDLE_TABLE_ENTRY</code>(객체 포인터+부여 접근권) → 객체 본문.</li>
+    <li>수명은 <b>PointerCount</b>가 결정한다. 핸들이 다 닫혀도 커널 참조가 남으면 산다. ref/deref 불균형은 누수 또는 UAF.</li>
+    <li>네임스페이스: <code>\Device</code>, <code>\Driver</code>, <code>\BaseNamedObjects</code>, <code>\Sessions</code>, <code>\KnownDlls</code>, <code>\??</code>(세션별 DOS 맵, 전역은 <code>\GLOBAL??</code>). <code>C:</code>는 심볼릭 링크.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+
+  /* ---- InfoMask 레이아웃 계산기 ---- */
+  // 교육용 근사 크기(바이트). 실제 값은 빌드마다 다름.
+  const OPT = [
+    { bit: 0x01, key: 'CreatorInfo', name: 'ObjectCreatorInfo', size: 0x20, desc: '생성 프로세스 추적(동일 타입 객체 리스트에 연결)' },
+    { bit: 0x02, key: 'Name',        name: 'ObjectNameInfo',    size: 0x20, desc: '네임스페이스 이름(UNICODE_STRING)과 부모 디렉터리' },
+    { bit: 0x04, key: 'HandleInfo',  name: 'ObjectHandleInfo',  size: 0x10, desc: '단일/다중 핸들 추적 정보' },
+    { bit: 0x08, key: 'Quota',       name: 'ObjectQuotaInfo',   size: 0x20, desc: '프로세스 풀 쿼터 청구 정보' },
+    { bit: 0x10, key: 'Process',     name: 'ObjectProcessInfo', size: 0x10, desc: '독점 프로세스(exclusive) 정보' },
+    { bit: 0x20, key: 'Audit',       name: 'ObjectAuditInfo',   size: 0x10, desc: '감사(audit) 설정' },
+  ];
+  const HDR_SIZE = 0x30; // OBJECT_HEADER 근사
+  const infoSim = $('#infoSim');
+  const grid = $('.infomask-grid', infoSim);
+  const infoOut = $('#infoOut');
+  let mask = 0x02; // 기본: Name만
+  OPT.forEach(o => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = o.key;
+    b.dataset.bit = o.bit;
+    b.addEventListener('click', () => { mask ^= o.bit; renderInfo(); });
+    grid.appendChild(b);
+  });
+  function renderInfo() {
+    $$('.btn', grid).forEach(b => b.classList.toggle('on', (mask & +b.dataset.bit) !== 0));
+    // 오프셋(Bit) = InfoMask & ((Bit<<1)-1) 에 해당하는 헤더 크기 합 → 낮은 비트일수록 OBJECT_HEADER에 가깝다
+    const present = OPT.filter(o => mask & o.bit);
+    const lines = [];
+    let acc = 0;
+    const offMap = {};
+    present.forEach(o => { acc += o.size; offMap[o.key] = acc; });
+    lines.push('<span class="dim">InfoMask = 0x' + mask.toString(16).toUpperCase().padStart(2, '0') + '  (존재 헤더 ' + present.length + '개, 낮은 주소부터 표시)</span>');
+    lines.push('');
+    present.slice().reverse().forEach(o => {
+      const sel = (mask & ((o.bit << 1) - 1)).toString(16).toUpperCase();
+      lines.push('<span class="ok">' + o.name.padEnd(20) + '</span>  OBJECT_HEADER −0x' + offMap[o.key].toString(16) + '   <span class="dim">[ToOffset[0x' + sel + ']] ' + o.desc + '</span>');
+    });
+    lines.push('<span class="warn">OBJECT_HEADER       </span>  +0x0   <span class="dim">(여기서 PointerCount/HandleCount/TypeIndex/InfoMask)</span>');
+    lines.push('<span class="dim">Object Body         </span>  +0x' + HDR_SIZE.toString(16) + '  (Ob*가 반환하는 포인터)');
+    if (!present.length) lines.splice(2, 0, '<span class="dim">(선택적 헤더 없음 — 이름 없는 익명 객체)</span>');
+    infoOut.innerHTML = lines.join('\n');
+  }
+  renderInfo();
+
+  /* ---- 객체 수명 시뮬레이터 ---- */
+  const lifeSim = $('#lifeSim');
+  const cH = $('#cHandle'), cP = $('#cPtr'), objState = $('#objState'), lifeOut = $('#lifeOut'), hList = $('#handleList');
+  let created = false, handles = [], ptr = 0, nextH = 0x100, hint = false;
+  function log(html, cls) { lifeOut.innerHTML = (cls ? '<span class="' + cls + '">' + html + '</span>' : html); }
+  function paint() {
+    cH.textContent = handles.length;
+    cP.textContent = ptr;
+    if (!created && ptr === 0) {
+      objState.textContent = '객체 없음 — CreateEvent로 생성하세요';
+      objState.className = 'obj-state dead';
+    } else if (ptr > 0) {
+      objState.textContent = '● 객체 살아 있음 (PointerCount=' + ptr + ')';
+      objState.className = 'obj-state alive';
+    } else {
+      objState.textContent = '✗ 객체 파괴됨 (DeleteProcedure 호출, 메모리 반환)';
+      objState.className = 'obj-state dead';
+    }
+    if (!handles.length) {
+      hList.innerHTML = '<p class="muted" style="font-size:.85rem">열린 핸들이 없습니다.</p>';
+    } else {
+      hList.innerHTML = handles.map(h =>
+        '<div class="h"><span>0x' + h.toString(16).toUpperCase() + '</span><span class="x" data-h="' + h + '">✕ Close</span></div>').join('');
+      $$('.x', hList).forEach(x => x.addEventListener('click', () => closeHandle(+x.dataset.h)));
+    }
+  }
+  function ensure() {
+    if (!created) { created = true; }
+  }
+  function create() {
+    if (created && handles.length === 0 && ptr === 0) { /* 재생성 */ }
+    created = true;
+    const h = nextH++; handles.push(h); ptr++;
+    log('CreateEvent → 새 핸들 <b>0x' + h.toString(16).toUpperCase() + '</b> 생성. 객체가 네임스페이스(\\BaseNamedObjects\\Demo)에 등록되고 HandleCount+1, PointerCount+1.', 'ok');
+    paint();
+  }
+  function openEv() {
+    if (!created || ptr === 0) { log('OpenEvent 실패: 그 이름의 객체가 없습니다(먼저 CreateEvent). 이름이 네임스페이스에서 사라지면 열 수 없습니다.', 'bad'); return; }
+    const h = nextH++; handles.push(h); ptr++;
+    log('OpenEvent → 이름으로 기존 객체를 찾아 새 핸들 <b>0x' + h.toString(16).toUpperCase() + '</b> 부여. HandleCount+1, PointerCount+1.', 'ok');
+    paint();
+  }
+  function dup() {
+    if (!handles.length) { log('DuplicateHandle 실패: 복제할 원본 핸들이 없습니다.', 'bad'); return; }
+    const h = nextH++; handles.push(h); ptr++;
+    log('DuplicateHandle → 같은 객체를 가리키는 두 번째 핸들 <b>0x' + h.toString(16).toUpperCase() + '</b> 생성. 객체는 하나, 핸들만 늘어납니다. HandleCount+1, PointerCount+1.', 'ok');
+    paint();
+  }
+  function closeHandle(h) {
+    const i = handles.indexOf(h);
+    if (i < 0) return;
+    handles.splice(i, 1); ptr--;
+    let msg = 'CloseHandle(0x' + h.toString(16).toUpperCase() + ') → 타입의 CloseProcedure 호출, HandleCount−1, PointerCount−1.';
+    if (handles.length === 0) {
+      msg += ' 이제 HandleCount=0 → (영구 객체가 아니므로) 이름이 네임스페이스에서 제거되어 더는 OpenEvent로 열 수 없습니다.';
+      if (ptr > 0) msg += ' 하지만 커널 참조(PointerCount=' + ptr + ')가 남아 객체 메모리는 유지됩니다.';
+    }
+    log(msg + (ptr === 0 ? ' <b>PointerCount=0 → 객체 파괴!</b>' : ''), ptr === 0 ? 'warn' : 'ok');
+    if (ptr === 0) created = false;
+    paint();
+  }
+  function ref() {
+    if (ptr === 0) { log('참조할 객체가 없습니다. 먼저 CreateEvent로 객체를 만드세요.', 'bad'); return; }
+    ptr++;
+    log('ObReferenceObject → 커널이 포인터로 객체를 붙잡음. PointerCount+1 (HandleCount는 그대로). 핸들을 모두 닫아도 이 참조가 있는 한 객체는 삽니다.', 'ok');
+    paint();
+  }
+  function deref() {
+    if (ptr === 0) { log('해제할 참조가 없습니다.', 'bad'); return; }
+    // 핸들 참조분은 제외하고 "커널 참조"만 줄이도록: ptr > handles.length 일 때만
+    if (ptr <= handles.length) { log('ObDereferenceObject: 현재 PointerCount는 핸들 참조분뿐입니다. 커널 참조가 없으니, 더 내리려면 핸들을 Close 하세요(과다 해제는 UAF!).', 'warn'); return; }
+    ptr--;
+    let msg = 'ObDereferenceObject → PointerCount−1.';
+    if (ptr === 0) { msg += ' <b>PointerCount=0 → 객체 파괴!</b> DeleteProcedure 실행.'; created = false; }
+    log(msg, ptr === 0 ? 'warn' : 'ok');
+    paint();
+  }
+  $$('.sim-controls .btn', lifeSim).forEach(b => b.addEventListener('click', () => {
+    const a = b.dataset.act;
+    if (a === 'create') create();
+    else if (a === 'open') openEv();
+    else if (a === 'dup') dup();
+    else if (a === 'ref') ref();
+    else if (a === 'deref') deref();
+  }));
+  paint();
+
+  /* ---- 네임스페이스 트리 탐색기 ---- */
+  const NS = [
+    { d: 0, kind: 'dir', name: '\\', key: 'root' },
+    { d: 1, kind: 'dir', name: 'Device', key: 'Device', tag: 'Directory' },
+    { d: 2, kind: 'leaf', name: 'HarddiskVolume3', key: 'vol', tag: 'Device' },
+    { d: 2, kind: 'leaf', name: 'Ntfs', key: 'ntfs', tag: 'Device' },
+    { d: 1, kind: 'dir', name: 'Driver', key: 'Driver', tag: 'Directory' },
+    { d: 1, kind: 'dir', name: 'BaseNamedObjects', key: 'BNO', tag: 'Directory' },
+    { d: 2, kind: 'leaf', name: 'MyApp.Mutex', key: 'mutex', tag: 'Mutant' },
+    { d: 1, kind: 'dir', name: 'Sessions', key: 'Sessions', tag: 'Directory' },
+    { d: 1, kind: 'dir', name: 'KnownDlls', key: 'KnownDlls', tag: 'Directory' },
+    { d: 1, kind: 'link', name: '??', key: 'dd', tag: '특수 접두사' },
+    { d: 1, kind: 'dir', name: 'GLOBAL??', key: 'GLOBAL', tag: 'Directory' },
+    { d: 2, kind: 'link', name: 'C:', key: 'C', tag: '→ \\Device\\HarddiskVolume3' },
+  ];
+  const NS_DESC = {
+    root: ['루트 디렉터리 \\', '객체 네임스페이스의 최상위. WinObj를 열면 보이는 바로 그 트리의 뿌리입니다. 모든 절대 경로는 여기서 시작합니다.'],
+    Device: ['\\Device', '디바이스 객체(<code>DEVICE_OBJECT</code>)들의 디렉터리. 드라이버가 <code>IoCreateDevice</code>로 만든 실제 장치 이름이 여기 있습니다(예: <code>HarddiskVolume3</code>, <code>Ntfs</code>, <code>Tcp</code>). 사용자는 보통 이 "진짜 이름" 대신 <code>\\??</code>의 심볼릭 링크를 통해 접근합니다.'],
+    Driver: ['\\Driver', '로드된 드라이버 객체(<code>DRIVER_OBJECT</code>)들의 디렉터리. 각 드라이버의 디스패치 루틴 테이블, 디바이스 목록이 여기에 연결됩니다(11장).'],
+    BNO: ['\\BaseNamedObjects', '세션 간 공유되는(전역, <code>Global\\</code> 접두사) 이름 있는 객체 — 뮤텍스, 이벤트, 세마포어, 섹션 — 가 등록되는 곳. 앱 간 동기화·단일 인스턴스 보장에 쓰입니다. 이름 스쿼팅 공격의 주무대이기도 합니다.'],
+    Sessions: ['\\Sessions', '세션별 네임스페이스. <code>\\Sessions\\N\\BaseNamedObjects</code>에는 세션 N 전용(접두사 없는 <code>Local\\</code>) 객체가, 로그온 세션별 DOS 디바이스 맵은 <code>\\Sessions\\0\\DosDevices\\&lt;로그온 LUID&gt;</code>에 있습니다. 세션 0(서비스)과 사용자 세션의 격리가 여기서 드러납니다.'],
+    KnownDlls: ['\\KnownDlls', '자주 쓰는 시스템 DLL(ntdll, kernel32 등)을 미리 섹션 객체로 매핑해 두는 디렉터리. 로더가 디스크를 다시 뒤지지 않고 이 섹션을 재사용해 로딩을 가속합니다. 이 디렉터리의 섹션을 위조해 보호 프로세스에 코드를 주입하는 기법이 보안 연구에서 공개된 바 있어, 이후 관련 경로가 강화되었습니다.'],
+    dd: ['\\?? (DOS 디바이스 맵)', '루트에 실제로 저장된 디렉터리가 아니라, 객체 관리자가 이름 해석 시 <b>호출자의 DOS 디바이스 맵</b>(로그온 세션별)으로 바꿔 주는 특수 접두사입니다(<code>\\DosDevices</code>는 이를 가리키는 심볼릭 링크). <code>C:</code>, <code>COM1</code>, <code>\\\\.\\PhysicalDrive0</code> 같은 DOS 이름이 실제 디바이스 객체로 이어집니다. 전역 공통분은 <code>\\GLOBAL??</code>에 있고, 네트워크 드라이브 등 사용자별 매핑이 위에 덧씌워집니다.'],
+    GLOBAL: ['\\GLOBAL??', '모든 세션이 공유하는 전역 DOS 디바이스 매핑. <code>\\??</code>로 이름을 풀 때 세션별 맵에 없으면 여기로 폴백합니다. <code>C:</code> 같은 로컬 볼륨 링크가 보통 여기 있습니다.'],
+    C: ['\\GLOBAL??\\C: (심볼릭 링크)', '드라이브 문자 <code>C:</code>는 디바이스가 아니라 <b>심볼릭 링크</b>입니다. 대상은 <code>\\Device\\HarddiskVolume3</code> 같은 실제 볼륨 디바이스. <code>CreateFile("C:\\\\x")</code>는 이 링크를 따라 볼륨에 도달합니다.'],
+    vol: ['\\Device\\HarddiskVolume3 (Device)', '실제 볼륨 디바이스 객체. 이름으로 열기를 하면 이 객체의 <b>ParseProcedure(<code>IopParseDevice</code>)</b>가 잔여 경로(<code>\\dir\\file</code>)를 받아 파일 시스템(NTFS) 스택으로 IRP를 보냅니다.'],
+    ntfs: ['\\Device\\Ntfs (Device)', 'NTFS 파일 시스템 드라이버의 컨트롤 디바이스. 볼륨들은 이 드라이버가 관리하는 파일 시스템 디바이스 스택 위에 마운트됩니다(12장).'],
+    mutex: ['\\BaseNamedObjects\\MyApp.Mutex (Mutant)', '애플리케이션이 <code>CreateMutex(L"Global\\\\MyApp.Mutex")</code>로 만든 이름 있는 뮤텍스. 두 번째 인스턴스가 같은 이름으로 열면 같은 객체를 공유해 "이미 실행 중"을 감지합니다. 이름 있는 객체이므로 <code>ObjectNameInfo</code> 선택적 헤더를 가집니다.'],
+  };
+  const tree = $('#nsTree'), detail = $('#nsDetail');
+  // 트리 구성: parent 지정된 노드는 해당 디렉터리 바로 아래로 들여쓰기 표현(간단히 d 사용)
+  tree.innerHTML = NS.map(n => {
+    const nmCls = n.kind === 'dir' ? 'dir' : n.kind === 'link' ? 'link' : '';
+    const tw = n.kind === 'dir' ? '📁' : n.kind === 'link' ? '🔗' : '•';
+    return '<div class="row" data-key="' + n.key + '" style="padding-left:' + (6 + n.d * 20) + 'px">' +
+      '<span class="tw">' + tw + '</span><span class="nm ' + nmCls + '">' + n.name + '</span>' +
+      (n.tag ? '<span class="tag">' + n.tag + '</span>' : '') + '</div>';
+  }).join('');
+  $$('.row', tree).forEach(r => r.addEventListener('click', () => {
+    $$('.row', tree).forEach(x => x.classList.remove('sel'));
+    r.classList.add('sel');
+    const d = NS_DESC[r.dataset.key];
+    detail.innerHTML = d ? '<h4>' + d[0] + '</h4><p>' + d[1] + '</p>' : '';
+  }));
+})();
+</script>
+</body>
+</html>

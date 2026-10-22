@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>아키텍처와 부트스트랩</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .layers { display: grid; gap: 6px; }
+  .layer { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; background: var(--surface-2); transition: background .25s, border-color .25s, box-shadow .25s; }
+  .layer .ln { font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .layer .ln small { font-weight: 400; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .layer .ld { font-size: 13px; color: var(--muted); margin-top: 2px; min-height: 1.4em; }
+  .layer.on { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .layer.on .ld { color: var(--text); }
+  .layer.deps { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; background: var(--surface); }
+  .dep { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; text-align: center; background: var(--surface-2); transition: background .25s, border-color .25s; }
+  .dep b { display: block; font-family: var(--mono); font-size: 12px; }
+  .dep small { color: var(--muted); font-size: 11px; }
+  .dep.on { background: var(--ok-soft); border-color: var(--ok); }
+  .api-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .api-btns .btn { font-family: var(--mono); font-size: 12.5px; padding: 4px 10px; }
+  .api-btns .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .path-note { margin-top: 10px; font-size: 14px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; min-height: 2.5em; }
+  .boot-list { display: grid; gap: 4px; }
+  .boot-step { display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: start; padding: 7px 10px; border-radius: 8px; border: 1px solid transparent; font-size: 14px; transition: background .25s, border-color .25s; }
+  .boot-step .n { font-family: var(--mono); color: var(--muted); font-size: 12px; padding-top: 2px; }
+  .boot-step .lyr { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; margin-right: 6px; }
+  .boot-step.cpp .lyr { background: var(--violet-soft); color: var(--violet); }
+  .boot-step.js .lyr { background: var(--ok-soft); color: var(--ok); }
+  .boot-step.snap .lyr { background: var(--teal-soft); color: var(--teal); }
+  .boot-step.user .lyr { background: var(--warn-soft); color: var(--warn); }
+  .boot-step.done { opacity: .55; }
+  .boot-step.on { background: var(--accent-soft); border-color: var(--accent); opacity: 1; }
+  .cls-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface); margin: 8px 0; }
+  .cls-card .api { font-family: var(--mono); font-weight: 700; font-size: 15px; }
+  .cls-opts { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+  .cls-opts .btn.ok { background: var(--ok-soft); border-color: var(--ok); }
+  .cls-opts .btn.bad { background: var(--bad-soft); border-color: var(--bad); }
+  .cls-why { font-size: 13.5px; color: var(--muted); display: none; margin-top: 6px; }
+  .cls-card.answered .cls-why { display: block; }
+  .nt-bars { display: grid; gap: 6px; }
+  .nt-row { display: grid; grid-template-columns: 180px 1fr 80px; gap: 8px; align-items: center; font-size: 13px; }
+  .nt-row .bar { height: 20px; background: var(--surface-2); border-radius: 4px; position: relative; overflow: hidden; }
+  .nt-row .bar > div { position: absolute; top: 0; height: 100%; border-radius: 4px; }
+  .nt-row .v { font-family: var(--mono); text-align: right; font-size: 12.5px; }
+  @media (max-width: 600px) { .nt-row { grid-template-columns: 1fr; gap: 2px; } .nt-row .v { text-align: left; } }
+</style>
+</head>
+<body data-chapter="01">
+<main>
+  <header class="chapter-head">
+    <span class="label">런타임 내부 · Chapter 01</span>
+    <h1>Node.js 아키텍처와 부트스트랩</h1>
+    <p class="lead"><code>node app.js</code>를 치면 무슨 일이 일어나는가. JavaScript 한 줄이 실행되기 전에 C++ 레이어는 V8 Isolate를 만들고, 바이너리에 구워진 스냅샷에서 부트스트랩된 컨텍스트를 복원하고, libuv 루프를 준비합니다. 이 장은 Node.js를 구성하는 부품과 그 부품들이 조립되는 순서를 다룹니다. 이후 모든 장의 지도(map)에 해당합니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>Node.js를 구성하는 레이어(JS 코어 → <code>internalBinding</code> → C++ → V8/libuv/의존 라이브러리)와 각 레이어의 책임을 그릴 수 있다.</li>
+      <li>임의의 Node API 호출이 어느 레이어와 어느 실행 주체(V8, 스레드풀, epoll, c-ares, 동기)로 가는지 분류할 수 있다.</li>
+      <li>Isolate · Context · Environment · <code>process</code>의 관계와, 프로세스 시작부터 메인 모듈 실행까지의 부트스트랩 순서를 설명할 수 있다.</li>
+      <li>스타트업 스냅샷과 컴파일 캐시로 기동 시간을 줄이는 방법과 그 제약을 안다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">한 장의 그림: Node.js의 부품들</a></li>
+    <li><a href="#s2">JS와 C++의 경계: internalBinding과 primordials</a></li>
+    <li><a href="#s3">Isolate · Context · Environment · process</a></li>
+    <li><a href="#s4">부트스트랩: main()에서 메인 모듈까지</a></li>
+    <li><a href="#s5">기동 시간 측정과 분해</a></li>
+    <li><a href="#s6">스타트업 스냅샷과 컴파일 캐시</a></li>
+    <li><a href="#s7">단일 실행 파일(SEA)</a></li>
+    <li><a href="#s8">훈련: 이 호출은 어디로 가나</a></li>
+    <li><a href="#s9">현업 장애 사례</a></li>
+  </ol></nav>
+
+  <section id="s1">
+    <h2>1. 한 장의 그림: Node.js의 부품들</h2>
+    <p>Node.js는 "V8 위에 올린 JavaScript 런타임"이라고 흔히 소개되지만, 실제 바이너리의 절반 이상은 V8이 아닌 코드입니다. <code>process.versions</code>를 찍어 보면 바이너리에 정적으로 링크된 의존 라이브러리 목록이 그대로 나옵니다.</p>
+<pre><code>$ node -p "process.versions"
+{
+  node: '22.x', v8: '12.4.…', uv: '1.48.0', llhttp: '9.x', openssl: '3.0.x',
+  ares: '1.3x', nghttp2: '1.6x', zlib: '1.3.x', brotli: '1.1.0', ada: '2.x',
+  undici: '6.x', simdutf: '5.x', icu: '7x', acorn: '8.x', cjs_module_lexer: '1.x',
+  uvwasi: '0.0.2x', napi: '9', modules: '127', …
+}</code></pre>
+    <p>각 부품은 명확한 책임이 있습니다. 아래 탐색기에서 API 이름을 누르면, 그 호출이 어느 레이어를 거쳐 어느 부품에 도달하는지 표시됩니다.</p>
+
+    <div class="widget">
+      <div class="w-title">레이어 탐색기</div>
+      <div class="w-desc">API를 선택하면 그 호출이 통과하는 레이어와 최종 실행 주체가 강조됩니다. 같은 "비동기 API"라도 도착지가 완전히 다르다는 점을 보세요.</div>
+      <div class="api-btns" id="lx-btns"></div>
+      <div class="layers" id="lx-layers" style="margin-top:12px">
+        <div class="layer" data-l="user"><div class="ln">애플리케이션 코드 <small>app.js, node_modules</small></div><div class="ld"></div></div>
+        <div class="layer" data-l="lib"><div class="ln">Node.js JS 코어 <small>lib/*.js · lib/internal/**</small></div><div class="ld">공개 API 표면. 인자 검증, 스트림/이벤트 추상화, 에러 코드(ERR_*) 조립. primordials로 작성.</div></div>
+        <div class="layer" data-l="binding"><div class="ln">internalBinding <small>src/node_binding.cc · NODE_BINDING_CONTEXT_AWARE_INTERNAL</small></div><div class="ld">JS ↔ C++ 경계. 'fs', 'tcp_wrap', 'crypto', 'cares_wrap', 'zlib', 'url', 'timers' … 약 70개의 내부 바인딩.</div></div>
+        <div class="layer" data-l="cpp"><div class="ln">Node.js C++ 코어 <small>src/*.cc · HandleWrap · ReqWrap · AsyncWrap</small></div><div class="ld">libuv 핸들/요청을 JS 객체로 감싸고, 콜백이 JS로 돌아올 때 async_hooks·nextTick 처리를 끼워 넣는 층.</div></div>
+        <div class="layer deps" data-l="deps">
+          <div class="dep" data-d="v8"><b>V8</b><small>JS 엔진·GC</small></div>
+          <div class="dep" data-d="uv"><b>libuv</b><small>루프·스레드풀·fs·net</small></div>
+          <div class="dep" data-d="ares"><b>c-ares</b><small>비동기 DNS</small></div>
+          <div class="dep" data-d="ssl"><b>OpenSSL</b><small>crypto·TLS</small></div>
+          <div class="dep" data-d="zlib"><b>zlib·brotli</b><small>압축</small></div>
+          <div class="dep" data-d="llhttp"><b>llhttp</b><small>HTTP/1 파서</small></div>
+          <div class="dep" data-d="nghttp2"><b>nghttp2</b><small>HTTP/2 프레이밍</small></div>
+          <div class="dep" data-d="ada"><b>ada</b><small>WHATWG URL</small></div>
+          <div class="dep" data-d="icu"><b>ICU</b><small>Intl·인코딩</small></div>
+          <div class="dep" data-d="simdutf"><b>simdutf</b><small>UTF 변환·base64</small></div>
+          <div class="dep" data-d="undici"><b>undici</b><small>fetch (JS)</small></div>
+          <div class="dep" data-d="uvwasi"><b>uvwasi</b><small>WASI</small></div>
+        </div>
+        <div class="layer" data-l="os"><div class="ln">운영체제 <small>syscall · epoll/kqueue/IOCP · 스레드</small></div><div class="ld"></div></div>
+      </div>
+      <div class="path-note" id="lx-note">API 버튼을 눌러 보세요.</div>
+    </div>
+
+    <div class="callout"><span class="title">"비동기"는 네 가지 서로 다른 메커니즘의 총칭이다</span>
+      <ol style="margin:4px 0 0">
+        <li><b>논블로킹 소켓 + epoll</b>: TCP/UDP/파이프/TTY. 커널이 준비 상태를 알려 주고 메인 스레드가 직접 read/write. 스레드 없음.</li>
+        <li><b>libuv 스레드풀</b>: 파일 I/O, <code>dns.lookup</code>, CPU 무거운 crypto/zlib. 워커 스레드 4개(기본)가 블로킹 호출을 대신 수행.</li>
+        <li><b>c-ares</b>: <code>dns.resolve*</code>. 자체 UDP 소켓으로 DNS 프로토콜을 직접 말하고, 소켓은 epoll에 등록.</li>
+        <li><b>V8 플랫폼 워커</b>: GC 병렬 마킹, 백그라운드 컴파일. 애플리케이션 API는 아니지만 CPU를 쓴다(<code>--v8-pool-size</code>, 기본 4).</li>
+      </ol>
+      <p style="margin:6px 0 0">어느 메커니즘인지에 따라 포화 지점과 장애 양상이 완전히 다릅니다. 3장이 이 구분을 깊게 다룹니다.</p>
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2>2. JS와 C++의 경계: internalBinding과 primordials</h2>
+    <h3>2.1 lib/와 src/</h3>
+    <p>Node.js 저장소의 <code>lib/</code>는 JavaScript, <code>src/</code>는 C++입니다. 공개 모듈(<code>lib/fs.js</code>)은 대부분 얇고, 실제 로직은 <code>lib/internal/</code>에 있으며, 거기서 <code>internalBinding('fs')</code>로 C++ 함수를 호출합니다. 바이너리를 빌드할 때 <code>lib/</code>의 모든 JS는 <code>js2c</code> 도구로 C++ 문자열 상수로 변환되어 실행 파일에 내장되고, <b>코드 캐시(V8이 컴파일한 바이트코드)도 함께 구워집니다</b>. 그래서 <code>require('fs')</code>는 디스크를 읽지 않습니다.</p>
+<pre><code>// lib/fs.js (요지)
+const binding = internalBinding('fs');
+function readFile(path, options, callback) {
+  callback = maybeCallback(callback || options);
+  options = getOptions(options, { flag: 'r' });
+  const context = new ReadFileContext(callback, options.encoding);
+  const req = new FSReqCallback();          // C++ FSReqCallback 객체 (ReqWrap)
+  req.context = context;
+  req.oncomplete = readFileAfterOpen;
+  binding.open(path, flags, 0o666, req);    // → src/node_file.cc Open() → uv_fs_open
+}</code></pre>
+    <p><code>internalBinding</code>은 사용자 코드에서 접근할 수 없습니다(<code>--expose-internals</code>를 켜고 <code>require('internal/test/binding')</code>으로만 가능하며 테스트 전용). 과거의 <code>process.binding()</code>은 같은 테이블의 일부를 노출했지만 <b>DEP0111로 폐기</b>되었고, 접근 시 경고가 납니다. 이를 쓰는 레거시 네이티브 모듈(오래된 <code>fsevents</code>, 일부 APM 에이전트)이 Node 메이저 업그레이드에서 깨지는 전형적 이유입니다.</p>
+
+    <h3>2.2 primordials: 코어는 왜 <code>arr.push</code>를 안 쓰나</h3>
+    <p><code>lib/</code> 코드를 열어 보면 <code>ArrayPrototypePush(arr, x)</code>, <code>StringPrototypeSlice(s, 0, 3)</code>, <code>SafeMap</code> 같은 낯선 이름이 가득합니다. 이것이 <b>primordials</b>입니다. 부트스트랩 가장 첫 단계(<code>lib/internal/per_context/primordials.js</code>)에서 모든 내장 객체의 메서드를 <em>동결된 복사본</em>으로 떠 놓은 것입니다.</p>
+<pre><code>// 사용자 코드가 이렇게 해도
+Array.prototype.push = function () { throw new Error('nope'); };
+// 코어는 자기 복사본을 쓰므로 영향받지 않는다
+const { ArrayPrototypePush } = primordials;
+ArrayPrototypePush(list, item);   // uncurryThis(Array.prototype.push)의 원본</code></pre>
+    <p>이유는 두 가지입니다. (1) <b>격리</b>: 사용자 땅의 프로토타입 오염이 코어 동작을 바꾸지 못하게 한다(16장 보안). (2) <b>성능</b>: 매번 프로토타입 체인을 조회하지 않고 직접 호출한다. 단, <code>Promise</code>는 예외적으로 <code>SafePromise*</code>와 일반 Promise를 섞어 씁니다. 사용자 thenable과 상호작용해야 하기 때문입니다.</p>
+
+    <h3>2.3 HandleWrap · ReqWrap · AsyncWrap</h3>
+    <p>C++ 레이어의 핵심 계층 구조입니다. libuv의 두 개념(핸들 = 수명이 긴 것, 요청 = 일회성 작업)을 JS 객체로 감싼 것입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>C++ 클래스</th><th>libuv 대응</th><th>JS에서 보이는 모습</th><th>예</th></tr>
+      <tr><td><code>AsyncWrap</code></td><td>-</td><td>async_hooks의 <code>asyncId</code>, <code>triggerAsyncId</code>를 가진 모든 것의 베이스</td><td>모든 아래 클래스</td></tr>
+      <tr><td><code>HandleWrap</code></td><td><code>uv_handle_t</code></td><td>소켓·서버·타이머·프로세스 등 "열려 있는 것". <code>close()</code>가 close 콜백 페이즈로 감</td><td><code>TCPWrap</code>, <code>PipeWrap</code>, <code>TTYWrap</code>, <code>ProcessWrap</code>, <code>FSEventWrap</code></td></tr>
+      <tr><td><code>ReqWrap</code></td><td><code>uv_req_t</code></td><td>한 번 완료되면 끝나는 작업. <code>oncomplete</code> 속성에 콜백</td><td><code>FSReqCallback</code>, <code>WriteWrap</code>, <code>ConnectWrap</code>, <code>GetAddrInfoReqWrap</code></td></tr>
+    </table></div>
+    <p>JS로 콜백이 돌아올 때 C++는 반드시 <code>MakeCallback</code> 계열(내부적으로 <code>InternalCallbackScope</code>)을 거칩니다. 이 스코프가 종료될 때 async_hooks의 <code>after</code> 훅과 2장에서 본 <code>processTicksAndRejections</code>가 호출됩니다. 즉 <b>"콜백 하나마다 nextTick/마이크로태스크 드레인"이라는 규칙은 이 C++ 스코프에서 구현</b>되어 있습니다.</p>
+  </section>
+
+  <section id="s3">
+    <h2>3. Isolate · Context · Environment · process</h2>
+    <p>네 개념이 자주 혼동됩니다. 소속을 정확히 알아야 워커 스레드, <code>vm</code> 모듈, 스냅샷, 임베딩(Electron 등)이 이해됩니다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 880 330" role="img" aria-label="프로세스, Isolate, Context, Environment 관계">
+        <rect x="10" y="10" width="860" height="310" rx="12" class="box"/>
+        <text x="24" y="34" font-weight="700">OS 프로세스 (node)</text>
+        <text x="24" y="54" class="muted" font-size="12">per_process: CLI 옵션, V8 플랫폼(워커 스레드 풀), OpenSSL/ICU 초기화, 시그널 핸들러</text>
+        <!-- Main isolate -->
+        <rect x="24" y="70" width="520" height="236" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="38" y="92" font-weight="700" style="fill:var(--accent)">v8::Isolate (메인 스레드)</text>
+        <text x="38" y="110" class="muted" font-size="12">자기만의 힙·GC·마이크로태스크 큐. 한 번에 한 스레드만 진입.</text>
+        <rect x="38" y="122" width="240" height="170" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+        <text x="50" y="142" font-weight="700" font-size="13">v8::Context (메인)</text>
+        <text x="50" y="160" class="muted" font-size="11.5">globalThis, Object, Array … 내장 객체 한 벌</text>
+        <rect x="50" y="172" width="216" height="108" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="60" y="192" font-weight="700" font-size="12.5" style="fill:var(--ok)">node::Environment</text>
+        <text x="60" y="210" font-size="11.5">uv_loop_t · 핸들/요청 목록</text>
+        <text x="60" y="226" font-size="11.5">process 객체 · async_hooks 상태</text>
+        <text x="60" y="242" font-size="11.5">타이머 · immediate 큐 · 모듈 로더</text>
+        <text x="60" y="258" font-size="11.5">BindingData (fs, http_parser …)</text>
+        <text x="60" y="274" font-size="11.5" class="muted">exit code · 경고 상태 · 권한 모델</text>
+        <rect x="294" y="122" width="236" height="76" rx="8" style="fill:var(--surface);stroke:var(--border);stroke-dasharray:4 3"/>
+        <text x="306" y="142" font-weight="700" font-size="13">v8::Context (vm.createContext)</text>
+        <text x="306" y="160" class="muted" font-size="11.5">같은 Isolate·같은 힙, 다른 globalThis.</text>
+        <text x="306" y="176" class="muted" font-size="11.5">Environment 없음 → process·require 없음.</text>
+        <text x="306" y="192" class="muted" font-size="11.5">보안 경계가 아님 (탈출 가능)</text>
+        <rect x="294" y="212" width="236" height="80" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+        <text x="306" y="232" font-weight="700" font-size="13">node::IsolateData</text>
+        <text x="306" y="250" class="muted" font-size="11.5">Isolate 단위 공유물: 내부 문자열 상수,</text>
+        <text x="306" y="266" class="muted" font-size="11.5">플랫폼 포인터, 스냅샷 데이터,</text>
+        <text x="306" y="282" class="muted" font-size="11.5">ArrayBuffer allocator</text>
+        <!-- Worker isolate -->
+        <rect x="560" y="70" width="298" height="236" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="574" y="92" font-weight="700" style="fill:var(--violet)">v8::Isolate (worker_threads)</text>
+        <text x="574" y="110" class="muted" font-size="12">별도 스레드 · 별도 힙 · 별도 uv_loop_t</text>
+        <rect x="574" y="122" width="270" height="170" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+        <text x="586" y="142" font-weight="700" font-size="13">Context + Environment (워커용)</text>
+        <text x="586" y="162" font-size="11.5">process 객체는 있지만 일부 제한</text>
+        <text x="586" y="178" font-size="11.5">(process.exit는 워커만 종료, chdir 불가 …)</text>
+        <text x="586" y="200" font-size="11.5">메인과 공유: 프로세스 메모리 공간,</text>
+        <text x="586" y="216" font-size="11.5">SharedArrayBuffer, libuv 스레드풀(!)</text>
+        <text x="586" y="238" font-size="11.5">메인과 분리: JS 힙, 루프, 모듈 캐시,</text>
+        <text x="586" y="254" font-size="11.5">env 변수(기본 복사본), 타이머</text>
+        <text x="586" y="280" class="muted" font-size="11.5">resourceLimits로 힙 상한 개별 설정</text>
+      </svg>
+      <figcaption>Isolate는 V8의 단위(힙·GC), Context는 전역 객체의 단위, Environment는 Node.js의 단위(루프·process)입니다. 워커는 세 개를 모두 새로 만들지만 libuv 스레드풀은 프로세스에 하나뿐입니다.</figcaption>
+    </figure>
+    <ul>
+      <li><b>Isolate</b>: V8 힙 하나. GC는 Isolate 단위로 돕니다. <code>--max-old-space-size</code>는 Isolate 힙 상한이므로 워커마다 따로 적용됩니다(워커는 <code>resourceLimits</code> 옵션). 메모리 한계를 잡을 때 "프로세스 = 메인 힙 + 워커 힙 × N + 네이티브 메모리"로 계산해야 합니다(14장).</li>
+      <li><b>Context</b>: 전역 객체와 내장 객체 세트. <code>vm.createContext()</code>는 같은 Isolate 안에 새 Context를 만듭니다. 힙을 공유하므로 샌드박스가 아니며(<code>this.constructor.constructor('return process')()</code>류 탈출), 격리가 필요하면 워커나 별도 프로세스를 써야 합니다.</li>
+      <li><b>Environment</b>: Node.js가 Context 위에 얹는 상태 묶음. <code>uv_loop_t</code>가 여기 소속입니다. 즉 "이벤트 루프 하나 = Environment 하나"입니다.</li>
+      <li><b><code>process</code></b>: Environment가 만드는 JS 객체. 부트스트랩 초기에 C++ <code>process</code> 템플릿에서 생성된 뒤, JS 부트스트랩이 <code>process.nextTick</code>, <code>process.env</code>(프록시 객체), <code>process.stdout</code>(lazy getter) 등을 덧붙입니다. <code>process.env</code>가 일반 객체가 아니라 <code>setenv</code>를 호출하는 인터셉터라는 점, <code>process.stdout</code>이 첫 접근 시점에 fd 1의 종류를 보고 TTY/파이프/파일 스트림 중 하나로 생성된다는 점이 자주 걸리는 세부입니다.</li>
+    </ul>
+  </section>
+
+  <section id="s4">
+    <h2>4. 부트스트랩: main()에서 메인 모듈까지</h2>
+    <p>아래 순서는 Node 22 소스 기준입니다. C++(<code>src/node.cc</code>, <code>src/node_main_instance.cc</code>)에서 시작해 JS(<code>lib/internal/bootstrap/*</code>, <code>lib/internal/main/*</code>)로 넘어옵니다. 스냅샷 덕분에 보라색 JS 단계 상당수는 실제로는 <em>실행되지 않고 역직렬화</em>됩니다.</p>
+
+    <div class="widget">
+      <div class="w-title">부트스트랩 타임라인</div>
+      <div class="w-desc">재생을 누르면 단계가 순서대로 진행됩니다. 오른쪽 라벨은 해당 단계가 C++인지, 스냅샷에서 복원되는지, JS인지, 사용자 코드인지입니다.</div>
+      <div class="boot-list" id="boot-list"></div>
+      <div id="boot-step"></div>
+    </div>
+
+    <h3>4.1 주요 단계 해설</h3>
+    <p><b><code>InitializeOncePerProcess</code></b>는 프로세스에 단 한 번 일어나는 일입니다. CLI 인자와 <code>NODE_OPTIONS</code>를 파싱해 <code>per_process::cli_options</code>에 넣고, <code>NodePlatform</code>(V8이 GC·컴파일 작업을 던질 워커 스레드 풀)을 만들고, OpenSSL 설정(<code>openssl.cnf</code>, FIPS)과 ICU 데이터를 초기화한 뒤 <code>V8::Initialize()</code>를 호출합니다. 여기까지가 <code>performance.nodeTiming.v8Start</code>입니다.</p>
+    <p><b>Isolate와 Environment 생성</b>에서 Node는 바이너리에 내장된 <b>스타트업 스냅샷</b>(<code>node_snapshot.cc</code>, 빌드 시 <code>node_mksnapshot</code>이 생성)을 V8에 넘겨 Isolate를 만듭니다. 스냅샷에는 primordials가 준비되고 <code>internal/bootstrap/node.js</code>까지 실행된 상태의 힙이 들어 있습니다. 따라서 이 단계는 "JS를 실행"하는 것이 아니라 "힙을 복사"하는 것입니다. <code>--no-node-snapshot</code>으로 끄면 같은 JS를 실제로 실행하며, 기동이 눈에 띄게(수십 ms) 느려집니다. <code>nodeTiming.environment</code>가 이 시점입니다.</p>
+    <p><b><code>StartExecution</code></b>은 "무엇을 실행할 것인가"에 따라 <code>lib/internal/main/</code>의 진입점 하나를 고릅니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>호출 형태</th><th>진입점</th></tr>
+      <tr><td><code>node app.js</code></td><td><code>internal/main/run_main_module.js</code></td></tr>
+      <tr><td><code>node -e "…"</code> / <code>-p</code></td><td><code>internal/main/eval_string.js</code></td></tr>
+      <tr><td><code>node</code> (TTY)</td><td><code>internal/main/repl.js</code></td></tr>
+      <tr><td><code>echo "…" | node</code></td><td><code>internal/main/eval_stdin.js</code></td></tr>
+      <tr><td><code>node --check app.js</code></td><td><code>internal/main/check_syntax.js</code></td></tr>
+      <tr><td><code>node --test</code></td><td><code>internal/main/test_runner.js</code></td></tr>
+      <tr><td><code>node --watch app.js</code></td><td><code>internal/main/watch_mode.js</code> (부모) → 자식 프로세스가 run_main_module</td></tr>
+      <tr><td><code>new Worker()</code></td><td><code>internal/main/worker_thread.js</code></td></tr>
+      <tr><td><code>node --build-snapshot entry.js</code></td><td><code>internal/main/mksnapshot.js</code></td></tr>
+    </table></div>
+    <p>모든 진입점은 <b><code>prepareMainThreadExecution()</code></b>(<code>lib/internal/process/pre_execution.js</code>)을 먼저 호출합니다. 스냅샷은 환경에 독립적이어야 하므로, <b>환경 의존적인 것은 모두 여기서 뒤늦게 붙습니다</b>: <code>process.argv</code>/<code>execArgv</code> 패치, <code>process.env</code> 기반 설정(<code>NODE_V8_COVERAGE</code>, <code>NODE_DEBUG</code>), 경고·deprecation 핸들러, inspector 훅, <code>--require</code>/<code>--import</code> 프리로드 실행, CJS·ESM 로더 초기화, 권한 모델(<code>--permission</code>) 활성화. 끝에 <code>markBootstrapComplete()</code>가 <code>nodeTiming.bootstrapComplete</code>를 찍습니다.</p>
+    <p>그다음 <code>runEntryPointWithESMLoader</code>가 메인 모듈을 로드합니다. 메인 모듈의 <b>동기 코드(그리고 그것이 require하는 모든 트리)가 끝나야</b> C++로 제어가 돌아가고, <code>SpinEventLoop</code>가 <code>uv_run</code>을 시작합니다(<code>nodeTiming.loopStart</code>). 대부분의 서비스에서 기동 시간의 지배적 부분은 이 "require 트리 동기 실행"입니다.</p>
+
+    <details class="deep"><summary>종료 시퀀스도 대칭이다</summary><div>
+      <p><code>uv_run</code>이 반환하면(활성 핸들 없음) <code>EmitProcessBeforeExit</code> → <code>'beforeExit'</code> 이벤트. 여기서 새 비동기 작업을 걸면 루프가 <em>다시</em> 돕니다(지연 종료 패턴). 루프가 정말 비었으면 <code>EmitProcessExit</code> → <code>'exit'</code> 이벤트(동기 코드만 가능) → <code>Environment</code> 정리 → <code>process.exitCode</code> 반환. <code>process.exit()</code>는 이 순서를 건너뛰고 즉시 <code>'exit'</code>만 발화한 뒤 C++ <code>exit()</code>를 부르므로, <b>stdout 파이프에 쌓인 비동기 쓰기가 유실</b>될 수 있습니다. 13장 그레이스풀 셧다운에서 다시 봅니다.</p>
+    </div></details>
+  </section>
+
+  <section id="s5">
+    <h2>5. 기동 시간 측정과 분해</h2>
+    <p>"기동이 느리다"를 진단하려면 어느 단계가 느린지 분해해야 합니다. 첫 도구는 <code>performance.nodeTiming</code>입니다.</p>
+<pre><code>$ node -e "setImmediate(() =&gt; console.log(performance.nodeTiming))"
+PerformanceNodeTiming {
+  name: 'node', entryType: 'node', startTime: 0, duration: 24.1,
+  nodeStart: 1.9,           // main() 진입
+  v8Start: 4.3,             // V8::Initialize 완료
+  environment: 9.8,         // Environment 생성(스냅샷 역직렬화 포함)
+  bootstrapComplete: 14.6,  // prepareMainThreadExecution 종료
+  loopStart: 22.0,          // uv_run 시작 = 메인 모듈 동기 실행 종료
+  loopExit: -1, idleTime: 0.4
+}</code></pre>
+    <div class="widget">
+      <div class="w-title">nodeTiming 분해 뷰어</div>
+      <div class="w-desc">위 명령으로 얻은 값을 JSON으로 붙여 넣으면 구간별 소요 시간을 막대로 그립니다. (기본값은 예시. <code>loopStart</code>가 -1이면 아직 루프 진입 전이므로 측정 시점을 <code>setImmediate</code> 안으로 옮기세요.)</div>
+      <div class="controls">
+        <textarea id="nt-in" rows="3" style="width:100%;font-family:var(--mono);font-size:12.5px">{"nodeStart":1.9,"v8Start":4.3,"environment":9.8,"bootstrapComplete":14.6,"loopStart":22.0}</textarea>
+      </div>
+      <div class="controls"><button class="btn primary" id="nt-go">그리기</button><span id="nt-err" class="c-bad" style="font-size:13px"></span></div>
+      <div class="nt-bars" id="nt-bars"></div>
+      <div class="stat-row"><div class="stat"><div class="k">루프 진입까지 총</div><div class="v" id="nt-total">-</div></div><div class="stat"><div class="k">지배 구간</div><div class="v" id="nt-dom" style="font-size:15px">-</div></div></div>
+    </div>
+    <p>구간별 전형적 원인과 대응:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>구간</th><th>포함되는 일</th><th>느릴 때 원인</th><th>대응</th></tr>
+      <tr><td>nodeStart → v8Start</td><td>옵션 파싱, OpenSSL/ICU 초기화, V8 플랫폼</td><td>거의 고정(수 ms). OpenSSL 설정 파일 로드가 느린 FS</td><td><code>--openssl-config</code> 점검, 컨테이너 FS</td></tr>
+      <tr><td>v8Start → environment</td><td>Isolate 생성, 스냅샷 역직렬화</td><td><code>--no-node-snapshot</code>, 커스텀 스냅샷이 거대</td><td>스냅샷 활성 확인</td></tr>
+      <tr><td>environment → bootstrapComplete</td><td>pre_execution, <code>--require</code>/<code>--import</code> 프리로드</td><td>APM 에이전트·계측 프리로드가 무거움</td><td>프리로드 모듈 프로파일링(10장)</td></tr>
+      <tr><td>bootstrapComplete → loopStart</td><td><b>메인 모듈과 require 트리 동기 실행</b></td><td>의존성 수백 개, 최상위에서 동기 I/O·네트워크·DB 연결 초기화, 큰 JSON 로드</td><td>컴파일 캐시(6절), 지연 로딩, 번들링, 최상위 await 지양</td></tr>
+    </table></div>
+    <p>구간을 더 쪼개려면 <code>node --cpu-prof --cpu-prof-interval 100 app.js</code>로 기동 구간의 CPU 프로파일을 뜨거나(10장), <code>NODE_DEBUG=module</code>로 어떤 모듈이 언제 로드되는지 찍어 봅니다. 모듈 로드 시간만 간단히 보려면 <code>--require</code>로 <code>Module._load</code>를 감싸는 작은 스크립트도 유효합니다(8장).</p>
+  </section>
+
+  <section id="s6">
+    <h2>6. 스타트업 스냅샷과 컴파일 캐시</h2>
+    <h3>6.1 사용자 정의 스타트업 스냅샷 (Node 18.8+, 실험적)</h3>
+    <p>Node 자체가 쓰는 기법을 애플리케이션에도 적용할 수 있습니다. 초기화를 끝낸 힙을 파일로 저장했다가, 다음 실행에서 그 힙을 그대로 복원하는 것입니다.</p>
+<pre><code>// entry.js — 스냅샷에 담을 초기화
+const { setDeserializeMainFunction, addSerializeCallback } = require('node:v8').startupSnapshot;
+const config = loadAndParseBigConfig();       // 무거운 초기화: 스냅샷 빌드 때 1회만 실행
+const routes = buildRouteTable();
+addSerializeCallback(() =&gt; { /* 직렬화 직전: 열린 핸들 닫기 등 */ });
+setDeserializeMainFunction(() =&gt; {           // 복원 후 실제 진입점
+  require('./server').start(config, routes);
+});
+
+$ node --snapshot-blob snap.blob --build-snapshot entry.js   # 빌드
+$ node --snapshot-blob snap.blob                              # 실행 (수십 ms → 수 ms)</code></pre>
+    <p>제약이 큽니다. 스냅샷 시점에 <b>열린 핸들(소켓, 타이머, 파일)이 있으면 안 되고</b>, 네이티브 애드온은 불가하며, 코어 모듈 중 일부만 스냅샷 가능 목록에 있습니다(목록은 <code>lib/internal/bootstrap/</code>의 <code>supportedModules</code>류 상수로 관리되며 버전마다 늘어남). 사용자 모듈 로더(ESM)도 Node 22 기준 제한이 있어, 실전에서는 "순수 계산으로 만들 수 있는 큰 자료구조"를 담는 용도에 적합합니다. 이 기능은 Node 22에서도 Stability 1(실험적)입니다.</p>
+
+    <h3>6.2 컴파일 캐시 (Node 22.1+)</h3>
+    <p>스냅샷보다 훨씬 적용하기 쉬운 것이 컴파일 캐시입니다. V8이 각 모듈을 파싱·컴파일한 결과(바이트코드와 메타데이터)를 디스크에 저장해 두고 다음 실행 때 재사용합니다. 실행 의미론은 그대로이고 "파싱 시간"만 아낍니다.</p>
+<pre><code>// 방법 1: 코드에서 (가능한 한 가장 먼저 호출)
+const { enableCompileCache } = require('node:module');
+enableCompileCache();                 // 기본 디렉터리: os.tmpdir()/node-compile-cache
+// 반환값 { status, message, directory } 로 활성 여부 확인
+
+// 방법 2: 환경변수 (코드 수정 없이, 프리로드까지 포함)
+$ NODE_COMPILE_CACHE=/var/cache/node-cc node app.js
+
+// 상태 확인/강제 저장 (22.10+)
+module.getCompileCacheDir();  module.flushCompileCache();</code></pre>
+    <p>캐시 키는 파일 경로·내용 해시·Node 버전·V8 플래그를 포함하므로 소스가 바뀌면 자동으로 무효화됩니다. 의존성 수백 개를 로드하는 서비스에서 기동의 "bootstrapComplete → loopStart" 구간이 전형적으로 20~40% 줄어듭니다(코드 규모에 비례하므로 수치는 참고치). 컨테이너에서는 캐시 디렉터리를 이미지 빌드 단계에서 미리 채워 두면(빌드 시 한 번 실행) 첫 기동부터 효과를 봅니다. 주의: 캐시 디렉터리가 읽기 전용이거나 없으면 조용히 비활성화되므로 반환값의 <code>status</code>를 로그로 남기세요.</p>
+
+    <div class="callout tip"><span class="title">세 가지 기법의 자리</span>
+      <ul style="margin:4px 0 0">
+        <li><b>컴파일 캐시</b>: 거의 모든 서비스. 적용 비용 0, 부작용 없음. 먼저 켠다.</li>
+        <li><b>번들링(esbuild 등)</b>: 파일 수천 개의 <code>stat</code>/<code>open</code>을 한 파일로. 서버리스·CLI에 효과 큼. 단 네이티브 애드온·동적 require 주의.</li>
+        <li><b>스냅샷</b>: 콜드 스타트가 비즈니스 지표인 경우(서버리스, CLI 도구)에만. 제약을 감수할 가치가 있는지 측정 후 결정.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="s7">
+    <h2>7. 단일 실행 파일(SEA, Node 20+ 실험적)</h2>
+    <p>Node 바이너리 복사본에 애플리케이션 번들을 <em>주입</em>해 하나의 실행 파일로 배포하는 기능입니다. pkg·nexe 같은 서드파티가 하던 일을 코어가 공식화한 것입니다.</p>
+<pre><code>// sea-config.json
+{ "main": "dist/app.js",            // 반드시 CommonJS (Node 22 기준 ESM 메인 미지원)
+  "output": "sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useCodeCache": true,             // 컴파일 캐시 내장
+  "useSnapshot": false,             // true면 main이 스냅샷 엔트리 규칙을 따라야 함
+  "assets": { "schema.json": "./schema.json" } }
+
+$ node --experimental-sea-config sea-config.json          # blob 생성
+$ cp "$(command -v node)" myapp
+$ npx postject myapp NODE_SEA_BLOB sea-prep.blob \
+    --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+# macOS: codesign --sign - myapp  /  Windows: signtool
+
+// 앱에서 에셋 접근
+const { isSea, getAsset } = require('node:sea');
+if (isSea()) JSON.parse(getAsset('schema.json', 'utf8'));</code></pre>
+    <p>동작 원리: 바이너리의 특정 섹션(<code>NODE_SEA_BLOB</code>)에 blob을 넣고, "fuse"라는 센티널 바이트열을 뒤집어 "나는 SEA다"라고 표시합니다. 기동 시 C++가 fuse를 검사해 켜져 있으면 <code>run_main_module</code> 대신 <code>internal/main/embedding.js</code>로 진입해 blob의 main을 실행합니다. 결과물 크기는 node 바이너리 크기(약 100MB)가 하한이고, 네이티브 애드온은 별도 파일로 두고 <code>process.dlopen</code>해야 합니다. 배포 단순화(사내 CLI, 에이전트)에는 유용하지만 "번들링 + 컴파일 캐시"로 충분한 경우가 더 많습니다.</p>
+  </section>
+
+  <section id="s8">
+    <h2>8. 훈련: 이 호출은 어디로 가나</h2>
+    <p>전문가의 첫 번째 습관은 API를 보는 순간 그 실행 주체를 떠올리는 것입니다. 아래 각 호출의 도착지를 고르세요. 틀리면 이유가 표시됩니다.</p>
+    <div class="widget">
+      <div class="w-title">실행 주체 분류 훈련</div>
+      <div class="w-desc">도착지: <b>V8만</b>(Node 레이어 없음) · <b>동기</b>(메인 스레드가 syscall/연산을 직접 수행해 블로킹) · <b>스레드풀</b>(libuv 워커) · <b>epoll</b>(논블로킹 fd, 메인 스레드) · <b>c-ares</b>(자체 DNS 클라이언트).</div>
+      <div class="controls"><button class="btn" id="cls-reset">다시 섞기</button><span id="cls-score" style="font-size:14px"></span></div>
+      <div id="cls-list"></div>
+    </div>
+  </section>
+
+  <section id="s9">
+    <h2>9. 현업 장애 사례</h2>
+    <div class="callout danger"><span class="title">사례 1: 서버리스 콜드 스타트 1.8초의 정체</span>
+      <p>Lambda 함수의 콜드 스타트가 1.8초. <code>nodeTiming</code>을 찍어 보니 <code>bootstrapComplete</code>까지는 40ms, <code>loopStart</code>까지가 1.7초. 즉 런타임이 아니라 <b>require 트리</b>였습니다. AWS SDK v2 전체(<code>require('aws-sdk')</code>)와 moment-timezone 데이터 로드가 지배적. v3 모듈식 클라이언트로 교체 + esbuild 번들 + 컴파일 캐시로 300ms. 교훈: "Node가 느리다"가 아니라 "내 require가 느리다"를 먼저 의심하라.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 2: Node 메이저 업그레이드 후 APM 에이전트 크래시</span>
+      <p>Node 16 → 20 업그레이드 뒤 기동 즉시 <code>TypeError: process.binding is not a function</code>… 은 아니고, 실제로는 <code>process.binding('http_parser')</code>가 다른 내부 구조를 돌려줘서 에이전트가 <code>undefined</code> 프로퍼티를 읽다 죽은 경우. <code>process.binding</code>은 DEP0111로 폐기되었고 노출 목록은 버전마다 줄어듭니다. 내부 바인딩에 의존하는 모듈은 메이저 업그레이드 전에 반드시 별도 검증. 공식 대안은 <code>diagnostics_channel</code>(15장)과 공개 API뿐입니다.</p>
+    </div>
+    <div class="callout danger"><span class="title">사례 3: 워커 8개를 띄웠더니 OOM</span>
+      <p>4GB 컨테이너에서 <code>--max-old-space-size=3072</code>를 주고 워커 8개를 생성. 각 워커는 <em>자기 Isolate</em>를 가지며 힙 상한을 상속하지는 않지만, 메인과 별도로 힙을 키울 수 있어 합계가 컨테이너 한계를 넘어 OOM Kill. 워커마다 <code>resourceLimits: { maxOldGenerationSizeMb }</code>를 명시하고, 총합(메인 + 워커 + 네이티브 버퍼 + V8 플랫폼 스레드 스택)이 cgroup 한계의 70~80% 이내가 되도록 계산해야 합니다(9장, 14장).</p>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>Node.js = JS 코어(<code>lib/</code>) + <code>internalBinding</code> 경계 + C++ 래퍼(<code>src/</code>) + V8 + libuv + c-ares/OpenSSL/zlib/llhttp/nghttp2/ada/ICU/simdutf/undici. <code>process.versions</code>가 그 목록이다.</li>
+    <li>"비동기"의 실체는 넷 중 하나: epoll(소켓), libuv 스레드풀(fs·dns.lookup·crypto·zlib), c-ares(dns.resolve), V8 플랫폼 워커(GC·컴파일). 포화 지점이 각각 다르다.</li>
+    <li>코어는 primordials로 작성되어 프로토타입 오염에 면역이고, <code>process.binding</code>은 폐기되었다.</li>
+    <li>Isolate(힙·GC) ⊃ Context(전역 객체) + Environment(루프·process). 워커는 셋 다 새로 만들지만 스레드풀은 프로세스에 하나.</li>
+    <li>부트스트랩: InitializeOncePerProcess → Isolate(스냅샷 복원) → Environment → <code>internal/main/*</code> 진입점 → <code>prepareMainThreadExecution</code>(환경 의존 패치, 프리로드) → 메인 모듈 동기 실행 → <code>uv_run</code>.</li>
+    <li><code>performance.nodeTiming</code>으로 기동을 분해하라. 대개 지배 구간은 require 트리. 컴파일 캐시(<code>NODE_COMPILE_CACHE</code>) → 번들링 → 스냅샷 순으로 적용.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q"><code>dns.lookup('example.com', cb)</code>과 <code>dns.resolve4('example.com', cb)</code>의 실행 주체로 옳은 것은?</div>
+    <button class="opt">둘 다 c-ares가 UDP로 질의한다</button>
+    <button class="opt">lookup은 libuv 스레드풀에서 getaddrinfo(3), resolve4는 c-ares가 UDP 소켓으로 질의</button>
+    <button class="opt">lookup은 epoll, resolve4는 스레드풀</button>
+    <button class="opt">둘 다 메인 스레드에서 동기적으로 /etc/hosts와 DNS를 조회한다</button>
+    <div class="explain"><code>dns.lookup</code>은 OS 리졸버(getaddrinfo)를 쓰기 때문에 블로킹 호출이고, libuv가 스레드풀 워커에서 대신 호출합니다. <code>dns.resolve*</code>는 c-ares가 직접 DNS 패킷을 보내며 그 소켓은 epoll에 등록됩니다. 3장에서 이 차이가 만드는 장애를 다룹니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>vm.createContext()</code>로 만든 컨텍스트에서 실행한 코드에 대한 설명으로 옳은 것은?</div>
+    <button class="opt">별도 Isolate이므로 메모리 상한을 따로 둘 수 있다</button>
+    <button class="opt">별도 Environment이므로 자체 이벤트 루프를 가진다</button>
+    <button class="opt">같은 Isolate·같은 힙을 쓰는 다른 전역 객체일 뿐이며 보안 경계가 아니다</button>
+    <button class="opt">process 객체가 자동으로 복제되어 주입된다</button>
+    <div class="explain">Context는 전역 객체의 단위입니다. 힙, GC, 마이크로태스크 큐를 메인과 공유하고 Environment가 없으므로 process/require도 없습니다. 신뢰할 수 없는 코드 격리에는 워커나 프로세스를 쓰세요.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">기동 시 <code>process.argv</code>, <code>--require</code> 프리로드, 권한 모델 활성화가 스냅샷이 아니라 <code>prepareMainThreadExecution</code>에서 처리되는 이유는?</div>
+    <button class="opt">스냅샷은 환경(인자·env·플래그)에 독립적이어야 재사용 가능하기 때문</button>
+    <button class="opt">C++에서는 process 객체에 접근할 수 없기 때문</button>
+    <button class="opt">V8이 문자열을 스냅샷에 담지 못하기 때문</button>
+    <button class="opt">프리로드 모듈이 ESM일 수 있기 때문</button>
+    <div class="explain">스냅샷은 빌드 시점에 한 번 만들어 모든 실행이 공유합니다. 실행마다 달라지는 값(argv, env, CLI 플래그에 따른 동작)은 복원 후에 덧붙여야 하므로 pre_execution 단계가 존재합니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q"><code>performance.nodeTiming</code>에서 <code>bootstrapComplete</code>와 <code>loopStart</code> 사이가 1.5초라면 가장 먼저 의심할 것은?</div>
+    <button class="opt">V8 스냅샷 역직렬화가 느리다</button>
+    <button class="opt">OpenSSL 초기화가 느리다</button>
+    <button class="opt">libuv 스레드풀 생성이 느리다</button>
+    <button class="opt">메인 모듈과 그 require 트리의 동기 실행(의존성 로드, 최상위 초기화)이 느리다</button>
+    <div class="explain">그 구간은 정확히 "메인 모듈이 동기적으로 실행되는 시간"입니다. 컴파일 캐시, 번들링, 지연 로딩, 최상위 동기 I/O 제거가 대응입니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Node.js 코어가 <code>arr.push(x)</code> 대신 <code>ArrayPrototypePush(arr, x)</code>(primordials)를 쓰는 주된 이유는?</div>
+    <button class="opt">V8이 메서드 호출을 최적화하지 못하기 때문</button>
+    <button class="opt">사용자 코드의 프로토타입 변경(오염)이 코어 동작에 영향을 주지 못하게 하기 위해</button>
+    <button class="opt">ESM에서는 프로토타입 메서드를 호출할 수 없기 때문</button>
+    <button class="opt">스냅샷에 프로토타입 메서드를 담을 수 없기 때문</button>
+    <div class="explain">primordials는 부트스트랩 최초 단계에서 내장 메서드의 동결된 복사본을 떠 둔 것입니다. 이후 누가 <code>Array.prototype.push</code>를 바꿔도 코어는 영향을 받지 않습니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>기동 분해.</b> 여러분 서비스의 진입 파일 첫 줄에 <code>setImmediate(() =&gt; console.log(JSON.stringify(performance.nodeTiming)))</code>를 넣고 10회 실행해 평균을 구한 뒤, 위 뷰어에 붙여 넣으세요. 그다음 <code>NODE_COMPILE_CACHE=/tmp/cc node app.js</code>로 두 번째 실행부터의 <code>loopStart</code> 변화를 비교하세요. 기대: bootstrapComplete→loopStart 구간만 줄어들고 나머지는 거의 동일.</li>
+    <li><b>스냅샷 끄기 실험.</b> <code>node --no-node-snapshot -e "setImmediate(()=&gt;console.log(performance.nodeTiming.environment))"</code>와 기본 실행을 비교하세요. 기대: <code>environment</code> 시점이 수십 ms 뒤로 밀림(머신에 따라 다름). 이것이 바이너리 내장 스냅샷이 매 실행마다 절약하는 시간입니다.</li>
+    <li><b>분류 검증.</b> 8절 훈련에서 "스레드풀"로 분류된 API 중 하나(예: <code>crypto.pbkdf2</code>)를 100개 동시에 호출하면서 동시에 <code>fs.readFile</code> 한 번의 소요 시간을 재 보세요. 그다음 <code>UV_THREADPOOL_SIZE=32</code>로 다시 재세요. 기대: readFile 지연이 pbkdf2 작업 길이 × (100/4) 수준에서 × (100/32) 수준으로 감소. 3장에서 원리를 다룹니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  // ===== 위젯 1: 레이어 탐색기 =====
+  const APIS = [
+    { n: "fs.readFile", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>lib/fs.js → internal/fs/read/context.js → internalBinding('fs') (src/node_file.cc) → uv_fs_open/fstat/read/close → libuv 스레드풀 → open(2)/read(2)</b>. 한 번의 readFile이 open·fstat·read(청크 반복)·close 각각을 스레드풀 왕복으로 수행한다." },
+    { n: "fs.readFileSync", layers: ["user", "lib", "binding", "cpp", "os"], deps: [], note: "<b>internalBinding('fs').readFileUtf8 등 → 메인 스레드에서 직접 syscall</b>. libuv 스레드풀을 거치지 않으며, 끝날 때까지 이벤트 루프가 멈춘다. 디스크가 느리면(네트워크 FS) 그대로 지연." },
+    { n: "http.get", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv", "llhttp"], note: "<b>lib/http.js → _http_client.js → net.Socket → internalBinding('tcp_wrap') → uv_tcp_connect / uv_read_start → epoll</b>. 응답 바이트는 internalBinding('http_parser')의 llhttp가 메인 스레드에서 파싱. 스레드풀 사용 없음." },
+    { n: "fetch", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["undici", "uv", "ssl", "llhttp"], note: "<b>lib/internal/deps/undici (순수 JS HTTP 클라이언트) → net/tls 소켓 → tcp_wrap/tls_wrap → OpenSSL(TLS, 메인 스레드) + epoll</b>. undici는 자체 HTTP 파서(llhttp WASM 빌드)를 쓴다." },
+    { n: "crypto.pbkdf2", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["ssl", "uv"], note: "<b>lib/internal/crypto/pbkdf2.js → internalBinding('crypto') → OpenSSL PKCS5_PBKDF2_HMAC을 uv_queue_work로 스레드풀에서 실행</b>. CPU 집약 작업을 스레드풀에 위임하는 대표 예. Sync 버전은 메인 스레드 블로킹." },
+    { n: "crypto.createHash().update()", layers: ["user", "lib", "binding", "cpp", "deps"], deps: ["ssl"], note: "<b>internalBinding('crypto') Hash → OpenSSL EVP_DigestUpdate, 메인 스레드 동기</b>. 해시는 비동기 API가 없다. 수백 MB를 해시하면 루프가 그만큼 멈춘다(스트림으로 쪼개도 각 청크는 동기)." },
+    { n: "dns.lookup", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>lib/dns.js → internalBinding('cares_wrap').getaddrinfo → uv_getaddrinfo → 스레드풀에서 getaddrinfo(3)</b>. /etc/hosts, nsswitch, 시스템 리졸버 설정을 모두 따른다. net.connect(host)의 기본 경로." },
+    { n: "dns.resolve4", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["ares", "uv"], note: "<b>internalBinding('cares_wrap') → c-ares ares_query → c-ares가 연 UDP 소켓을 uv_poll로 epoll에 등록</b>. /etc/hosts를 보지 않는다. 스레드풀 사용 없음." },
+    { n: "zlib.gzip", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["zlib", "uv"], note: "<b>lib/zlib.js → internalBinding('zlib') ZlibContext → uv_queue_work로 스레드풀에서 deflate</b>. 스트림(createGzip)도 청크마다 스레드풀 왕복. gzipSync는 메인 스레드." },
+    { n: "JSON.parse", layers: ["user", "deps"], deps: ["v8"], note: "<b>V8 내장 함수. Node 레이어를 전혀 거치지 않는다</b>. 메인 스레드 동기. 큰 페이로드(수십 MB)는 수백 ms 블로킹의 흔한 원인." },
+    { n: "new URL(s)", layers: ["user", "lib", "binding", "cpp", "deps"], deps: ["ada"], note: "<b>lib/internal/url.js → internalBinding('url') → ada 파서(C++)</b>. Node 20부터 ada로 교체되어 파싱이 수 배 빨라졌다. 동기." },
+    { n: "setTimeout", layers: ["user", "lib", "binding", "cpp", "deps"], deps: ["uv"], note: "<b>lib/timers.js → internal/timers.js 리스트/우선순위 큐 → internalBinding('timers') → 단 하나의 uv_timer_t</b>. 타이머 10만 개도 libuv 타이머는 하나. 2장 참고." },
+    { n: "child_process.spawn", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>internalBinding('process_wrap') → uv_spawn → fork/exec(posix_spawn)</b>. stdio 파이프는 uv_pipe_t로 epoll에 등록. 자식 종료는 SIGCHLD 시그널 핸들 경유." },
+    { n: "new Worker()", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["v8", "uv"], note: "<b>lib/internal/worker.js → internalBinding('worker') → 새 OS 스레드 + 새 v8::Isolate + 새 uv_loop_t + Environment</b>. 메시지는 MessagePort(uv_async_t)로. 스레드풀은 메인과 공유." },
+    { n: "Intl.DateTimeFormat", layers: ["user", "deps"], deps: ["v8", "icu"], note: "<b>V8 내장 → ICU 라이브러리</b>. Node 레이어 없음. full-icu 데이터(약 30MB)가 바이너리에 내장되어 있다(기본 빌드)." },
+    { n: "process.stdout.write (TTY)", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>internalBinding('tty_wrap') → uv_tty_t</b>. 주의: POSIX에서 TTY와 파일로의 쓰기는 <em>동기</em>, 파이프는 Linux에서 동기·macOS에서 비동기. console.log가 '비동기'라는 통념은 대상에 따라 틀리다." },
+  ];
+  const btns = document.getElementById("lx-btns"), note = document.getElementById("lx-note");
+  const layersEl = document.getElementById("lx-layers");
+  APIS.forEach((a, i) => {
+    const b = MM.el("button", { class: "btn", type: "button" }, MM.esc(a.n));
+    b.onclick = () => {
+      btns.querySelectorAll(".btn").forEach(x => x.classList.remove("on")); b.classList.add("on");
+      layersEl.querySelectorAll(".layer").forEach(l => l.classList.toggle("on", a.layers.includes(l.dataset.l)));
+      layersEl.querySelectorAll(".dep").forEach(d => d.classList.toggle("on", a.deps.includes(d.dataset.d)));
+      note.innerHTML = a.note;
+    };
+    btns.append(b);
+  });
+  btns.querySelector(".btn").click();
+
+  // ===== 위젯 2: 부트스트랩 타임라인 =====
+  const BOOT = [
+    ["cpp", "<code>main()</code> → <code>node::Start()</code>. <code>nodeTiming.nodeStart</code>.", "C++"],
+    ["cpp", "<code>InitializeOncePerProcess</code>: argv/<code>NODE_OPTIONS</code> 파싱 → <code>per_process::cli_options</code>, 시그널 핸들러, OpenSSL(설정 파일·FIPS)·ICU 초기화, <code>NodePlatform</code> 생성(V8 워커 스레드, <code>--v8-pool-size</code>), <code>V8::Initialize()</code>. → <code>v8Start</code>", "C++"],
+    ["cpp", "<code>NodeMainInstance::Run</code>: <code>uv_loop_t</code> 준비, 바이너리 내장 스냅샷 blob 로드, <code>v8::Isolate</code> 생성(힙·GC), <code>IsolateData</code> 생성.", "C++"],
+    ["snap", "<code>CreateMainEnvironment</code>: 스냅샷에서 메인 <code>Context</code>와 <code>Environment</code>를 <b>역직렬화</b>. primordials, <code>internal/bootstrap/realm.js</code>(BuiltinModule 로더·internalBinding 테이블), <code>internal/bootstrap/node.js</code>(process 객체·global·timers·buffer 설정), <code>bootstrap/web/*</code>(fetch·URL 등 웹 API), <code>bootstrap/switches/*</code>가 이미 실행된 상태의 힙. → <code>environment</code>", "스냅샷"],
+    ["js", "스냅샷이 없거나 <code>--no-node-snapshot</code>이면 위 JS 파일들을 이 시점에 실제로 실행한다(내장 코드 캐시 사용).", "JS"],
+    ["cpp", "<code>LoadEnvironment</code> → <code>StartExecution</code>: 실행 형태에 따라 <code>internal/main/*.js</code> 진입점 선택 (run_main_module / eval_string / repl / worker_thread …).", "C++"],
+    ["js", "<code>prepareMainThreadExecution()</code>: <code>process.argv</code>·<code>execArgv</code> 패치, env 의존 설정(<code>NODE_DEBUG</code>, 커버리지), 경고·deprecation 핸들러, inspector, 권한 모델, CJS/ESM 로더 초기화, <b><code>--require</code>/<code>--import</code> 프리로드 실행</b>.", "JS"],
+    ["js", "<code>markBootstrapComplete()</code> → <code>nodeTiming.bootstrapComplete</code>. 여기까지가 '런타임 준비'.", "JS"],
+    ["user", "<code>runEntryPointWithESMLoader</code>: 메인 모듈 로드·<b>동기 실행</b>. require/import 트리 전체가 이 안에서 돈다. 최상위 await가 있으면 여기서 루프가 먼저 돈다(ESM).", "사용자"],
+    ["cpp", "메인 모듈의 동기 코드 종료 → <code>SpinEventLoop</code> → <code>uv_run(UV_RUN_DEFAULT)</code>. → <code>loopStart</code>. 2장의 루프 시작.", "C++"],
+    ["cpp", "루프 종료(활성 핸들 없음) → <code>'beforeExit'</code> → 비었으면 <code>'exit'</code> → Environment 해제 → exit code 반환.", "C++"],
+  ];
+  const bl = document.getElementById("boot-list");
+  BOOT.forEach((s, i) => bl.append(MM.el("div", { class: "boot-step " + s[0] }, `<span class="n">${String(i + 1).padStart(2, "0")}</span><span><span class="lyr">${s[2]}</span>${s[1]}</span>`)));
+  const steps = [...bl.children];
+  MM.stepper(document.getElementById("boot-step"), { steps: BOOT.length, interval: 2200, render(i) {
+    steps.forEach((s, k) => { s.classList.toggle("on", k === i); s.classList.toggle("done", k < i); });
+    return `단계 ${i + 1}: ` + BOOT[i][1].replace(/<[^>]+>/g, "").slice(0, 90) + "…";
+  } });
+
+  // ===== 위젯 3: nodeTiming 뷰어 =====
+  (function () {
+    const $ = id => document.getElementById(id);
+    const SEG = [
+      ["nodeStart → v8Start", "nodeStart", "v8Start", "var(--violet)", "프로세스 초기화"],
+      ["v8Start → environment", "v8Start", "environment", "var(--teal)", "Isolate·스냅샷 복원"],
+      ["environment → bootstrapComplete", "environment", "bootstrapComplete", "var(--ok)", "pre_execution·프리로드"],
+      ["bootstrapComplete → loopStart", "bootstrapComplete", "loopStart", "var(--warn)", "메인 모듈 동기 실행"],
+    ];
+    function draw() {
+      $("nt-err").textContent = "";
+      let t;
+      try { t = JSON.parse($("nt-in").value); } catch (e) { $("nt-err").textContent = "JSON 파싱 실패: " + e.message; return; }
+      for (const k of ["nodeStart", "v8Start", "environment", "bootstrapComplete", "loopStart"]) if (typeof t[k] !== "number") { $("nt-err").textContent = k + " 값이 없습니다."; return; }
+      if (t.loopStart < 0) { $("nt-err").textContent = "loopStart가 -1: 루프 진입 전에 측정됨. setImmediate 안에서 측정하세요."; return; }
+      const total = t.loopStart - t.nodeStart;
+      const segs = SEG.map(s => ({ ...s, d: Math.max(0, t[s[2]] - t[s[1]]), from: t[s[1]] - t.nodeStart }));
+      $("nt-bars").innerHTML = segs.map(s => `<div class="nt-row"><div>${s[0]}<br><small class="muted">${s[4]}</small></div><div class="bar"><div style="left:${s.from / total * 100}%;width:${s.d / total * 100}%;background:${s[3]}"></div></div><div class="v">${s.d.toFixed(1)} ms</div></div>`).join("");
+      $("nt-total").textContent = total.toFixed(1) + " ms";
+      const dom = segs.reduce((a, b) => b.d > a.d ? b : a);
+      $("nt-dom").textContent = `${dom[4]} (${(dom.d / total * 100).toFixed(0)}%)`;
+    }
+    $("nt-go").onclick = draw; draw();
+  })();
+
+  // ===== 위젯 4: 분류 훈련 =====
+  (function () {
+    const DEST = ["V8만", "동기(메인 블로킹)", "스레드풀", "epoll", "c-ares"];
+    const ITEMS = [
+      ["fs.readFile(p, cb)", 2, "fs 비동기 API는 uv_fs_* 요청으로 스레드풀에서 open/fstat/read/close를 수행한다."],
+      ["fs.readFileSync(p)", 1, "메인 스레드가 직접 syscall. 루프가 멈춘다."],
+      ["fs.promises.readFile(p)", 2, "Promise 버전도 동일하게 스레드풀. 'Promise니까 더 비동기'인 것은 없다."],
+      ["dns.lookup(host)", 2, "getaddrinfo(3)는 블로킹 함수라 스레드풀 워커가 대신 호출한다."],
+      ["dns.resolve4(host)", 4, "c-ares가 UDP로 DNS 서버에 직접 질의. 소켓은 epoll에 등록."],
+      ["net.connect(port, host)", 3, "논블로킹 소켓 connect → epoll(EPOLLOUT)로 완료 감지. 단, host가 이름이면 그 전에 dns.lookup(스레드풀)이 먼저 일어난다."],
+      ["crypto.pbkdf2(…, cb)", 2, "CPU 집약 OpenSSL 호출을 uv_queue_work로 스레드풀에 위임."],
+      ["crypto.pbkdf2Sync(…)", 1, "같은 연산을 메인 스레드에서. 100ms 짜리 해시면 루프 100ms 정지."],
+      ["crypto.createHash('sha256').update(buf)", 1, "해시는 비동기 API가 없다. 메인 스레드 동기."],
+      ["crypto.randomBytes(n, cb)", 2, "콜백 버전은 스레드풀. 콜백 없이 호출하면 동기."],
+      ["zlib.gzip(buf, cb)", 2, "압축 비동기 API는 스레드풀. 스트림도 청크마다 왕복."],
+      ["zlib.gzipSync(buf)", 1, "메인 스레드 동기."],
+      ["JSON.parse(str)", 0, "V8 내장. Node 레이어를 거치지 않는다. 동기."],
+      ["http.request(opts)", 3, "TCP 소켓 → epoll. 파싱(llhttp)은 메인 스레드지만 바이트 단위로 짧다."],
+      ["fs.watch(dir)", 3, "inotify(Linux)/kqueue(macOS) fd를 epoll에 등록한 uv_fs_event_t. 스레드풀 아님."],
+      ["setTimeout(fn, 100)", 3, "uv_timer_t 하나. 루프의 timers 페이즈에서 처리. (엄밀히는 epoll 타임아웃으로 깨어남)"],
+      ["child_process.exec(cmd, cb)", 3, "uv_spawn 후 stdio 파이프를 epoll로 읽는다. 자식의 CPU는 다른 프로세스."],
+      ["Buffer.from(str, 'base64')", 1, "simdutf로 메인 스레드에서 변환. 빠르지만 동기."],
+      ["new TextDecoder().decode(u8)", 1, "메인 스레드 동기(simdutf/ICU)."],
+      ["process.stdout.write(s) — stdout이 파이프 (Linux)", 1, "Linux에서 파이프로의 stdout 쓰기는 동기. 파이프 버퍼(64KB)가 차면 블로킹된다. 로그 폭주 시 루프 정지의 원인."],
+      ["crypto.subtle.digest('SHA-256', buf)", 2, "WebCrypto는 Promise 기반이며 내부적으로 스레드풀 작업으로 실행된다."],
+      ["fs.open + fs.read 반복 (스트림 createReadStream)", 2, "각 read가 스레드풀 왕복. highWaterMark(64KiB)가 왕복 횟수를 정한다(6장)."],
+    ];
+    const list = document.getElementById("cls-list"), score = document.getElementById("cls-score");
+    let correct = 0, answered = 0;
+    function render() {
+      correct = 0; answered = 0; score.textContent = "";
+      const items = ITEMS.slice().sort(() => Math.random() - 0.5).slice(0, 10);
+      list.innerHTML = "";
+      items.forEach(it => {
+        const card = MM.el("div", { class: "cls-card" }, `<div class="api">${MM.esc(it[0])}</div><div class="cls-opts">${DEST.map((d, i) => `<button class="btn" type="button" data-i="${i}">${d}</button>`).join("")}</div><div class="cls-why"></div>`);
+        card.onclick = e => {
+          const b = e.target.closest(".btn"); if (!b || card.classList.contains("answered")) return;
+          card.classList.add("answered"); answered++;
+          const i = +b.dataset.i;
+          if (i === it[1]) { b.classList.add("ok"); correct++; } else { b.classList.add("bad"); card.querySelector(`[data-i="${it[1]}"]`).classList.add("ok"); }
+          card.querySelector(".cls-why").innerHTML = `<b>${DEST[it[1]]}</b> — ${it[2]}`;
+          score.textContent = `${correct} / ${answered} 정답`;
+        };
+        list.append(card);
+      });
+    }
+    document.getElementById("cls-reset").onclick = render;
+    render();
+  })();
+})();
+</script>
+</body>
+</html>

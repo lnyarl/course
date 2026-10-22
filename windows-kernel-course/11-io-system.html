@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>I/O 시스템과 IRP</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .irp-grid { display: grid; grid-template-columns: minmax(0,0.9fr) minmax(0,1.3fr); gap: 14px; margin-bottom: 12px; }
+  @media (max-width: 760px) { .irp-grid { grid-template-columns: 1fr; } }
+  .irp-grid h5 { margin: 0 0 6px; font-size: .8rem; color: var(--muted); letter-spacing: .04em; }
+  .layer { border: 1.5px solid var(--kernel); background: var(--kernel-bg); border-radius: 8px; padding: 6px 10px; margin-bottom: 4px; font-size: .86rem; line-height: 1.4; transition: box-shadow .2s, border-color .2s; }
+  .layer.iom { border-color: var(--user); background: var(--user-bg); }
+  .layer.flt { border-style: dashed; }
+  .layer.pdo { border-color: var(--hw); background: var(--hw-bg); }
+  .layer.act { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-bg), 0 0 10px var(--acc); }
+  .layer .nm { font-weight: 700; color: var(--head); }
+  .layer .md { font-size: .76rem; color: var(--muted); }
+  .layer-arrow { text-align: center; font-size: .72rem; color: var(--muted); line-height: 1.1; margin: -2px 0 2px; }
+  .ctxline { font: 600 .78rem var(--mono); color: var(--kernel); margin: 8px 0 0; }
+  table.sl { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+  table.sl th, table.sl td { padding: 5px 6px; border: 1px solid var(--line); white-space: nowrap; }
+  table.sl th { background: var(--panel2); font-size: 11px; }
+  table.sl tr.cur td { background: var(--acc-bg); }
+  table.sl tr.cur td:first-child { color: var(--acc); font-weight: 700; }
+  table.sl td.unused { color: var(--muted); }
+  table.sl td.pend { color: var(--warn); font-weight: 700; }
+  .sl-wrap { overflow-x: auto; }
+  .cl-note { font: 600 .8rem var(--mono); margin: 6px 0; color: var(--head); }
+  #irpSim .console { max-height: 300px; }
+  #irpSim .console .now { background: rgba(127,219,202,.12); display: inline-block; width: 100%; }
+  .bitrow .g.dt .bit { background: var(--kernel-bg); border-color: var(--kernel); }
+  .bitrow .g.ac .bit { background: var(--hv-bg); border-color: var(--hv); }
+  .bitrow .g.fn .bit { background: var(--user-bg); border-color: var(--user); }
+  .bitrow .g.me .bit { background: var(--ok-bg); border-color: var(--ok); }
+  .bitrow .bit.one { font-weight: 800; color: var(--head); }
+  .io-out { margin-top: 10px; font-size: .92rem; }
+  .io-out .big { font: 700 1.05rem var(--mono); color: var(--head); }
+  .io-fields { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  .io-fields input[type=text] { width: 110px; }
+</style>
+</head>
+<body data-chapter="11">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part IV · Chapter 11</div>
+  <h1>I/O 시스템과 IRP</h1>
+  <p class="sub">모든 파일·디바이스·네트워크 요청은 IRP라는 패킷이 되어 계층형 드라이버 스택을 내려갔다가 완료되어 올라옵니다. 그 왕복을 정확히 따라가는 것이 드라이버 개발과 행(hang) 분석의 출발점입니다.</p>
+  <div class="meta"><span class="pill lv-adv">심화</span><span class="pill">⏱ 약 120분</span><span class="pill">선수: 06 IRQL·DPC·APC, 10 객체 관리자</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li><code>DRIVER_OBJECT</code>·<code>DEVICE_OBJECT</code>·<code>FILE_OBJECT</code>·<code>IRP</code>가 서로 어떻게 연결되는지 그릴 수 있다.</li>
+    <li>IRP의 스택 로케이션이 <code>IoCallDriver</code>로 내려가고 <code>IoCompleteRequest</code>로 올라오는 과정을 CurrentLocation 값 단위로 추적할 수 있다.</li>
+    <li>완료 루틴, <code>STATUS_PENDING</code>, <code>IoMarkIrpPending</code>의 규칙을 지키지 않았을 때 생기는 버그를 설명할 수 있다.</li>
+    <li>버퍼링 방식(Buffered/Direct/Neither)과 IOCTL 코드의 비트 구조를 해석하고 보안상 함정을 짚을 수 있다.</li>
+    <li>PnP 관리자가 디바이스 스택을 만들고 시작하는 순서, 전원 IRP와 I/O 우선순위의 개요를 설명할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="overview">I/O 시스템의 설계 철학</h2>
+<p>
+  Windows I/O 관리자는 "<b>패킷 기반</b>, <b>계층형</b>, <b>본질적으로 비동기</b>"라는 세 원칙 위에 서 있습니다.
+  유저가 <code>ReadFile</code>을 부르든 메모리 관리자가 페이지 폴트를 해결하든, 요청은 <b>IRP(I/O Request Packet)</b>라는 자기 기술적 패킷으로 만들어져
+  드라이버에서 드라이버로 넘겨집니다. 각 드라이버는 패킷을 처리하거나, 변형해 아래로 넘기거나, 큐에 보관했다가 나중에 완료합니다.
+</p>
+<div class="grid3">
+  <div class="card kernel"><h4>패킷 기반</h4><p>요청의 모든 상태(버퍼, 파라미터, 결과, 소유 스레드)가 IRP 하나에 담긴다. 호출 스택이 아니라 <b>데이터 구조</b>가 요청을 대표한다.</p></div>
+  <div class="card kernel"><h4>계층형</h4><p>디바이스 스택의 각 층(필터·기능·버스 드라이버)이 같은 IRP를 차례로 처리한다. 층마다 자기 몫의 <b>스택 로케이션</b>을 가진다.</p></div>
+  <div class="card kernel"><h4>비동기</h4><p>드라이버는 <code>STATUS_PENDING</code>을 반환하고 나중에 완료할 수 있다. 동기 I/O는 "비동기 I/O + 대기"로 구현된다.</p></div>
+</div>
+<p>
+  이 장은 <b>WDM</b> 수준(I/O 관리자가 직접 다루는 구조체)에서 설명합니다. KMDF는 이 위에 큐·상태 기계를 얹은 프레임워크이며,
+  KMDF 드라이버도 디버거에서 보면 결국 같은 IRP와 디바이스 스택으로 동작합니다(→ 14장).
+</p>
+
+<h2 id="objects">드라이버 · 디바이스 · 파일 객체</h2>
+<p>
+  I/O 시스템의 핵심 객체는 네 가지입니다. <b>드라이버 객체</b>는 로드된 드라이버 이미지 하나를 대표하고, <b>디바이스 객체</b>는 그 드라이버가 처리하는
+  논리/물리 장치 하나를 대표하며, <b>파일 객체</b>는 디바이스(또는 파일)를 연 "열기 인스턴스" 하나를, <b>IRP</b>는 진행 중인 요청 하나를 대표합니다.
+  도식의 각 요소를 클릭해 보세요.
+</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 470" role="img" aria-label="I/O 객체 관계">
+    <g data-info="handle"><rect class="box user" x="20" y="20" width="240" height="56" rx="8"/>
+      <text x="140" y="43" text-anchor="middle" class="b">프로세스 핸들 테이블</text>
+      <text x="140" y="63" text-anchor="middle" class="sm mono">HANDLE 0x1a4 → 객체 포인터</text></g>
+    <path class="ln" d="M140 76 L140 116"/>
+
+    <g data-info="fo"><rect class="box kernel" x="20" y="120" width="240" height="150" rx="8"/>
+      <text x="140" y="143" text-anchor="middle" class="b mono">FILE_OBJECT</text>
+      <text x="34" y="167" class="sm mono">DeviceObject</text>
+      <text x="34" y="187" class="sm mono">Vpb</text>
+      <text x="34" y="207" class="sm mono">FsContext / FsContext2</text>
+      <text x="34" y="227" class="sm mono">CurrentByteOffset</text>
+      <text x="34" y="247" class="sm mono">Flags (FO_SYNCHRONOUS_IO…)</text></g>
+
+    <g data-info="irp"><rect class="box acc" x="20" y="310" width="240" height="140" rx="8"/>
+      <text x="140" y="333" text-anchor="middle" class="b mono">IRP</text>
+      <text x="34" y="357" class="sm mono">MdlAddress / AssociatedIrp</text>
+      <text x="34" y="377" class="sm mono">IoStatus · RequestorMode</text>
+      <text x="34" y="397" class="sm mono">StackCount · CurrentLocation</text>
+      <text x="34" y="417" class="sm mono">Tail.Overlay.OriginalFileObject</text>
+      <text x="34" y="437" class="sm mono">IO_STACK_LOCATION[StackCount]</text></g>
+    <path class="ln acc dash" d="M140 310 L140 274"/>
+
+    <text x="440" y="22" text-anchor="middle" class="sm b c-kernel">디바이스 스택 (위 → 아래)</text>
+    <g data-info="fido"><rect class="box kernel" x="320" y="34" width="240" height="76" rx="8" style="stroke-dasharray:5 4"/>
+      <text x="440" y="58" text-anchor="middle" class="b">DEVICE_OBJECT · 필터</text>
+      <text x="440" y="78" text-anchor="middle" class="sm mono">AttachedDevice = NULL (최상단)</text>
+      <text x="440" y="96" text-anchor="middle" class="sm mono">StackSize = 3</text></g>
+    <g data-info="fdo"><rect class="box kernel" x="320" y="170" width="240" height="76" rx="8"/>
+      <text x="440" y="194" text-anchor="middle" class="b">DEVICE_OBJECT · FDO</text>
+      <text x="440" y="214" text-anchor="middle" class="sm mono">DeviceExtension (드라이버 상태)</text>
+      <text x="440" y="232" text-anchor="middle" class="sm mono">StackSize = 2</text></g>
+    <g data-info="pdo"><rect class="box hw" x="320" y="306" width="240" height="76" rx="8"/>
+      <text x="440" y="330" text-anchor="middle" class="b">DEVICE_OBJECT · PDO</text>
+      <text x="440" y="350" text-anchor="middle" class="sm mono">이름: \Device\00000032</text>
+      <text x="440" y="368" text-anchor="middle" class="sm mono">StackSize = 1</text></g>
+
+    <path class="ln kernel" d="M345 306 L345 250"/><text x="352" y="282" class="sm">AttachedDevice ↑</text>
+    <path class="ln dash" d="M535 248 L535 302"/><text x="528" y="282" class="sm" text-anchor="end">AttachedTo ↓</text>
+    <path class="ln kernel" d="M345 170 L345 114"/><text x="352" y="146" class="sm">AttachedDevice ↑</text>
+    <path class="ln dash" d="M535 112 L535 166"/><text x="528" y="146" class="sm" text-anchor="end">AttachedTo ↓</text>
+
+    <g data-info="drvflt"><rect class="box kernel" x="620" y="34" width="240" height="76" rx="8"/>
+      <text x="740" y="58" text-anchor="middle" class="b mono">DRIVER_OBJECT</text>
+      <text x="740" y="78" text-anchor="middle" class="sm mono">\Driver\UpperFlt</text>
+      <text x="740" y="96" text-anchor="middle" class="sm">MajorFunction[] 대부분 패스스루</text></g>
+    <g data-info="drv"><rect class="box kernel" x="620" y="140" width="240" height="160" rx="8"/>
+      <text x="740" y="162" text-anchor="middle" class="b mono">DRIVER_OBJECT</text>
+      <text x="740" y="180" text-anchor="middle" class="sm mono">\Driver\Disk · MajorFunction[28]</text>
+      <text x="636" y="204" class="sm mono">[0x00] IRP_MJ_CREATE</text>
+      <text x="636" y="220" class="sm mono">[0x03] IRP_MJ_READ</text>
+      <text x="636" y="236" class="sm mono">[0x04] IRP_MJ_WRITE</text>
+      <text x="636" y="252" class="sm mono">[0x0e] IRP_MJ_DEVICE_CONTROL</text>
+      <text x="636" y="268" class="sm mono">[0x16] IRP_MJ_POWER</text>
+      <text x="636" y="284" class="sm mono">[0x1b] IRP_MJ_PNP</text></g>
+    <g data-info="drvbus"><rect class="box hw" x="620" y="318" width="240" height="64" rx="8"/>
+      <text x="740" y="344" text-anchor="middle" class="b mono">DRIVER_OBJECT</text>
+      <text x="740" y="364" text-anchor="middle" class="sm mono">\Driver\storahci (버스/포트)</text></g>
+
+    <path class="ln" d="M560 72 L618 72"/>
+    <path class="ln" d="M560 208 L618 208"/>
+    <path class="ln" d="M560 344 L618 350"/>
+
+    <path class="ln dash" d="M260 160 C 292 160, 292 344, 318 344"/>
+    <path class="ln acc flow" d="M260 140 C 292 140, 292 72, 318 72"/>
+
+    <text x="320" y="420" class="sm">점선(검정): FILE_OBJECT.DeviceObject — 이름으로 연 디바이스(여기선 PDO)</text>
+    <text x="320" y="440" class="sm" style="fill:var(--acc)">파란 흐름선: IRP가 실제로 들어가는 곳 = IoGetRelatedDeviceObject() = 스택 최상단</text>
+    <text x="320" y="460" class="sm">가로 화살표: DEVICE_OBJECT.DriverObject — 이 장치를 처리하는 드라이버</text>
+  </svg>
+
+  <template data-key="handle"><h4>핸들 → FILE_OBJECT</h4>
+    <p><code>CreateFile</code>이 반환한 핸들은 프로세스 핸들 테이블에서 <code>FILE_OBJECT</code>를 가리킵니다(10장). 같은 파일을 두 번 열면 FILE_OBJECT가 <b>두 개</b> 생깁니다. 반면 <code>DuplicateHandle</code>이나 상속은 같은 FILE_OBJECT를 공유하므로 <b>파일 위치(CurrentByteOffset)도 공유</b>됩니다.</p></template>
+  <template data-key="fo"><h4>FILE_OBJECT — 열기 인스턴스</h4>
+    <ul>
+      <li><code>DeviceObject</code>: 열린 대상 디바이스. 파일 시스템 위의 파일이면 <b>스토리지 볼륨 디바이스</b>(파일 시스템의 VDO가 아님)이고, <code>Vpb</code>를 통해 마운트된 파일 시스템 볼륨을 찾습니다.</li>
+      <li><code>FsContext</code> / <code>FsContext2</code>: 파일 시스템 전용. 보통 스트림별 구조(SCB/FCB)와 핸들별 구조(CCB)를 가리킵니다 → 12장.</li>
+      <li><code>CurrentByteOffset</code>: 동기 I/O(<code>FO_SYNCHRONOUS_IO</code>)에서 I/O 관리자가 관리하는 파일 위치.</li>
+      <li><code>Event</code>, <code>Lock</code>, <code>CompletionContext</code>(IOCP 연결), <code>SectionObjectPointer</code>, <code>PrivateCacheMap</code> 등.</li>
+    </ul>
+    <p>필드 오프셋은 빌드마다 다르므로 <code>dt nt!_FILE_OBJECT</code>로 확인하세요.</p></template>
+  <template data-key="irp"><h4>IRP</h4>
+    <p>요청 하나의 전체 상태. 고정 헤더 뒤에 <code>StackCount</code>개의 <code>IO_STACK_LOCATION</code>이 <b>연속으로</b> 붙어 할당됩니다. <code>Tail.Overlay.Thread</code>는 요청 스레드, <code>OriginalFileObject</code>는 요청 대상 파일 객체입니다. 자세한 필드는 아래 표 참고.</p></template>
+  <template data-key="fido"><h4>필터 디바이스 객체 (FiDO)</h4>
+    <p>필터 드라이버가 <code>IoCreateDevice</code>로 만든 뒤 <code>IoAttachDeviceToDeviceStack</code>으로 기존 스택 위(상위 필터) 또는 FDO와 PDO 사이(하위 필터)에 붙입니다. 이름이 없고, <code>DeviceExtension</code>에 "바로 아래 디바이스" 포인터를 보관해 IRP를 전달합니다.</p>
+    <p><code>StackSize</code>는 아래 디바이스의 StackSize + 1로 자동 설정됩니다. IRP를 만들 때 최상단의 StackSize만큼 스택 로케이션을 할당하므로, 이 값이 틀리면 <code>NO_MORE_IRP_STACK_LOCATIONS</code>(0x35) 버그체크가 납니다.</p></template>
+  <template data-key="fdo"><h4>기능 디바이스 객체 (FDO)</h4>
+    <p>장치의 "주인"인 기능 드라이버가 <code>AddDevice</code>에서 만듭니다. 장치 프로토콜·상태 기계·전원 정책을 담당합니다. 드라이버 상태는 전역 변수가 아니라 <code>DeviceExtension</code>에 둡니다(같은 드라이버가 장치 여러 개를 처리하므로).</p></template>
+  <template data-key="pdo"><h4>물리 디바이스 객체 (PDO)</h4>
+    <p>버스 드라이버(PCI, USB 허브, storport 미니포트 등)가 자식 장치를 <b>발견했을 때</b> 만듭니다. 스택의 맨 아래이며, PnP 관리자가 장치 트리(devnode)를 PDO 단위로 관리합니다. PnP PDO는 이름을 가져야 하며 보통 <code>\Device\0000003x</code> 같은 자동 이름입니다.</p></template>
+  <template data-key="drvflt"><h4>필터 드라이버의 DRIVER_OBJECT</h4>
+    <p>필터는 자신이 이해하지 못하는 IRP도 막으면 안 되므로, <code>MajorFunction</code> 전체를 패스스루 함수로 채우고 관심 있는 몇 개만 특별 처리하는 것이 정석입니다. 채우지 않은 엔트리는 I/O 관리자가 <code>IopInvalidDeviceRequest</code>(→ <code>STATUS_INVALID_DEVICE_REQUEST</code>)로 초기화해 둡니다.</p></template>
+  <template data-key="drv"><h4>DRIVER_OBJECT와 디스패치 테이블</h4>
+    <ul>
+      <li><code>MajorFunction[IRP_MJ_MAXIMUM_FUNCTION + 1]</code>: 28개(0x00~0x1b) 함수 포인터. <code>IoCallDriver</code>는 대상 DO의 <code>DriverObject-&gt;MajorFunction[스택로케이션.MajorFunction]</code>을 호출합니다.</li>
+      <li><code>DeviceObject</code>: 이 드라이버가 만든 디바이스 객체 리스트의 머리. 각 DO의 <code>NextDevice</code>로 연결 (스택의 위아래 관계와는 무관!).</li>
+      <li><code>DriverExtension-&gt;AddDevice</code>, <code>DriverUnload</code>, <code>DriverStartIo</code>, <code>FastIoDispatch</code>.</li>
+      <li><code>DriverStart</code>/<code>DriverSize</code>: 이미지 범위 — 루트킷 탐지에서 "디스패치 포인터가 이미지 밖을 가리키는가"를 검사할 때 사용.</li>
+    </ul>
+    <p>디스패치 테이블 후킹은 고전적인 루트킷 기법이며, 현대 Windows에서는 PatchGuard가 일부 드라이버 객체를 감시합니다.</p></template>
+  <template data-key="drvbus"><h4>버스/포트 드라이버</h4>
+    <p>PDO를 만든 드라이버. 같은 드라이버가 자기 부모 버스에 대해서는 FDO 역할을 하는 경우가 많습니다(예: PCI 버스에 대한 AHCI 컨트롤러의 FDO, 그리고 자식 디스크의 PDO). 그래서 장치 트리는 "스택 위에 스택"이 쌓인 구조가 됩니다.</p></template>
+  <figcaption><b>그림 11-1.</b> I/O 객체 관계. 디바이스 스택의 위/아래 연결은 <code>AttachedDevice</code>(위로)와 <code>DEVOBJ_EXTENSION.AttachedTo</code>(아래로)로 표현됩니다.</figcaption>
+</figure>
+
+<div class="callout expert">
+  <div class="callout-title">IRP는 "이름의 디바이스"가 아니라 "스택 최상단"으로 간다</div>
+  <p><code>FILE_OBJECT.DeviceObject</code>가 PDO를 가리키더라도, I/O 관리자는 <code>IoGetRelatedDeviceObject(FileObject)</code>로 대상 스택의 <b>최상단</b>(파일 시스템 파일이면 <code>Vpb-&gt;DeviceObject</code> 스택의 최상단)을 구해 IRP를 보냅니다.
+  그래서 나중에 붙은 필터도 모든 요청을 볼 수 있습니다. 단, 필터가 붙기 <b>전에</b> 이미 열린 핸들의 요청도 새 최상단으로 가므로, 필터는 자신이 보지 못한 CREATE에 대한 READ를 받을 수 있다는 점을 처리해야 합니다.</p>
+</div>
+
+<table class="struct">
+  <thead><tr><th>오프셋</th><th>필드</th><th>설명 (DEVICE_OBJECT 핵심 필드)</th></tr></thead>
+  <tbody>
+    <tr><td>dt 확인</td><td>DriverObject</td><td>이 장치를 처리하는 드라이버. IoCallDriver가 디스패치 테이블을 찾는 출발점.</td></tr>
+    <tr><td>dt 확인</td><td>NextDevice</td><td>같은 드라이버가 만든 다음 DO (드라이버 내부 리스트).</td></tr>
+    <tr><td>dt 확인</td><td>AttachedDevice</td><td>내 위에 붙은 DO. NULL이면 내가 최상단.</td></tr>
+    <tr><td>dt 확인</td><td>Flags</td><td><code>DO_BUFFERED_IO</code>(0x4), <code>DO_DIRECT_IO</code>(0x10), <code>DO_DEVICE_INITIALIZING</code>(0x80), <code>DO_POWER_PAGABLE</code>(0x2000) 등.</td></tr>
+    <tr><td>dt 확인</td><td>DeviceExtension</td><td>드라이버 정의 컨텍스트. 크기는 IoCreateDevice 인자.</td></tr>
+    <tr><td>dt 확인</td><td>DeviceType / Characteristics</td><td><code>FILE_DEVICE_DISK</code> 등 / <code>FILE_DEVICE_SECURE_OPEN</code>, <code>FILE_REMOVABLE_MEDIA</code> 등.</td></tr>
+    <tr><td>dt 확인</td><td>StackSize</td><td>이 DO로 보낼 IRP에 필요한 스택 로케이션 수.</td></tr>
+    <tr><td>dt 확인</td><td>Vpb</td><td>디스크류 장치의 볼륨 파라미터 블록 → 12장.</td></tr>
+    <tr><td>dt 확인</td><td>DeviceObjectExtension</td><td><code>DEVOBJ_EXTENSION</code>: <code>AttachedTo</code>(아래 DO), <code>DeviceNode</code>(PnP devnode) 등.</td></tr>
+  </tbody>
+</table>
+<p class="muted" style="font-size:.88rem">오프셋은 빌드마다 다를 수 있습니다. <code>dt nt!_DEVICE_OBJECT</code>, <code>dt nt!_DEVOBJ_EXTENSION</code>으로 확인하세요.</p>
+
+<h2 id="stack">디바이스 스택과 계층형 드라이버</h2>
+<p>
+  PnP 장치 하나에는 아래부터 <b>PDO</b>(버스 드라이버) → [하위 필터] → <b>FDO</b>(기능 드라이버) → [상위 필터] 순으로 디바이스 객체가 쌓입니다.
+  스택에 붙는 함수는 <code>IoAttachDeviceToDeviceStack(새 DO, 대상 DO)</code>이며, <b>반환값은 대상 DO가 아니라 붙기 직전의 최상단 DO</b>입니다.
+  드라이버는 이 반환값을 "내 아래 디바이스"로 저장해 IRP를 넘길 때 써야 합니다.
+</p>
+<div class="grid2">
+  <div class="card kernel"><h4>상위 필터 (Upper filter)</h4><p>FDO 위. 기능 드라이버가 해석하기 전의 요청을 본다. 예: 디스크 위의 <code>partmgr</code>, 키보드 위의 <code>kbdclass</code>, 암호화·감시 필터.</p></div>
+  <div class="card kernel"><h4>하위 필터 (Lower filter)</h4><p>FDO와 PDO 사이. 기능 드라이버가 버스로 보내는 요청(예: URB, SRB)을 본다. 하드웨어 버그 보정, 프로토콜 트레이싱.</p></div>
+  <div class="card kernel"><h4>기능 드라이버 (FDO)</h4><p>장치를 "운영"한다. 전원 정책 소유자인 경우가 많다. 레지스트리 <code>Service</code> 값으로 지정.</p></div>
+  <div class="card hw"><h4>버스 드라이버 (PDO)</h4><p>자식 장치를 열거하고 PDO를 만든다. 자식에 대한 버스 수준 요청(설정 공간 접근, 리셋)을 처리.</p></div>
+</div>
+<pre data-title="C — AddDevice: FDO 생성과 스택 부착"><code class="lang-c">NTSTATUS MyAddDevice(PDRIVER_OBJECT DriverObject, PDEVICE_OBJECT Pdo)
+{
+    PDEVICE_OBJECT fdo;
+    NTSTATUS st = IoCreateDevice(DriverObject, sizeof(MY_EXT), NULL,
+                                 FILE_DEVICE_UNKNOWN, FILE_DEVICE_SECURE_OPEN, FALSE, &amp;fdo);
+    if (!NT_SUCCESS(st)) return st;
+
+    PMY_EXT ext = (PMY_EXT)fdo-&gt;DeviceExtension;
+    ext-&gt;Self  = fdo;
+    ext-&gt;Lower = IoAttachDeviceToDeviceStack(fdo, Pdo);   // 반환 = 붙기 직전의 최상단
+    if (ext-&gt;Lower == NULL) { IoDeleteDevice(fdo); return STATUS_NO_SUCH_DEVICE; }
+
+    // 아래 장치의 버퍼링/전원 특성을 물려받는다 (필터라면 DeviceType·Characteristics도 복사)
+    fdo-&gt;Flags |= ext-&gt;Lower-&gt;Flags &amp; (DO_BUFFERED_IO | DO_DIRECT_IO | DO_POWER_PAGABLE);
+    fdo-&gt;Flags &amp;= ~DO_DEVICE_INITIALIZING;               // 잊으면 이 장치는 열리지 않는다
+    return STATUS_SUCCESS;                                // 하드웨어 접근은 START_DEVICE에서!
+}</code></pre>
+<div class="callout warn">
+  <div class="callout-title">흔한 실수</div>
+  <p><code>DO_DEVICE_INITIALIZING</code>을 지우지 않으면 I/O 관리자가 CREATE를 거부합니다. AddDevice에서는 하드웨어 리소스가 아직 할당되지 않았으므로 레지스터 접근은 <code>IRP_MN_START_DEVICE</code> 처리 이후에만 해야 합니다. 그리고 필터의 버퍼링 플래그가 아래 장치와 다르면 위아래 드라이버가 같은 IRP의 버퍼를 서로 다른 필드에서 찾게 됩니다.</p>
+</div>
+
+<h2 id="irp">IRP와 IO_STACK_LOCATION</h2>
+<p>
+  IRP는 <b>모든 층이 공유하는 헤더</b>와 <b>층마다 하나씩인 스택 로케이션 배열</b>로 나뉩니다. 헤더에는 "요청 전체"에 관한 정보(버퍼, 최종 상태, 요청 스레드)가,
+  스택 로케이션에는 "이 층이 받은 명령"(MajorFunction, 파라미터, 대상 DO, 그리고 <b>위층이 등록한 완료 루틴</b>)이 들어갑니다.
+</p>
+<table>
+  <thead><tr><th>IRP 필드</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td><code>MdlAddress</code></td><td>Direct I/O에서 유저 버퍼를 기술하는 MDL (잠긴 물리 페이지 목록).</td></tr>
+    <tr><td><code>AssociatedIrp.SystemBuffer</code></td><td>Buffered I/O에서 I/O 관리자가 할당한 비페이지 풀 버퍼.</td></tr>
+    <tr><td><code>UserBuffer</code></td><td>원래 유저 버퍼 주소 (Neither I/O나 완료 시 복사 대상).</td></tr>
+    <tr><td><code>IoStatus</code></td><td><code>Status</code> + <code>Information</code>(보통 전송 바이트 수). 완료 전에 드라이버가 채운다.</td></tr>
+    <tr><td><code>RequestorMode</code></td><td>요청이 유저 모드에서 왔는지(UserMode) — 버퍼 신뢰 여부를 결정.</td></tr>
+    <tr><td><code>PendingReturned</code></td><td>완료 처리 중, 방금 지난 하위 층이 펜딩을 표시했는지. 완료 루틴에서 읽는다.</td></tr>
+    <tr><td><code>StackCount</code> / <code>CurrentLocation</code></td><td>스택 로케이션 총수 / 현재 위치 (1-기반, 초기값 = StackCount + 1).</td></tr>
+    <tr><td><code>Cancel</code> / <code>CancelRoutine</code></td><td>취소 요청 여부와 취소 시 호출할 루틴.</td></tr>
+    <tr><td><code>UserIosb</code> / <code>UserEvent</code></td><td>완료 시 결과를 쓸 유저 IOSB와 신호할 이벤트.</td></tr>
+    <tr><td><code>Overlay.AsynchronousParameters</code></td><td>ReadFileEx 등의 유저 APC 루틴/컨텍스트.</td></tr>
+    <tr><td><code>Tail.Overlay.Thread</code></td><td>요청한 스레드 (스레드 IRP 리스트에 연결됨).</td></tr>
+    <tr><td><code>Tail.Overlay.CurrentStackLocation</code></td><td>현재 스택 로케이션 포인터 (CurrentLocation과 항상 함께 움직인다).</td></tr>
+    <tr><td><code>Tail.Overlay.DriverContext[4]</code></td><td>IRP를 현재 소유한 드라이버가 쓸 수 있는 스크래치 공간.</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th>IO_STACK_LOCATION 필드</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td><code>MajorFunction</code> / <code>MinorFunction</code></td><td><code>IRP_MJ_READ</code>, <code>IRP_MJ_PNP</code> + <code>IRP_MN_START_DEVICE</code> 등.</td></tr>
+    <tr><td><code>Flags</code> / <code>Control</code></td><td>Control 비트: <code>SL_PENDING_RETURNED</code>(0x01), <code>SL_INVOKE_ON_CANCEL</code>(0x20), <code>SL_INVOKE_ON_SUCCESS</code>(0x40), <code>SL_INVOKE_ON_ERROR</code>(0x80).</td></tr>
+    <tr><td><code>Parameters</code></td><td>메이저 코드별 union: <code>Read.Length/ByteOffset</code>, <code>DeviceIoControl.IoControlCode/InputBufferLength/OutputBufferLength/Type3InputBuffer</code>, <code>Create.SecurityContext</code> 등.</td></tr>
+    <tr><td><code>DeviceObject</code></td><td>이 로케이션을 처리하는 층의 DO (IoCallDriver가 설정).</td></tr>
+    <tr><td><code>FileObject</code></td><td>대상 파일 객체.</td></tr>
+    <tr><td><code>CompletionRoutine</code> / <code>Context</code></td><td><b>위층</b>이 <code>IoSetCompletionRoutine</code>으로 기록한 완료 루틴. 이 로케이션의 층이 완료한 뒤 호출된다.</td></tr>
+  </tbody>
+</table>
+
+<div class="callout note">
+  <div class="callout-title">스택 로케이션은 "아래에서 위로" 번호가 붙고 "위에서 아래로" 소비된다</div>
+  <p>새 IRP의 <code>CurrentLocation</code>은 <code>StackCount + 1</code>, 즉 배열 바깥을 가리킵니다. 요청자는 <code>IoGetNextIrpStackLocation</code>으로 #StackCount 로케이션을 채우고,
+  <code>IoCallDriver</code>가 CurrentLocation을 1 감소시킨 뒤 최상단 드라이버를 호출합니다. 맨 아래 드라이버는 #1을 씁니다. 0이 되면 <code>NO_MORE_IRP_STACK_LOCATIONS</code> 버그체크입니다.</p>
+</div>
+
+<h2 id="flow">IoCallDriver로 내려가고 IoCompleteRequest로 올라오기</h2>
+<p>
+  3층 스택(필터 → FDO → PDO)에서 읽기 요청 하나를 따라갑니다. 필터는 완료 루틴을 등록하고, PDO는 하드웨어에 요청을 건 뒤 <code>STATUS_PENDING</code>을 반환합니다.
+  오른쪽 IRP의 <b>CurrentLocation</b>과 각 로케이션의 <b>Control</b> 값 변화를 주목하세요.
+</p>
+
+<figure class="fig stepper" data-interval="3200">
+  <svg class="dia" viewBox="0 0 880 400" role="img" aria-label="IRP 하강과 완료">
+    <g data-hl="1,8"><rect class="box user" x="30" y="20" width="250" height="44" rx="8"/><text x="155" y="47" text-anchor="middle" class="b">I/O 관리자 (NtReadFile)</text></g>
+    <g data-hl="2,3,7"><rect class="box kernel" x="30" y="100" width="250" height="56" rx="8" style="stroke-dasharray:5 4"/><text x="155" y="124" text-anchor="middle" class="b">FiltDO (상위 필터)</text><text x="155" y="143" text-anchor="middle" class="sm mono">FiltDispatchRead / FiltComplete</text></g>
+    <g data-hl="4"><rect class="box kernel" x="30" y="180" width="250" height="56" rx="8"/><text x="155" y="204" text-anchor="middle" class="b">FuncDO (FDO)</text><text x="155" y="223" text-anchor="middle" class="sm mono">FuncDispatchRead</text></g>
+    <g data-hl="5,6"><rect class="box hw" x="30" y="260" width="250" height="56" rx="8"/><text x="155" y="284" text-anchor="middle" class="b">BusPDO (PDO)</text><text x="155" y="303" text-anchor="middle" class="sm mono">BusDispatchRead · ISR · DPC</text></g>
+    <g data-hl="6"><rect class="box hw" x="30" y="340" width="250" height="40" rx="8"/><text x="155" y="365" text-anchor="middle" class="sm b">디스크 컨트롤러 (DMA · 인터럽트)</text></g>
+
+    <path class="ln kernel" d="M110 64 L110 98" data-only="2+"/>
+    <path class="ln kernel" d="M110 156 L110 178" data-only="4+"/>
+    <path class="ln kernel" d="M110 236 L110 258" data-only="5+"/>
+    <path class="ln kernel" d="M110 316 L110 338" data-only="5+"/>
+    <path class="ln ok" d="M200 338 L200 318" data-only="6+"/>
+    <path class="ln ok" d="M200 258 L200 238" data-only="6+"/>
+    <path class="ln ok" d="M200 178 L200 158" data-only="7+"/>
+    <path class="ln ok" d="M200 98 L200 66" data-only="8+"/>
+    <path class="ln acc dash" d="M24 288 C 6 288, 6 42, 28 42" data-only="5"/>
+
+    <g data-hl="1,8"><rect class="box acc" x="360" y="20" width="490" height="44" rx="8"/>
+      <text x="376" y="47" class="b mono">IRP</text>
+      <text x="420" y="47" class="mono">StackCount = 3</text>
+      <text x="600" y="47" class="mono">CurrentLocation =</text>
+      <text x="735" y="47" class="lg mono" data-text="1:4|2:3|4:2|5:1|6:2|7:3|8:4">4</text></g>
+
+    <g data-hl="2,3,7"><rect class="box plain" x="360" y="100" width="490" height="56" rx="8"/>
+      <text x="376" y="134" class="lg">#3</text>
+      <text x="420" y="122" class="mono" data-text="1:IRP_MJ_READ · DeviceObject = —|2:IRP_MJ_READ · DeviceObject = FiltDO">IRP_MJ_READ · DeviceObject = —</text>
+      <text x="420" y="144" class="sm mono" data-text="1:CompletionRoutine = — · Control = 0x00|7:CompletionRoutine = — · Control = 0x01 (PENDING)">CompletionRoutine = — · Control = 0x00</text></g>
+    <g data-hl="3,4,6"><rect class="box plain" x="360" y="180" width="490" height="56" rx="8"/>
+      <text x="376" y="214" class="lg">#2</text>
+      <text x="420" y="202" class="mono" data-text="1:(비어 있음)|3:IRP_MJ_READ · DeviceObject = —|4:IRP_MJ_READ · DeviceObject = FuncDO">(비어 있음)</text>
+      <text x="420" y="224" class="sm mono" data-text="1: |3:CompletionRoutine = FiltComplete · Control = 0xE0|6:CompletionRoutine = FiltComplete · Control = 0xE1"> </text></g>
+    <g data-hl="5,6"><rect class="box plain" x="360" y="260" width="490" height="56" rx="8"/>
+      <text x="376" y="294" class="lg">#1</text>
+      <text x="420" y="282" class="mono" data-text="1:(비어 있음)|4:IRP_MJ_READ · DeviceObject = —|5:IRP_MJ_READ · DeviceObject = BusPDO">(비어 있음)</text>
+      <text x="420" y="304" class="sm mono" data-text="1: |4:CompletionRoutine = — · Control = 0x00|5:CompletionRoutine = — · Control = 0x01 (PENDING)"> </text></g>
+
+    <g data-at="1:0,0|2:0,86|4:0,166|5:0,246|6:0,166|7:0,86|8:0,0">
+      <circle class="token" cx="340" cy="42" r="9"/>
+    </g>
+    <text x="360" y="352" class="sm b c-kernel" data-text="1:문맥: 요청 스레드 · PASSIVE_LEVEL|6:문맥: DPC · DISPATCH_LEVEL (임의 스레드)|8:문맥: 원래 스레드 · 특수 커널 APC (APC_LEVEL)">문맥: 요청 스레드 · PASSIVE_LEVEL</text>
+    <text x="360" y="374" class="sm c-acc" data-only="5">STATUS_PENDING이 디스패치 루틴들을 거쳐 I/O 관리자까지 연쇄 반환 → 스레드 복귀</text>
+  </svg>
+  <ol class="steps">
+    <li><b>IRP 할당</b>: I/O 관리자가 최상단 DO의 <code>StackSize</code>(3)만큼 로케이션을 붙여 IRP를 만듭니다. CurrentLocation = 4(=StackCount+1). <code>IoGetNextIrpStackLocation</code>으로 #3에 <code>IRP_MJ_READ</code>, 길이, 오프셋, FileObject를 채웁니다.</li>
+    <li><b>IoCallDriver(FiltDO)</b>: CurrentLocation을 3으로 내리고 #3.DeviceObject = FiltDO로 설정한 뒤 <code>FiltDO-&gt;DriverObject-&gt;MajorFunction[IRP_MJ_READ]</code>를 호출합니다. 필터는 <code>IoGetCurrentIrpStackLocation</code>으로 #3을 봅니다.</li>
+    <li><b>완료 루틴 등록</b>: 필터가 <code>IoCopyCurrentIrpStackLocationToNext</code>로 #3을 #2로 복사하고 <code>IoSetCompletionRoutine</code>으로 <b>#2에</b> FiltComplete를 기록합니다. Control = 0xE0(INVOKE_ON_SUCCESS|ERROR|CANCEL). 완료 루틴이 "다음" 로케이션에 들어가는 점이 핵심입니다.</li>
+    <li><b>IoCallDriver(FuncDO)</b>: CurrentLocation = 2. FDO는 요청을 검증하고 #1을 준비한 뒤(여기서는 완료 루틴 없이) 아래로 전달합니다.</li>
+    <li><b>IoCallDriver(BusPDO)</b>: CurrentLocation = 1. PDO는 DMA를 프로그래밍하고 <code>IoMarkIrpPending</code>(#1.Control |= SL_PENDING_RETURNED) 후 <code>STATUS_PENDING</code>을 반환합니다. 이 값이 FDO → 필터 → I/O 관리자로 그대로 반환되고, 스레드는 (비동기 핸들이면) 유저 모드로 돌아갑니다.</li>
+    <li><b>인터럽트 → DPC → IoCompleteRequest</b>: 전송이 끝나면 ISR이 DPC를 큐잉하고, DPC가 <code>IoStatus</code>를 채운 뒤 <code>IoCompleteRequest</code>를 호출합니다. #1에는 완료 루틴이 없으므로 I/O 관리자가 <b>펜딩 표시를 #2로 자동 전파</b>하고 CurrentLocation = 2가 됩니다.</li>
+    <li><b>완료 루틴 호출</b>: #2에 FiltComplete가 있습니다. I/O 관리자는 CurrentLocation을 3으로 올린 <b>뒤</b> FiltComplete(FiltDO, Irp, Context)를 호출합니다. <code>Irp-&gt;PendingReturned</code>가 TRUE이므로 루틴은 <code>IoMarkIrpPending</code>으로 #3에 펜딩을 표시하고 <code>STATUS_CONTINUE_COMPLETION</code>을 반환합니다.</li>
+    <li><b>I/O 관리자 최종 처리</b>: CurrentLocation = 4(=StackCount+1). 모든 층이 끝났습니다. 원래 스레드에 특수 커널 APC를 보내 그 문맥에서 버퍼 복사, IOSB 기록, 이벤트/APC/IOCP 통지를 수행하고 IRP를 해제합니다(그림 11-3).</li>
+  </ol>
+  <figcaption><b>그림 11-2.</b> 스택 로케이션의 하강과 상승. 완료 루틴은 등록한 층이 아니라 <b>바로 아래 층의 로케이션</b>에 저장되며, 아래 층이 완료한 뒤 등록자의 문맥(DeviceObject)으로 호출됩니다.</figcaption>
+</figure>
+
+<pre data-title="C — 필터의 두 가지 전달 방식"><code class="lang-c">// (1) 관심 없는 요청: 내 로케이션을 하위가 재사용하게 한다
+NTSTATUS FiltPassThrough(PDEVICE_OBJECT DeviceObject, PIRP Irp)
+{
+    PFLT_EXT ext = (PFLT_EXT)DeviceObject-&gt;DeviceExtension;
+    IoSkipCurrentIrpStackLocation(Irp);          // CurrentLocation++ (IoCallDriver가 다시 --)
+    return IoCallDriver(ext-&gt;Lower, Irp);        // 이 줄 이후 Irp는 내 것이 아니다
+}
+
+// (2) 결과를 봐야 하는 요청: 다음 로케이션을 만들고 완료 루틴을 건다
+NTSTATUS FiltDispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
+{
+    PFLT_EXT ext = (PFLT_EXT)DeviceObject-&gt;DeviceExtension;
+    IoCopyCurrentIrpStackLocationToNext(Irp);    // CompletionRoutine 필드는 복사되지 않는다
+    IoSetCompletionRoutine(Irp, FiltComplete, ext, TRUE, TRUE, TRUE);
+    return IoCallDriver(ext-&gt;Lower, Irp);        // 하위의 반환값을 "그대로" 돌려준다
+}
+
+NTSTATUS FiltComplete(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID Context)
+{
+    // IRQL &lt;= DISPATCH_LEVEL, 임의 스레드 문맥. 페이지 가능 코드·유저 버퍼 접근 금지.
+    if (Irp-&gt;PendingReturned) {
+        IoMarkIrpPending(Irp);                   // 디스패치가 하위 반환값을 그대로 돌려준 경우의 필수 규칙
+    }
+    if (NT_SUCCESS(Irp-&gt;IoStatus.Status)) {
+        // Irp-&gt;IoStatus.Information 바이트가 전송됨 — 후처리
+    }
+    return STATUS_CONTINUE_COMPLETION;
+}</code></pre>
+
+<div class="callout warn">
+  <div class="callout-title">IoSkip 후 완료 루틴을 걸면 안 되는 이유</div>
+  <p>Skip은 "내 로케이션 = 하위 로케이션"으로 만듭니다. 이 상태에서 <code>IoSetCompletionRoutine</code>을 호출하면 <b>위층이 내 로케이션에 걸어 둔 완료 루틴을 덮어씁니다</b>. 완료 루틴이 필요하면 반드시 Copy를 쓰세요.
+  또한 드라이버가 언로드될 수 있는 필터라면 완료 루틴 실행 중 이미지가 사라지지 않도록 <code>IoSetCompletionRoutineEx</code>를 고려합니다.</p>
+</div>
+
+<h2 id="sim">IRP 스택 시뮬레이터</h2>
+<p>
+  필터를 추가/제거하고 층마다 동작을 바꾼 뒤 IRP를 보내 보세요. <b>Skip</b>은 로케이션을 재사용하고, <b>완료 루틴</b>은 아래 로케이션에 루틴을 기록하며,
+  <b>동기 대기</b>는 <code>STATUS_MORE_PROCESSING_REQUIRED</code>로 IRP 소유권을 되찾는 START_DEVICE 패턴입니다. 한 단계씩 넘기며 CurrentLocation, 펜딩 전파, 완료 루틴 호출 순서를 관찰하세요.
+</p>
+
+<div class="sim" id="irpSim">
+  <div class="sim-title">디바이스 스택 · IRP 왕복 시뮬레이터 (IRP_MJ_READ)</div>
+  <div class="sim-controls">
+    <label>상위 필터 <select id="cfgUp"><option value="none">없음</option><option value="skip">Skip 전달</option><option value="cr" selected>완료 루틴 등록</option></select></label>
+    <label>FDO <select id="cfgFdo"><option value="skip">Skip 전달</option><option value="cr">완료 루틴 등록</option><option value="sync">동기 대기 (MORE_PROCESSING)</option></select></label>
+    <label>하위 필터 <select id="cfgLow"><option value="none" selected>없음</option><option value="skip">Skip 전달</option><option value="cr">완료 루틴 등록</option></select></label>
+    <label>PDO <select id="cfgPdo"><option value="pending" selected>STATUS_PENDING → DPC 완료</option><option value="now">디스패치에서 즉시 완료</option></select></label>
+  </div>
+  <div class="sim-controls">
+    <button class="btn primary" data-act="send">IRP 보내기 (초기화)</button>
+    <button class="btn" data-act="prev">◀ 이전</button>
+    <button class="btn" data-act="next">다음 ▶</button>
+    <button class="btn" data-act="end">끝까지 ⏭</button>
+    <span class="muted mono" id="irpStepNo" style="font-size:.85rem"></span>
+  </div>
+  <div class="irp-grid">
+    <div>
+      <h5>디바이스 스택 (위 → 아래)</h5>
+      <div id="irpLayers"></div>
+      <div class="ctxline" id="irpCtx"></div>
+    </div>
+    <div>
+      <h5>IRP</h5>
+      <div class="cl-note" id="irpCl"></div>
+      <div class="sl-wrap"><table class="sl" id="irpTable"></table></div>
+    </div>
+  </div>
+  <div class="console" id="irpLog"></div>
+</div>
+
+<div class="callout tip">
+  <div class="callout-title">시뮬레이터로 확인해 볼 것</div>
+  <p>① 상위 필터를 <b>Skip</b>으로 바꾸면 사용되는 로케이션이 하나 줄어드는 것. ② PDO를 <b>즉시 완료</b>로 바꾸면 완료 루틴이 디스패치 루틴들이 반환하기 <b>전에</b>, 같은 스레드에서 호출되는 것.
+  ③ FDO를 <b>동기 대기</b>로 두면 완료가 FDO의 완료 루틴에서 멈췄다가, FDO가 <code>IoCompleteRequest</code>를 다시 호출해야 위층 완료 루틴이 불리는 것, 그리고 위층은 PENDING을 보지 않는 것.</p>
+</div>
+
+<h2 id="pending">STATUS_PENDING과 비동기 완료</h2>
+<p>
+  디스패치 루틴이 IRP를 즉시 끝낼 수 없으면 IRP를 큐에 넣거나 하드웨어에 넘긴 뒤 <code>STATUS_PENDING</code>을 반환합니다. 이때 지켜야 할 규칙은 단 하나지만 어기면 치명적입니다.
+</p>
+<div class="callout expert">
+  <div class="callout-title">펜딩 규칙: 반환값과 SL_PENDING_RETURNED는 반드시 일치해야 한다</div>
+  <ul>
+    <li><code>STATUS_PENDING</code>을 반환한다면, 반환 전에 자기 로케이션에 <code>IoMarkIrpPending</code>을 호출해야 한다.</li>
+    <li><code>IoMarkIrpPending</code>을 호출했다면, 실제 상태가 무엇이든 <b>반드시</b> <code>STATUS_PENDING</code>을 반환해야 한다.</li>
+    <li>하위 반환값을 그대로 돌려주면서 완료 루틴을 등록했다면, 완료 루틴에서 <code>if (Irp-&gt;PendingReturned) IoMarkIrpPending(Irp);</code>로 표시를 위로 전파해야 한다.</li>
+  </ul>
+  <p>I/O 관리자는 최상단의 펜딩 여부로 "요청자가 결과를 기다려야 하는가"와 "완료 처리를 어디서 할 것인가"를 결정합니다. 불일치하면 이벤트가 영원히 신호되지 않아 <b>행</b>이 걸리거나, 반대로 완료 처리가 두 번 일어나 <b>이미 해제된 IRP</b>를 건드립니다. Driver Verifier의 I/O 검증이 이 실수를 잡습니다.</p>
+</div>
+<pre data-title="C — 펜딩 후 큐잉"><code class="lang-c">NTSTATUS MyDispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
+{
+    PMY_EXT ext = (PMY_EXT)DeviceObject-&gt;DeviceExtension;
+    IoMarkIrpPending(Irp);                     // 큐에 넣기 "전에" — 넣는 순간 다른 CPU가 완료·해제할 수 있다
+    IoCsqInsertIrp(&amp;ext-&gt;CancelSafeQueue, Irp, NULL);
+    KickHardwareIfIdle(ext);
+    return STATUS_PENDING;                     // IoMarkIrpPending과 짝
+}</code></pre>
+
+<h3>완료 통지: 이벤트 · APC · I/O 완료 포트</h3>
+<p>
+  IRP가 완료되는 순간은 대개 <b>DPC</b>, 즉 요청 스레드와 무관한 임의 문맥입니다. 그런데 결과를 유저 IOSB에 쓰거나 Buffered I/O 데이터를 유저 버퍼로 복사하려면 <b>요청 프로세스의 주소 공간</b>이 필요합니다.
+  그래서 I/O 관리자는 완료의 마지막 단계를 원래 스레드에 <b>특수 커널 APC</b>(<code>IopCompleteRequest</code>)로 보냅니다. 단, 펜딩되지 않았고 I/O 관리자가 반환 경로에서 처리하기로 표시한 요청(<code>IRP_DEFER_IO_COMPLETION</code>)은 APC 없이 반환 경로에서 바로 처리합니다.
+</p>
+
+<figure class="fig stepper" data-interval="3000">
+  <svg class="dia" viewBox="0 0 880 360" role="img" aria-label="I/O 완료 통지 경로">
+    <g data-hl="1,2"><rect class="box hw" x="20" y="30" width="230" height="70" rx="8"/><text x="135" y="58" text-anchor="middle" class="b">DPC (임의 스레드 문맥)</text><text x="135" y="80" text-anchor="middle" class="sm mono">IoCompleteRequest → 스택 상승</text></g>
+    <path class="ln kernel" d="M250 65 L318 65" data-only="2+"/>
+    <text x="284" y="56" text-anchor="middle" class="sm" data-only="2+">KAPC</text>
+    <g data-hl="2-4"><rect class="box user" x="320" y="20" width="250" height="210" rx="10"/>
+      <text x="445" y="44" text-anchor="middle" class="b">원래 스레드 T</text>
+      <text x="445" y="62" text-anchor="middle" class="sm mono">Irp-&gt;Tail.Overlay.Thread</text></g>
+    <g data-only="2+" data-hl="2"><rect class="box kernel" x="336" y="76" width="218" height="34" rx="6"/><text x="445" y="98" text-anchor="middle" class="sm mono">특수 커널 APC: IopCompleteRequest</text></g>
+    <g data-only="3+" data-hl="3"><rect class="box kernel" x="336" y="118" width="218" height="46" rx="6"/><text x="445" y="137" text-anchor="middle" class="sm">SystemBuffer → 유저 버퍼 복사</text><text x="445" y="155" text-anchor="middle" class="sm">MDL 잠금 해제·해제</text></g>
+    <g data-only="4+" data-hl="4"><rect class="box kernel" x="336" y="172" width="218" height="44" rx="6"/><text x="445" y="199" text-anchor="middle" class="sm mono">*UserIosb = Irp-&gt;IoStatus</text></g>
+
+    <g data-only="5+" data-hl="5"><rect class="box ok" x="640" y="20" width="220" height="60" rx="8"/><text x="750" y="45" text-anchor="middle" class="b">이벤트 신호</text><text x="750" y="66" text-anchor="middle" class="sm mono">UserEvent / FileObject-&gt;Event</text></g>
+    <g data-only="6+" data-hl="6"><rect class="box ok" x="640" y="100" width="220" height="60" rx="8"/><text x="750" y="125" text-anchor="middle" class="b">유저 APC 큐잉</text><text x="750" y="146" text-anchor="middle" class="sm mono">ReadFileEx 완료 루틴</text></g>
+    <g data-only="7+" data-hl="7"><rect class="box ok" x="640" y="180" width="220" height="60" rx="8"/><text x="750" y="205" text-anchor="middle" class="b">IOCP 패킷 삽입</text><text x="750" y="226" text-anchor="middle" class="sm mono">KeInsertQueue(KQUEUE)</text></g>
+    <path class="ln ok" d="M570 80 L638 50" data-only="5+"/>
+    <path class="ln ok" d="M570 130 L638 130" data-only="6+"/>
+    <path class="ln ok" d="M570 190 L638 210" data-only="7+"/>
+
+    <g data-only="6+"><rect class="box user" x="640" y="262" width="220" height="40" rx="8"/><text x="750" y="287" text-anchor="middle" class="sm">T가 alertable 대기일 때 실행</text></g>
+    <g data-only="7+"><rect class="box user" x="320" y="262" width="250" height="40" rx="8"/><text x="445" y="287" text-anchor="middle" class="sm mono">GetQueuedCompletionStatus (아무 워커)</text></g>
+    <path class="ln user dash" d="M640 225 C 600 240, 600 282, 572 282" data-only="7+"/>
+    <g data-only="8+" data-hl="8"><rect class="box plain" x="20" y="262" width="230" height="40" rx="8"/><text x="135" y="287" text-anchor="middle" class="sm mono">IoFreeIrp · 스레드 IRP 리스트 제거</text></g>
+    <text x="440" y="340" text-anchor="middle" class="sm" data-text="1:요청 스레드는 이미 반환했을 수 있음 — 완료는 다른 문맥에서 시작된다|2:APC 덕분에 이후 단계는 요청 프로세스의 주소 공간에서 실행|5:통지 방식은 핸들/호출 방식에 따라 하나 이상이 선택된다|8:완료">요청 스레드는 이미 반환했을 수 있음 — 완료는 다른 문맥에서 시작된다</text>
+  </svg>
+  <ol class="steps">
+    <li><b>DPC에서 완료</b>: 하위 드라이버가 <code>IoCompleteRequest</code>를 호출하고 스택 로케이션을 모두 올라갑니다(그림 11-2). 이 시점의 CPU는 요청 프로세스와 무관한 주소 공간에 있을 수 있습니다.</li>
+    <li><b>APC 큐잉</b>: I/O 관리자는 <code>Irp-&gt;Tail.Overlay.Thread</code>에 특수 커널 APC를 큐잉합니다. 특수 커널 APC는 스레드가 대기 중이든 실행 중이든 IRQL이 PASSIVE로 내려오는 즉시 끼어듭니다.</li>
+    <li><b>버퍼 정리</b>: APC가 요청 스레드 문맥에서 실행됩니다. Buffered 읽기였다면 <code>SystemBuffer</code>에서 <code>UserBuffer</code>로 <code>IoStatus.Information</code> 바이트를 복사하고 풀 버퍼를 해제합니다. Direct I/O였다면 MDL의 페이지 잠금을 풉니다.</li>
+    <li><b>IOSB 기록</b>: 유저의 <code>IO_STATUS_BLOCK</code>(OVERLAPPED의 Internal/InternalHigh)에 상태와 바이트 수를 씁니다. 유저 주소이므로 요청 프로세스 문맥이 필요한 이유입니다.</li>
+    <li><b>이벤트</b>: 요청자가 이벤트를 줬다면(<code>OVERLAPPED.hEvent</code>) 그것을, 아니면 파일 객체의 <code>Event</code>를 신호합니다. 동기 핸들(<code>FO_SYNCHRONOUS_IO</code>)에서 <code>STATUS_PENDING</code>을 받은 I/O 관리자는 바로 이 이벤트를 기다리고 있었습니다.</li>
+    <li><b>유저 APC</b>: <code>ReadFileEx</code>처럼 완료 루틴을 줬다면 유저 APC를 큐잉합니다. 스레드가 <code>SleepEx</code>/<code>WaitFor…Ex</code> 같은 <b>alertable 대기</b>에 들어가야 실행됩니다.</li>
+    <li><b>I/O 완료 포트</b>: 파일 객체가 IOCP에 연결되어 있으면(<code>FileObject-&gt;CompletionContext</code>) 완료 키와 함께 패킷을 KQUEUE에 넣습니다. 어느 워커 스레드든 <code>GetQueuedCompletionStatus</code>로 꺼낼 수 있어, 고성능 서버의 표준 모델입니다.</li>
+    <li><b>정리</b>: IRP를 스레드 IRP 리스트에서 빼고 해제합니다. 스레드가 종료될 때 이 리스트에 남은 IRP는 취소됩니다 — 취소를 처리하지 않는 드라이버가 프로세스 종료 행을 일으키는 이유입니다.</li>
+  </ol>
+  <figcaption><b>그림 11-3.</b> I/O 완료의 마지막 단계. 이벤트·유저 APC·IOCP 중 무엇이 쓰일지는 요청 방식이 결정합니다.</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>요청 방식</th><th>드라이버가 PENDING 반환 시 요청자 동작</th><th>완료 통지</th></tr></thead>
+  <tbody>
+    <tr><td>동기 핸들 (FILE_FLAG_OVERLAPPED 없음)</td><td>I/O 관리자가 커널에서 <code>FileObject-&gt;Event</code>를 대기 후 결과 반환</td><td>파일 객체 이벤트</td></tr>
+    <tr><td>비동기 핸들 + OVERLAPPED.hEvent</td><td>즉시 <code>ERROR_IO_PENDING</code> 반환</td><td>지정 이벤트 (또는 <code>GetOverlappedResult</code>)</td></tr>
+    <tr><td><code>ReadFileEx</code>/<code>WriteFileEx</code></td><td>즉시 반환</td><td>유저 APC (alertable 대기 필요)</td></tr>
+    <tr><td>IOCP 연결 핸들</td><td>즉시 반환</td><td>완료 포트 패킷. <code>FILE_SKIP_COMPLETION_PORT_ON_SUCCESS</code>로 동기 성공 시 패킷 생략 가능</td></tr>
+  </tbody>
+</table>
+<div class="callout note">
+  <div class="callout-title">스레드와 무관한(thread-agnostic) I/O</div>
+  <p>IOCP에 연결된 파일의 IRP는 특정 스레드에 묶일 필요가 적기 때문에, 최신 Windows는 이런 IRP를 스레드 대신 파일 객체/완료 포트와 연결해 APC 없이 완료할 수 있습니다. 세부 조건은 버전에 따라 다르므로 "항상 APC를 거친다"고 단정하지 마세요.</p>
+</div>
+
+<h2 id="buffering">버퍼링 방식과 IOCTL 코드</h2>
+<p>
+  유저 버퍼를 드라이버에 어떻게 보여줄지는 요청 종류에 따라 다르게 결정됩니다. READ/WRITE는 <b>디바이스 객체의 Flags</b>(<code>DO_BUFFERED_IO</code>/<code>DO_DIRECT_IO</code>/둘 다 없음)로,
+  IOCTL은 <b>제어 코드의 하위 2비트(Method)</b>로 정해집니다.
+</p>
+<div class="tabs">
+  <div class="tab-bar"><button>Buffered</button><button>Direct (MDL)</button><button>Neither</button></div>
+  <div class="tab-panel">
+    <p>I/O 관리자가 비페이지 풀에 <code>max(입력, 출력)</code> 크기의 <code>SystemBuffer</code>를 할당하고 입력을 복사해 넣습니다. 드라이버는 그 버퍼에서 읽고 같은 버퍼에 결과를 씁니다. 완료 시 I/O 관리자가 <code>IoStatus.Information</code> 바이트를 유저 출력 버퍼로 복사합니다.</p>
+    <ul><li><b>장점</b>: 드라이버가 유저 주소를 만지지 않으므로 가장 안전. 임의 문맥/높은 IRQL에서도 접근 가능.</li>
+    <li><b>단점</b>: 복사 2회. 큰 전송에는 부적합.</li>
+    <li><b>함정</b>: 입력과 출력이 같은 버퍼이므로 출력을 쓰기 전에 입력을 다 읽어 둘 것. <code>Information</code>을 실제 쓴 크기보다 크게 설정하면 초기화되지 않은 풀 내용이 유저에게 새어 나간다(정보 노출 취약점).</li></ul>
+  </div>
+  <div class="tab-panel">
+    <p>I/O 관리자가 유저 버퍼를 프로브하고 페이지를 잠근 뒤 그 물리 페이지 목록을 <b>MDL</b>로 만들어 <code>Irp-&gt;MdlAddress</code>에 둡니다. 드라이버는 DMA에 MDL을 그대로 쓰거나, CPU로 접근해야 하면 <code>MmGetSystemAddressForMdlSafe</code>로 시스템 주소에 매핑합니다.</p>
+    <ul><li>IOCTL에서는 <b>입력은 SystemBuffer(버퍼링)</b>, <b>출력 버퍼만 MDL</b>입니다. <code>METHOD_IN_DIRECT</code>는 출력 버퍼를 읽기 접근으로(디바이스가 그 버퍼에서 데이터를 가져감), <code>METHOD_OUT_DIRECT</code>는 쓰기 접근으로 프로브합니다.</li>
+    <li><b>함정</b>: 유저가 같은 물리 페이지를 다른 가상 주소로 동시에 보고 있으므로 "한 번 검증 후 다시 읽기"는 TOCTOU가 될 수 있습니다.</li></ul>
+  </div>
+  <div class="tab-panel">
+    <p>I/O 관리자는 아무것도 하지 않습니다. IOCTL 입력은 <code>Parameters.DeviceIoControl.Type3InputBuffer</code>, 출력은 <code>Irp-&gt;UserBuffer</code>에 <b>원래 유저 주소 그대로</b> 들어옵니다.</p>
+    <ul><li>드라이버는 <b>요청 스레드 문맥(최상단, PASSIVE_LEVEL)</b>에서만 접근할 수 있고, <code>RequestorMode == UserMode</code>면 <code>__try</code> 안에서 <code>ProbeForRead/ProbeForWrite</code> 후 접근하고 값을 커널로 복사(capture)해 써야 합니다.</li>
+    <li>파일 시스템 FSCTL 중 일부(예: <code>FSCTL_GET_RETRIEVAL_POINTERS</code>)가 이 방식을 씁니다. 서드파티 드라이버 취약점의 단골 출처입니다.</li></ul>
+  </div>
+</div>
+
+<pre data-title="C — METHOD_BUFFERED IOCTL 처리"><code class="lang-c">NTSTATUS MyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
+{
+    PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(Irp);
+    ULONG inLen  = sp-&gt;Parameters.DeviceIoControl.InputBufferLength;
+    ULONG outLen = sp-&gt;Parameters.DeviceIoControl.OutputBufferLength;
+    NTSTATUS st = STATUS_INVALID_DEVICE_REQUEST;
+    ULONG_PTR info = 0;
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    switch (sp-&gt;Parameters.DeviceIoControl.IoControlCode) {
+    case IOCTL_MY_QUERY: {                                   // METHOD_BUFFERED
+        if (inLen &lt; sizeof(MY_IN) || outLen &lt; sizeof(MY_OUT)) { st = STATUS_BUFFER_TOO_SMALL; break; }
+        ULONG id = ((PMY_IN)Irp-&gt;AssociatedIrp.SystemBuffer)-&gt;Id;   // 입력을 먼저 읽어 둔다
+        PMY_OUT out = (PMY_OUT)Irp-&gt;AssociatedIrp.SystemBuffer;      // 같은 버퍼
+        RtlZeroMemory(out, sizeof(MY_OUT));                          // 패딩까지 초기화
+        out-&gt;Value = LookupValue(id);
+        info = sizeof(MY_OUT);                                       // I/O 관리자가 이만큼 복사
+        st = STATUS_SUCCESS;
+        break; }
+    }
+    Irp-&gt;IoStatus.Status = st;
+    Irp-&gt;IoStatus.Information = info;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return st;                                                       // 펜딩 안 했으므로 실제 상태 반환
+}</code></pre>
+
+<h3 id="ioctl-bits">IOCTL 코드의 비트 구조</h3>
+<p>
+  <code>CTL_CODE(DeviceType, Function, Method, Access) = (DeviceType &lt;&lt; 16) | (Access &lt;&lt; 14) | (Function &lt;&lt; 2) | Method</code>.
+  DeviceType 0x8000 이상(bit 31 = Common 비트)과 Function 0x800 이상(bit 13 = Custom 비트)은 서드파티용으로 예약되어 있습니다.
+  <b>Access</b>는 I/O 관리자가 <code>NtDeviceIoControlFile</code>에서 핸들의 허가 접근을 검사하는 데 씁니다 — <code>FILE_READ_ACCESS</code>면 핸들에 <code>FILE_READ_DATA</code>가, <code>FILE_WRITE_ACCESS</code>면 <code>FILE_WRITE_DATA</code>가 있어야 합니다.
+</p>
+
+<div class="sim" id="ioctlSim">
+  <div class="sim-title">IOCTL 디코더 — 코드 ↔ 필드</div>
+  <div class="sim-controls">
+    <label>코드 <input type="text" id="ioHex" value="0x0007405C" aria-label="IOCTL 코드"></label>
+    <button class="btn" data-io="0x70000">IOCTL_DISK_GET_DRIVE_GEOMETRY</button>
+    <button class="btn" data-io="0x7405C">IOCTL_DISK_GET_LENGTH_INFO</button>
+    <button class="btn" data-io="0x2D1400">IOCTL_STORAGE_QUERY_PROPERTY</button>
+    <button class="btn" data-io="0x90018">FSCTL_LOCK_VOLUME</button>
+    <button class="btn" data-io="0x90073">FSCTL_GET_RETRIEVAL_POINTERS</button>
+    <button class="btn" data-io="0x222000">커스텀 (UNKNOWN, 0x800)</button>
+  </div>
+  <div class="io-fields">
+    <label>DeviceType <input type="text" id="ioDt" aria-label="DeviceType"></label>
+    <label>Function <input type="text" id="ioFn" aria-label="Function"></label>
+    <label>Method <select id="ioMe"><option value="0">METHOD_BUFFERED</option><option value="1">METHOD_IN_DIRECT</option><option value="2">METHOD_OUT_DIRECT</option><option value="3">METHOD_NEITHER</option></select></label>
+    <label>Access <select id="ioAc"><option value="0">FILE_ANY_ACCESS</option><option value="1">FILE_READ_ACCESS</option><option value="2">FILE_WRITE_ACCESS</option><option value="3">READ | WRITE</option></select></label>
+  </div>
+  <div class="bitrow" id="ioBits"></div>
+  <div class="io-out" id="ioOut"></div>
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">보안 함정: FILE_ANY_ACCESS + 느슨한 DACL</div>
+  <p>디바이스 객체의 보안 설명자가 Everyone 열기를 허용하고 IOCTL이 <code>FILE_ANY_ACCESS</code>라면, 일반 사용자도 그 IOCTL을 호출할 수 있습니다. 물리 메모리·MSR·포트 접근을 IOCTL로 노출한 서명된 드라이버가 "취약한 드라이버(BYOVD)" 공격에 쓰이는 전형적 경로입니다.
+  <code>IoCreateDeviceSecure</code>(SDDL 지정)와 <code>FILE_DEVICE_SECURE_OPEN</code>(디바이스 이름 뒤 경로 열기에도 같은 DACL 적용)을 사용하고, 위험한 IOCTL에는 읽기/쓰기 접근을 요구하세요.</p>
+</div>
+
+<h2 id="fastio">Fast I/O</h2>
+<p>
+  캐시에 이미 있는 파일 데이터를 읽는 데 IRP를 할당하고 스택을 왕복하는 것은 낭비입니다. 그래서 파일 시스템은 <code>DRIVER_OBJECT.FastIoDispatch</code>에
+  <code>FAST_IO_DISPATCH</code> 테이블(<code>FastIoRead</code>, <code>FastIoWrite</code>, <code>FastIoQueryBasicInfo</code>, <code>FastIoDeviceControl</code> …)을 제공합니다.
+</p>
+<ul>
+  <li>I/O 관리자는 (주로 동기 파일 객체에 대해) IRP를 만들기 전에 최상단 드라이버의 Fast I/O 루틴을 <b>직접 함수 호출</b>합니다.</li>
+  <li>파일 시스템은 캐싱이 시작된 파일이고 바이트 범위 락 등 제약이 없으면 <code>CcFastCopyRead</code>/<code>FsRtlCopyRead</code>로 캐시에서 복사하고 <code>TRUE</code>를 반환합니다.</li>
+  <li><code>FALSE</code>를 반환하면 "이 경로로는 못 한다"는 뜻일 뿐이며, I/O 관리자가 일반 IRP 경로로 다시 시도합니다. 즉 Fast I/O는 언제든 실패해도 되는 <b>최적화</b>입니다.</li>
+  <li>파일 시스템이 아닌 드라이버도 쓸 수 있습니다. 예: <code>FastIoDeviceControl</code>은 IOCTL을 IRP 없이 처리하는 데 쓰입니다(AFD 등).</li>
+</ul>
+<div class="callout expert">
+  <div class="callout-title">레거시 필터가 Fast I/O를 잊으면</div>
+  <p>레거시 파일 시스템 필터는 IRP뿐 아니라 Fast I/O 테이블도 패스스루로 구현해야 합니다. 빠뜨리면 그 볼륨의 Fast I/O가 꺼져 성능이 크게 떨어지거나, 반대로 필터가 Fast I/O 경로의 요청을 보지 못해 감시에 구멍이 납니다. 미니필터 모델(12장)에서는 Filter Manager가 Fast I/O를 콜백 데이터로 통일해 줍니다(<code>FLTFL_CALLBACK_DATA_FAST_IO_OPERATION</code>).</p>
+</div>
+
+<h2 id="pnp">PnP 관리자와 디바이스 트리</h2>
+<p>
+  PnP 관리자는 루트 열거자에서 시작해 각 버스 드라이버에게 "자식이 누구냐"고 물으며 <b>장치 트리</b>를 만듭니다. 트리의 각 노드(devnode)는 하나의 PDO에 대응하고,
+  그 위에 쌓인 디바이스 스택을 가집니다. 다음 스테퍼는 새 PCI 장치가 발견되어 드라이버가 붙고 시작되기까지의 과정입니다.
+</p>
+
+<figure class="fig stepper" data-interval="3200">
+  <svg class="dia" viewBox="0 0 880 420" role="img" aria-label="PnP 장치 열거와 시작">
+    <g data-hl="1,2,6"><rect class="box kernel" x="20" y="20" width="200" height="52" rx="8"/><text x="120" y="44" text-anchor="middle" class="b">PnP 관리자</text><text x="120" y="62" text-anchor="middle" class="sm mono">Pnp* / Pp* / Pip*</text></g>
+    <g data-hl="1"><rect class="box hw" x="20" y="340" width="200" height="56" rx="8"/><text x="120" y="364" text-anchor="middle" class="b">pci.sys (부모 버스)</text><text x="120" y="383" text-anchor="middle" class="sm">PCI 버스의 FDO</text></g>
+    <path class="ln acc" d="M120 72 L120 338" data-only="1"/>
+    <text x="128" y="200" class="sm c-acc" data-only="1">IRP_MN_QUERY_DEVICE_RELATIONS</text>
+    <text x="128" y="216" class="sm c-acc" data-only="1">(BusRelations)</text>
+
+    <text x="440" y="22" text-anchor="middle" class="sm b c-kernel">새 장치의 디바이스 스택</text>
+    <g data-only="1+" data-hl="1"><rect class="box hw" x="330" y="340" width="220" height="56" rx="8"/><text x="440" y="364" text-anchor="middle" class="b">PDO</text><text x="440" y="383" text-anchor="middle" class="sm">pci.sys가 생성</text></g>
+    <path class="ln" d="M220 368 L328 368" data-only="1+"/>
+    <g data-only="3+" data-hl="3"><rect class="box kernel" x="330" y="266" width="220" height="52" rx="8" style="stroke-dasharray:5 4"/><text x="440" y="288" text-anchor="middle" class="b">하위 필터 DO</text><text x="440" y="306" text-anchor="middle" class="sm mono">LowerFilters</text></g>
+    <g data-only="4+" data-hl="4"><rect class="box kernel" x="330" y="192" width="220" height="52" rx="8"/><text x="440" y="214" text-anchor="middle" class="b">FDO</text><text x="440" y="232" text-anchor="middle" class="sm mono">Service = mydrv</text></g>
+    <g data-only="5+" data-hl="5"><rect class="box kernel" x="330" y="118" width="220" height="52" rx="8" style="stroke-dasharray:5 4"/><text x="440" y="140" text-anchor="middle" class="b">상위 필터 DO</text><text x="440" y="158" text-anchor="middle" class="sm mono">UpperFilters</text></g>
+    <path class="ln kernel" d="M440 338 L440 320" data-only="3+"/>
+    <path class="ln kernel" d="M440 264 L440 246" data-only="4+"/>
+    <path class="ln kernel" d="M440 190 L440 172" data-only="5+"/>
+
+    <g data-only="2+" data-hl="2"><rect class="box plain" x="620" y="20" width="240" height="132" rx="8"/>
+      <text x="740" y="42" text-anchor="middle" class="b">ID 질의 · INF 매칭</text>
+      <text x="636" y="66" class="sm mono">IRP_MN_QUERY_ID</text>
+      <text x="636" y="84" class="sm mono">PCI\VEN_xxxx&amp;DEV_yyyy</text>
+      <text x="636" y="104" class="sm">→ 드라이버 패키지 선택·설치</text>
+      <text x="636" y="124" class="sm mono">Enum\PCI\… : Service,</text>
+      <text x="636" y="142" class="sm mono">LowerFilters, UpperFilters</text></g>
+    <path class="ln" d="M220 46 L618 46" data-only="2"/>
+
+    <g data-only="6+" data-hl="6"><rect class="box acc" x="620" y="184" width="240" height="76" rx="8"/>
+      <text x="740" y="206" text-anchor="middle" class="b">IRP_MN_START_DEVICE</text>
+      <text x="740" y="226" text-anchor="middle" class="sm">할당 리소스: 메모리 BAR,</text>
+      <text x="740" y="244" text-anchor="middle" class="sm">MSI 인터럽트 (원시/변환 목록)</text></g>
+    <path class="ln acc" d="M618 214 C 590 200, 590 144, 562 144" data-only="6"/>
+    <path class="ln acc dash" d="M318 144 L318 366" data-only="6"/>
+    <text x="312" y="260" text-anchor="end" class="sm c-acc" data-only="6">위에서 아래로 전달</text>
+    <path class="ln ok" d="M570 366 L570 146" data-only="7"/>
+    <text x="598" y="174" class="sm c-ok" data-only="7">아래부터 시작 (완료되며 올라옴)</text>
+
+    <g data-only="8+" data-hl="8"><rect class="box ok" x="620" y="296" width="240" height="100" rx="8"/>
+      <text x="740" y="318" text-anchor="middle" class="b">devnode: Started</text>
+      <text x="740" y="340" text-anchor="middle" class="sm">버스 장치라면 다시</text>
+      <text x="740" y="358" text-anchor="middle" class="sm mono">QUERY_DEVICE_RELATIONS</text>
+      <text x="740" y="378" text-anchor="middle" class="sm">→ 트리가 재귀적으로 확장</text></g>
+  </svg>
+  <ol class="steps">
+    <li><b>열거</b>: PnP 관리자가 부모 버스 스택에 <code>IRP_MN_QUERY_DEVICE_RELATIONS</code>(BusRelations)를 보냅니다. pci.sys는 설정 공간을 스캔해 새 장치를 발견하고 <b>PDO</b>를 만들어 목록으로 반환합니다.</li>
+    <li><b>식별</b>: PnP 관리자가 새 PDO에 <code>IRP_MN_QUERY_ID</code>(하드웨어 ID·호환 ID), <code>QUERY_CAPABILITIES</code> 등을 보내 devnode를 만들고, ID로 INF를 매칭해 드라이버 패키지를 고릅니다. 결과는 <code>HKLM\SYSTEM\CurrentControlSet\Enum\…</code>에 기록됩니다.</li>
+    <li><b>하위 필터</b>: 드라이버 로드 순서는 하위 필터(장치별 → 클래스별) → 기능 드라이버 → 상위 필터(장치별 → 클래스별)입니다. 각 드라이버의 <code>DriverEntry</code>(처음 한 번) 후 <code>AddDevice(DriverObject, PDO)</code>가 호출되어 DO가 스택에 붙습니다.</li>
+    <li><b>기능 드라이버</b>: <code>AddDevice</code>에서 FDO를 만들어 부착합니다. 아직 하드웨어에 접근하지 않습니다 — 리소스가 할당되지 않았기 때문입니다.</li>
+    <li><b>상위 필터</b>: 마지막으로 상위 필터가 부착됩니다. 스택 구성이 끝났습니다. 각 DO는 <code>DO_DEVICE_INITIALIZING</code>을 지웠어야 합니다.</li>
+    <li><b>리소스 할당과 START</b>: <code>IRP_MN_FILTER_RESOURCE_REQUIREMENTS</code> 등을 거쳐 아비터가 리소스를 배정하면, PnP 관리자는 <code>IRP_MN_START_DEVICE</code>를 리소스 목록과 함께 <b>스택 최상단</b>에 보냅니다.</li>
+    <li><b>아래에서 위로 시작</b>: START는 "올라오면서" 처리해야 합니다. 각 드라이버는 IRP를 먼저 아래로 보내고 완료 루틴+이벤트로 기다린 뒤(<code>IoForwardIrpSynchronously</code> 패턴), 하위가 성공했을 때에만 자기 하드웨어를 초기화하고 IRP를 완료합니다. 버스가 먼저 켜져야 기능 드라이버가 레지스터에 접근할 수 있기 때문입니다.</li>
+    <li><b>시작됨</b>: devnode가 Started 상태가 되고 장치 인터페이스가 활성화됩니다. 새 장치가 다시 버스라면 PnP 관리자는 그 스택에 BusRelations를 질의해 트리를 재귀적으로 확장합니다.</li>
+  </ol>
+  <figcaption><b>그림 11-4.</b> PnP 열거 → AddDevice(아래부터 부착) → START_DEVICE(위에서 보내고 아래부터 처리).</figcaption>
+</figure>
+
+<pre data-title="C — 하위로 보내고 기다리기 (START_DEVICE 패턴)"><code class="lang-c">static NTSTATUS SyncComplete(PDEVICE_OBJECT D, PIRP Irp, PVOID Ctx)
+{
+    UNREFERENCED_PARAMETER(D); UNREFERENCED_PARAMETER(Irp);
+    KeSetEvent((PKEVENT)Ctx, IO_NO_INCREMENT, FALSE);
+    return STATUS_MORE_PROCESSING_REQUIRED;     // 완료 처리를 멈추고 IRP 소유권을 되찾는다
+}
+
+NTSTATUS ForwardAndWait(PDEVICE_OBJECT Lower, PIRP Irp)   // PASSIVE_LEVEL에서만
+{
+    KEVENT evt;
+    KeInitializeEvent(&amp;evt, NotificationEvent, FALSE);
+    IoCopyCurrentIrpStackLocationToNext(Irp);
+    IoSetCompletionRoutine(Irp, SyncComplete, &amp;evt, TRUE, TRUE, TRUE);
+    NTSTATUS st = IoCallDriver(Lower, Irp);
+    if (st == STATUS_PENDING) {
+        KeWaitForSingleObject(&amp;evt, Executive, KernelMode, FALSE, NULL);
+        st = Irp-&gt;IoStatus.Status;
+    }
+    return st;   // 호출자는 하드웨어 초기화 후 IoCompleteRequest를 "다시" 호출해야 한다
+}</code></pre>
+
+<table>
+  <thead><tr><th>PnP 마이너 코드</th><th>의미와 처리 방향</th></tr></thead>
+  <tbody>
+    <tr><td><code>IRP_MN_START_DEVICE</code></td><td>리소스와 함께 시작. 아래부터 처리(위 패턴).</td></tr>
+    <tr><td><code>IRP_MN_QUERY_STOP_DEVICE</code> / <code>STOP_DEVICE</code></td><td>리소스 재배치(rebalance)를 위한 일시 정지. 정지 중 들어온 IRP는 보류.</td></tr>
+    <tr><td><code>IRP_MN_QUERY_REMOVE_DEVICE</code> / <code>REMOVE_DEVICE</code></td><td>정상 제거. REMOVE에서 위층부터 처리하고 아래로 넘긴 뒤 <code>IoDetachDevice</code> + <code>IoDeleteDevice</code>.</td></tr>
+    <tr><td><code>IRP_MN_SURPRISE_REMOVAL</code></td><td>예고 없는 제거(USB 뽑기). 하드웨어 접근 중단, 대기 IRP 실패 처리. 이후 REMOVE가 온다.</td></tr>
+    <tr><td><code>IRP_MN_QUERY_DEVICE_RELATIONS</code></td><td>BusRelations(자식 목록), RemovalRelations, TargetDeviceRelation 등.</td></tr>
+    <tr><td><code>IRP_MN_QUERY_CAPABILITIES</code></td><td>D-상태 매핑(S→D), 제거 가능 여부, 웨이크 능력. 아래(버스)가 채우고 위가 보정.</td></tr>
+  </tbody>
+</table>
+<div class="callout warn">
+  <div class="callout-title">REMOVE와 진행 중 I/O — Remove Lock</div>
+  <p>REMOVE 처리 중에도 다른 스레드의 IRP가 디스패치 루틴 안에 있을 수 있습니다. <code>IoAcquireRemoveLock</code>/<code>IoReleaseRemoveLock</code>/<code>IoReleaseRemoveLockAndWait</code>로 진행 중 I/O를 세고, 모두 빠져나간 뒤 장치를 삭제해야 use-after-free를 피할 수 있습니다. KMDF는 이를 자동으로 처리합니다.</p>
+</div>
+
+<h3>전원 IRP 개요</h3>
+<div class="grid2">
+  <div class="card"><h4>S-IRP (시스템 전원)</h4><p><code>IRP_MJ_POWER</code> + <code>IRP_MN_SET_POWER</code>/<code>QUERY_POWER</code>, 타입 SystemPowerState(S0 작동 ~ S5 꺼짐). 전원 관리자가 각 스택에 보냅니다.</p></div>
+  <div class="card"><h4>D-IRP (장치 전원)</h4><p>타입 DevicePowerState(D0 완전 작동 ~ D3 꺼짐). 스택의 <b>전원 정책 소유자</b>(보통 FDO)가 S-IRP를 받으면 <code>PoRequestPowerIrp</code>로 적절한 D-IRP를 자기 스택에 요청합니다.</p></div>
+</div>
+<ul>
+  <li>D0로 갈 때(켜기)는 START처럼 <b>아래부터</b>, 저전력으로 갈 때(끄기)는 위부터 상태를 저장하고 아래로 넘깁니다.</li>
+  <li><code>IRP_MN_WAIT_WAKE</code>: 장치가 시스템/자신을 깨울 수 있도록 미리 걸어 두는 IRP. 깨우기 이벤트가 생기면 완료됩니다.</li>
+  <li><code>DO_POWER_PAGABLE</code>이 설정된 DO는 전원 IRP를 PASSIVE_LEVEL에서 받습니다. 설정되지 않으면 DISPATCH_LEVEL에서 받을 수 있으므로 페이지 가능 코드를 쓰면 안 됩니다.</li>
+  <li>Windows Vista 이후로는 전원 IRP도 <code>IoCallDriver</code>로 전달하면 되며, 과거의 <code>PoCallDriver</code>/<code>PoStartNextPowerIrp</code> 규칙은 호환을 위한 것입니다.</li>
+</ul>
+
+<h2 id="priority">I/O 우선순위 · 취소 · IRP 소유권</h2>
+<p>
+  Windows는 CPU 스케줄링과 별개로 <b>I/O 우선순위 힌트</b>를 IRP에 실어 스토리지 스택이 순서를 정할 수 있게 합니다. 레벨은 <code>IoPriorityVeryLow</code>, <code>Low</code>, <code>Normal</code>, <code>High</code>, <code>Critical</code>입니다.
+</p>
+<ul>
+  <li>스레드/프로세스를 <b>백그라운드 모드</b>(<code>THREAD_MODE_BACKGROUND_BEGIN</code>, <code>PROCESS_MODE_BACKGROUND_BEGIN</code>)로 바꾸면 그 I/O가 VeryLow가 됩니다. 인덱서·디펜더 검사·조각 모음 같은 작업이 사용.</li>
+  <li>핸들 단위로는 <code>SetFileInformationByHandle(FileIoPriorityHintInfo)</code>로 지정합니다. 드라이버는 <code>IoGetIoPriorityHint(Irp)</code>로 읽습니다.</li>
+  <li>힌트를 실제로 반영하는 것은 스토리지 스택(클래스/포트 드라이버)입니다. 낮은 우선순위 I/O가 락을 쥐고 있어 높은 우선순위 스레드가 막히는 <b>우선순위 역전</b>을 피하기 위한 부스트 메커니즘도 존재합니다.</li>
+  <li>Critical은 메모리 관리자의 일부 페이징 I/O처럼 시스템이 내부적으로 쓰는 레벨입니다.</li>
+</ul>
+<h3>취소</h3>
+<p>
+  큐에 오래 머무는 IRP는 취소 가능해야 합니다. 스레드 종료, <code>CancelIoEx</code>가 <code>IoCancelIrp</code>를 부르면 I/O 관리자는 <code>Irp-&gt;Cancel = TRUE</code>로 설정하고 등록된 <code>CancelRoutine</code>을 호출합니다.
+  취소 루틴과 정상 완료 경로가 같은 IRP를 동시에 완료하려는 경쟁이 고전적인 버그 원천이므로, 직접 구현하지 말고 <b>취소 안전 큐(<code>IoCsq*</code>)</b>나 KMDF 큐를 쓰는 것이 정석입니다.
+</p>
+<div class="grid2">
+  <div class="card kernel"><h4>스레드 IRP (Threaded)</h4><p><code>IoBuildSynchronousFsdRequest</code>, <code>IoBuildDeviceIoControlRequest</code>로 만든 IRP. 스레드에 연결되고 <b>I/O 관리자가 해제</b>합니다. 만든 드라이버는 완료 후 IRP를 건드리지 않습니다.</p></div>
+  <div class="card kernel"><h4>드라이버 소유 IRP</h4><p><code>IoAllocateIrp</code>, <code>IoBuildAsynchronousFsdRequest</code>로 만든 IRP. 만든 드라이버의 완료 루틴이 <code>STATUS_MORE_PROCESSING_REQUIRED</code>를 반환하고 <b>직접</b> <code>IoFreeIrp</code>해야 합니다.</p></div>
+</div>
+<div class="callout expert">
+  <div class="callout-title">실제 disk.sys는 원래 IRP를 그대로 내리지 않는다</div>
+  <p>교과서 그림과 달리 디스크 클래스 드라이버(classpnp 기반)는 읽기/쓰기 IRP를 받으면 미리 할당해 둔 "전송 패킷" IRP로 요청을 쪼개 포트 드라이버에 보내고, 모든 패킷이 끝나면 원래 IRP를 완료합니다. 그래서 <code>!irp</code>로 원래 IRP를 보면 디스크 아래 로케이션이 비어 있을 수 있습니다. 실제 스택을 분석할 때는 "이 층이 IRP를 전달하는가, 새로 만드는가"를 먼저 확인하세요.</p>
+</div>
+
+<h2 id="lab">실습: IRP와 디바이스 스택 관찰</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 11-1 · 커널 디버거로 스택 읽기</div>
+  <p>가상 머신에 커널 디버거를 연결하거나 로컬 커널 디버깅(<code>lkd</code>)을 사용합니다. 아래 출력은 <b>형식 예시</b>이며 주소·모듈 구성은 시스템마다 다릅니다.</p>
+</div>
+<pre data-title="WinDbg — 드라이버 객체와 디스패치 테이블"><code class="lang-windbg">kd> !drvobj \Driver\Disk 2
+Driver object (ffffc58f`19a2d8e0) is for:
+ \Driver\Disk
+
+DriverEntry:   fffff806`2a3c1010	disk!GsDriverEntry
+DriverStartIo: 00000000
+DriverUnload:  fffff806`2a2e5030	CLASSPNP!ClassUnload
+AddDevice:     fffff806`2a2d2140	CLASSPNP!ClassAddDevice
+
+Dispatch routines:
+[00] IRP_MJ_CREATE                      fffff806`2a2c1010	CLASSPNP!ClassCreateClose
+[03] IRP_MJ_READ                        fffff806`2a2c1050	CLASSPNP!ClassReadWrite
+[0e] IRP_MJ_DEVICE_CONTROL              fffff806`2a2c2300	CLASSPNP!ClassDeviceControlDispatch
+[1b] IRP_MJ_PNP                         fffff806`2a2c3100	CLASSPNP!ClassDispatchPnp
+...</code></pre>
+<pre data-title="WinDbg — 디바이스 스택"><code class="lang-windbg">kd> !devstack ffffc58f`19b3e050
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffc58f`19c41030  \Driver\partmgr    ffffc58f`19c41180
+> ffffc58f`19b3e050  \Driver\Disk       ffffc58f`19b3e1a0  DR0
+  ffffc58f`19a8f060  \Driver\storahci   ffffc58f`19a8f1b0  00000032
+!DevNode ffffc58f`19a90d30 :
+  DeviceInst is "SCSI\Disk&amp;Ven_...\..."
+  ServiceName is "disk"</code></pre>
+<pre data-title="WinDbg — 진행 중인 IRP"><code class="lang-windbg">kd> !irp ffffc58f`1b2c4a10
+Irp is active with 4 stacks 3 is current (= 0xffffc58f1b2c4b70)
+ Mdl=ffffc58f1b0e2a60: No System Buffer: Thread ffffc58f1a7f2080:  Irp stack trace.
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000
+>[IRP_MJ_READ(3), N/A(0)]
+            0 e1 ffffc58f19b3e050 00000000 fffff8062a2c8a10-ffffc58f1b2d0000 Success Error Cancel pending
+	       \Driver\Disk	CLASSPNP!TransferPktComplete
+ [IRP_MJ_READ(3), N/A(0)]
+            0 e1 ffffc58f19c41030 00000000 fffff80629d01230-ffffc58f19c41180 Success Error Cancel pending
+	       \Driver\partmgr	partmgr!PmReadWriteCompletion
+...</code></pre>
+<ol>
+  <li><code>!irp</code> 출력에서 <code>&gt;</code>는 현재 로케이션, <code>cl</code> 열은 Control 비트입니다(<code>e1</code> = INVOKE_ON_* + PENDING_RETURNED). 한 줄의 <b>Completion</b>은 그 줄 드라이버가 완료한 뒤 호출될 루틴, 즉 <b>바로 위 드라이버</b>의 것입니다.</li>
+  <li><code>!devstack</code>으로 디스크 스택을 보고, 같은 DO로 <code>!devobj</code>를 실행해 <code>AttachedDevice</code>, <code>StackSize</code>, Flags를 확인하세요.</li>
+  <li><code>!devnode 0 1</code>로 전체 장치 트리를, <code>!devnode 0 1 disk</code>로 특정 서비스의 devnode를 찾아보세요.</li>
+  <li>행이 걸린 프로세스가 있다면 <code>!thread</code>의 IRP 목록 → <code>!irp</code> → 현재 로케이션의 드라이버 순으로 "누가 IRP를 쥐고 완료하지 않는가"를 추적합니다. <code>!irpfind</code>는 풀 전체에서 IRP를 찾습니다(느림).</li>
+  <li><code>dt nt!_IRP</code>, <code>dt nt!_IO_STACK_LOCATION</code>으로 이 장의 표를 직접 대조해 보세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">필터 드라이버가 <code>IoSetCompletionRoutine</code>으로 등록한 완료 루틴은 IRP의 어느 스택 로케이션에 저장되나요?</p>
+  <ol class="opts">
+    <li>필터 자신의 현재 로케이션</li>
+    <li data-correct>바로 아래 드라이버가 사용할 다음 로케이션</li>
+    <li>IRP 헤더의 <code>CompletionRoutine</code> 필드</li>
+    <li>맨 아래(#1) 로케이션</li>
+  </ol>
+  <div class="explain"><code>IoSetCompletionRoutine</code>은 <code>IoGetNextIrpStackLocation</code>에 씁니다. 아래 층이 완료하면 I/O 관리자가 그 로케이션의 루틴을 호출하는데, 그 전에 CurrentLocation을 올려 두므로 루틴 안에서 <code>IoGetCurrentIrpStackLocation</code>은 등록한 필터 자신의 로케이션이 됩니다. IRP 헤더에는 완료 루틴 필드가 없습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">디스패치 루틴이 <code>IoMarkIrpPending</code>을 호출한 뒤, 하위 드라이버가 즉시 성공 완료했다며 <code>STATUS_SUCCESS</code>를 반환했습니다. 무엇이 문제인가요?</p>
+  <ol class="opts">
+    <li>문제없다. 실제 결과를 반환하는 편이 더 정확하다.</li>
+    <li data-correct>펜딩 표시와 반환값이 불일치해, I/O 관리자가 완료 처리를 중복하거나 요청자가 영원히 기다릴 수 있다.</li>
+    <li>IRQL이 DISPATCH_LEVEL로 고정된다.</li>
+    <li>IRP가 자동으로 취소된다.</li>
+  </ol>
+  <div class="explain">IoMarkIrpPending을 호출했다면 반드시 STATUS_PENDING을 반환해야 합니다. I/O 관리자는 이 일치를 전제로 "반환 경로에서 처리할지, APC로 처리할지"를 정합니다. 불일치는 행 또는 해제된 IRP 접근(BSOD)으로 이어지며 Driver Verifier가 검출합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)</code> IOCTL에서 드라이버가 출력 버퍼를 찾는 곳과 주의점은?</p>
+  <ol class="opts">
+    <li><code>Irp-&gt;AssociatedIrp.SystemBuffer</code> — 이미 복사된 커널 버퍼라 안전</li>
+    <li><code>Irp-&gt;MdlAddress</code> — 잠긴 페이지라 아무 IRQL에서나 접근 가능</li>
+    <li data-correct><code>Irp-&gt;UserBuffer</code> — 원래 유저 주소이므로 요청 문맥에서 <code>__try</code> + <code>ProbeForWrite</code> 후 접근</li>
+    <li><code>Parameters.DeviceIoControl.Type3InputBuffer</code> — 출력 전용 커널 버퍼</li>
+  </ol>
+  <div class="explain">METHOD_NEITHER는 I/O 관리자가 버퍼에 아무것도 하지 않습니다. 입력은 Type3InputBuffer, 출력은 UserBuffer로 유저 주소 그대로 옵니다. 요청 스레드 문맥에서만 유효하며, 프로브·예외 처리·캡처 없이 쓰면 임의 커널 메모리 쓰기 취약점이 됩니다. 게다가 FILE_ANY_ACCESS라 접근 검사도 느슨합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>IRP_MN_START_DEVICE</code>를 처리하는 기능 드라이버의 올바른 순서는?</p>
+  <ol class="opts">
+    <li>하드웨어 초기화 → IRP를 아래로 Skip 전달</li>
+    <li>IRP를 즉시 완료하고 하드웨어는 DPC에서 초기화</li>
+    <li data-correct>IRP를 아래로 보내 완료를 기다린 뒤(하위 성공 시) 하드웨어 초기화 → IoCompleteRequest</li>
+    <li>AddDevice에서 이미 초기화했으므로 그냥 Skip 전달</li>
+  </ol>
+  <div class="explain">START는 아래부터 처리해야 합니다. 버스(PDO)가 먼저 장치를 켜고 리소스를 활성화해야 기능 드라이버가 레지스터에 접근할 수 있습니다. 완료 루틴에서 STATUS_MORE_PROCESSING_REQUIRED로 IRP를 되찾고, 초기화 후 IoCompleteRequest를 다시 호출합니다. AddDevice 시점에는 리소스가 아직 없습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">Buffered I/O 읽기에서 데이터가 유저 버퍼로 복사되는 것은 언제, 어느 문맥에서인가요?</p>
+  <ol class="opts">
+    <li>드라이버가 IoCompleteRequest를 호출하는 순간, DPC 문맥에서</li>
+    <li data-correct>I/O 관리자의 완료 처리 단계에서, 보통 원래 스레드에 큐잉된 특수 커널 APC 문맥에서</li>
+    <li>드라이버가 직접 유저 버퍼에 써야 한다</li>
+    <li>유저 모드의 ntdll이 GetOverlappedResult에서 복사한다</li>
+  </ol>
+  <div class="explain">DPC는 임의 프로세스 문맥이라 유저 주소에 쓸 수 없습니다. 그래서 I/O 관리자는 원래 스레드에 특수 커널 APC(IopCompleteRequest)를 보내 그 프로세스 주소 공간에서 SystemBuffer → UserBuffer 복사와 IOSB 기록을 합니다(펜딩 없이 동기 완료된 일부 요청은 반환 경로에서 바로 처리).</div>
+</div>
+<div class="quiz">
+  <p class="q"><code>!irp</code> 출력에서 디스크 드라이버 줄의 Completion 열에 <code>partmgr!…</code>가 아니라 <code>CLASSPNP!TransferPktComplete</code>가 보입니다. 이것이 의미하는 것은?</p>
+  <ol class="opts">
+    <li>disk.sys가 자신의 완료 루틴을 자기 로케이션에 등록했다</li>
+    <li data-correct>그 줄의 드라이버가 완료한 뒤 호출될 루틴으로, 바로 위 층(이 IRP를 만든/보낸 쪽)이 등록한 것이다</li>
+    <li>IRP가 이미 완료되었다</li>
+    <li>완료 루틴은 항상 맨 아래 드라이버 것이 표시된다</li>
+  </ol>
+  <div class="explain">각 로케이션의 Completion 열은 "이 로케이션의 드라이버가 완료한 다음 호출될, 위층이 등록한 루틴"입니다. 이 예에서는 classpnp가 만든 전송 패킷 IRP를 보고 있는 것이므로 classpnp의 완료 루틴이 보입니다. 이 규칙을 알아야 행 분석에서 IRP 소유자를 정확히 짚을 수 있습니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>DRIVER_OBJECT(디스패치 테이블) · DEVICE_OBJECT(스택의 층) · FILE_OBJECT(열기 인스턴스) · IRP(요청)가 I/O의 네 기둥이다. IRP는 이름의 디바이스가 아니라 <b>스택 최상단</b>으로 간다.</li>
+    <li>IRP의 스택 로케이션은 CurrentLocation = StackCount+1에서 시작해 <code>IoCallDriver</code>마다 1씩 내려가고, <code>IoCompleteRequest</code>가 다시 올라가며 각 로케이션의 (위층이 등록한) 완료 루틴을 호출한다.</li>
+    <li><code>STATUS_PENDING</code> 반환과 <code>IoMarkIrpPending</code>은 반드시 짝을 이룬다. 완료 루틴은 <code>PendingReturned</code>를 위로 전파해야 한다. <code>STATUS_MORE_PROCESSING_REQUIRED</code>는 IRP 소유권을 되찾는 수단이다.</li>
+    <li>완료의 마지막 단계는 보통 원래 스레드의 특수 커널 APC에서 일어나며, 이벤트·유저 APC·IOCP로 요청자에게 통지된다.</li>
+    <li>버퍼링은 Buffered(복사)·Direct(MDL)·Neither(유저 주소)이며, IOCTL은 코드의 하위 2비트가 방식을, 비트 14–15가 필요 접근을 정한다. Neither와 FILE_ANY_ACCESS는 보안 감사의 1순위다.</li>
+    <li>PnP는 아래부터 AddDevice로 스택을 쌓고, START는 위에서 보내 아래부터 처리한다. REMOVE는 Remove Lock으로 진행 중 I/O를 기다린다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  'use strict';
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+  /* ================= IRP 스택 시뮬레이터 ================= */
+  const sim = document.getElementById('irpSim');
+  const q = s => sim.querySelector(s);
+  let snaps = [], idx = 0, layers = [];
+
+  function build() {
+    const cfg = { up: q('#cfgUp').value, fdo: q('#cfgFdo').value, low: q('#cfgLow').value, pdo: q('#cfgPdo').value };
+    const L = [];
+    if (cfg.up !== 'none') L.push({ name: 'UpperFlt', role: '상위 필터 DO', mode: cfg.up, cls: 'flt' });
+    L.push({ name: 'FuncDrv', role: 'FDO (기능 드라이버)', mode: cfg.fdo, cls: '' });
+    if (cfg.low !== 'none') L.push({ name: 'LowerFlt', role: '하위 필터 DO', mode: cfg.low, cls: 'flt' });
+    L.push({ name: 'BusDrv', role: 'PDO (버스 드라이버)', mode: cfg.pdo, cls: 'pdo' });
+    layers = L;
+    const N = L.length;
+    const loc = [];
+    for (let i = 0; i <= N; i++) loc.push({ dev: '', major: '', cr: '', pend: false, ctl: 0 });
+    let cur = N + 1, act = -1, ctx = 'PASSIVE_LEVEL · 요청 스레드';
+    let deferredDone = false;
+    snaps = [];
+    const snap = (msg, cls) => snaps.push({ msg, cls: cls || '', cur, act, ctx, loc: loc.map(o => Object.assign({}, o)) });
+    const st = r => r === 'PENDING' ? 'STATUS_PENDING' : 'STATUS_SUCCESS';
+    const modeName = { skip: 'Skip', cr: '완료 루틴', sync: '동기 대기' };
+
+    function walk() {
+      while (true) {
+        const k = cur;
+        const pr = loc[k].pend;
+        cur++;
+        const owner = loc[k].cr;
+        if (owner) {
+          const li = L.findIndex(x => x.name === owner);
+          act = li;
+          snap(`IoCompleteRequest: #${k}의 완료 루틴 발견 → CurrentLocation ${k}→${cur} 후 ${owner}의 완료 루틴 호출 (Irp->PendingReturned=${pr ? 'TRUE' : 'FALSE'})`, 'warn');
+          if (L[li].mode === 'sync') {
+            snap(`${owner} 완료 루틴: KeSetEvent(&evt) → return STATUS_MORE_PROCESSING_REQUIRED → 완료 처리가 여기서 중단됨 (IRP 소유권이 ${owner}에게 돌아감)`, 'warn');
+            return 'halt';
+          }
+          if (pr && cur <= N) {
+            loc[cur].pend = true;
+            snap(`${owner} 완료 루틴: if (Irp->PendingReturned) IoMarkIrpPending(Irp) → #${cur}.Control |= SL_PENDING_RETURNED`);
+          }
+          snap(`${owner} 완료 루틴: return STATUS_CONTINUE_COMPLETION → 계속 위로`, 'ok');
+        } else if (cur <= N) {
+          if (pr) { loc[cur].pend = true; snap(`IoCompleteRequest: #${k}에 완료 루틴 없음 → 펜딩 표시를 #${cur}로 자동 전파, CurrentLocation=${cur}`); }
+          else snap(`IoCompleteRequest: #${k}에 완료 루틴 없음 → CurrentLocation=${cur}`);
+        }
+        if (cur > N) {
+          act = -1;
+          if (pr) snap(`CurrentLocation=${cur} (=StackCount+1) · 최상단이 펜딩됨 → 원래 스레드에 특수 커널 APC 큐잉 → 그 문맥에서 버퍼 복사·IOSB 기록·이벤트/APC/IOCP 통지`, 'ok');
+          else snap(`CurrentLocation=${cur} (=StackCount+1) · 펜딩 없음 → 모든 층 완료. 최종 처리(버퍼 복사·IOSB·통지)는 요청 유형에 따라 디스패치 반환 후 I/O 관리자의 반환 경로 또는 APC에서`, 'ok');
+          return 'done';
+        }
+      }
+    }
+    function runDeferred() {
+      if (deferredDone) return;
+      deferredDone = true;
+      const keep = ctx;
+      ctx = 'DISPATCH_LEVEL · DPC (임의 스레드 문맥)'; act = N - 1;
+      snap('…시간 경과… 디바이스 인터럽트 → ISR → DPC 큐잉', 'dim');
+      snap(`${L[N - 1].name} DPC: Irp->IoStatus = {STATUS_SUCCESS, 4096} → IoCompleteRequest(Irp, IO_DISK_INCREMENT)`, 'ok');
+      walk();
+      ctx = keep;
+    }
+    function call(i) {
+      cur--; act = i;
+      const me = L[i];
+      loc[cur].dev = me.name;
+      snap(`IoCallDriver(${me.name}): CurrentLocation ${cur + 1}→${cur}, #${cur}.DeviceObject=${me.name} → MajorFunction[IRP_MJ_READ] 호출`);
+      if (i === N - 1) {
+        if (me.mode === 'pending') {
+          loc[cur].pend = true;
+          snap(`${me.name}: IoMarkIrpPending (#${cur}에 SL_PENDING_RETURNED) → DMA 시작 → return STATUS_PENDING`, 'warn');
+          return 'PENDING';
+        }
+        snap(`${me.name}: 즉시 처리 가능 → Irp->IoStatus = {STATUS_SUCCESS, 4096} → IoCompleteRequest (디스패치 루틴 안에서, 같은 스레드)`, 'ok');
+        walk();
+        act = i;
+        snap(`${me.name}: return STATUS_SUCCESS (IoCompleteRequest 이후 Irp 접근 금지)`);
+        return 'SUCCESS';
+      }
+      if (me.mode === 'skip') {
+        cur++;
+        snap(`${me.name}: IoSkipCurrentIrpStackLocation → CurrentLocation ${cur - 1}→${cur} (하위가 #${cur}를 재사용)`);
+        const r = call(i + 1);
+        act = i;
+        snap(`${me.name}: IoCallDriver의 반환값 ${st(r)}를 그대로 반환`);
+        return r;
+      }
+      loc[cur - 1].major = 'IRP_MJ_READ';
+      loc[cur - 1].cr = me.name;
+      snap(`${me.name}: ${me.mode === 'sync' ? 'KeInitializeEvent → ' : ''}IoCopyCurrentIrpStackLocationToNext + IoSetCompletionRoutine → #${cur - 1}에 ${me.name}의 완료 루틴 기록`);
+      const r = call(i + 1);
+      act = i;
+      if (me.mode === 'cr') { snap(`${me.name}: IoCallDriver의 반환값 ${st(r)}를 그대로 반환`); return r; }
+      if (r === 'PENDING') {
+        ctx = 'PASSIVE_LEVEL · 요청 스레드 (대기 중)';
+        snap(`${me.name}: STATUS_PENDING 수신 → KeWaitForSingleObject(&evt) — 요청 스레드가 여기서 블록`, 'warn');
+        runDeferred();
+        ctx = 'PASSIVE_LEVEL · 요청 스레드'; act = i;
+        snap(`${me.name}: 이벤트 신호됨 → 대기 해제, 디스패치 루틴 재개`);
+      } else {
+        snap(`${me.name}: 하위가 이미 완료(완료 루틴이 MORE_PROCESSING으로 멈춰 둠) → 대기 불필요`);
+      }
+      snap(`${me.name}: 후처리(결과 검사 등) 후 IoCompleteRequest 재호출 → 중단 지점(#${cur})부터 완료 계속`, 'ok');
+      walk();
+      act = i;
+      snap(`${me.name}: return Irp->IoStatus.Status (STATUS_SUCCESS — PENDING 아님, IoMarkIrpPending 불필요)`);
+      return 'SUCCESS';
+    }
+
+    snap(`I/O 관리자: NtReadFile → IoAllocateIrp(StackSize=${N}) · CurrentLocation=${N + 1} (배열 바깥)`);
+    loc[N].major = 'IRP_MJ_READ';
+    snap(`I/O 관리자: IoGetNextIrpStackLocation → #${N} 채움 (IRP_MJ_READ, Length=4096, FileObject)`);
+    const r = call(0);
+    act = -1;
+    if (r === 'PENDING') {
+      snap('I/O 관리자: STATUS_PENDING 수신 → 비동기 핸들이면 ERROR_IO_PENDING으로 즉시 복귀 / 동기 핸들이면 FileObject->Event 대기', 'warn');
+      runDeferred();
+    } else {
+      snap(`I/O 관리자: 최상단이 ${st(r)} 반환 → 동기 완료`, 'ok');
+    }
+    snaps.forEach(s => { s.modes = L.map(l => modeName[l.mode] || (l.mode === 'pending' ? 'PENDING' : '즉시 완료')); });
+    idx = 0;
+    render();
+  }
+
+  function render() {
+    const s = snaps[idx];
+    const N = layers.length;
+    let h = `<div class="layer iom${s.act === -1 ? ' act' : ''}"><span class="nm">I/O 관리자</span> <span class="md">IRP 생성·최종 완료</span></div>`;
+    layers.forEach((l, i) => {
+      h += `<div class="layer-arrow">▼ IoCallDriver · ▲ 완료</div>`;
+      h += `<div class="layer ${l.cls}${s.act === i ? ' act' : ''}"><span class="nm">${l.name}</span> <span class="md">${l.role} · ${s.modes[i]}</span></div>`;
+    });
+    q('#irpLayers').innerHTML = h;
+    q('#irpCtx').textContent = '문맥: ' + s.ctx;
+    q('#irpCl').innerHTML = `StackCount = ${N} · CurrentLocation = <span style="color:var(--acc)">${s.cur}</span>${s.cur > N ? ' (배열 바깥: 아직 아무도 / 모두 처리)' : ''}`;
+    let t = '<tr><th>#</th><th>MajorFunction</th><th>DeviceObject</th><th>CompletionRoutine</th><th>Control</th></tr>';
+    for (let k = N; k >= 1; k--) {
+      const o = s.loc[k];
+      const used = o.dev || o.major;
+      const ctl = (o.cr ? 0xE0 : 0) | (o.pend ? 1 : 0);
+      t += `<tr class="${s.cur === k ? 'cur' : ''}"><td>${s.cur === k ? '▶ ' : ''}${k}</td>` +
+        (used ? `<td>${o.major || 'IRP_MJ_READ'}</td><td>${o.dev || '—'}</td><td>${o.cr ? o.cr + ' 등록' : '—'}</td><td class="${o.pend ? 'pend' : ''}">0x${ctl.toString(16).padStart(2, '0').toUpperCase()}${o.pend ? ' PENDING' : ''}</td>`
+              : `<td class="unused" colspan="4">(미사용)</td>`) + '</tr>';
+    }
+    q('#irpTable').innerHTML = t;
+    q('#irpLog').innerHTML = snaps.slice(0, idx + 1).map((x, i) =>
+      `<span class="${i === idx ? 'now ' : ''}${x.cls}">${String(i + 1).padStart(2, ' ')}. ${esc(x.msg)}</span>`).join('\n');
+    const lg = q('#irpLog'); lg.scrollTop = lg.scrollHeight;
+    q('#irpStepNo').textContent = `${idx + 1} / ${snaps.length}`;
+    q('[data-act=prev]').disabled = idx === 0;
+    q('[data-act=next]').disabled = idx === snaps.length - 1;
+  }
+  sim.addEventListener('click', e => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    const a = b.dataset.act;
+    if (a === 'send') build();
+    if (a === 'prev' && idx > 0) { idx--; render(); }
+    if (a === 'next' && idx < snaps.length - 1) { idx++; render(); }
+    if (a === 'end') { idx = snaps.length - 1; render(); }
+  });
+  sim.querySelectorAll('select').forEach(s => s.addEventListener('change', build));
+  build();
+
+  /* ================= IOCTL 디코더 ================= */
+  const DEVT = { 0x2: 'FILE_DEVICE_CD_ROM', 0x7: 'FILE_DEVICE_DISK', 0x8: 'FILE_DEVICE_DISK_FILE_SYSTEM', 0x9: 'FILE_DEVICE_FILE_SYSTEM',
+    0xb: 'FILE_DEVICE_KEYBOARD', 0xf: 'FILE_DEVICE_MOUSE', 0x12: 'FILE_DEVICE_NETWORK', 0x14: 'FILE_DEVICE_NETWORK_FILE_SYSTEM',
+    0x22: 'FILE_DEVICE_UNKNOWN', 0x2d: 'FILE_DEVICE_MASS_STORAGE (IOCTL_STORAGE_BASE)' };
+  const METH = ['METHOD_BUFFERED', 'METHOD_IN_DIRECT', 'METHOD_OUT_DIRECT', 'METHOD_NEITHER'];
+  const ACC = ['FILE_ANY_ACCESS', 'FILE_READ_ACCESS', 'FILE_WRITE_ACCESS', 'FILE_READ_ACCESS | FILE_WRITE_ACCESS'];
+  const MDESC = [
+    '입력·출력 모두 Irp->AssociatedIrp.SystemBuffer (I/O 관리자가 복사)',
+    '입력 = SystemBuffer, 출력 버퍼 = Irp->MdlAddress (읽기 접근으로 프로브·잠금 — 디바이스가 그 버퍼에서 읽음)',
+    '입력 = SystemBuffer, 출력 버퍼 = Irp->MdlAddress (쓰기 접근으로 프로브·잠금 — 디바이스가 그 버퍼에 씀)',
+    '입력 = Parameters.DeviceIoControl.Type3InputBuffer, 출력 = Irp->UserBuffer (유저 주소 그대로! 프로브·캡처 필수)'];
+  const ADESC = ['핸들 접근 검사 없음 (디바이스 열기 DACL에만 의존)', '핸들에 FILE_READ_DATA 필요', '핸들에 FILE_WRITE_DATA 필요', 'FILE_READ_DATA와 FILE_WRITE_DATA 모두 필요'];
+  const io = document.getElementById('ioctlSim');
+  const hexIn = io.querySelector('#ioHex'), dtIn = io.querySelector('#ioDt'), fnIn = io.querySelector('#ioFn');
+  const meIn = io.querySelector('#ioMe'), acIn = io.querySelector('#ioAc');
+  const hx = (v, w) => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(w, '0');
+  function parse(s) { s = String(s).trim(); const v = /^0x/i.test(s) ? parseInt(s, 16) : (/[a-f]/i.test(s) ? parseInt(s, 16) : parseInt(s, 10)); return isNaN(v) ? null : v; }
+  function show(code) {
+    code = code >>> 0;
+    const dt = code >>> 16, ac = (code >>> 14) & 3, fn = (code >>> 2) & 0xFFF, me = code & 3;
+    dtIn.value = hx(dt, 4); fnIn.value = hx(fn, 3); meIn.value = me; acIn.value = ac;
+    const groups = [['dt', 'DeviceType (31–16)', 31, 16], ['ac', 'Access', 15, 14], ['fn', 'Function (13–2)', 13, 2], ['me', 'Method', 1, 0]];
+    io.querySelector('#ioBits').innerHTML = groups.map(([c, lbl, hi, lo]) => {
+      let cells = '';
+      for (let b = hi; b >= lo; b--) { const v = (code >>> b) & 1; cells += `<span class="bit${v ? ' one' : ''}" title="bit ${b}">${v}</span>`; }
+      return `<div class="g ${c}"><span class="lbl">${lbl}</span><span class="cells">${cells}</span></div>`;
+    }).join('');
+    const dtName = DEVT[dt] || (dt >= 0x8000 ? '서드파티 정의 (Common 비트=1)' : '알려진 표준 타입 아님');
+    io.querySelector('#ioOut').innerHTML =
+      `<div class="big">${hx(code, 8)} = CTL_CODE(${hx(dt, 4)}, ${hx(fn, 3)}, ${METH[me]}, ${ACC[ac]})</div>
+       <ul>
+        <li><b>DeviceType</b> ${hx(dt, 4)}: ${esc(dtName)}${dt >= 0x8000 ? '' : ' — 0x0000~0x7FFF는 Microsoft 예약'}</li>
+        <li><b>Function</b> ${hx(fn, 3)}: ${fn >= 0x800 ? '서드파티 정의 범위(Custom 비트=1)' : 'Microsoft 예약 범위(0x000~0x7FF)'}</li>
+        <li><b>Method</b> ${METH[me]}: ${esc(MDESC[me])}</li>
+        <li><b>Access</b> ${ACC[ac]}: ${ADESC[ac]}${ac === 0 ? ' <span style="color:var(--warn)">— 보안 검토 대상</span>' : ''}</li>
+       </ul>`;
+  }
+  function fromHex() { const v = parse(hexIn.value); if (v !== null) show(v); }
+  function fromFields() {
+    const dt = parse(dtIn.value), fn = parse(fnIn.value);
+    if (dt === null || fn === null) return;
+    const code = (((dt & 0xFFFF) << 16) | ((+acIn.value & 3) << 14) | ((fn & 0xFFF) << 2) | (+meIn.value & 3)) >>> 0;
+    hexIn.value = hx(code, 8); show(code);
+  }
+  hexIn.addEventListener('input', fromHex);
+  [dtIn, fnIn].forEach(e => e.addEventListener('input', fromFields));
+  [meIn, acIn].forEach(e => e.addEventListener('change', fromFields));
+  io.querySelectorAll('[data-io]').forEach(b => b.addEventListener('click', () => { hexIn.value = hx(parseInt(b.dataset.io, 16), 8); fromHex(); }));
+  fromHex();
+})();
+</script>
+</body>
+</html>

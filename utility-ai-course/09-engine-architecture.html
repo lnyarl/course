@@ -1,0 +1,1365 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시뮬레이션 엔진 아키텍처</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 09장 전용 */
+.mod-map g.mod { cursor: pointer; outline: none; }
+.mod-map g.mod rect { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.2; transition: fill .2s, stroke .2s; }
+.mod-map g.mod:hover rect, .mod-map g.mod:focus rect { stroke: var(--accent); }
+.mod-map g.mod.on rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.2; }
+.mod-map g.mod text { pointer-events: none; }
+.mod-map .t { font-weight: 700; font-family: var(--mono); font-size: 13px; }
+.mod-map .sub { font-size: 11px; fill: var(--muted); }
+.mod-map .arr { stroke: var(--muted); fill: none; stroke-width: 1.4; }
+.mod-map .arr.data { stroke-dasharray: 5 4; }
+.mod-info { margin: 10px 0 6px; padding: 10px 14px; border-radius: 8px; background: var(--surface-2); font-size: 14.5px; }
+#mod-code pre.engine { max-height: 380px; overflow: auto; font-size: 12.5px; }
+.tk .cell-r { fill: var(--surface-2); stroke: var(--border); transition: fill .25s, stroke .25s; }
+.tk .cell-r.active { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.2; }
+.tk .cell-r.done { fill: var(--ok-soft); stroke: var(--ok); }
+.tk .cell-t { font-size: 11.5px; fill: var(--text); }
+.tk .cell-t.dim { fill: var(--muted); }
+.tk .badge { fill: var(--surface); stroke: var(--border); }
+.tk .badge-t { font-size: 10px; fill: var(--muted); font-family: var(--mono); }
+.tk .hdr { font-size: 12.5px; font-weight: 700; fill: var(--muted); }
+.cap-tbl { font-size: 13px; margin-top: 6px; }
+.cap-tbl td, .cap-tbl th { padding: 3px 8px; }
+.sliders { display: grid; grid-template-columns: minmax(120px, auto) 1fr minmax(64px, auto); gap: 6px 12px; align-items: center; font-size: 14px; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+svg.chart { width: 100%; height: auto; display: block; }
+svg.chart text { font-size: 11px; fill: var(--muted); font-family: var(--mono); }
+svg.chart .grid { stroke: var(--border); }
+svg.chart .b-before { fill: var(--bad); }
+svg.chart .b-after { fill: var(--ok); }
+svg.chart .b-on { fill: var(--warn); }
+svg.chart .budget { stroke: var(--violet); stroke-dasharray: 5 4; stroke-width: 1.5; }
+svg.chart .budget-t { fill: var(--violet); }
+.chart-lbl { font-size: 13px; font-weight: 700; margin: 8px 0 2px; }
+.diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.diff .log { max-height: 260px; font-size: 12px; padding: 6px 8px; white-space: pre; }
+.diff .log div { padding: 0 4px; border-radius: 3px; }
+.diff .log div.same { color: var(--muted); }
+.diff .log div.bad { background: var(--bad-soft); color: var(--bad); }
+.diff .log div.first { outline: 2px solid var(--bad); }
+.diff h5 { margin: 4px 0; font-size: 13px; }
+@media (max-width: 600px) { .diff { grid-template-columns: 1fr; } }
+.dd-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 14px; }
+@media (max-width: 780px) { .dd-grid { grid-template-columns: 1fr; } }
+textarea.json { width: 100%; min-height: 420px; font-family: var(--mono); font-size: 12px; line-height: 1.45; resize: vertical; }
+.msg { font-size: 13.5px; padding: 6px 10px; border-radius: 6px; margin: 6px 0; white-space: pre-wrap; }
+.msg.ok { background: var(--ok-soft); color: var(--ok); }
+.msg.bad { background: var(--bad-soft); color: var(--bad); }
+svg.village { width: 100%; height: auto; display: block; border-radius: 8px; }
+svg.village .ground { fill: var(--surface-2); }
+svg.village .gl { stroke: var(--border); stroke-width: .5; }
+svg.village .obj { fill: var(--teal-soft); stroke: var(--teal); }
+svg.village .obj-t { font-size: 9px; fill: var(--teal); }
+svg.village .ag-t { font-size: 10px; font-weight: 700; fill: var(--bg); }
+svg.village .ag-l { font-size: 8.5px; fill: var(--text); }
+svg.village .wolf { fill: var(--bad); }
+svg.village .wolf-r { fill: none; stroke: var(--bad); stroke-dasharray: 4 3; }
+.ag-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; margin-top: 8px; font-size: 12.5px; }
+.ag-list .ag { background: var(--surface-2); border-radius: 6px; padding: 5px 8px; }
+.ag-list .ag b { display: block; }
+.ag-list .bar { height: 6px; margin: 2px 0; }
+.ag-list .cur { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mono { font-family: var(--mono); }
+pre.sketch { border-left: 4px solid var(--violet); font-size: 13px; }
+pre.sketch::before { content: "확장 스케치 (uai.js에 없음)"; display: block; font-size: 11px; color: var(--violet); margin-bottom: 6px; }
+</style>
+</head>
+<body data-chapter="09">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">엔진 · Chapter 09</span>
+    <h1>시뮬레이션 엔진 아키텍처</h1>
+    <p class="lead">지금까지 커브, 결합, 선택, 관성, 욕구, 대상 평가를 부품 단위로 만들었다. 이 장은 그 부품들이 <code>assets/uai.js</code> 안에서 어떻게 조립되어 "살아 있는 마을"이 되는지 해부한다. 루프의 순서, 결정과 실행의 경계, 부하 분산, 재현성, 데이터 주도 설계처럼 코드 한 줄로는 안 보이지만 엔진의 성패를 가르는 결정들이 주제다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li><code>uai.js</code>의 모듈 의존 구조를 그리고, 각 모듈이 어느 장에서 왜 생겼는지 설명한다.</li>
+      <li><code>World.tick</code>의 세 단계(욕구 감소 → 결정 → 실행)와 주민 단위 순차 처리가 만드는 순서 효과를 설명한다.</li>
+      <li>Reasoner(평가)와 <code>action.run</code>(실행)을 분리한 이유를 Merrill, Côté, Dragon Age: Inquisition의 구조와 비교한다.</li>
+      <li><code>thinkEvery</code>·<code>thinkOffset</code>으로 결정 부하를 tick에 나누는 time-slicing을 계산하고, 실제 평가 비용을 측정한다.</li>
+      <li>시드 고정 RNG로 시뮬레이션을 재현하고, 재현성을 깨는 흔한 실수를 찾아낸다.</li>
+      <li>행동을 JSON 데이터로 정의하고 실행 중에 교체(핫 리로드)하며, 데이터와 실행 코드 사이의 계약을 이해한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>UAI.World</code> <code>World.tick()</code> <code>World.think()</code> <code>World.act()</code> <code>thinkEvery</code> <code>thinkOffset</code> <code>UAI.rng(seed)</code> — 부품을 하나의 루프로 묶는 "몸통". 새 수학은 없고, 순서·주기·경계가 전부다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">uai.js 해부: 모듈 지도</a></li>
+    <li><a href="#s2">시뮬레이션 루프: World.tick의 세 단계</a></li>
+    <li><a href="#s3">결정과 실행의 분리</a></li>
+    <li><a href="#s4">스케줄링과 성능: time-slicing</a></li>
+    <li><a href="#s5">결정론과 재현성</a></li>
+    <li><a href="#s6">데이터 주도 설계와 핫 리로드</a></li>
+    <li><a href="#s7">확장 포인트: 실제 엔진으로 가는 길</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. uai.js 해부: 모듈 지도</h2>
+    <p><code>uai.js</code>는 400줄이 안 되는 파일이지만 층이 분명하다. 맨 아래에는 상태가 없는 순수 함수(커브, 결합, 선택, 난수)가 있고, 가운데에는 그 함수들을 "행동 목록"에 적용하는 <code>Reasoner</code>가 있으며, 맨 위에는 시간과 공간과 주민을 가진 <code>World</code>가 있다. 화살표는 "호출한다 / 사용한다"의 방향이다. 아래층은 위층을 모른다. 이 한 방향 의존이 엔진을 테스트 가능하게 만든다. <code>UAI.curve</code>는 월드 없이 node에서 바로 검증할 수 있고, <code>Reasoner</code>는 가짜 agent 객체 하나로 돌려 볼 수 있다.</p>
+
+    <div class="widget">
+      <div class="w-title">모듈 지도: 블록을 눌러 실제 코드 보기</div>
+      <div class="w-desc">각 블록을 클릭(또는 Tab 후 Enter)하면 해당 부분의 <code>uai.js</code> 원문 발췌와, 그 부품을 처음 다룬 장으로 가는 링크가 나온다. 실선은 호출, 점선은 데이터 전달이다.</div>
+      <div class="stage">
+      <svg id="modmap" class="diagram mod-map" viewBox="0 0 700 430" role="img" aria-label="uai.js 모듈 의존 도식" style="min-width:560px">
+        <defs>
+          <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <text x="8" y="18" class="sub">층 3: 세계</text>
+        <text x="8" y="196" class="sub">층 2: 추론</text>
+        <text x="8" y="318" class="sub">층 1: 순수 함수</text>
+        <line x1="8" y1="182" x2="692" y2="182" style="stroke:var(--border);stroke-dasharray:2 4"/>
+        <line x1="8" y1="304" x2="692" y2="304" style="stroke:var(--border);stroke-dasharray:2 4"/>
+
+        <g class="mod" data-mod="makeHamlet" tabindex="0"><rect x="270" y="24" width="160" height="48" rx="8"/><text class="t" x="350" y="45" text-anchor="middle">makeHamlet</text><text class="sub" x="350" y="62" text-anchor="middle">기본 마을 조립 · 12장</text></g>
+        <g class="mod" data-mod="World" tabindex="0"><rect x="210" y="100" width="280" height="56" rx="8"/><text class="t" x="350" y="124" text-anchor="middle">World</text><text class="sub" x="350" y="142" text-anchor="middle">tick · think · act · rng · 시간 · 09장</text></g>
+
+        <g class="mod" data-mod="Reasoner" tabindex="0"><rect x="70" y="206" width="250" height="56" rx="8"/><text class="t" x="195" y="230" text-anchor="middle">Reasoner</text><text class="sub" x="195" y="248" text-anchor="middle">evaluate · decide · 04·06·08장</text></g>
+        <g class="mod" data-mod="hamletActions" tabindex="0"><rect x="400" y="206" width="250" height="56" rx="8"/><text class="t" x="525" y="230" text-anchor="middle">hamletActions</text><text class="sub" x="525" y="248" text-anchor="middle">행동 정의 + run · 07·08장</text></g>
+
+        <g class="mod" data-mod="curve" tabindex="0"><rect x="20" y="326" width="125" height="52" rx="8"/><text class="t" x="82" y="348" text-anchor="middle">curve</text><text class="sub" x="82" y="365" text-anchor="middle">normalize · 03장</text></g>
+        <g class="mod" data-mod="combine" tabindex="0"><rect x="155" y="326" width="125" height="52" rx="8"/><text class="t" x="217" y="348" text-anchor="middle">combine</text><text class="sub" x="217" y="365" text-anchor="middle">compensate · 04장</text></g>
+        <g class="mod" data-mod="select" tabindex="0"><rect x="290" y="326" width="115" height="52" rx="8"/><text class="t" x="347" y="348" text-anchor="middle">select</text><text class="sub" x="347" y="365" text-anchor="middle">dual · 05장</text></g>
+        <g class="mod" data-mod="rng" tabindex="0"><rect x="415" y="326" width="105" height="52" rx="8"/><text class="t" x="467" y="348" text-anchor="middle">rng</text><text class="sub" x="467" y="365" text-anchor="middle">mulberry32 · 05장</text></g>
+        <g class="mod" data-mod="adValue" tabindex="0"><rect x="530" y="326" width="150" height="52" rx="8"/><text class="t" x="605" y="348" text-anchor="middle">adValue</text><text class="sub" x="605" y="365" text-anchor="middle">광고 가치 · 07장</text></g>
+
+        <!-- 호출 화살표 -->
+        <line class="arr" x1="350" y1="72" x2="350" y2="98" marker-end="url(#am)"/>
+        <line class="arr" x1="290" y1="156" x2="230" y2="204" marker-end="url(#am)"/>
+        <line class="arr" x1="410" y1="156" x2="480" y2="204" marker-end="url(#am)"/>
+        <path class="arr" d="M480,156 C560,175 690,250 680,300 L520,300 L490,324" marker-end="url(#am)"/>
+        <line class="arr" x1="120" y1="262" x2="90" y2="324" marker-end="url(#am)"/>
+        <line class="arr" x1="195" y1="262" x2="212" y2="324" marker-end="url(#am)"/>
+        <line class="arr" x1="270" y1="262" x2="330" y2="324" marker-end="url(#am)"/>
+        <line class="arr" x1="405" y1="352" x2="413" y2="352" marker-end="url(#am)"/>
+        <line class="arr" x1="560" y1="262" x2="595" y2="324" marker-end="url(#am)"/>
+        <path class="arr" d="M605,378 C605,420 90,420 84,380" marker-end="url(#am)"/>
+        <!-- 데이터 -->
+        <line class="arr data" x1="398" y1="234" x2="324" y2="234" marker-end="url(#am)"/>
+        <text x="361" y="226" text-anchor="middle" class="sub">행동 배열</text>
+        <text x="600" y="296" class="sub" text-anchor="middle">world.rng (wander)</text>
+        <text x="350" y="414" text-anchor="middle" class="sub">adValue → UAI.curve(NEED_CURVE[n])</text>
+      </svg>
+      </div>
+      <div class="mod-info" id="mod-info"></div>
+      <div id="mod-code">
+<pre class="engine" data-mod="makeHamlet" hidden><code>  // 기본 마을 생성
+  UAI.makeHamlet = function (opt) {
+    const w = new World(opt);
+    [["bakery", 4, 3], ["farm", 2, 12], ["house", 20, 2], ["house", 21, 13], ["bench", 11, 8], ["tavern", 15, 9], ["well", 9, 4], ["stage", 13, 13]]
+      .forEach(([t, x, y]) =&gt; w.addObject(t, x, y));
+    const names = (opt &amp;&amp; opt.names) || ["아리", "보람", "찬", "두리", "은솔", "파랑"];
+    names.forEach((n, i) =&gt; w.addAgent(n, 3 + ((i * 5) % 18), 2 + ((i * 3) % 12)));
+    return w;
+  };</code></pre>
+<pre class="engine" data-mod="World" hidden><code>  class World {
+    constructor(opt) {
+      opt = opt || {};
+      this.w = opt.w || 24; this.h = opt.h || 16;
+      this.rng = UAI.rng(opt.seed || 7);
+      this.time = 0; // 게임 시간(분)
+      this.dt = opt.dt || 1; // tick당 분
+      this.objects = []; this.agents = []; this.log = [];
+      this.thinkEvery = opt.thinkEvery || 5; // 바쁠 때 몇 tick마다 인터럽트 검사를 할지 (09장 time-slicing)
+      this.threat = null; // 늑대 {x,y,until}
+      this.tickCount = 0;
+      this.reasoner = opt.reasoner || new Reasoner(UAI.hamletActions(opt), opt.reasonerOpt || { combine: "compensated", strategy: "dual", pct: 0.15, inertia: 0.1 });
+    }</code></pre>
+<pre class="engine" data-mod="Reasoner" hidden><code>  // ───────────────────────── 5. Reasoner (04·06·08장) ─────────────────────────
+  // action = {
+  //   id, label, weight=1, rank=0,
+  //   targets?: (ctx) =&gt; [target, ...]           // 08장: 행동 × 대상 평가
+  //   considerations: [{ name, input: (ctx) =&gt; raw, lo=0, hi=1, curve }],
+  //   cooldown?: 초, duration?: 초
+  // }
+  // ctx = { agent, world, target }
+  class Reasoner {
+    constructor(actions, opt) {
+      this.actions = actions.map(a =&gt; Object.assign({ weight: 1, rank: 0 }, a, {
+        considerations: (a.considerations || []).map(c =&gt; Object.assign({ lo: 0, hi: 1 }, c, { fn: UAI.curve(c.curve || "선형 증가") })),
+      }));
+      this.opt = Object.assign({ combine: "compensated", strategy: "best", inertia: 0, pct: 0.1, n: 3 }, opt);
+    }
+    // 모든 (행동, 대상) 쌍을 점수화. 점수 0이 되는 순간 나머지 consideration은 생략(early-out)
+    evaluate(agent, world) {
+      const rows = [];
+      const now = world ? world.time : 0;
+      for (const a of this.actions) {
+        const targets = a.targets ? a.targets({ agent, world }) : [null];
+        for (const target of targets) {
+          const ctx = { agent, world, target };
+          const parts = [];
+          let alive = true;
+          const cdLeft = a.cooldown &amp;&amp; agent.lastUsed &amp;&amp; agent.lastUsed[a.id] != null
+            ? a.cooldown - (now - agent.lastUsed[a.id]) : 0;
+          if (cdLeft &gt; 0) alive = false;
+          for (const c of a.considerations) {
+            if (!alive) { parts.push({ name: c.name, raw: null, x: null, y: null, skipped: true }); continue; }
+            const raw = c.input(ctx);
+            const x = UAI.normalize(raw, c.lo, c.hi);
+            const y = c.fn(x);
+            parts.push({ name: c.name, raw, x, y });
+            if (y &lt;= 0) alive = false;
+          }
+          const ys = parts.filter(p =&gt; !p.skipped).map(p =&gt; p.y);
+          let score = alive ? UAI.combine(ys, this.opt.combine) * a.weight : 0;
+          const cur = agent.current;
+          const isCurrent = cur &amp;&amp; cur.action === a.id &amp;&amp; cur.target === target;
+          if (isCurrent &amp;&amp; score &gt; 0) score += this.opt.inertia;
+          rows.push({ action: a, target, parts, score, rank: a.rank, isCurrent, cooldown: Math.max(0, cdLeft) });
+        }
+      }
+      return rows;
+    }
+    decide(agent, world, rng) {
+      const rows = this.evaluate(agent, world);
+      const res = UAI.select(rows, this.opt, rng);
+      return { rows, chosen: res.chosen, pool: res.pool };
+    }
+  }
+  UAI.Reasoner = Reasoner;</code></pre>
+<pre class="engine" data-mod="hamletActions" hidden><code>  // Hamlet 기본 행동 세트. 욕구 행동은 rank 0, 위협 회피는 rank 10 (dual utility)
+  UAI.hamletActions = function () {
+    const useObject = {
+      id: "use", label: "이용하기", rank: 0,
+      targets: ({ world }) =&gt; world.objects.filter(o =&gt; o.users &lt; o.capacity || false),
+      considerations: [
+        // 광고된 욕구 충족량 × 그 욕구의 긴급도 합 → 0~1 (07장)
+        { name: "광고 가치", input: ({ agent, target }) =&gt; UAI.adValue(agent, target), lo: 0, hi: 1, curve: "선형 증가" },
+        // 거리: 가까울수록 좋다. 너무 멀면 0 근처 (08장)
+        { name: "거리", input: ({ agent, target }) =&gt; Math.abs(agent.x - target.x) + Math.abs(agent.y - target.y), lo: 0, hi: 30, curve: { type: "poly", m: -1, k: 2, b: 1 } },
+        // 이미 사용 중이면 붐빔 감점
+        { name: "혼잡", input: ({ target }) =&gt; target.users / target.capacity, lo: 0, hi: 1, curve: { type: "linear", m: -0.7, b: 1 } },
+      ],
+      duration: null,
+      run(world, a, cur) {
+        const o = cur.target;
+        if (a.x !== o.x || a.y !== o.y) return world.step(a, o.x, o.y);
+        if (!cur.using) { if (o.users &gt;= o.capacity) { a.current = null; return; } o.users++; cur.using = true; cur.until = world.time + o.duration; }
+        for (const n in o.ads) a.needs[n] = Math.min(100, Math.max(0, a.needs[n] + (o.ads[n] / o.duration) * world.dt));
+        if (world.time &gt;= cur.until) { world.release(a); a.lastUsed["use:" + o.id] = world.time; a.current = null; }
+      },
+    };</code></pre>
+<pre class="engine" data-mod="curve" hidden><code>  // bookend 정규화: [lo, hi] 구간을 [0, 1]로. 범위를 벗어나면 끝값에 고정 (GAP3 13장)
+  UAI.normalize = (v, lo, hi) =&gt; (hi === lo ? 0 : clamp01((v - lo) / (hi - lo)));</code></pre>
+<pre class="engine" data-mod="curve" hidden><code>  // spec → (x∈[0,1]) → y∈[0,1]. spec.invert면 입력을 1−x로 뒤집는다
+  UAI.curve = function (spec) {
+    if (typeof spec === "function") return x =&gt; clamp01(spec(x));
+    if (typeof spec === "string") spec = UAI.PRESETS[spec];
+    const f = spec.type === "piecewise" ? piecewise(spec.points) : null;
+    const p = Object.assign({}, DEFAULTS, spec);
+    const g = f || (x =&gt; CURVES[p.type](x, p));
+    return x =&gt; clamp01(g(p.invert ? 1 - x : x));
+  };</code></pre>
+<pre class="engine" data-mod="combine" hidden><code>  // ───────────────────────── 2. 결합 (04장) ─────────────────────────
+  // 곱셈 결합은 consideration이 많을수록 점수가 깎이므로 보정한다 (IAUS make-up value)
+  //   modification = 1 − 1/n,  makeUp = (1 − s)·modification,  s' = s + makeUp·s
+  UAI.compensate = function (s, n) {
+    if (n &lt;= 1) return s;
+    const mod = 1 - 1 / n;
+    return s + (1 - s) * mod * s;
+  };
+  UAI.combine = function (vals, method) {
+    const n = vals.length;
+    if (!n) return 0;
+    switch (method || "product") {
+      case "product": return vals.reduce((a, v) =&gt; a * v, 1);
+      case "compensated": return vals.reduce((a, v) =&gt; a * UAI.compensate(v, n), 1);
+      case "mean": return vals.reduce((a, v) =&gt; a + v, 0) / n;
+      case "min": return Math.min(...vals);
+      case "max": return Math.max(...vals);
+      case "geomean": return Math.pow(vals.reduce((a, v) =&gt; a * v, 1), 1 / n);
+    }
+    throw new Error("unknown combine: " + method);
+  };</code></pre>
+<pre class="engine" data-mod="select" hidden><code>  // ───────────────────────── 4. 선택 (05장) ─────────────────────────
+  // cands: [{score, rank?}, ...]
+  // opt.strategy: "best" | "weighted" | "topN" | "topPct" | "dual"
+  //   topN: 상위 n개 중 가중 랜덤 / topPct: 최고점의 (1−pct) 이상만 가중 랜덤
+  //   dual: 최고 rank만 남기고 → (pct 있으면) 최고 weight 대비 필터 → 가중 랜덤 (GAP2 3장)
+  // 반환: { chosen, pool: [{cand, p}] }  — p는 선택 확률(위젯 시각화용)
+  UAI.select = function (cands, opt, rng) {
+    opt = opt || {};
+    const r = rng ? rng.next : Math.random;
+    let pool = cands.filter(c =&gt; c.score &gt; 0);
+    if (!pool.length) return { chosen: null, pool: [] };
+    const st = opt.strategy || "best";
+    if (st === "dual") {
+      const top = Math.max(...pool.map(c =&gt; c.rank || 0));
+      pool = pool.filter(c =&gt; (c.rank || 0) === top);
+    }
+    const maxS = Math.max(...pool.map(c =&gt; c.score));
+    if (st === "best") {
+      const best = pool.find(c =&gt; c.score === maxS);
+      return { chosen: best, pool: [{ cand: best, p: 1 }] };
+    }
+    if (st === "topN") pool = [...pool].sort((a, b) =&gt; b.score - a.score).slice(0, opt.n || 3);
+    if (st === "topPct" || (st === "dual" &amp;&amp; opt.pct)) pool = pool.filter(c =&gt; c.score &gt;= maxS * (1 - (opt.pct || 0.1)));
+    const sum = pool.reduce((a, c) =&gt; a + c.score, 0);
+    const probs = pool.map(c =&gt; ({ cand: c, p: c.score / sum }));
+    let x = r() * sum;
+    for (const c of pool) { x -= c.score; if (x &lt;= 0) return { chosen: c, pool: probs }; }
+    return { chosen: pool[pool.length - 1], pool: probs };
+  };</code></pre>
+<pre class="engine" data-mod="rng" hidden><code>  // ───────────────────────── 3. 난수 (05장) ─────────────────────────
+  // 시드 고정 RNG(mulberry32): 같은 시드면 같은 시뮬레이션 → 재현 가능한 디버깅 (09장)
+  UAI.rng = function (seed) {
+    let a = seed &gt;&gt;&gt; 0 || 1;
+    const next = () =&gt; {
+      a = (a + 0x6d2b79f5) &gt;&gt;&gt; 0;
+      let t = a;
+      t = Math.imul(t ^ (t &gt;&gt;&gt; 15), t | 1);
+      t ^= t + Math.imul(t ^ (t &gt;&gt;&gt; 7), t | 61);
+      return ((t ^ (t &gt;&gt;&gt; 14)) &gt;&gt;&gt; 0) / 4294967296;
+    };
+    return {
+      next, seed,
+      range: (lo, hi) =&gt; lo + (hi - lo) * next(),
+      int: n =&gt; Math.floor(next() * n),
+      pick: arr =&gt; arr[Math.floor(next() * arr.length)],
+    };
+  };</code></pre>
+<pre class="engine" data-mod="adValue" hidden><code>  // 오브젝트 광고 가치: Σ (충족량/100 × 그 욕구의 긴급도 × 성격 가중치), 0~1로 제한
+  UAI.adValue = function (agent, obj) {
+    let v = 0;
+    for (const n in obj.ads) {
+      const urgency = UAI.curve(UAI.NEED_CURVE[n])(agent.needs[n] / 100);
+      const room = Math.min(obj.ads[n], 100 - agent.needs[n]); // 한계효용: 이미 찬 만큼은 의미 없음
+      v += (Math.max(room, Math.min(0, obj.ads[n])) / 100) * urgency * (agent.traits[n] || 1);
+    }
+    return clamp01(v);
+  };</code></pre>
+      </div>
+    </div>
+
+    <p>지도를 보면 몇 가지 설계 결정이 읽힌다.</p>
+    <ul>
+      <li><b>Reasoner는 World를 모른다.</b> <code>evaluate(agent, world)</code>는 world를 인자로 받아 consideration의 <code>input(ctx)</code>에 넘길 뿐, 월드의 내부 구조를 직접 쓰지 않는다. 그래서 같은 Reasoner를 늑대 무리나 상인 NPC에도 쓸 수 있다. 월드를 아는 것은 행동 정의(<code>hamletActions</code>)뿐이다.</li>
+      <li><b>행동은 "데이터 + 실행 함수"의 묶음이다.</b> considerations·rank·weight는 점수를 만드는 데이터이고, <code>run</code>은 월드를 바꾸는 코드다. Reasoner는 <code>run</code>을 한 번도 호출하지 않는다(3절).</li>
+      <li><b>난수는 월드가 소유한다.</b> <code>select</code>는 rng를 인자로 받을 뿐 직접 만들지 않는다. 한 시뮬레이션의 모든 무작위성이 <code>world.rng</code> 한 줄기에서 나오므로 시드 하나로 전체가 재현된다(5절).</li>
+      <li><b>점선 화살표 하나가 확장의 입구다.</b> Reasoner는 행동 배열을 생성자에서 받는다. 이 배열을 JS 코드 대신 JSON에서 만들면 데이터 주도 엔진이 된다(6절).</li>
+    </ul>
+
+    <div class="callout tip"><span class="title">각 장이 엔진에 남긴 것</span>
+    <a class="xref" href="03-response-curves.html">03장</a>에서 <code>curve</code>/<code>normalize</code>, <a class="xref" href="04-considerations.html">04장</a>에서 <code>combine</code>/<code>compensate</code>와 Reasoner의 뼈대, <a class="xref" href="05-action-selection.html">05장</a>에서 <code>select</code>/<code>rng</code>, <a class="xref" href="06-time-inertia.html">06장</a>에서 <code>inertia</code>·<code>cooldown</code>·<code>think(interruptOnly)</code>, <a class="xref" href="07-needs-smart-objects.html">07장</a>에서 욕구와 스마트 오브젝트, <a class="xref" href="08-context-targets.html">08장</a>에서 <code>targets</code>가 생겼다. 이 장은 이들을 움직이게 하는 <code>World.tick</code>을 다룬다.</div>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. 시뮬레이션 루프: World.tick의 세 단계</h2>
+    <p>게임 AI 문헌은 에이전트의 한 주기를 흔히 <b>Sense–Think–Act</b>로 나눈다. 행동 선택 알고리즘(FSM, BT, 효용, GOAP, HTN)은 이 중 Think를 맡는 여러 선택지이고, 정답은 게임과 플랫폼에 따라 다르다(Dawe 외, GAP1 4장). <code>uai.js</code>의 한 tick은 이렇게 생겼다.</p>
+<pre class="engine"><code>    tick() {
+      this.time += this.dt; this.tickCount++;
+      if (this.threat &amp;&amp; this.time &gt;= this.threat.until) this.threat = null;
+      for (const a of this.agents) {
+        // 1) 욕구 감소
+        for (const n of UAI.NEEDS) a.needs[n] = Math.max(0, a.needs[n] - UAI.NEED_DECAY[n] * this.dt * (n === "energy" &amp;&amp; this.hour() &gt;= 22 ? 1.8 : 1));
+        // 2) 결정 (06장, GAP1 11장): 숙고는 할 일이 끝났을 때만, 반응(인터럽트)은 주기적으로 검사
+        const due = (this.tickCount + a.thinkOffset) % this.thinkEvery === 0;
+        if (!a.current) this.think(a);
+        else if (due) this.think(a, true);
+        // 3) 실행
+        this.act(a);
+      }
+    }</code></pre>
+    <p>세 단계를 Sense–Think–Act에 대응시키면 다음과 같다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>단계</th><th>코드</th><th>Sense–Think–Act</th><th>무엇을 바꾸나</th></tr>
+      <tr><td>① 욕구 감소</td><td><code>a.needs[n] -= NEED_DECAY[n]·dt</code></td><td>(세계 갱신) 내부 상태의 시간 경과</td><td>자기 욕구만</td></tr>
+      <tr><td>② 결정</td><td><code>this.think(a)</code> / <code>this.think(a, true)</code></td><td>Sense + Think. consideration의 <code>input(ctx)</code>가 필요할 때 월드를 직접 읽는다(pull 방식 감지)</td><td><code>a.current</code>, 로그, RNG 상태</td></tr>
+      <tr><td>③ 실행</td><td><code>this.act(a)</code> → <code>action.run(world, a, cur)</code></td><td>Act</td><td>위치, 욕구, 오브젝트 <code>users</code></td></tr>
+    </table></div>
+
+    <h3>2.1 고정 시간 간격</h3>
+    <p><code>dt</code>는 tick당 흐르는 <b>게임 분</b>이다(기본 1). 욕구 감소량(<code>NEED_DECAY</code>는 분당 값)도, 오브젝트 이용 시간(<code>duration</code>, 분)도, 쿨다운도 전부 게임 시간으로 적혀 있다. 화면 프레임과는 무관하다. 브라우저가 60fps든 20fps든, 1초에 tick을 몇 번 돌릴지는 위젯(호스트)이 정한다. 이렇게 하면 같은 입력에 같은 결과가 나오고(5절), 배속 재생은 "프레임당 tick 수"만 바꾸면 된다.</p>
+<pre class="sketch"><code>// 호스트 쪽 루프의 전형: 누적기(accumulator)로 실시간과 게임 시간을 분리
+let acc = 0;
+function frame(realMs) {
+  acc += realMs * speed;              // 배속
+  while (acc &gt;= MS_PER_TICK) { world.tick(); acc -= MS_PER_TICK; }
+  render(world);                      // 렌더는 시뮬레이션 상태를 읽기만 한다
+}</code></pre>
+    <p>가변 <code>dt</code>(프레임 시간을 그대로 넘기기)를 쓰면 어떻게 될까? 욕구 감소처럼 선형인 부분은 괜찮지만, <code>step()</code>은 tick당 정확히 한 칸 움직이고 <code>thinkEvery</code>는 tick 수로 센다. 프레임이 느린 기기에서는 같은 게임 시간 동안 결정 횟수가 줄어 행동이 달라진다. 결정 주기를 tick에 묶은 엔진이라면 dt는 고정해야 한다.</p>
+
+    <h3>2.2 주민 단위 순차 처리와 순서 효과</h3>
+    <p>코드를 다시 보면 바깥 루프가 <b>주민</b>, 안쪽이 <b>단계</b>다. 즉 "모든 주민의 욕구 감소 → 모든 주민의 결정 → 모든 주민의 실행"이 아니라, 아리의 ①②③이 끝난 다음 보람의 ①②③이 돈다. 결과적으로 <b>보람은 아리가 이미 한 칸 움직이고 빵집 자리를 차지한 뒤의 세계를 보고 결정한다.</b> 아래 애니메이션으로 실제 한 tick을 따라가 보자.</p>
+
+    <div class="widget">
+      <div class="w-title">한 tick 안에서 주민 3명이 처리되는 순서</div>
+      <div class="w-desc">아리·보람·찬 3명만 있는 마을(시드 11)을 실제로 돌리다가, 한 tick 안에 "한가해서 결정", "인터럽트 검사", "검사 생략"이 모두 일어나는 순간을 골랐다. 숫자는 엔진 메서드(<code>think</code>, <code>act</code>)를 그대로 호출해 얻은 값이다.</div>
+      <div class="controls"><button class="btn" id="tk-next">다른 tick 고르기</button><span id="tk-info" class="mono" style="font-size:13px"></span></div>
+      <div class="stage">
+        <svg id="tk-svg" class="diagram tk" viewBox="0 0 770 245" role="img" aria-label="tick 처리 순서" style="min-width:600px"></svg>
+      </div>
+      <div id="tk-box"></div>
+    </div>
+
+    <p>순서 효과는 버그가 아니라 <b>선택</b>이다. 장점은 단순함과 일관성이다. 아리가 마지막 자리를 차지하면 보람은 같은 tick에 그 사실을 본다(빵집이 <code>targets</code> 필터에서 빠진다). 단점은 공정성이다. 배열 앞쪽 주민이 매 tick 먼저 움직이므로, 자리 경쟁에서 체계적으로 유리하다. 실제 엔진이 쓰는 대안은 세 가지다.</p>
+    <ul>
+      <li><b>처리 순서 섞기</b>: 매 tick 시드 RNG로 주민 순서를 섞는다. 공정하고 결정론도 유지된다.</li>
+      <li><b>이중 버퍼</b>: 모든 주민이 "tick 시작 시점의 스냅샷"을 읽고 결정한 뒤, 결과를 한꺼번에 적용한다. 순서 효과가 사라지는 대신 같은 자리에 두 명이 동시에 들어가는 충돌을 따로 풀어야 한다. 7절의 멀티스레드 평가가 이 구조를 쓴다.</li>
+      <li><b>예약(reservation)</b>: 결정 순간에 오브젝트를 예약해 다른 주민의 <code>targets</code>에서 빼 버린다. <code>uai.js</code>는 도착해서야 <code>users++</code>를 하므로 두 명이 같은 빵집을 향해 걸어갈 수 있고, 늦게 온 쪽은 <code>run</code> 안에서 포기한다(3절).</li>
+    </ul>
+
+    <h3>2.3 언제 생각하나</h3>
+    <p>② 단계는 두 갈래다. 할 일이 없으면(<code>!a.current</code>) <b>즉시</b> 숙고하고, 할 일이 있으면 <code>thinkEvery</code> tick마다 한 번 <b>인터럽트 검사</b>만 한다. 인터럽트 검사는 <code>think(a, true)</code>로, 현재 행동보다 rank가 높은 후보가 나왔을 때만 갈아탄다. 이는 Côté가 말한 반응성(고우선 인터럽트)과 숙고(현재 행동이 끝났을 때 다음 최선)의 분리이고(GAP1 11장), The Sims Medieval이 interaction queue가 비었을 때만 결정했다는 사례와도 같은 발상이다(Graham, GAP1 9장). 자세한 배경은 <a class="xref" href="06-time-inertia.html">06장 시간, 관성, 반응성</a>에 있다.</p>
+<pre class="engine"><code>    // interruptOnly=true: 실행 중인 행동보다 rank가 높은 후보가 생겼을 때만 갈아탄다
+    think(a, interruptOnly) {
+      const res = this.reasoner.decide(a, this, this.rng);
+      a.lastEval = res;
+      const c = res.chosen;
+      if (!c) return;
+      if (a.current &amp;&amp; a.current.action === c.action.id &amp;&amp; a.current.target === c.target) return;
+      if (interruptOnly) {
+        const curAct = this.reasoner.actions.find(x =&gt; x.id === a.current.action);
+        if (c.rank &lt;= curAct.rank) return;
+      }
+      if (a.current &amp;&amp; a.current.using) this.release(a);
+      a.current = { action: c.action.id, target: c.target, label: c.action.label, started: this.time, using: false };
+      a.trace.push({ t: this.time, action: c.action.id, target: c.target &amp;&amp; (c.target.id || c.target.name), score: c.score });
+      if (a.trace.length &gt; 60) a.trace.shift();
+      this.log.push(`[${UAI.clock(this.time)}] ${a.name} → ${c.action.label}${c.target ? " @" + (c.target.label || c.target.name) : ""} (${c.score.toFixed(2)})`);
+      if (this.log.length &gt; 200) this.log.shift();
+    }</code></pre>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. 결정과 실행의 분리</h2>
+    <p><code>uai.js</code>에서 "무엇을 할지"와 "어떻게 할지"는 다른 코드가 맡는다. Reasoner는 점수표(<code>rows</code>)를 만들어 돌려줄 뿐 월드를 바꾸지 않는다. 월드를 바꾸는 것은 행동마다 붙은 <code>run(world, agent, cur)</code>이고, 이를 부르는 곳은 <code>World.act</code> 한 군데다.</p>
+<pre class="engine"><code>    act(a) {
+      const cur = a.current; if (!cur) return;
+      const act = this.reasoner.actions.find(x =&gt; x.id === cur.action);
+      if (act.run) act.run(this, a, cur);
+    }</code></pre>
+    <p>"이용하기"의 실행부를 보면 실행 계층이 어떤 일을 떠안는지 알 수 있다. 목적지까지 걷기, 도착 시 자리 확인, 이용 중 욕구 회복, 끝나면 자리 반납과 <code>current</code> 비우기. 이 중 어느 것도 점수와는 상관없다.</p>
+<pre class="engine"><code>      run(world, a, cur) {
+        const o = cur.target;
+        if (a.x !== o.x || a.y !== o.y) return world.step(a, o.x, o.y);
+        if (!cur.using) { if (o.users &gt;= o.capacity) { a.current = null; return; } o.users++; cur.using = true; cur.until = world.time + o.duration; }
+        for (const n in o.ads) a.needs[n] = Math.min(100, Math.max(0, a.needs[n] + (o.ads[n] / o.duration) * world.dt));
+        if (world.time &gt;= cur.until) { world.release(a); a.lastUsed["use:" + o.id] = world.time; a.current = null; }
+      },</code></pre>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 700 300" role="img" aria-label="평가 계층과 실행 계층" style="min-width:560px">
+        <defs>
+          <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+          <marker id="a3v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--violet)"/></marker>
+        </defs>
+        <rect x="10" y="10" width="680" height="120" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="22" y="30" font-weight="700" style="fill:var(--accent)">평가 계층 (읽기 전용) — Reasoner.evaluate / decide</text>
+        <rect x="24" y="50" width="130" height="60" rx="8" class="box"/><text x="89" y="76" text-anchor="middle">월드 상태</text><text x="89" y="96" text-anchor="middle" class="muted">needs, 위치, 위협</text>
+        <rect x="190" y="50" width="150" height="60" rx="8" class="box"/><text x="265" y="76" text-anchor="middle">considerations</text><text x="265" y="96" text-anchor="middle" class="muted">input → 정규화 → 커브</text>
+        <rect x="376" y="50" width="130" height="60" rx="8" class="box"/><text x="441" y="76" text-anchor="middle">rows</text><text x="441" y="96" text-anchor="middle" class="muted">(행동, 대상, 점수)</text>
+        <rect x="542" y="50" width="134" height="60" rx="8" class="box"/><text x="609" y="76" text-anchor="middle">select</text><text x="609" y="96" text-anchor="middle" class="muted">rng 소비</text>
+        <line x1="154" y1="80" x2="186" y2="80" class="line" marker-end="url(#a3)"/>
+        <line x1="340" y1="80" x2="372" y2="80" class="line" marker-end="url(#a3)"/>
+        <line x1="506" y1="80" x2="538" y2="80" class="line" marker-end="url(#a3)"/>
+
+        <rect x="230" y="140" width="240" height="40" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="350" y="165" text-anchor="middle" font-weight="700" style="fill:var(--violet)">World.think: 갈아탈까? (rank 규칙)</text>
+        <path d="M609,110 C609,130 520,160 474,160" style="stroke:var(--violet);fill:none" marker-end="url(#a3v)"/>
+
+        <rect x="10" y="190" width="680" height="100" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="22" y="210" font-weight="700" style="fill:var(--ok)">실행 계층 (월드 변경) — World.act → action.run</text>
+        <rect x="24" y="222" width="190" height="56" rx="8" class="box"/><text x="119" y="245" text-anchor="middle">a.current</text><text x="119" y="265" text-anchor="middle" class="muted">{action, target, using}</text>
+        <rect x="250" y="222" width="200" height="56" rx="8" class="box"/><text x="350" y="245" text-anchor="middle">run(world, a, cur)</text><text x="350" y="265" text-anchor="middle" class="muted">걷기 · 이용 · 반납</text>
+        <rect x="486" y="222" width="190" height="56" rx="8" class="box"/><text x="581" y="245" text-anchor="middle">바뀐 월드</text><text x="581" y="265" text-anchor="middle" class="muted">다음 tick의 입력</text>
+        <path d="M300,180 C300,200 160,200 140,220" style="stroke:var(--violet);fill:none" marker-end="url(#a3v)"/>
+        <line x1="214" y1="250" x2="246" y2="250" class="line" marker-end="url(#a3)"/>
+        <line x1="450" y1="250" x2="482" y2="250" class="line" marker-end="url(#a3)"/>
+        <path d="M676,240 C700,200 700,60 680,58" class="line" style="stroke-dasharray:5 4" marker-end="url(#a3)"/>
+      </svg>
+      </div>
+      <figcaption>그림 9-1. 점수를 만드는 계층은 월드를 읽기만 하고, 월드를 바꾸는 것은 실행 계층뿐이다. 둘을 잇는 것은 <code>a.current</code> 하나다.</figcaption>
+    </figure>
+
+    <h3>3.1 왜 나누나</h3>
+    <ul>
+      <li><b>평가는 자주, 실행은 길게.</b> 이용하기 하나가 20~60분(=tick) 동안 이어지는데, 평가는 그 사이에도 주기적으로 돈다. 둘이 한 함수에 섞이면 "평가만 해 보기"가 불가능하다.</li>
+      <li><b>평가는 부작용이 없어야 재사용된다.</b> 디버그 패널(11장)이 "지금 점수표"를 보여 주려면 evaluate를 아무 때나 불러도 월드가 변하지 않아야 한다. 읽기 전용이면 병렬화도 가능하다(7절).</li>
+      <li><b>실행 코드는 행동 수보다 적게.</b> "이용하기" 하나의 <code>run</code>이 빵집·밭·집·벤치·선술집·우물·무대를 전부 처리한다. 점수 규칙은 오브젝트마다 달라도(광고 값), 걸어가서 쓰고 반납하는 절차는 같다.</li>
+    </ul>
+
+    <h3>3.2 문헌 속 같은 분리</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>관점</th><th>uai.js</th><th>Merrill (GAP1 10장)</th><th>Côté (GAP1 11장)</th><th>Dragon Age: Inquisition (GAP3 31장)</th></tr>
+      <tr><td>평가</td><td><code>Reasoner.evaluate</code></td><td><code>Evaluate()</code>에서 비싼 계산, <code>CalculateUtility()</code>는 캐시된 값 반환</td><td>Deliberating 계층 (Action Description 출력)</td><td>Evaluation tree: 점수 노드를 지날 때마다 가산</td></tr>
+      <tr><td>둘을 잇는 곳</td><td><code>World.think</code> (rank 인터럽트 규칙)</td><td>Utility Selector: 점수 내림차순으로 자식 Execute, 실패하면 다음 자식</td><td>Sequencing 계층 (Action Selector)</td><td>최고점 snippet의 대상·어빌리티를 실행 트리에 전달</td></tr>
+      <tr><td>실행</td><td><code>action.run</code></td><td>BT 노드 실행 (Busy / Done / Failed)</td><td>Controlling 계층: 행동 풀, 각 행동은 자체 반응성</td><td>Execution tree: 이동 → 범위 필터 → Execute Ability. 펀치·찌르기·물기에 재사용</td></tr>
+      <tr><td>실행 중 재평가</td><td><code>thinkEvery</code>마다 인터럽트 검사</td><td>실행 중 병렬 평가, 결과가 바뀔 때만 개입</td><td>반응 모듈이 고우선 인터럽트</td><td>실행 중에도 재평가 계속</td></tr>
+    </table></div>
+    <p>Merrill의 분리는 성능 쪽이다. 서브트리를 펼쳐 효용을 전파하면 비용과 메모리 접근이 커지므로, 리프에서 주기적으로 계산해 캐시하고 별도 패스로 분산하라고 권한다. <code>uai.js</code>에는 캐시가 없다. 매 평가가 처음부터 다시 계산한다. 4절의 벤치마크가 그 대가를 보여 준다.</p>
+    <p>Côté의 3계층은 구조 쪽이다. 숙고(다음에 무엇을)와 반응(지금 당장 피해)을 하나의 결정 모델로 합치면 트리거와 목표가 충돌한다. <code>uai.js</code>는 한 Reasoner 안에 rank로 두 성격을 섞었지만, "한가할 때만 숙고, 바쁠 때는 rank가 높은 것만 끼어들기"라는 <code>think</code>의 두 갈래가 Sequencing 역할을 한다. 그리고 <code>flee.run</code>이 위협이 사라지면 스스로 <code>current</code>를 비우는 것처럼, 실행부 안에 작은 반응성이 들어 있다.</p>
+
+    <h3>3.3 평가와 실행 사이의 계약</h3>
+    <p>Dragon Age: Inquisition은 이 분리에 계약을 붙였다. 실행 트리는 범용이라 맥락을 모르므로, <b>실행이 불가능한 조건(예: 대상 사망)은 평가 트리가 미리 막아야 한다</b>(Hanlon·Watts, GAP3 31장). <code>uai.js</code>에서는 "이용하기"의 <code>targets</code>가 꽉 찬 오브젝트를 걸러 내는 것이 이 계약이다. 하지만 평가와 실행 사이에는 시간이 흐른다. 걸어가는 동안 다른 주민이 자리를 채울 수 있다. 그래서 <code>run</code>은 도착 순간 <code>o.users &gt;= o.capacity</code>를 다시 확인하고, 안 되면 <code>a.current = null</code>로 포기한다. 다음 tick에 한가해진 주민이 즉시 다시 생각한다.</p>
+    <div class="callout warn"><span class="title">실패 처리의 차이</span>Merrill의 Utility Selector는 최고점 자식이 실패하면 같은 정렬 목록의 다음 자식을 곧바로 시도한다. <code>uai.js</code>는 목록을 버리고 다음 tick에 처음부터 다시 평가한다. 구현은 단순하지만 한 tick을 잃는다. 또 같은 실패가 반복될 수 있다. 꽉 찬 빵집 앞에 두 명이 서 있으면, 자리가 나는 순간 둘 중 배열 앞쪽 주민이 가져간다(2.2절의 순서 효과).</div>
+    <p>6절에서는 이 계약이 데이터 주도 설계에서 어떻게 깨지는지 직접 볼 것이다. 데이터(점수)는 디자이너가 바꿀 수 있지만 실행 코드에 박힌 가정은 그대로 남는다.</p>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 스케줄링과 성능: time-slicing</h2>
+    <p>주민 6명이면 매 tick 전원이 생각해도 문제없다. 하지만 마을이 1,000명이 되면 이야기가 다르다. 평가 한 번의 비용은 "행동 × 대상 × consideration" 수에 비례하고, 대상에 다른 주민이 들어가는 "수다 떨기"는 주민 수에 비례하므로, 전원 평가는 <b>N² 작업</b>이 된다.</p>
+    <p><code>uai.js</code>의 대책은 두 줄이다. 바쁜 주민은 <code>thinkEvery</code> tick마다 한 번만 인터럽트 검사를 하고, 그 "한 번"이 언제인지를 주민마다 다르게(<code>thinkOffset</code> = 추가된 순서) 둔다.</p>
+    <div class="formula">due = (tickCount + thinkOffset) mod thinkEvery == 0</div>
+    <p>offset이 없으면 모든 주민이 같은 tick에 생각한다. 총 작업량은 같지만 5 tick 중 한 tick에 몰려 <b>스파이크</b>가 된다. 프레임 예산은 평균이 아니라 최악의 tick이 깨뜨린다. offset을 나누면 각 tick에 약 N/thinkEvery명씩 고르게 퍼진다. Merrill이 말한 "별도 패스로 분산"이 바로 이것이다.</p>
+
+    <div class="widget">
+      <div class="w-title">tick당 평가 횟수: 분산 전과 후</div>
+      <div class="w-desc">바쁜 주민의 인터럽트 검사만 time-slicing 대상이다. 한가한 주민은 매 tick 즉시 생각하므로(<code>if (!a.current)</code>) 두 그래프 모두에 바닥값으로 더해진다. "벤치마크"를 돌리면 실측 비용으로 ms를 환산하고 16.7ms(60fps) 예산선을 그린다.</div>
+      <div class="sliders">
+        <label for="sc-n">주민 수 N</label><input type="range" id="sc-n" min="10" max="2000" step="10" value="600"><output id="sc-n-o">600</output>
+        <label for="sc-e">thinkEvery</label><input type="range" id="sc-e" min="1" max="20" step="1" value="5"><output id="sc-e-o">5</output>
+        <label for="sc-i">한가한 주민 비율</label><input type="range" id="sc-i" min="0" max="50" step="1" value="10"><output id="sc-i-o">10%</output>
+      </div>
+      <div class="controls"><button class="btn primary" id="sc-play">▶ 재생</button><button class="btn" id="sc-bench">벤치마크: evaluate를 N번 실행</button><span id="sc-bench-o" class="mono" style="font-size:13px"></span></div>
+      <div class="chart-lbl c-bad">분산 전: thinkOffset = 0 (모두 같은 tick)</div>
+      <svg id="sc-before" class="chart" viewBox="0 0 640 170" role="img" aria-label="분산 전 tick당 평가 수"></svg>
+      <div class="chart-lbl c-ok">분산 후: thinkOffset = 주민 번호</div>
+      <svg id="sc-after" class="chart" viewBox="0 0 640 170" role="img" aria-label="분산 후 tick당 평가 수"></svg>
+      <div class="stat-row" id="sc-stats"></div>
+    </div>
+
+    <h3>4.1 측정에서 읽어야 할 것</h3>
+    <ul>
+      <li><b>평가 1회 비용은 N에 따라 커진다.</b> 벤치마크 결과의 "평가한 행 수"를 보면 주민 1명당 (오브젝트 8 + 다른 주민 N−1 + 산책 1 + 도망 1)행이다. N=2,000이면 대부분이 수다 상대 후보다. time-slicing은 상수 배(÷thinkEvery)만 줄일 뿐 N²을 없애지 못한다. 근본 해법은 <b>후보 자체를 줄이는 것</b>, 즉 <code>targets</code>에서 공간 질의(반경 12칸 이내만)로 미리 걸러 내는 것이다. "상대와 거리" consideration이 어차피 12칸 밖을 0점으로 만들기 때문에 결과는 같고 비용만 준다.</li>
+      <li><b>early-out은 순서가 중요하다.</b> Reasoner는 한 consideration이 0이 되면 나머지를 건너뛴다. Lewis는 그래서 싼 consideration을 앞에, 비싼 레이캐스트 시야 검사를 맨 끝에 두었고, 내비메시 경로 검사는 비용 때문에 아예 생략했다(GAP3 13장). <code>hamletActions</code>의 "이용하기"는 가장 비싼 <code>adValue</code>가 맨 앞이다. 거리 커브가 0이 되려면 30칸 이상 떨어져야 해서 순서를 바꿔도 이득은 작지만, 원칙은 알아 둘 것.</li>
+      <li><b>숨은 할당.</b> <code>adValue</code>는 호출될 때마다 <code>UAI.curve(UAI.NEED_CURVE[n])</code>로 커브 함수를 새로 만든다. 교육용으로는 읽기 쉽지만, 실제 엔진이라면 욕구 커브는 한 번 만들어 캐시한다. Merrill의 "비싼 계산은 Evaluate에서 한 번, 이후에는 캐시"와 같은 이야기다.</li>
+    </ul>
+
+    <div class="callout danger"><span class="title">time-slicing의 대가: 반응 지연</span>바쁜 주민은 늑대가 나타나도 자기 due tick이 올 때까지 모른다. <code>thinkEvery = 5</code>면 최대 4 tick(게임 4분) 늦게 도망친다. 한가한 주민은 즉시 반응하므로, 같은 장면에서 "어떤 주민은 바로 뛰고 어떤 주민은 빵을 마저 먹는" 차이가 생긴다. 이 지연을 없애는 방법이 7절의 이벤트 기반 재평가다.</div>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 결정론과 재현성</h2>
+    <p>효용 AI에는 무작위성이 들어간다. dual 전략은 최고 rank 안에서 가중 랜덤으로 고르고(<a class="xref" href="05-action-selection.html">05장</a>), 산책 목적지도 무작위이며, 주민의 초기 욕구도 난수로 정한다. 그런데 "아까 보람이 왜 선술집에 갔지?"를 조사하려면 같은 장면을 다시 볼 수 있어야 한다. 그래서 <code>uai.js</code>의 모든 난수는 시드 고정 생성기 하나에서 나온다.</p>
+<pre class="engine"><code>  // ───────────────────────── 3. 난수 (05장) ─────────────────────────
+  // 시드 고정 RNG(mulberry32): 같은 시드면 같은 시뮬레이션 → 재현 가능한 디버깅 (09장)
+  UAI.rng = function (seed) {
+    let a = seed &gt;&gt;&gt; 0 || 1;
+    const next = () =&gt; {
+      a = (a + 0x6d2b79f5) &gt;&gt;&gt; 0;
+      let t = a;
+      t = Math.imul(t ^ (t &gt;&gt;&gt; 15), t | 1);
+      t ^= t + Math.imul(t ^ (t &gt;&gt;&gt; 7), t | 61);
+      return ((t ^ (t &gt;&gt;&gt; 14)) &gt;&gt;&gt; 0) / 4294967296;
+    };
+    return {
+      next, seed,
+      range: (lo, hi) =&gt; lo + (hi - lo) * next(),
+      int: n =&gt; Math.floor(next() * n),
+      pick: arr =&gt; arr[Math.floor(next() * arr.length)],
+    };
+  };</code></pre>
+    <p>mulberry32는 32비트 정수 상태 하나(<code>a</code>)만 가진 작은 생성기다. 같은 시드면 같은 수열이 나오고, 상태가 정수 연산(<code>Math.imul</code>, 비트 시프트)만으로 바뀌므로 어떤 JS 엔진에서든 같은 수열을 낸다. <code>World</code>는 생성자에서 <code>this.rng = UAI.rng(opt.seed || 7)</code>를 만들고, <code>think</code>는 <code>decide(a, this, this.rng)</code>로, 산책의 <code>run</code>은 <code>world.rng.int</code>로 같은 줄기를 쓴다.</p>
+
+    <div class="widget">
+      <div class="w-title">같은 시드, 두 개의 마을</div>
+      <div class="w-desc">마을 A와 B를 <code>UAI.makeHamlet({ seed })</code>로 따로 만들어 같은 tick 수만큼 돌린 뒤, 결정 로그(<code>world.log</code>에 쌓인 줄)를 한 줄씩 비교한다. 다른 줄은 빨갛게, 처음 갈라진 줄은 테두리로 표시한다. 최종 상태(위치·욕구·현재 행동)의 해시도 비교한다.</div>
+      <div class="controls">
+        <label>A 시드 <input type="number" id="dt-sa" value="42" style="width:80px"></label>
+        <label>B 시드 <input type="number" id="dt-sb" value="42" style="width:80px"></label>
+        <label>tick <select id="dt-t"><option>200</option><option selected>400</option><option>800</option></select></label>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="dt-peek"> B: tick 100에 디버그 패널이 <code>decide(…, world.rng)</code>로 미리보기</label>
+        <label><input type="checkbox" id="dt-mr"> B: 선택·산책에 <code>Math.random</code> 사용</label>
+        <button class="btn primary" id="dt-run">두 마을 실행</button>
+      </div>
+      <div class="stat-row" id="dt-stats"></div>
+      <div class="diff">
+        <div><h5>마을 A</h5><div class="log" id="dt-la"></div></div>
+        <div><h5>마을 B</h5><div class="log" id="dt-lb"></div></div>
+      </div>
+    </div>
+
+    <p>세 가지 실험을 해 보자. (1) 시드가 같으면 수백 줄이 소수점 둘째 자리까지 완전히 같고 해시도 같다. (2) B의 시드를 하나만 바꾸면 첫 줄부터 다르다. 초기 욕구부터 다른 난수로 정해지기 때문이다. (3) 시드는 같게 두고 "디버그 미리보기"를 켜면, tick 100까지는 같다가 그 직후 갈라진다. 미리보기 자체는 월드를 바꾸지 않았다. 단지 <code>world.rng</code>에서 난수 하나를 <b>꺼내 갔을</b> 뿐인데, 이후 모든 선택이 한 칸씩 밀린다.</p>
+
+    <h3>5.1 재현성이 사는 곳</h3>
+    <ul>
+      <li><b>버그 재현</b>: "시드 42, tick 1,830에 찬이 벽에 끼었다"는 한 줄이면 누구나 같은 장면을 다시 본다. 시드가 없으면 "가끔 끼어요"로 끝난다.</li>
+      <li><b>리플레이</b>: 시드와 외부 입력(늑대 출현 시각 같은 플레이어 개입)만 저장하면 전체 시뮬레이션을 다시 돌릴 수 있다. 상태 스냅샷보다 훨씬 작다.</li>
+      <li><b>회귀 테스트</b>: 커브 하나를 고친 뒤 "시드 1~100으로 1,000 tick씩 돌린 로그"를 이전 버전과 비교하면, 의도한 변화인지 아닌지가 diff로 보인다. 위젯의 해시 비교가 그 축소판이다.</li>
+      <li><b>밸런싱 실험</b>: 같은 시드로 A/B를 돌리면 차이가 순전히 파라미터 때문임을 보장할 수 있다(11장).</li>
+    </ul>
+
+    <h3>5.2 재현성을 깨는 것들</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>원인</th><th>예</th><th>대책</th></tr>
+      <tr><td><code>Math.random</code></td><td><code>UAI.select</code>는 rng를 안 넘기면 <code>Math.random</code>을 쓴다. 시드를 줄 방법이 없다.</td><td>시뮬레이션 안에서는 항상 <code>world.rng</code>를 넘긴다.</td></tr>
+      <tr><td>관찰자가 RNG를 소비</td><td>디버그 UI, 툴팁 미리보기, 로그 출력이 <code>world.rng</code>로 <code>decide</code>를 부른다.</td><td>관찰은 rng가 필요 없는 <code>evaluate</code>로 하거나, 별도 rng를 쓴다.</td></tr>
+      <tr><td>실시간 의존</td><td><code>Date.now()</code>, 프레임 시간을 <code>dt</code>로 사용.</td><td>게임 시간(<code>world.time</code>)과 고정 dt만 쓴다.</td></tr>
+      <tr><td>순회 순서</td><td>해시 기반 컬렉션, 비동기 콜백 순서에 따라 처리 순서가 바뀜.</td><td>배열 순서 고정. 섞어야 하면 시드 RNG로.</td></tr>
+      <tr><td>부동소수점 차이</td><td><code>Math.exp</code>·<code>Math.pow</code>의 결과는 명세상 구현에 맡겨져 있어 브라우저·플랫폼 간 마지막 비트가 다를 수 있다.</td><td>같은 빌드 안에서의 재현을 목표로 한다. 플랫폼 간 락스텝이 필요하면 고정소수점이나 자체 수학 함수를 쓴다.</td></tr>
+    </table></div>
+    <div class="callout deep"><span class="title">왜 select는 Math.random으로 폴백할까</span>
+    <code>UAI.select(cands, opt)</code>를 단독으로 써 보는 05장 위젯처럼, 시뮬레이션 밖에서 편하게 쓰라는 배려다. 하지만 편의 기본값은 재현성의 적이다. 실제 엔진이라면 rng 인자를 필수로 만들어, 빠뜨리면 바로 에러가 나게 하는 편이 안전하다.</div>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 데이터 주도 설계와 핫 리로드</h2>
+    <p><code>hamletActions</code>를 다시 보면 행동 정의의 대부분은 사실 코드가 아니라 <b>값</b>이다. consideration 이름, 입력, 구간(lo/hi), 커브 종류, weight, rank. 코드인 부분은 두 가지뿐이다. 입력을 읽는 짧은 함수(<code>input</code>)와 실행부(<code>run</code>). 이 둘을 "이름으로 고르는 사전"으로 만들면 행동 전체를 JSON으로 쓸 수 있다.</p>
+    <p>이것이 Lewis가 Guild Wars 2: Heart of Thorns에서 쓴 IAUS 방식의 핵심이다. 행동마다 DSE(Decision Score Evaluator)를 데이터로 정의하고, 미리 만들어 둔 consideration 패턴 100개 이상을 조합해 새 생물의 행동을 몇 분 만에 만든다. 커브는 소수의 프리셋 팔레트로 고르고, 임의 커브는 "고급 모드" 뒤에 숨긴다(GAP3 13장). Merrill도 커브를 리로드 가능한 데이터로 두라고 권한다(GAP1 10장). 디자이너가 숫자를 바꿀 때마다 프로그래머가 빌드하지 않아도 되기 때문이다.</p>
+
+    <h3>6.1 입력 사전과 실행 사전</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>입력 이름</th><th>값</th><th>필요한 대상</th></tr>
+      <tr><td><code>need:hunger</code> · <code>need:energy</code> · <code>need:fun</code> · <code>need:social</code></td><td>결핍량 100 − 욕구 (0~100)</td><td>없음</td></tr>
+      <tr><td><code>ad:value</code></td><td><code>UAI.adValue(agent, target)</code> (0~1)</td><td>오브젝트</td></tr>
+      <tr><td><code>dist:target</code></td><td>대상까지 맨해튼 거리 (칸)</td><td>오브젝트 또는 주민</td></tr>
+      <tr><td><code>crowd:target</code></td><td>users / capacity (0~1)</td><td>오브젝트</td></tr>
+      <tr><td><code>target:idle</code></td><td>상대가 도망 중이 아니면 1</td><td>주민</td></tr>
+      <tr><td><code>threat:on</code></td><td>늑대가 있으면 1</td><td>없음</td></tr>
+      <tr><td><code>threat:dist</code></td><td>늑대까지 거리 (없으면 99)</td><td>없음</td></tr>
+      <tr><td><code>hour</code></td><td>현재 시각 0~24</td><td>없음</td></tr>
+      <tr><td><code>const:1</code></td><td>항상 1</td><td>없음</td></tr>
+    </table></div>
+    <p><code>targets</code>는 <code>"objects"</code>(빈자리 있는 모든 오브젝트), <code>"objects:bakery"</code>처럼 종류 지정, <code>"agents"</code>(다른 주민) 중 하나이고, <code>exec</code>는 <code>use</code>·<code>chat</code>·<code>wander</code>·<code>flee</code> 중 하나다. 실행 사전은 새로 짜지 않고 <code>UAI.hamletActions()</code>가 돌려주는 행동들의 <code>run</code>을 그대로 가져온다. <code>curve</code>는 <code>UAI.PRESETS</code>의 이름이거나, 고급 모드로 <code>{"type": "linear", "m": -0.7, "b": 1}</code> 같은 객체다.</p>
+
+    <div class="widget">
+      <div class="w-title">JSON 행동 정의 → 핫 리로드</div>
+      <div class="w-desc">기본 JSON은 <code>hamletActions</code>와 정확히 같은 행동을 만든다(같은 시드면 엔진 기본 마을과 로그가 한 줄도 다르지 않다). 편집 후 "핫 리로드"를 누르면 월드는 그대로 둔 채 Reasoner만 교체된다. 사라진 행동이나 실행부가 바뀐 행동을 하던 주민만 하던 일을 놓고 다시 생각한다.</div>
+      <div class="controls">
+        <label>프리셋 <select id="dd-preset">
+          <option value="base">엔진 기본값 (hamletActions와 동일)</option>
+          <option value="bakery">빵집 우선: rank 1 식사 행동 추가</option>
+          <option value="hermit">은둔자 마을: 수다 제거, 산책 증가</option>
+          <option value="coward">겁쟁이 마을: 도망 반경 24 (계약 위반)</option>
+        </select></label>
+        <button class="btn primary" id="dd-reload">⟳ 핫 리로드</button>
+      </div>
+      <div class="dd-grid">
+        <div>
+          <textarea id="dd-json" class="json" spellcheck="false" aria-label="행동 정의 JSON"></textarea>
+          <div id="dd-msg" class="msg ok"></div>
+        </div>
+        <div>
+          <div class="controls">
+            <button class="btn" id="dd-play">⏸ 정지</button>
+            <label>속도 <select id="dd-speed"><option value="1">×1</option><option value="3" selected>×3</option><option value="8">×8</option></select></label>
+            <button class="btn" id="dd-wolf">🐺 늑대 출현</button>
+            <button class="btn" id="dd-reset">처음부터</button>
+            <span id="dd-clock" class="mono" style="font-size:13px"></span>
+          </div>
+          <svg id="dd-map" class="village" viewBox="0 0 528 352" role="img" aria-label="Hamlet 마을 지도"></svg>
+          <div class="ag-list" id="dd-agents"></div>
+          <div class="log" id="dd-log" style="margin-top:8px;max-height:160px"></div>
+        </div>
+      </div>
+    </div>
+
+    <h3>6.2 프리셋으로 보는 세 가지 교훈</h3>
+    <ul>
+      <li><b>빵집 우선</b>: rank 1짜리 "빵 먹으러 가기"를 추가했다. 배고픔 결핍이 50을 넘는 순간(<code>lo: 50</code>, √x 커브라 그 아래는 0점) 이 행동만 유효 후보가 되고, 바쁜 주민도 다음 인터럽트 검사에서 하던 일을 놓는다. 숫자 하나(<code>rank</code>)가 행동의 성격을 "욕구 중 하나"에서 "다른 욕구를 끊는 강제 행동"으로 바꾼다. Dill의 dual utility에서 rank가 범주라는 말이 바로 이것이다(<a class="xref" href="05-action-selection.html">05장</a>).</li>
+      <li><b>은둔자 마을</b>: 행동을 지웠다. 수다를 떨던 주민만 하던 일을 놓고(리로드 메시지의 "재결정" 수), 나머지는 하던 일을 계속한다. 핫 리로드가 월드 상태를 보존한다는 뜻이다.</li>
+      <li><b>겁쟁이 마을</b>: 도망 consideration의 <code>hi</code>를 14에서 24로 늘렸다. 늑대를 부르면 주민들이 14칸쯤에서 멈춘 채 로그에 "도망치기"가 매 tick 찍힌다. <code>flee.run</code>은 <code>world.dist(a, t) &gt;= 14</code>이면 스스로 끝내도록 <b>코드에 박혀 있기</b> 때문이다. 데이터는 "24칸까지 도망쳐라"라고 하는데 실행부는 "14칸이면 끝"이라고 한다. 끝나면 한가해진 주민은 즉시 다시 생각하고, 다시 도망을 고르고, 실행부는 다시 바로 끝낸다. 3.3절의 계약이 데이터 쪽에서 깨진 사례다.</li>
+    </ul>
+    <div class="callout warn"><span class="title">데이터 주도의 진짜 비용</span>
+    데이터로 열어 둔 값은 디자이너가 마음껏 바꾼다. 그 값과 묶여 있는 가정이 실행 코드나 다른 데이터에 숨어 있으면, 겁쟁이 마을처럼 "아무 에러 없이 이상하게" 동작한다. 해결은 두 가지다. 가정을 데이터로 끌어올리거나(도망 종료 거리도 JSON 필드로), 로딩 시점에 검증한다(<code>flee</code>의 <code>threat:dist</code> 구간이 실행부 종료 거리와 다르면 경고). 위젯의 컴파일러는 이름 오타·입력과 대상 종류 불일치·없는 커브 프리셋은 잡지만, 이런 의미상 불일치는 못 잡는다. Lewis가 "필수 스위치도 하드코딩하지 말고 DSE 템플릿에 넣으라"고 한 것도 같은 문제의식이다(GAP3 13장).</div>
+
+    <h3>6.3 핫 리로드를 안전하게</h3>
+    <p>위젯의 리로드는 다음 순서로 동작한다. 이 순서 자체가 설계다.</p>
+    <ol>
+      <li><b>먼저 전부 검증하고, 하나라도 틀리면 아무것도 바꾸지 않는다.</b> 반쯤 적용된 행동 집합은 원래 집합보다 위험하다.</li>
+      <li>새 <code>Reasoner</code>를 만들어 <code>world.reasoner</code>를 통째로 바꾼다. 선택 옵션(<code>combine</code>, <code>strategy</code>, <code>pct</code>, <code>inertia</code>)은 이전 것을 그대로 쓴다.</li>
+      <li>현재 행동이 새 집합에 없거나 실행부가 바뀐 주민은 <code>world.release(a)</code>로 자리를 반납하고 <code>current</code>를 비운다. 이 처리가 없으면 다음 <code>act</code>에서 <code>reasoner.actions.find(...)</code>가 <code>undefined</code>를 돌려주고 <code>act.run</code>에서 예외가 난다. <code>World.act</code>와 <code>think(a, true)</code>는 현재 행동 id가 Reasoner 안에 반드시 있다고 가정하기 때문이다.</li>
+      <li>tick 카운터, 시간, RNG, 위치, 욕구는 그대로 둔다. 그래서 리로드 후에도 시뮬레이션은 결정론적이다. "시드 + 리로드한 tick + JSON"을 기록하면 재현된다.</li>
+    </ol>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 확장 포인트: 실제 엔진으로 가는 길</h2>
+    <p><code>uai.js</code>는 일부러 작게 만들었다. 상용 엔진으로 키울 때 가장 먼저 손대게 되는 네 곳을 정리한다. 아래 코드는 모두 <b>확장 스케치</b>이고 <code>uai.js</code>에는 없다.</p>
+
+    <h3>7.1 지각(sensor)과 블랙보드</h3>
+    <p>지금은 consideration이 월드를 직접 읽는다. "늑대까지 거리"는 늑대의 실제 좌표다. 그러면 주민은 벽 너머의 늑대도 알고, 늑대가 사라지는 순간 즉시 잊는다. 실제 엔진은 그 사이에 <b>센서</b>를 두고, 센서가 지각한 결과를 에이전트별 <b>블랙보드</b>(기억)에 시간 표시와 함께 써 둔다. consideration은 블랙보드를 읽는다.</p>
+    <p>Côté가 든 FSM 사례가 이 층이 왜 필요한지 보여 준다. "위협 발견"을 시야 판정에 직결하면, 장애물 때문에 시야가 깜빡일 때 추적과 순찰 사이를 오가며 애니메이션이 튄다. 해법은 히스테리시스 같은 필터를 거친 "논리적 위협 인지"에 연결하는 것이다(GAP1 11장). 블랙보드는 그 필터를 둘 자리다. 비싼 지각(시야 레이캐스트)을 consideration마다 반복하지 않고 센서가 주기적으로 한 번 하게 되는 성능상 이점도 있다.</p>
+<pre class="sketch"><code>// 센서: 일정 주기로 지각해 블랙보드에 기록 (마지막으로 본 시각 포함)
+function senseThreat(world, a) {
+  const t = world.threat;
+  if (t &amp;&amp; world.dist(a, t) &lt; 16) a.bb.threat = { x: t.x, y: t.y, seen: world.time };
+  else if (a.bb.threat &amp;&amp; world.time - a.bb.threat.seen &gt; 10) a.bb.threat = null; // 10분 뒤에야 잊는다
+}
+// consideration은 블랙보드를 읽는다
+{ name: "위협 거리", input: ({ agent }) =&gt; agent.bb.threat ? dist(agent, agent.bb.threat) : 99, lo: 0, hi: 14, curve: "선형 감소" }</code></pre>
+
+    <h3>7.2 LOD: 멀리 있는 에이전트는 덜 자주 생각한다</h3>
+    <p>4절의 <code>thinkEvery</code>는 월드 공용 값이다. 화면 밖 주민이 화면 앞 주민만큼 자주 생각할 이유는 없다. 결정 주기를 카메라와의 거리(또는 중요도)에 따라 주민마다 다르게 두면, 플레이어가 보는 곳의 반응성은 유지하면서 전체 비용을 크게 줄일 수 있다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>LOD</th><th>조건 (예)</th><th>결정 주기</th><th>기타 절감</th></tr>
+      <tr><td>0 근거리</td><td>카메라 10칸 이내</td><td>매 tick</td><td>전체 consideration</td></tr>
+      <tr><td>1 중거리</td><td>30칸 이내</td><td>5 tick</td><td>비싼 consideration(시야) 생략</td></tr>
+      <tr><td>2 원거리</td><td>그 밖</td><td>20 tick</td><td>이동은 순간 이동, 욕구는 통계적으로 갱신</td></tr>
+    </table></div>
+<pre class="sketch"><code>// 주민마다 다른 주기. offset 분산은 그대로 유지한다
+const every = a =&gt; { const d = dist(a, camera); return d &lt; 10 ? 1 : d &lt; 30 ? 5 : 20; };
+const due = (world.tickCount + a.thinkOffset) % every(a) === 0;</code></pre>
+    <p>주의할 점: LOD가 바뀌는 순간(카메라가 다가올 때) 원거리에서 대충 갱신된 상태가 갑자기 정밀 시뮬레이션으로 넘어온다. 그 경계에서 주민이 "순간 이동"한 것처럼 보이지 않게, LOD를 올릴 때 즉시 한 번 재평가하는 것이 보통이다.</p>
+
+    <h3>7.3 이벤트 기반 재평가</h3>
+    <p>4절의 반응 지연(최대 thinkEvery−1 tick)을 없애려면 주기 대신 <b>사건</b>으로 결정을 깨워야 한다. 늑대 출현, 오브젝트 파괴, 대화 요청 같은 이벤트가 발생하면 관련된 주민의 다음 tick을 강제로 due로 만든다. 평소에는 주기를 길게 잡아 비용을 아끼고, 중요한 순간에만 즉시 반응한다.</p>
+    <p>상용 엔진에서도 같은 고민이 보인다. UE5 StateTree는 5.5부터 자식 상태를 utility로 고르는 selector("Try Select Children with Highest Utility", "Try Select Children at Random Weighted by Utility")를 제공한다. 이 선택은 상태를 고르는 시점에 일어나므로, 한 상태가 실행 중이면 그 상태가 끝나거나 전이가 일어날 때까지 점수를 다시 매기지 않는다. 실행 중에 더 나은 선택지로 갈아타게 하려면 이벤트나 전이 조건으로 재선택을 강제해야 한다. 즉 <code>uai.js</code>의 "한가할 때만 숙고"를 엔진 차원에서 택한 셈이고, 인터럽트는 이벤트로 설계해야 한다.</p>
+<pre class="sketch"><code>// 이벤트를 받으면 해당 주민을 다음 tick에 반드시 생각하게 만든다
+world.emit = (type, data) =&gt; {
+  for (const a of world.agents) if (type === "threat" &amp;&amp; world.dist(a, data) &lt; 14) a.wake = true;
+};
+// tick의 ② 단계
+if (!a.current) this.think(a);
+else if (due || a.wake) { this.think(a, true); a.wake = false; }</code></pre>
+
+    <h3>7.4 멀티스레드 평가: 읽기 전용 평가 + 순차 적용</h3>
+    <p>3절에서 평가를 읽기 전용으로 분리한 덕분에 평가는 병렬화할 수 있다. 하지만 2.2절의 순서 효과와 5절의 결정론을 생각하면, 병렬화할 수 있는 부분은 정확히 <b>evaluate까지</b>다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 700 230" role="img" aria-label="병렬 평가와 순차 적용 파이프라인" style="min-width:560px">
+        <defs>
+          <marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <rect x="10" y="80" width="120" height="70" rx="8" class="box"/>
+        <text x="70" y="108" text-anchor="middle" font-weight="700">스냅샷</text>
+        <text x="70" y="128" text-anchor="middle" class="muted">tick 시작 월드</text>
+        <rect x="170" y="14" width="200" height="200" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="270" y="34" text-anchor="middle" font-weight="700" style="fill:var(--accent)">병렬: evaluate</text>
+        <rect x="190" y="46" width="160" height="34" rx="6" class="box"/><text x="270" y="68" text-anchor="middle">스레드 1: 주민 0~249</text>
+        <rect x="190" y="90" width="160" height="34" rx="6" class="box"/><text x="270" y="112" text-anchor="middle">스레드 2: 주민 250~499</text>
+        <rect x="190" y="134" width="160" height="34" rx="6" class="box"/><text x="270" y="156" text-anchor="middle">스레드 3: …</text>
+        <text x="270" y="198" text-anchor="middle" class="muted">월드 쓰기 금지 · rng 금지</text>
+        <rect x="410" y="80" width="110" height="70" rx="8" class="box"/>
+        <text x="465" y="108" text-anchor="middle" font-weight="700">rows[]</text>
+        <text x="465" y="128" text-anchor="middle" class="muted">주민별 점수표</text>
+        <rect x="560" y="14" width="130" height="200" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="625" y="34" text-anchor="middle" font-weight="700" style="fill:var(--ok)">순차: 적용</text>
+        <text x="625" y="70" text-anchor="middle">select(rng)</text>
+        <text x="625" y="100" text-anchor="middle">갈아타기</text>
+        <text x="625" y="130" text-anchor="middle">run / 자리</text>
+        <text x="625" y="160" text-anchor="middle">고정 순서</text>
+        <text x="625" y="198" text-anchor="middle" class="muted">결정론 유지</text>
+        <line x1="130" y1="115" x2="166" y2="115" class="line" marker-end="url(#a7)"/>
+        <line x1="370" y1="115" x2="406" y2="115" class="line" marker-end="url(#a7)"/>
+        <line x1="520" y1="115" x2="556" y2="115" class="line" marker-end="url(#a7)"/>
+      </svg>
+      </div>
+      <figcaption>그림 9-2. 무거운 평가(N² 행)는 병렬로, 월드를 바꾸는 일과 난수 소비는 하나의 스레드에서 고정된 순서로.</figcaption>
+    </figure>
+    <ul>
+      <li><b>평가는 스냅샷을 읽는다.</b> 2.2절의 이중 버퍼 방식이 된다. 스레드들이 같은 월드를 읽는 동안 아무도 쓰지 않아야 하므로, 실행 단계와 겹칠 수 없다.</li>
+      <li><b>rng는 평가 단계에서 쓰지 않는다.</b> <code>Reasoner.evaluate</code>가 rng를 받지 않는 것이 여기서 빛난다. 선택(<code>select</code>)은 순차 단계에서 정해진 순서로 rng를 소비하므로 스레드 수와 무관하게 같은 결과가 나온다. 선택까지 병렬로 하고 싶다면 "시드·주민 id·tick"으로 주민별 rng를 파생해 쓰는 방법이 있다.</li>
+      <li><b>충돌은 적용 단계가 푼다.</b> 두 주민이 같은 스냅샷에서 빵집의 마지막 자리를 보고 둘 다 고를 수 있다. 순차 적용에서 앞선 쪽만 성공하고 뒤쪽은 다음 tick에 다시 생각한다. <code>useObject.run</code>의 도착 시 재확인이 이미 이 역할을 하고 있다.</li>
+    </ul>
+<pre class="sketch"><code>// 1단계(병렬 가능): 읽기 전용 평가
+const tables = agents.map(a =&gt; reasoner.evaluate(a, snapshot));   // 워커에 나눠 줄 수 있다
+// 2단계(순차): 고정 순서로 선택 → 갈아타기 → 실행
+agents.forEach((a, i) =&gt; {
+  const res = UAI.select(tables[i], reasoner.opt, world.rng);
+  applyChoice(world, a, res.chosen);
+  world.act(a);
+});</code></pre>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li><code>uai.js</code>는 순수 함수(curve·combine·select·rng) → Reasoner → World의 3층 구조다. 아래층은 위층을 모르므로 각 층을 따로 테스트할 수 있다.</li>
+    <li><code>World.tick</code>은 주민마다 ① 욕구 감소 ② 결정 ③ 실행을 차례로 돈다. 주민 단위 순차 처리라 뒤 주민은 앞 주민이 바꾼 세계를 본다(순서 효과).</li>
+    <li>Reasoner는 읽기 전용 평가만 하고, 월드를 바꾸는 것은 <code>action.run</code>뿐이다. 평가가 막아야 할 조건과 실행이 재확인할 조건 사이에 계약이 있다(Merrill·Côté·DAI도 같은 분리).</li>
+    <li>한가한 주민은 즉시, 바쁜 주민은 <code>thinkEvery</code>마다 인터럽트만 검사한다. <code>thinkOffset</code>이 그 검사를 tick에 고르게 나눠 스파이크를 없앤다. 대가는 최대 thinkEvery−1 tick의 반응 지연이다.</li>
+    <li>모든 난수는 <code>world.rng</code> 한 줄기에서 나온다. 같은 시드면 같은 로그가 나오고, <code>Math.random</code>이나 관찰자의 rng 소비가 그 보장을 깬다.</li>
+    <li>행동을 JSON(입력 이름, lo/hi, 커브 프리셋, weight, rank, exec)으로 정의하면 빌드 없이 바꿀 수 있다. 다만 실행 코드에 숨은 가정과 데이터가 어긋나면 에러 없이 이상하게 동작한다.</li>
+    <li>실제 엔진으로 키우는 네 갈래: 센서·블랙보드, LOD 결정 주기, 이벤트 기반 재평가, 병렬 평가 + 순차 적용.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>World.tick</code>에서 주민 루프가 바깥, 단계(욕구 감소·결정·실행)가 안쪽에 있다. 그 결과로 맞는 것은?</div>
+    <button class="opt">모든 주민이 tick 시작 시점의 같은 스냅샷을 보고 결정한다.</button>
+    <button class="opt">결정은 모든 주민의 욕구 감소가 끝난 뒤에 한꺼번에 일어난다.</button>
+    <button class="opt">보람의 결정은 같은 tick에 아리가 이미 움직이고 자리를 차지한 결과를 반영한다.</button>
+    <button class="opt">주민 처리 순서는 결과에 영향을 주지 않는다.</button>
+    <div class="explain">아리의 ①②③이 모두 끝난 뒤 보람의 ①이 시작된다. 그래서 뒤 주민은 앞 주민의 실행 결과를 보고 결정하고, 배열 앞쪽 주민이 자리 경쟁에서 체계적으로 유리하다. 스냅샷 방식(이중 버퍼)은 7.4절의 확장이다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">주민 1,000명이 모두 바쁜 상태이고 <code>thinkEvery = 5</code>다. <code>thinkOffset</code>이 주민 번호일 때와 모두 0일 때, tick당 최대 인터럽트 검사 수는?</div>
+    <button class="opt">둘 다 매 tick 1,000회</button>
+    <button class="opt">번호일 때 매 tick 200회, 모두 0일 때 5 tick마다 한 번 1,000회</button>
+    <button class="opt">번호일 때 매 tick 1,000회, 모두 0일 때 200회</button>
+    <button class="opt">둘 다 매 tick 200회</button>
+    <div class="explain">총 작업량(5 tick에 1,000회)은 같지만, offset이 없으면 모두 같은 tick에 몰려 스파이크가 된다. 프레임 예산을 깨는 것은 평균이 아니라 최악의 tick이다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">디버그 패널이 매 프레임 "이 주민이 지금 고를 행동"을 보여 주려고 <code>world.reasoner.decide(a, world, world.rng)</code>를 호출한다. 무엇이 문제인가?</div>
+    <button class="opt">decide가 a.current를 바꿔 주민이 행동을 갈아탄다.</button>
+    <button class="opt">decide가 오브젝트의 users를 늘린다.</button>
+    <button class="opt">evaluate가 비싸서 프레임이 떨어지는 것 말고는 문제없다.</button>
+    <button class="opt">시뮬레이션 rng에서 난수를 꺼내 가므로 이후의 모든 선택이 밀려, 같은 시드로도 재현되지 않는다.</button>
+    <div class="explain">decide는 월드를 바꾸지 않지만 rng 상태를 진행시킨다. 관찰이 결과를 바꾸면 안 된다. 관찰은 rng가 필요 없는 evaluate로 하거나 별도 rng를 쓴다. 5절 위젯의 "디버그 미리보기" 체크박스가 이 상황이다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">겁쟁이 마을 프리셋에서 도망 consideration의 <code>hi</code>를 24로 늘리자, 주민들이 약 14칸에서 멈추고 매 tick "도망치기"가 로그에 찍혔다. 원인은?</div>
+    <button class="opt"><code>flee.run</code>이 14칸 이상이면 스스로 끝나도록 코드에 박혀 있어, 데이터(24칸)와 실행부(14칸)의 가정이 어긋났다.</button>
+    <button class="opt">핫 리로드가 RNG를 초기화했다.</button>
+    <button class="opt">관성(inertia)이 너무 커서 도망을 멈추지 못한다.</button>
+    <button class="opt">rank 10이 너무 높아서 다른 행동이 선택되지 못한다.</button>
+    <div class="explain">실행부가 끝나 current가 비면 한가한 주민은 즉시 다시 생각하고, 14~24칸에서는 도망 점수가 아직 0보다 커서 다시 도망을 고른다. 그리고 실행부는 바로 다시 끝난다. 평가와 실행 사이 계약이 데이터 쪽에서 깨진 경우다. 가정을 데이터로 끌어올리거나 로딩 시점에 검증해야 한다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">평가를 여러 스레드로 나누려 한다. 가장 안전한 분할은?</div>
+    <button class="opt">주민마다 스레드 하나를 주고 think와 act를 통째로 병렬 실행한다.</button>
+    <button class="opt">evaluate와 select는 병렬로 하되 모든 스레드가 world.rng를 공유한다.</button>
+    <button class="opt">스냅샷을 읽는 evaluate만 병렬로 하고, select(rng 소비)·갈아타기·run은 고정 순서로 순차 적용한다.</button>
+    <button class="opt">run만 병렬로 하고 evaluate는 순차로 한다.</button>
+    <div class="explain">evaluate는 읽기 전용이고 rng를 받지 않으므로 병렬화해도 결과가 같다. 월드를 바꾸는 run과 rng 소비 순서는 스레드 스케줄에 따라 달라지면 안 되므로 순차 단계에 둔다. 같은 자리를 두 명이 고른 충돌도 순차 단계에서 풀린다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">바쁜 주민이 늑대에 늦게 반응하는 문제(최대 thinkEvery−1 tick)를 비용을 크게 늘리지 않고 없애는 방법은?</div>
+    <button class="opt">thinkEvery를 1로 낮춘다.</button>
+    <button class="opt">늑대 출현 이벤트가 발생하면 근처 주민의 다음 tick을 강제로 due로 만든다.</button>
+    <button class="opt">도망의 rank를 1,000,000으로 올린다.</button>
+    <button class="opt">thinkOffset을 모두 0으로 맞춘다.</button>
+    <div class="explain">thinkEvery = 1은 time-slicing을 포기하는 것이다. rank는 인터럽트 검사가 일어난 뒤의 우선순위일 뿐 검사 시점을 앞당기지 못한다. 이벤트 기반 재평가는 평소에는 긴 주기를 유지하고 중요한 순간에만 즉시 생각하게 한다. UE5 StateTree처럼 실행 중 상태를 재평가하지 않는 엔진에서도 같은 방식으로 재선택을 강제한다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b>우리 엔진은 효용 하나로 숙고와 반응을 모두 처리했다. 하지만 상용 게임은 대부분 효용을 BT나 StateTree 안의 "선택 노드"로 넣었다. 10장에서는 Merrill의 Utility Selector, Dragon Age: Inquisition의 평가·실행 트리, Zoo Tycoon 2의 rank 체계를 따라가며 효용과 BT/StateTree를 어떻게 섞었는지 본다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>Dawe, M., Gargolinski, S., Dicken, L., Humphreys, T., Mark, D. "Behavior Selection Algorithms: An Overview." <i>Game AI Pro</i>, Ch.4, 2013. (Sense–Think–Act, 선택 알고리즘 비교)</li>
+    <li>Graham, D. "An Introduction to Utility Theory." <i>Game AI Pro</i>, Ch.9, 2013. (The Sims Medieval의 queue가 빌 때 결정)</li>
+    <li>Merrill, B. "Building Utility Decisions into Your Existing Behavior Tree." <i>Game AI Pro</i>, Ch.10, 2013. (Evaluate/CalculateUtility 캐시, 별도 패스 분산, 리로드 가능한 커브 데이터)</li>
+    <li>Côté, C. "Reactivity and Deliberation in Decision-Making Systems." <i>Game AI Pro</i>, Ch.11, 2013. (반응·숙고 분리, 3계층, 논리적 위협 인지)</li>
+    <li>Dill, K. "Dual-Utility Reasoning." <i>Game AI Pro 2</i>, Ch.3, 2015. (rank + weight)</li>
+    <li>Lewis, M. "Choosing Effective Utility-Based Considerations." <i>Game AI Pro 3</i>, Ch.13, 2017. (IAUS, 데이터 주도 DSE, 프리셋 팔레트, early-out 순서)</li>
+    <li>Hanlon, S., Watts, C. "Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture." <i>Game AI Pro 3</i>, Ch.31, 2017. (evaluation tree / execution tree, 계약)</li>
+    <li>Mark, D., Lewis, M. "Building a Better Centaur: AI at Massive Scale." GDC 2015.</li>
+    <li>Epic Games. "StateTree Selectors Overview." Unreal Engine 5 문서 (dev.epicgames.com/documentation/unreal-engine/statetree-selectors-overview).</li>
+  </ul></div>
+</main>
+
+<script>
+// ==LOGIC-START==
+// 위젯 공용 로직 (DOM 없음 — node에서 그대로 검증한다)
+const L = (function () {
+  "use strict";
+  const label = t => (t ? t.label || t.name : "");
+  const view = a => ({
+    x: a.x, y: a.y, needs: Object.assign({}, a.needs),
+    cur: a.current ? a.current.label + (a.current.target ? "@" + label(a.current.target) : "") : null,
+    using: !!(a.current && a.current.using),
+  });
+
+  // World.tick과 같은 순서로 한 tick을 돌리며 단계마다 기록한다 (think/act는 엔진 메서드 그대로)
+  function tracedTick(w) {
+    const snaps = [];
+    w.time += w.dt; w.tickCount++;
+    if (w.threat && w.time >= w.threat.until) w.threat = null;
+    snaps.push({ kind: "start", time: w.time, tickCount: w.tickCount });
+    w.agents.forEach((a, idx) => {
+      const b1 = view(a);
+      for (const n of UAI.NEEDS) a.needs[n] = Math.max(0, a.needs[n] - UAI.NEED_DECAY[n] * w.dt * (n === "energy" && w.hour() >= 22 ? 1.8 : 1));
+      snaps.push({ kind: "decay", idx, before: b1, after: view(a) });
+      const due = (w.tickCount + a.thinkOffset) % w.thinkEvery === 0;
+      const b2 = view(a), curObj = a.current;
+      let mode = "none";
+      if (!a.current) { mode = "idle"; w.think(a); }
+      else if (due) { mode = "due"; w.think(a, true); }
+      let top = [], nrows = 0, chosen = null;
+      if (mode !== "none" && a.lastEval) {
+        const ev = a.lastEval;
+        nrows = ev.rows.length;
+        top = ev.rows.slice().sort((p, q) => q.score - p.score).slice(0, 3)
+          .map(r => ({ label: r.action.label, target: label(r.target), score: r.score, rank: r.rank }));
+        if (ev.chosen) chosen = { label: ev.chosen.action.label, target: label(ev.chosen.target), score: ev.chosen.score, rank: ev.chosen.rank };
+      }
+      snaps.push({ kind: "think", idx, mode, due, before: b2, after: view(a), switched: a.current !== curObj, top, nrows, chosen });
+      const b3 = view(a);
+      w.act(a);
+      snaps.push({ kind: "act", idx, before: b3, after: view(a) });
+    });
+    return snaps;
+  }
+  // 다음 tick에 "한가해서 결정 / 인터럽트 검사 / 검사 생략"이 모두 일어나는가
+  function isInteresting(w) {
+    const t = w.tickCount + 1;
+    const due = a => (t + a.thinkOffset) % w.thinkEvery === 0;
+    return w.agents.some(a => !a.current) && w.agents.some(a => a.current && due(a)) && w.agents.some(a => a.current && !due(a));
+  }
+
+  // tick당 평가 수 모델. spread=false면 모든 바쁜 주민의 offset이 0
+  function evalCounts(N, E, ticks, spread, idleFrac) {
+    const idle = Math.round(N * idleFrac), busy = N - idle, out = [];
+    for (let t = 1; t <= ticks; t++) {
+      let c = idle;
+      if (spread) { const r = (E - (t % E)) % E; c += r < busy ? Math.floor((busy - 1 - r) / E) + 1 : 0; }
+      else c += t % E === 0 ? busy : 0;
+      out.push(c);
+    }
+    return out;
+  }
+
+  // 상태 해시 (FNV-1a 32비트)
+  function hashState(w) {
+    const s = JSON.stringify(w.agents.map(a => [a.x, a.y, UAI.NEEDS.map(n => a.needs[n].toFixed(6)), a.current && a.current.action]));
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16).padStart(8, "0");
+  }
+  // 결정론 실험: opts.peekAt(tick 번호), opts.mathRandom
+  function runWorld(seed, ticks, opts) {
+    opts = opts || {};
+    const w = UAI.makeHamlet({ seed });
+    const full = [], push = w.log.push;
+    w.log.push = function (...x) { full.push(...x); return push.apply(this, x); }; // 200줄 제한 전에 전부 보관
+    if (opts.mathRandom) w.rng = Object.assign({}, w.rng, { next: Math.random, int: n => Math.floor(Math.random() * n) });
+    for (let t = 1; t <= ticks; t++) {
+      if (opts.peekAt === t) w.reasoner.decide(w.agents[0], w, w.rng); // 관찰자가 시뮬레이션 rng를 소비
+      w.tick();
+    }
+    return { log: full, hash: hashState(w) };
+  }
+
+  // ── 데이터 주도 행동 정의 ──
+  const dist = (p, q) => Math.abs(p.x - q.x) + Math.abs(p.y - q.y);
+  const INPUTS = {
+    "ad:value": { fn: ({ agent, target }) => UAI.adValue(agent, target), needs: "object" },
+    "dist:target": { fn: ({ agent, target }) => dist(agent, target), needs: "any" },
+    "crowd:target": { fn: ({ target }) => target.users / target.capacity, needs: "object" },
+    "target:idle": { fn: ({ target }) => (target.current && target.current.action === "flee" ? 0 : 1), needs: "agent" },
+    "threat:on": { fn: ({ world }) => (world.threat ? 1 : 0) },
+    "threat:dist": { fn: ({ agent, world }) => (world.threat ? dist(agent, world.threat) : 99) },
+    "hour": { fn: ({ world }) => world.hour() },
+    "const:1": { fn: () => 1 },
+  };
+  for (const n of UAI.NEEDS) INPUTS["need:" + n] = { fn: ({ agent }) => 100 - agent.needs[n] };
+  // 실행 사전: 엔진의 run을 그대로 재사용
+  const EXEC = {};
+  for (const a of UAI.hamletActions()) EXEC[a.id] = { run: a.run, needs: a.id === "use" ? "object" : a.id === "chat" ? "agent" : null };
+  const RES_OPT = { combine: "compensated", strategy: "dual", pct: 0.15, inertia: 0.1 }; // World 기본값과 동일
+
+  function makeTargets(spec, errs, where) {
+    if (spec == null) return { fn: null, kind: null };
+    if (spec === "agents") return { fn: ({ agent, world }) => world.agents.filter(b => b !== agent), kind: "agent" };
+    if (spec === "objects") return { fn: ({ world }) => world.objects.filter(o => o.users < o.capacity || false), kind: "object" };
+    const m = /^objects:(\w+)$/.exec(spec);
+    if (m && UAI.OBJECT_TYPES[m[1]]) { const ty = m[1]; return { fn: ({ world }) => world.objects.filter(o => o.type === ty && o.users < o.capacity), kind: "object" }; }
+    errs.push(`${where}: targets "${spec}"를 모름 (objects, objects:종류, agents 중 하나)`);
+    return { fn: null, kind: null };
+  }
+  function checkCurve(c, errs, where) {
+    if (c == null) return;
+    if (typeof c === "string") { if (!UAI.PRESETS[c]) errs.push(`${where}: 커브 프리셋 "${c}" 없음`); return; }
+    if (typeof c !== "object" || !(c.type === "piecewise" ? Array.isArray(c.points) && c.points.length : UAI.CURVES[c.type])) { errs.push(`${where}: 커브 type이 잘못됨`); return; }
+    const y = UAI.curve(c)(0.5);
+    if (!Number.isFinite(y)) errs.push(`${where}: 커브가 숫자를 내지 않음`);
+  }
+  // JSON 문자열 → { actions, errors }. 오류가 하나라도 있으면 actions는 null
+  function compileActions(text) {
+    const errs = [];
+    let spec;
+    try { spec = JSON.parse(text); } catch (e) { return { actions: null, errors: ["JSON 문법 오류: " + e.message] }; }
+    if (!Array.isArray(spec) || !spec.length) return { actions: null, errors: ["최상위는 행동 객체의 배열이어야 함"] };
+    const ids = new Set(), actions = [];
+    spec.forEach((a, i) => {
+      const where = `행동 #${i + 1}${a && a.id ? " (" + a.id + ")" : ""}`;
+      if (!a || typeof a.id !== "string" || !a.id) { errs.push(`${where}: id 문자열 필요`); return; }
+      if (ids.has(a.id)) errs.push(`${where}: id 중복`);
+      ids.add(a.id);
+      const ex = EXEC[a.exec];
+      if (!ex) errs.push(`${where}: exec "${a.exec}"를 모름 (use, chat, wander, flee)`);
+      const tg = makeTargets(a.targets, errs, where);
+      if (ex && ex.needs && tg.kind !== ex.needs) errs.push(`${where}: exec "${a.exec}"는 targets가 ${ex.needs === "object" ? "objects" : "agents"}여야 함`);
+      if (a.weight != null && !(typeof a.weight === "number" && a.weight >= 0)) errs.push(`${where}: weight는 0 이상 숫자`);
+      if (a.rank != null && typeof a.rank !== "number") errs.push(`${where}: rank는 숫자`);
+      if (!Array.isArray(a.considerations) || !a.considerations.length) { errs.push(`${where}: considerations 배열 필요`); return; }
+      const cons = a.considerations.map((c, j) => {
+        const cw = `${where} / consideration #${j + 1}`;
+        const inp = c && INPUTS[c.input];
+        if (!inp) { errs.push(`${cw}: input "${c && c.input}"를 모름`); return null; }
+        if (inp.needs === "any" && !tg.kind) errs.push(`${cw}: "${c.input}"는 targets가 있어야 함`);
+        if ((inp.needs === "object" || inp.needs === "agent") && tg.kind !== inp.needs) errs.push(`${cw}: "${c.input}"는 targets가 ${inp.needs === "object" ? "objects" : "agents"}여야 함`);
+        const lo = c.lo == null ? 0 : c.lo, hi = c.hi == null ? 1 : c.hi;
+        if (typeof lo !== "number" || typeof hi !== "number" || lo === hi) errs.push(`${cw}: lo/hi는 서로 다른 숫자`);
+        checkCurve(c.curve, errs, cw);
+        const out = { name: c.name || c.input, input: inp.fn, lo, hi };
+        if (c.curve != null) out.curve = c.curve;
+        return out;
+      });
+      const act = { id: a.id, label: a.label || a.id, rank: a.rank || 0, considerations: cons, run: ex ? ex.run : null };
+      if (a.weight != null) act.weight = a.weight;
+      if (tg.fn) act.targets = tg.fn;
+      actions.push(act);
+    });
+    return errs.length ? { actions: null, errors: errs } : { actions, errors: [] };
+  }
+  function makeWorld(actions, seed) {
+    return UAI.makeHamlet({ seed: seed || 21, reasoner: new UAI.Reasoner(actions, RES_OPT) });
+  }
+  // 월드는 그대로 두고 Reasoner만 교체. 반환: 하던 일을 놓은 주민 수
+  function hotReload(w, actions) {
+    const oldRun = {};
+    for (const x of w.reasoner.actions) oldRun[x.id] = x.run;
+    const r = new UAI.Reasoner(actions, w.reasoner.opt);
+    w.reasoner = r;
+    let reset = 0;
+    for (const a of w.agents) {
+      if (!a.current) continue;
+      const na = r.actions.find(x => x.id === a.current.action);
+      if (!na || na.run !== oldRun[a.current.action]) { w.release(a); a.current = null; reset++; }
+    }
+    return reset;
+  }
+
+  return { tracedTick, isInteresting, evalCounts, hashState, runWorld, compileActions, makeWorld, hotReload, INPUTS, EXEC, RES_OPT };
+})();
+// ==LOGIC-END==
+
+(function () {
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const f1 = v => (+v).toFixed(1), f2 = v => (+v).toFixed(2);
+
+  // ───────── 위젯 1: 모듈 지도 ─────────
+  (function modMap() {
+    const svg = $("#modmap"), info = $("#mod-info");
+    const MODS = {
+      makeHamlet: ["UAI.makeHamlet(opt)", "오브젝트 8개와 주민 6명을 배치한 기본 마을을 만든다. 엔진의 조립 지점이자 위젯 대부분의 출발점.", [["12-capstone-hamlet.html", "12장 캡스톤"], ["07-needs-smart-objects.html", "07장 스마트 오브젝트"]]],
+      World: ["class World", "시간(time, dt), 공간(w, h), 주민, 오브젝트, 위협, 그리고 단 하나의 rng를 소유한다. 기본 Reasoner를 hamletActions로 만든다. thinkEvery가 여기서 정해진다.", [["#s2", "2절 tick 루프"], ["#s4", "4절 스케줄링"]]],
+      Reasoner: ["class Reasoner", "행동 × 대상마다 consideration을 정규화 → 커브 → 결합해 점수표(rows)를 만들고, decide에서 select로 하나를 고른다. 월드를 바꾸지 않는다. cooldown과 inertia도 여기서 처리한다.", [["04-considerations.html", "04장 결합"], ["06-time-inertia.html", "06장 관성"], ["08-context-targets.html", "08장 대상"]]],
+      hamletActions: ["UAI.hamletActions()", "이용하기·수다·산책·도망 4개 행동을 돌려준다. 각 행동은 점수용 데이터(considerations, rank, weight)와 실행부(run)를 함께 가진다. 월드 구조를 아는 유일한 곳.", [["07-needs-smart-objects.html", "07장 욕구"], ["08-context-targets.html", "08장 targets"], ["#s6", "6절 JSON 정의"]]],
+      curve: ["UAI.normalize / UAI.curve(spec)", "원시 입력을 [lo, hi] → [0, 1]로 bookend 정규화하고, 프리셋 이름이나 spec 객체로 커브 함수를 만든다. 결과는 항상 0~1로 잘린다.", [["03-response-curves.html", "03장 반응 커브"]]],
+      combine: ["UAI.combine / UAI.compensate", "consideration 점수를 곱·보정곱·평균·최소·최대·기하평균으로 합친다. 기본값 compensated는 IAUS의 make-up value 보정.", [["04-considerations.html", "04장 Consideration과 점수 결합"]]],
+      select: ["UAI.select(cands, opt, rng)", "best / weighted / topN / topPct / dual 전략으로 하나를 고른다. rng가 없으면 Math.random을 쓴다(5절 주의).", [["05-action-selection.html", "05장 행동 선택"]]],
+      rng: ["UAI.rng(seed)", "mulberry32 시드 고정 난수. next·range·int·pick. 같은 시드면 같은 수열.", [["05-action-selection.html", "05장"], ["#s5", "5절 재현성"]]],
+      adValue: ["UAI.adValue(agent, obj)", "오브젝트가 광고하는 욕구 충족량 × 그 욕구의 긴급도(NEED_CURVE) × 성격 가중치의 합. 이미 찬 만큼은 의미가 없다(한계효용).", [["07-needs-smart-objects.html", "07장 욕구 모델과 스마트 오브젝트"]]],
+    };
+    function show(id) {
+      svg.querySelectorAll("g.mod").forEach(g => g.classList.toggle("on", g.dataset.mod === id));
+      document.querySelectorAll("#mod-code pre.engine").forEach(p => { p.hidden = p.dataset.mod !== id; });
+      const [t, d, links] = MODS[id];
+      info.innerHTML = `<b class="mono">${esc(t)}</b> — ${esc(d)}<br>${links.map(([h, x]) => `<a class="xref" href="${h}">${x}</a>`).join(" ")}`;
+    }
+    svg.addEventListener("click", e => { const g = e.target.closest("g.mod"); if (g) show(g.dataset.mod); });
+    svg.addEventListener("keydown", e => { const g = e.target.closest("g.mod"); if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); show(g.dataset.mod); } });
+    show("Reasoner");
+  })();
+
+  // ───────── 위젯 2: tick 스텝 애니메이션 ─────────
+  (function tickStepper() {
+    const svg = $("#tk-svg"), box = $("#tk-box"), infoEl = $("#tk-info");
+    const NAMES = ["아리", "보람", "찬"];
+    const COLX = [90, 320, 550], CW = 210, ROWY = [66, 124, 182], RH = 50;
+    const PH = ["① 욕구 감소", "② 결정", "③ 실행"];
+    let snaps = [], offsets = [], skip = 0, stepper = null;
+
+    function build() {
+      let h = `<rect id="tk-start" x="90" y="8" width="670" height="30" rx="8" class="cell-r"/>
+        <text x="425" y="28" text-anchor="middle" class="cell-t" id="tk-start-t"></text>`;
+      PH.forEach((p, c) => { h += `<text x="${COLX[c] + CW / 2}" y="56" text-anchor="middle" class="hdr">${p}</text>`; });
+      NAMES.forEach((n, r) => {
+        h += `<text x="12" y="${ROWY[r] + 22}" font-weight="700">${n}</text><text x="12" y="${ROWY[r] + 40}" class="badge-t" id="tk-off-${r}"></text>`;
+        for (let c = 0; c < 3; c++) {
+          const k = 1 + r * 3 + c;
+          h += `<rect id="tk-c-${k}" x="${COLX[c]}" y="${ROWY[r]}" width="${CW}" height="${RH}" rx="7" class="cell-r"/>
+            <text id="tk-t1-${k}" x="${COLX[c] + 26}" y="${ROWY[r] + 21}" class="cell-t"></text>
+            <text id="tk-t2-${k}" x="${COLX[c] + 26}" y="${ROWY[r] + 39}" class="cell-t dim"></text>
+            <circle cx="${COLX[c] + 13}" cy="${ROWY[r] + 15}" r="8" class="badge"/><text x="${COLX[c] + 13}" y="${ROWY[r] + 18.5}" text-anchor="middle" class="badge-t">${k}</text>`;
+          if (c < 2) h += `<line x1="${COLX[c] + CW + 2}" y1="${ROWY[r] + RH / 2}" x2="${COLX[c + 1] - 4}" y2="${ROWY[r] + RH / 2}" class="line"/>`;
+        }
+        if (r < 2) h += `<path d="M${COLX[2] + CW / 2},${ROWY[r] + RH} L${COLX[2] + CW / 2},${ROWY[r] + RH + 4} L${COLX[0] + CW / 2},${ROWY[r] + RH + 4} L${COLX[0] + CW / 2},${ROWY[r + 1]}" class="line" style="stroke-dasharray:3 3"/>`;
+      });
+      svg.innerHTML = h;
+    }
+    const pos = v => `(${v.x},${v.y})`;
+    function cellText(s) {
+      if (s.kind === "decay") return [`배고픔 ${f2(s.before.needs.hunger)}→${f2(s.after.needs.hunger)}`, `기력 ${f2(s.before.needs.energy)}→${f2(s.after.needs.energy)}`];
+      if (s.kind === "think") {
+        if (s.mode === "none") return ["검사 생략 (due 아님)", `계속: ${s.before.cur}`];
+        if (s.mode === "idle") return ["한가함 → 즉시 숙고", s.chosen ? `→ ${s.after.cur} ${f2(s.chosen.score)}` : "→ 후보 없음"];
+        return ["인터럽트 검사", s.switched ? `→ 갈아탐: ${s.after.cur}` : "→ 유지"];
+      }
+      return [`${pos(s.before)} → ${pos(s.after)}`, s.after.cur ? (s.after.using ? "이용 중: " : "진행: ") + s.after.cur : "끝남 → current = null"];
+    }
+    function needTable(s) {
+      return `<table class="cap-tbl"><tr><th></th>${UAI.NEEDS.map(n => `<th>${UAI.NEED_LABEL[n]}</th>`).join("")}</tr>
+        <tr><td>전</td>${UAI.NEEDS.map(n => `<td class="mono">${f2(s.before.needs[n])}</td>`).join("")}</tr>
+        <tr><td>후</td>${UAI.NEEDS.map(n => `<td class="mono">${f2(s.after.needs[n])}</td>`).join("")}</tr></table>`;
+    }
+    function caption(i) {
+      const s = snaps[i];
+      if (s.kind === "start") return `<b>tick ${s.tickCount} 시작</b> — <code>time += dt</code>로 게임 시각이 ${UAI.clock(s.time)}이 되고, 위협 만료를 검사한다. 이제 <code>for (const a of this.agents)</code>가 주민을 배열 순서대로 하나씩 처리한다.`;
+      const n = NAMES[s.idx];
+      if (s.kind === "decay") return `<b>${n} ① 욕구 감소</b> — 네 욕구가 각각 <code>NEED_DECAY × dt</code>만큼 준다(22시 이후 기력은 1.8배). 자기 상태만 바꾼다.${needTable(s)}`;
+      if (s.kind === "think") {
+        const off = `(tickCount ${snaps[0].tickCount} + offset ${offsets[s.idx]}) mod 5 = ${(snaps[0].tickCount + offsets[s.idx]) % 5}`;
+        if (s.mode === "none") return `<b>${n} ② 결정: 생략</b> — 하던 일(<code>${esc(s.before.cur)}</code>)이 있고 ${off} ≠ 0이라 due가 아니다. Reasoner를 아예 부르지 않는다. time-slicing으로 아낀 평가다.`;
+        const top = s.top.map(r => `<tr><td>${esc(r.label)}${r.target ? " @" + esc(r.target) : ""}</td><td class="mono">${f2(r.score)}</td><td class="mono">${r.rank}</td></tr>`).join("");
+        const tbl = `<table class="cap-tbl"><tr><th>상위 후보 (평가한 행 ${s.nrows}개 중)</th><th>점수</th><th>rank</th></tr>${top}</table>`;
+        if (s.mode === "idle") return `<b>${n} ② 결정: 한가함</b> — <code>a.current</code>가 비어 있으므로 due와 상관없이 <code>this.think(a)</code>. dual 전략이 최고 rank 안에서 최고점의 85% 이상 후보 중 가중 랜덤으로 골라 <b>${esc(s.after.cur || "없음")}</b>를 시작한다. 이때 <code>world.rng</code>를 하나 소비한다.${tbl}`;
+        return `<b>${n} ② 결정: 인터럽트 검사</b> — ${off}이므로 due다. <code>this.think(a, true)</code>는 전체를 평가하지만, 고른 후보의 rank가 현재 행동의 rank보다 높을 때만 갈아탄다. 결과: <b>${s.switched ? "갈아탐 → " + esc(s.after.cur) : "유지 (" + esc(s.before.cur) + ")"}</b>.${tbl}`;
+      }
+      return `<b>${n} ③ 실행</b> — <code>this.act(a)</code> → <code>action.run(world, a, cur)</code>. 위치 ${pos(s.before)} → ${pos(s.after)}${s.after.using ? ", 오브젝트를 이용하며 욕구를 채우는 중" : ""}${!s.after.cur ? ". 행동이 끝나 <code>current</code>가 비었다. 다음 tick에 한가함 → 즉시 숙고" : ""}. 이 결과는 다음 주민의 결정에 바로 보인다.`;
+    }
+    function finalCaption() {
+      return `<b>tick ${snaps[0].tickCount} 끝</b> — 처리 순서는 1→9, 즉 <b>주민 단위</b>였다. 보람의 ②는 아리의 ③ 뒤에, 찬의 ②는 보람의 ③ 뒤에 일어났다. 이번 tick에 Reasoner를 부른 것은 ${snaps.filter(s => s.kind === "think" && s.mode !== "none").length}명뿐이다.`;
+    }
+    function render(i) {
+      document.getElementById("tk-start").setAttribute("class", "cell-r " + (i === 0 ? "active" : "done"));
+      document.getElementById("tk-start-t").textContent = `tick ${snaps[0].tickCount} 시작: time += dt (${UAI.clock(snaps[0].time)}), 위협 만료 검사`;
+      for (let k = 1; k <= 9; k++) {
+        const st = i === 10 || k < i ? "done" : k === i ? "active" : "";
+        document.getElementById("tk-c-" + k).setAttribute("class", "cell-r " + st);
+        const [a, b] = st ? cellText(snaps[k]) : ["", ""];
+        document.getElementById("tk-t1-" + k).textContent = a;
+        document.getElementById("tk-t2-" + k).textContent = b;
+      }
+      return i === 10 ? finalCaption() : caption(i);
+    }
+    function prepare() {
+      const w = UAI.makeHamlet({ seed: 11, names: NAMES });
+      let found = 0;
+      for (let t = 0; t < 3000; t++) {
+        if (L.isInteresting(w)) { if (found === skip) break; found++; }
+        w.tick();
+      }
+      offsets = w.agents.map(a => a.thinkOffset);
+      snaps = L.tracedTick(w);
+      offsets.forEach((o, r) => { document.getElementById("tk-off-" + r).textContent = "offset " + o; });
+      infoEl.textContent = `시드 11 · tick ${snaps[0].tickCount} · thinkEvery ${w.thinkEvery}`;
+    }
+    build(); prepare();
+    stepper = MM.stepper(box, { steps: 11, interval: 1700, render });
+    $("#tk-next").onclick = () => { skip++; prepare(); stepper.go(0); };
+  })();
+
+  // ───────── 위젯 3: 스케줄링 막대 + 벤치마크 ─────────
+  (function schedule() {
+    const nI = $("#sc-n"), eI = $("#sc-e"), iI = $("#sc-i"), T = 40;
+    let head = -1, timer = null, bench = null;
+    function chart(svg, data, cls, yMax) {
+      const L0 = 46, R = 8, Tp = 10, H = 130, W = 640 - L0 - R, bw = W / data.length;
+      let h = "";
+      for (let k = 0; k <= 4; k++) {
+        const y = Tp + H - (H * k) / 4;
+        h += `<line class="grid" x1="${L0}" y1="${y}" x2="${L0 + W}" y2="${y}"/><text x="${L0 - 4}" y="${y + 4}" text-anchor="end">${Math.round((yMax * k) / 4)}</text>`;
+      }
+      data.forEach((v, t) => {
+        const bh = (H * v) / yMax;
+        h += `<rect class="${t === head ? "b-on" : cls}" x="${(L0 + t * bw + 1).toFixed(1)}" y="${(Tp + H - bh).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${bh.toFixed(1)}"/>`;
+        if ((t + 1) % 5 === 0) h += `<text x="${(L0 + t * bw + bw / 2).toFixed(1)}" y="${Tp + H + 14}" text-anchor="middle">${t + 1}</text>`;
+      });
+      if (bench && bench.N === +nI.value) {
+        const cap = 16.7 / bench.perEval;
+        if (cap <= yMax) { const y = Tp + H - (H * cap) / yMax; h += `<line class="budget" x1="${L0}" y1="${y}" x2="${L0 + W}" y2="${y}"/><text class="budget-t" x="${L0 + W}" y="${y - 4}" text-anchor="end">16.7ms 예산 ≈ ${Math.floor(cap)}회</text>`; }
+      }
+      h += `<text x="${L0}" y="${Tp + H + 28}">tick →</text>`;
+      svg.innerHTML = h;
+    }
+    function stat(k, v, cls) { return `<div class="stat"><div class="k">${k}</div><div class="v ${cls || ""}">${v}</div></div>`; }
+    function draw() {
+      const N = +nI.value, E = +eI.value, idle = +iI.value / 100;
+      $("#sc-n-o").textContent = N; $("#sc-e-o").textContent = E; $("#sc-i-o").textContent = iI.value + "%";
+      const before = L.evalCounts(N, E, T, false, idle), after = L.evalCounts(N, E, T, true, idle);
+      const yMax = Math.max(N, 1);
+      chart($("#sc-before"), before, "b-before", yMax);
+      chart($("#sc-after"), after, "b-after", yMax);
+      const pb = Math.max(...before), pa = Math.max(...after), mean = before.reduce((a, b) => a + b, 0) / T;
+      let h = stat("최대 tick 평가 (전)", pb, "c-bad") + stat("최대 tick 평가 (후)", pa, "c-ok") + stat("tick 평균 (둘 다)", f1(mean));
+      if (head >= 0) h += stat(`tick ${head + 1} 평가 (전 / 후)`, `${before[head]} / ${after[head]}`, "c-warn");
+      if (bench) {
+        const stale = bench.N !== N ? " *" : "";
+        h += stat("최악 tick 비용 (전)" + stale, f1(pb * bench.perEval) + " ms", "c-bad") + stat("최악 tick 비용 (후)" + stale, f1(pa * bench.perEval) + " ms", "c-ok");
+      }
+      $("#sc-stats").innerHTML = h;
+    }
+    [nI, eI, iI].forEach(x => x.addEventListener("input", draw));
+    $("#sc-play").onclick = () => {
+      if (timer) { clearInterval(timer); timer = null; head = -1; $("#sc-play").textContent = "▶ 재생"; draw(); return; }
+      $("#sc-play").textContent = "⏸ 정지";
+      timer = setInterval(() => { head = (head + 1) % T; draw(); }, 180);
+    };
+    $("#sc-bench").onclick = async () => {
+      const btn = $("#sc-bench"), out = $("#sc-bench-o"), N = +nI.value;
+      btn.disabled = true;
+      const names = Array.from({ length: N }, (_, i) => "주민" + (i + 1));
+      const w = UAI.makeHamlet({ seed: 3, names });
+      let ms = 0, rows = 0;
+      const CH = Math.max(10, Math.floor(20000 / N));
+      for (let i = 0; i < N; i += CH) {
+        const t0 = performance.now();
+        for (let j = i; j < Math.min(N, i + CH); j++) rows += w.reasoner.evaluate(w.agents[j], w).length;
+        ms += performance.now() - t0;
+        out.textContent = `측정 중… ${Math.min(N, i + CH)}/${N}`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+      bench = { N, perEval: ms / N };
+      out.textContent = `N=${N}: 총 ${f1(ms)} ms · 평가 1회 ${(ms / N * 1000).toFixed(0)} µs · 행 ${rows.toLocaleString()}개 (그중 수다 후보 ${(N * (N - 1)).toLocaleString()}) · 행당 ${(ms * 1e6 / rows).toFixed(0)} ns`;
+      btn.disabled = false;
+      draw();
+    };
+    draw();
+  })();
+
+  // ───────── 위젯 4: 결정론 diff ─────────
+  (function determinism() {
+    const la = $("#dt-la"), lb = $("#dt-lb");
+    function run() {
+      const T = +$("#dt-t").value;
+      const A = L.runWorld(+$("#dt-sa").value, T, {});
+      const B = L.runWorld(+$("#dt-sb").value, T, { peekAt: $("#dt-peek").checked ? 100 : null, mathRandom: $("#dt-mr").checked });
+      const n = Math.max(A.log.length, B.log.length);
+      let first = -1, diffN = 0, ha = "", hb = "";
+      for (let i = 0; i < n; i++) {
+        const same = A.log[i] === B.log[i];
+        if (!same) { diffN++; if (first < 0) first = i; }
+        const cls = (same ? "same" : "bad") + (i === first ? " first" : "");
+        ha += `<div class="${cls}">${esc(A.log[i] == null ? "—" : A.log[i])}</div>`;
+        hb += `<div class="${cls}">${esc(B.log[i] == null ? "—" : B.log[i])}</div>`;
+      }
+      la.innerHTML = ha; lb.innerHTML = hb;
+      const eq = A.hash === B.hash;
+      $("#dt-stats").innerHTML =
+        `<div class="stat"><div class="k">로그 줄 수 A / B</div><div class="v">${A.log.length} / ${B.log.length}</div></div>` +
+        `<div class="stat"><div class="k">다른 줄</div><div class="v ${diffN ? "c-bad" : "c-ok"}">${diffN}</div></div>` +
+        `<div class="stat"><div class="k">처음 갈라진 줄</div><div class="v">${first < 0 ? "없음" : "#" + (first + 1)}</div></div>` +
+        `<div class="stat"><div class="k">상태 해시 A / B</div><div class="v mono ${eq ? "c-ok" : "c-bad"}" style="font-size:15px">${A.hash} / ${B.hash}</div></div>`;
+      const target = first < 0 ? 0 : la.children[first].offsetTop - la.offsetTop - 40;
+      la.scrollTop = lb.scrollTop = Math.max(0, target);
+    }
+    let syncing = false;
+    [[la, lb], [lb, la]].forEach(([p, q]) => p.addEventListener("scroll", () => { if (syncing) return; syncing = true; q.scrollTop = p.scrollTop; syncing = false; }));
+    $("#dt-run").onclick = run;
+    run();
+  })();
+
+  // ───────── 위젯 5: 데이터 주도 + 핫 리로드 ─────────
+  (function dataDriven() {
+    const USE = `  {
+    "id": "use", "label": "이용하기", "exec": "use", "targets": "objects", "rank": 0,
+    "considerations": [
+      { "name": "광고 가치", "input": "ad:value", "lo": 0, "hi": 1, "curve": "선형 증가" },
+      { "name": "거리", "input": "dist:target", "lo": 0, "hi": 30, "curve": "2차 감소 (1−x²)" },
+      { "name": "혼잡", "input": "crowd:target", "lo": 0, "hi": 1, "curve": { "type": "linear", "m": -0.7, "b": 1 } }
+    ]
+  }`;
+    const CHAT = `  {
+    "id": "chat", "label": "수다 떨기", "exec": "chat", "targets": "agents", "rank": 0,
+    "considerations": [
+      { "name": "사교 결핍", "input": "need:social", "lo": 0, "hi": 100, "curve": "2차 증가 (x²)" },
+      { "name": "상대와 거리", "input": "dist:target", "lo": 0, "hi": 12, "curve": "선형 감소" },
+      { "name": "상대 한가함", "input": "target:idle", "curve": "스위치 (≥0.5)" }
+    ]
+  }`;
+    const wander = w => `  {
+    "id": "wander", "label": "산책", "exec": "wander", "rank": 0, "weight": ${w},
+    "considerations": [ { "name": "기본값", "input": "const:1", "curve": "선형 증가" } ]
+  }`;
+    const flee = hi => `  {
+    "id": "flee", "label": "도망치기", "exec": "flee", "rank": 10,
+    "considerations": [
+      { "name": "위협 존재", "input": "threat:on", "curve": "스위치 (≥0.5)" },
+      { "name": "위협 거리", "input": "threat:dist", "lo": 0, "hi": ${hi}, "curve": "선형 감소" }
+    ]
+  }`;
+    const EAT = `  {
+    "id": "eat", "label": "빵 먹으러 가기", "exec": "use", "targets": "objects:bakery", "rank": 1,
+    "considerations": [
+      { "name": "배고픔 결핍", "input": "need:hunger", "lo": 50, "hi": 100, "curve": "제곱근 (√x)" },
+      { "name": "거리", "input": "dist:target", "lo": 0, "hi": 30, "curve": "2차 감소 (1−x²)" },
+      { "name": "혼잡", "input": "crowd:target", "lo": 0, "hi": 1, "curve": { "type": "linear", "m": -0.7, "b": 1 } }
+    ]
+  }`;
+    const P = {
+      base: [USE, CHAT, wander(0.12), flee(14)],
+      bakery: [EAT, USE, CHAT, wander(0.12), flee(14)],
+      hermit: [USE, wander(0.3), flee(14)],
+      coward: [USE, CHAT, wander(0.12), flee(24)],
+    };
+    const preset = k => "[\n" + P[k].join(",\n") + "\n]";
+    const ta = $("#dd-json"), msg = $("#dd-msg"), map = $("#dd-map"), CELL = 22;
+    const COLORS = ["--accent", "--ok", "--warn", "--violet", "--teal", "--bad"];
+    let world, timer = null, running = true, dyn;
+
+    function setMsg(ok, text) { msg.className = "msg " + (ok ? "ok" : "bad"); msg.textContent = text; }
+    function staticLayer() {
+      let h = `<rect class="ground" x="0" y="0" width="${world.w * CELL}" height="${world.h * CELL}"/>`;
+      for (let x = 1; x < world.w; x++) h += `<line class="gl" x1="${x * CELL}" y1="0" x2="${x * CELL}" y2="${world.h * CELL}"/>`;
+      for (let y = 1; y < world.h; y++) h += `<line class="gl" x1="0" y1="${y * CELL}" x2="${world.w * CELL}" y2="${y * CELL}"/>`;
+      for (const o of world.objects) {
+        h += `<rect class="obj" x="${o.x * CELL - 2}" y="${o.y * CELL - 2}" width="${CELL + 4}" height="${CELL + 4}" rx="5"/>
+          <text x="${o.x * CELL + CELL / 2}" y="${o.y * CELL + CELL / 2 + 5}" text-anchor="middle" font-size="14">${o.icon}</text>
+          <text class="obj-t" x="${o.x * CELL + CELL / 2}" y="${o.y * CELL + CELL + 11}" text-anchor="middle">${o.label}</text>`;
+      }
+      map.innerHTML = h + `<g id="dd-dyn"></g>`;
+      dyn = map.querySelector("#dd-dyn");
+    }
+    function render() {
+      let h = "";
+      const t = world.threat;
+      if (t) {
+        const cx = t.x * CELL + CELL / 2, cy = t.y * CELL + CELL / 2, r = 14 * CELL;
+        h += `<polygon class="wolf-r" points="${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}"/>
+          <circle class="wolf" cx="${cx}" cy="${cy}" r="10"/><text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="13">🐺</text>`;
+      }
+      world.agents.forEach((a, i) => {
+        const cx = a.x * CELL + CELL / 2, cy = a.y * CELL + CELL / 2;
+        h += `<circle cx="${cx}" cy="${cy}" r="9" style="fill:var(${COLORS[i % COLORS.length]})"/>
+          <text class="ag-t" x="${cx}" y="${cy + 3.5}" text-anchor="middle">${a.name[0]}</text>
+          <text class="ag-l" x="${cx}" y="${cy - 12}" text-anchor="middle">${a.current ? esc(a.current.label) : "…"}</text>`;
+      });
+      dyn.innerHTML = h;
+      $("#dd-agents").innerHTML = world.agents.map((a, i) => `<div class="ag"><b style="color:var(${COLORS[i % COLORS.length]})">${a.name}</b>
+        <div class="cur">${a.current ? esc(a.current.label + (a.current.target ? " @" + (a.current.target.label || a.current.target.name) : "")) : "할 일 없음"}</div>
+        ${UAI.NEEDS.map(n => `<div class="bar ${a.needs[n] < 25 ? "bad" : a.needs[n] < 50 ? "warn" : "ok"}" title="${UAI.NEED_LABEL[n]} ${f1(a.needs[n])}"><i style="width:${a.needs[n]}%"></i></div>`).join("")}</div>`).join("");
+      const lg = $("#dd-log");
+      lg.textContent = world.log.slice(-40).join("\n");
+      lg.scrollTop = lg.scrollHeight;
+      $("#dd-clock").textContent = `${UAI.clock(world.time)} · tick ${world.tickCount}`;
+    }
+    function reset() {
+      const r = L.compileActions(ta.value);
+      if (!r.actions) { setMsg(false, "오류 — 기존 정의 유지:\n• " + r.errors.join("\n• ")); return; }
+      world = L.makeWorld(r.actions);
+      staticLayer(); render();
+      setMsg(true, `새 마을 생성: 행동 ${r.actions.length}개 (시드 21)`);
+    }
+    function reload() {
+      const r = L.compileActions(ta.value);
+      if (!r.actions) { setMsg(false, "오류 — 기존 정의 유지:\n• " + r.errors.join("\n• ")); return; }
+      const n = L.hotReload(world, r.actions);
+      world.log.push(`[${UAI.clock(world.time)}] ⟳ 핫 리로드: 행동 ${r.actions.length}개, 재결정 ${n}명`);
+      setMsg(true, `핫 리로드 완료 (tick ${world.tickCount}): 행동 ${r.actions.length}개 [${r.actions.map(a => a.id).join(", ")}] · 하던 일을 놓은 주민 ${n}명 · 시간·위치·욕구·RNG는 유지`);
+      render();
+    }
+    function loop() {
+      if (!running) return;
+      const k = +$("#dd-speed").value;
+      for (let i = 0; i < k; i++) world.tick();
+      render();
+    }
+    $("#dd-preset").onchange = e => { ta.value = preset(e.target.value); reload(); };
+    $("#dd-reload").onclick = reload;
+    $("#dd-reset").onclick = reset;
+    $("#dd-play").onclick = () => { running = !running; $("#dd-play").textContent = running ? "⏸ 정지" : "▶ 실행"; };
+    $("#dd-wolf").onclick = () => { world.threat = { x: 12, y: 8, until: world.time + 45 }; world.log.push(`[${UAI.clock(world.time)}] 🐺 늑대 출현 (12,8)`); render(); };
+    ta.value = preset("base");
+    reset();
+    timer = setInterval(loop, 150);
+  })();
+})();
+</script>
+</body>
+</html>

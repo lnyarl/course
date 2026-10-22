@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01. 네트워크와 TCP/IP 모델 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+/* 계층 모델 비교 */
+.layer-cmp{display:grid;grid-template-columns:1fr 60px 1fr;gap:0 8px;align-items:stretch}
+.layer-col{display:grid;gap:6px}
+.layer-box{border-radius:9px;padding:8px 12px;color:#fff;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:space-between;transition:transform .12s,box-shadow .12s;min-height:46px;user-select:none}
+.layer-box small{font-weight:500;opacity:.85;font-size:.74rem}
+.layer-box:hover{transform:translateX(3px)}
+.layer-box.sel{box-shadow:0 0 0 3px var(--surface),0 0 0 6px currentColor}
+.layer-box.span3{grid-row:span 3}.layer-box.span2{grid-row:span 2}
+.layer-mid{display:grid;gap:6px}
+.layer-mid div{display:grid;place-items:center;color:var(--muted);font-size:.8rem;min-height:46px}
+.layer-info{margin-top:14px;background:var(--surface-2);border-radius:10px;padding:14px 16px;min-height:120px}
+.layer-info h4{margin-top:0}
+/* 캡슐화 */
+.encap{display:flex;flex-direction:column;gap:10px;padding:8px 0}
+.encap .lvl{display:flex;align-items:center;gap:10px;min-height:44px;opacity:.35;transition:opacity .4s}
+.encap .lvl.on{opacity:1}
+.encap .lvl .lbl{width:110px;font-size:.8rem;font-weight:700;text-align:right;flex:none}
+.encap .pdu{display:flex;gap:3px;flex:1}
+.encap .seg{padding:8px 10px;border-radius:7px;color:#fff;font-size:.78rem;font-weight:600;white-space:nowrap;transform:scaleX(0);transform-origin:left;transition:transform .5s,opacity .5s;opacity:0}
+.encap .seg.data{background:var(--l-phy);flex:1;text-align:center;transform:none;opacity:1}
+.encap .seg.show{transform:scaleX(1);opacity:1}
+.encap .seg.trail{transform-origin:right}
+.encap .name{width:90px;font-size:.78rem;color:var(--muted);font-family:var(--mono)}
+.tl{position:relative;padding-left:22px;border-left:2px solid var(--border);margin:1rem 0 1rem 6px}
+.tl .ev{position:relative;margin-bottom:14px}
+.tl .ev::before{content:"";position:absolute;left:-29px;top:6px;width:12px;height:12px;border-radius:50%;background:var(--primary);border:2px solid var(--surface)}
+.tl .ev .y{font-family:var(--mono);font-weight:700;color:var(--primary-text);font-size:.85rem}
+</style>
+</head>
+<body data-chapter="01">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 1 · 개론 — CHAPTER 01</div>
+  <h1>네트워크와 TCP/IP 모델</h1>
+  <p class="lead">인터넷의 모든 통신은 "계층"이라는 약속 위에서 이뤄집니다. 이 장에서는 TCP/IP가 왜 계층으로 설계되었는지, 데이터가 각 계층을 지나며 어떻게 포장(캡슐화)되는지, 그리고 한 패킷이 두 호스트 사이를 어떻게 여행하는지를 애니메이션으로 봅니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 50분</span><span class="chip l-app">응용</span><span class="chip l-tr">전송</span><span class="chip l-net">인터넷</span><span class="chip l-link">링크</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>OSI 7계층과 TCP/IP 4계층의 대응 관계를 설명하고, 각 계층의 PDU(프로토콜 데이터 단위) 이름을 말할 수 있다.</li>
+    <li>캡슐화·역캡슐화 과정을 헤더 단위로 그릴 수 있다.</li>
+    <li>스위치·라우터·호스트가 각각 어느 계층까지 패킷을 들여다보는지 설명할 수 있다.</li>
+    <li>MAC 주소·IP 주소·포트 번호의 역할 차이를 설명할 수 있다.</li>
+    <li>종단 간 원칙(end-to-end principle)과 최선형(best-effort) 전달의 의미를 이해한다.</li>
+  </ul>
+</div>
+
+<h2 id="history"><span class="num">1.1</span>인터넷과 TCP/IP의 탄생</h2>
+<p>TCP/IP는 특정 회사의 제품이 아니라 <b>공개 표준(RFC)</b>으로 자라난 프로토콜 군(suite)입니다. 처음부터 "서로 다른 네트워크를 연결(inter-network)"하는 것이 목적이었고, 그 설계 철학이 지금도 인터넷을 지탱합니다.</p>
+<div class="tl">
+  <div class="ev"><div class="y">1969</div>ARPANET 첫 노드 연결(UCLA–SRI). 패킷 교환(packet switching) 개념의 실증.</div>
+  <div class="ev"><div class="y">1974</div>Vint Cerf · Bob Kahn, "A Protocol for Packet Network Intercommunication" 발표. TCP의 원형. 이후 신뢰성(TCP)과 전달(IP)을 분리하는 설계로 발전.</div>
+  <div class="ev"><div class="y">1981</div>RFC 791(IP), RFC 793(TCP) 발행. 오늘날 쓰는 헤더 형식이 사실상 확정됨.</div>
+  <div class="ev"><div class="y">1983. 1. 1</div>"Flag Day": ARPANET이 NCP에서 TCP/IP로 전면 전환. 같은 해 DNS(RFC 882/883) 제안.</div>
+  <div class="ev"><div class="y">1989–91</div>BGP(RFC 1105), HTTP/WWW 등장. 상용 인터넷의 시작.</div>
+  <div class="ev"><div class="y">1993</div>CIDR(RFC 1519)로 클래스 기반 주소 체계 폐기. 주소 고갈 완화.</div>
+  <div class="ev"><div class="y">1998 / 2017</div>IPv6 규격 RFC 2460 → RFC 8200(표준). 2011년 IANA IPv4 풀 고갈.</div>
+  <div class="ev"><div class="y">2021–22</div>QUIC(RFC 9000), HTTP/3(RFC 9114). TCP 규격 통합본 RFC 9293 발행.</div>
+</div>
+<div class="callout tip"><div class="t">💡 전문가의 관점</div><p>TCP/IP의 성공 비결은 성능이 아니라 <b>"느슨한 결합"</b>입니다. IP는 아무것도 보장하지 않고(best effort), 신뢰성은 종단(TCP)이 책임집니다. 덕분에 중간 네트워크는 단순해졌고, 어떤 물리 매체(전화선, 이더넷, Wi‑Fi, 위성)도 그 아래에 끼워 넣을 수 있었습니다.</p></div>
+
+<h2 id="why-layers"><span class="num">1.2</span>왜 계층(layer)인가</h2>
+<p>통신에는 해결해야 할 문제가 너무 많습니다. 비트를 전기 신호로 바꾸기, 같은 선에 연결된 이웃을 구분하기, 전 세계 어디로든 길 찾기, 잃어버린 데이터 다시 보내기, 웹 페이지 형식 정하기… 이것을 하나의 거대한 프로그램으로 만들면 아무도 유지보수할 수 없습니다.</p>
+<p>계층화는 이 문제를 <b>관심사별로 분리</b>하고, 각 층이 바로 아래 층의 서비스만 사용하도록 제한합니다. 핵심 규칙은 세 가지입니다.</p>
+<ol>
+  <li><b>각 층은 아래 층의 서비스를 이용</b>하고, 위 층에 서비스를 제공한다. (TCP는 IP를 이용하고, HTTP에 서비스를 제공)</li>
+  <li><b>같은 층끼리 대화</b>한다. 내 TCP는 상대방 TCP와 대화한다고 "느낀다"(peer-to-peer). 실제 데이터는 아래로 내려갔다가 올라온다.</li>
+  <li>층의 <b>구현을 바꿔도 다른 층에 영향이 없다</b>. Wi‑Fi를 Ethernet으로 바꿔도 HTTP 코드는 그대로다.</li>
+</ol>
+
+<h2 id="models"><span class="num">1.3</span>OSI 7계층 vs TCP/IP 4계층 <small>(인터랙티브)</small></h2>
+<p>OSI 모델은 ISO가 만든 "교과서적" 참조 모델이고, TCP/IP 모델은 실제 구현에서 나온 모델입니다. 현업에서는 OSI의 <b>용어</b>(L2 스위치, L3 라우터, L4 로드밸런서, L7 방화벽)를 쓰고, <b>프로토콜</b>은 TCP/IP를 씁니다. 아래에서 각 층을 클릭해 보세요.</p>
+<div class="card">
+  <div class="layer-cmp">
+    <div class="layer-col" id="osi-col"></div>
+    <div class="layer-mid" id="mid-col"></div>
+    <div class="layer-col" id="tcp-col"></div>
+  </div>
+  <div class="layer-info" id="layer-info"><h4>층을 클릭하세요</h4><p class="small">역할, 대표 프로토콜, PDU 이름, 주소 체계, 대표 장비를 보여줍니다.</p></div>
+</div>
+<div class="callout"><div class="t">📌 용어 정리: PDU</div><p>각 층이 다루는 데이터 덩어리의 이름이 다릅니다. 응용 = <b>메시지</b>(message), 전송 = <b>세그먼트</b>(TCP) / <b>데이터그램</b>(UDP), 인터넷 = <b>패킷</b>(packet, 정확히는 IP 데이터그램), 링크 = <b>프레임</b>(frame), 물리 = <b>비트</b>. 대화할 때 "패킷"을 두루뭉술하게 쓰긴 하지만, 전문가는 어느 층의 단위인지 구분해서 말합니다.</p></div>
+
+<h2 id="encap"><span class="num">1.4</span>캡슐화와 역캡슐화 <small>(애니메이션)</small></h2>
+<p>송신 측에서 데이터는 위에서 아래로 내려가며 각 층의 <b>헤더가 앞에 붙습니다</b>(링크 계층은 뒤에 트레일러도 붙임). 수신 측에서는 아래에서 위로 올라가며 헤더가 하나씩 벗겨집니다. 각 헤더는 "내 바로 위 층에 이 데이터를 누구에게 줄지"를 담고 있습니다.</p>
+<div class="anim" id="encap-anim">
+  <div class="stage">
+    <div class="encap" id="encap">
+      <div class="lvl" data-l="4"><div class="lbl" style="color:var(--l-app)">응용</div><div class="pdu"><div class="seg data">HTTP 요청 "GET /index.html"</div></div><div class="name">message</div></div>
+      <div class="lvl" data-l="3"><div class="lbl" style="color:var(--l-tr)">전송 (TCP)</div><div class="pdu"><div class="seg" style="background:var(--l-tr)">TCP 헤더<br><small>src port 51234 → dst port 80</small></div><div class="seg data">데이터</div></div><div class="name">segment</div></div>
+      <div class="lvl" data-l="2"><div class="lbl" style="color:var(--l-net)">인터넷 (IP)</div><div class="pdu"><div class="seg" style="background:var(--l-net)">IP 헤더<br><small>10.0.0.5 → 93.184.216.34</small></div><div class="seg" style="background:var(--l-tr)">TCP</div><div class="seg data">데이터</div></div><div class="name">packet</div></div>
+      <div class="lvl" data-l="1"><div class="lbl" style="color:var(--l-link)">링크 (Ethernet)</div><div class="pdu"><div class="seg" style="background:var(--l-link)">Ethernet 헤더<br><small>MAC aa:.. → MAC bb:..</small></div><div class="seg" style="background:var(--l-net)">IP</div><div class="seg" style="background:var(--l-tr)">TCP</div><div class="seg data">데이터</div><div class="seg trail" style="background:var(--l-link)">FCS</div></div><div class="name">frame</div></div>
+      <div class="lvl" data-l="0"><div class="lbl" style="color:var(--l-phy)">물리</div><div class="pdu"><div class="seg data mono" id="bits" style="letter-spacing:.08em">0110 1000 0101 0100 0101 0100 0101 0000 0010 0000 0010 1111 …</div></div><div class="name">bits</div></div>
+    </div>
+  </div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: 왜 헤더는 "앞"에 붙는가</div><p>헤더가 앞에 있으면 수신 장비가 <b>패킷 전체를 받기 전에</b> 처리 방향을 결정할 수 있습니다(스위치의 cut-through 포워딩). 반대로 오류 검출용 FCS(Frame Check Sequence)는 끝에 두어, 송신 측이 데이터를 내보내면서 동시에 CRC를 계산할 수 있게 합니다. 헤더 배치 하나에도 하드웨어 파이프라인 관점이 들어 있습니다.</p></div>
+
+<h2 id="journey"><span class="num">1.5</span>패킷의 여행: 호스트 → 스위치 → 라우터 → 호스트 <small>(애니메이션)</small></h2>
+<p>이제 한 패킷이 네트워크를 가로지르는 모습을 보겠습니다. 핵심은 <b>장비마다 들여다보는 깊이가 다르다</b>는 것입니다. 스위치는 프레임(L2)만, 라우터는 패킷(L3)까지, 종단 호스트는 응용(L7)까지 열어봅니다. 그리고 <b>IP 주소는 끝까지 유지되지만 MAC 주소는 홉(hop)마다 바뀝니다.</b></p>
+<div class="anim" id="journey-anim">
+  <div class="stage">
+    <svg viewBox="0 0 900 330" id="journey">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker>
+      </defs>
+      <!-- wires -->
+      <line x1="90" y1="200" x2="270" y2="200" class="wire"/>
+      <line x1="330" y1="200" x2="450" y2="200" class="wire"/>
+      <line x1="510" y1="200" x2="630" y2="200" class="wire" stroke-dasharray="4 4"/>
+      <line x1="690" y1="200" x2="810" y2="200" class="wire"/>
+      <text x="570" y="190" text-anchor="middle" class="muted" font-size="11">인터넷 (다른 네트워크)</text>
+      <text x="180" y="190" text-anchor="middle" class="muted" font-size="11">LAN A (10.0.0.0/24)</text>
+      <text x="750" y="190" text-anchor="middle" class="muted" font-size="11">LAN B (203.0.113.0/24)</text>
+      <g id="nodes"></g>
+      <g id="pkt" class="anim-move" style="opacity:0">
+        <rect x="-28" y="-14" width="56" height="28" rx="6" fill="var(--surface)" stroke="var(--primary)" stroke-width="2"/>
+        <rect x="-26" y="-12" width="12" height="24" rx="3" fill="var(--l-link)"/>
+        <rect x="-13" y="-12" width="12" height="24" fill="var(--l-net)"/>
+        <rect x="0" y="-12" width="12" height="24" fill="var(--l-tr)"/>
+        <rect x="13" y="-12" width="13" height="24" rx="3" fill="var(--l-phy)"/>
+      </g>
+      <!-- info panel -->
+      <g id="jinfo" transform="translate(20,262)">
+        <rect x="0" y="0" width="860" height="58" rx="8" class="node"/>
+        <text x="14" y="22" class="mono" font-size="12"><tspan fill="var(--l-link)" font-weight="700">L2</tspan> <tspan id="j-l2">—</tspan></text>
+        <text x="14" y="44" class="mono" font-size="12"><tspan fill="var(--l-net)" font-weight="700">L3</tspan> <tspan id="j-l3">—</tspan></text>
+      </g>
+    </svg>
+  </div>
+</div>
+<div class="grid-2">
+  <div class="callout"><div class="t">🔁 홉마다 바뀌는 것</div><p>Ethernet 헤더(src/dst MAC)는 라우터를 지날 때마다 <b>완전히 새로 만들어집니다</b>. TTL은 1씩 줄고, 그에 따라 IP 헤더 체크섬도 다시 계산됩니다.</p></div>
+  <div class="callout tip"><div class="t">🔒 끝까지 유지되는 것</div><p>src/dst IP 주소(NAT가 없다면), TCP 헤더, 응용 데이터는 중간 장비가 건드리지 않습니다. 이것이 "IP는 종단 간 주소, MAC은 다음 홉 주소"라는 말의 의미입니다.</p></div>
+</div>
+
+<h2 id="addresses"><span class="num">1.6</span>세 가지 주소: MAC · IP · 포트</h2>
+<p>캡슐화 애니메이션에서 본 것처럼, 각 계층은 자기만의 주소를 갖습니다. 세 주소의 <b>범위(scope)</b>가 다르다는 점이 핵심입니다.</p>
+<table>
+  <thead><tr><th>주소</th><th>계층</th><th>길이·표기</th><th>범위</th><th>누가 정하나</th><th>비유</th></tr></thead>
+  <tbody>
+    <tr><td><b>MAC 주소</b></td><td>링크(L2)</td><td>48 bit, <code>00:1a:2b:3c:4d:5e</code></td><td>같은 링크(LAN) 안에서만 의미</td><td>제조사(OUI) + 장치 고유번호</td><td>사람의 주민번호 — 전 세계 유일하지만 길 찾기엔 못 씀</td></tr>
+    <tr><td><b>IP 주소</b></td><td>인터넷(L3)</td><td>32 bit(v4) <code>192.0.2.10</code> / 128 bit(v6)</td><td>전 세계(라우팅 가능)</td><td>네트워크 관리자/ISP/DHCP, 위치에 따라 바뀜</td><td>집 주소 — 이사하면 바뀌지만 우체부가 길을 찾는 기준</td></tr>
+    <tr><td><b>포트 번호</b></td><td>전송(L4)</td><td>16 bit, <code>0–65535</code></td><td>한 호스트 안의 프로세스 구분</td><td>서버는 잘 알려진 포트(80, 443…), 클라이언트는 임시 포트</td><td>아파트 호수 — 같은 주소 안에서 받는 사람 구분</td></tr>
+  </tbody>
+</table>
+<div class="callout warn"><div class="t">⚠️ 흔한 오해</div><p>"MAC 주소는 바뀌지 않으니 그걸로 라우팅하면 되지 않나?" — MAC은 <b>계층 구조가 없습니다</b>. 전 세계 수십억 장치의 MAC을 라우터가 모두 외워야 하죠. IP 주소는 앞부분(네트워크 프리픽스)으로 묶을 수 있어서, 라우터는 "203.0.113.0/24는 저쪽" 식으로 <b>집계(aggregation)</b>할 수 있습니다. 3장에서 자세히 다룹니다.</p></div>
+
+<h2 id="principles"><span class="num">1.7</span>TCP/IP를 떠받치는 설계 원칙</h2>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">종단 간 원칙 (End-to-End Principle)</h4><p>신뢰성·순서·보안 같은 기능은 <b>통신의 양 끝</b>(호스트)에서 구현해야 완전해진다. 네트워크 중간에서 아무리 노력해도 종단이 다시 검증해야 하므로, 중간은 단순하게 두고 끝에 지능을 둔다. (Saltzer, Reed, Clark 1984)</p></div>
+  <div class="card"><h4 style="margin-top:0">최선형 전달 (Best-Effort)</h4><p>IP는 패킷을 <b>잃어버리거나, 순서를 바꾸거나, 중복</b>시킬 수 있다. 어떤 보장도 하지 않는 대신 어디서든 동작한다. 보장이 필요하면 위 층(TCP)이 책임진다.</p></div>
+  <div class="card"><h4 style="margin-top:0">견고성 원칙 (Postel's Law)</h4><p>"보낼 때는 보수적으로, 받을 때는 관대하게." (RFC 761) 상호운용성의 바탕이 되었지만, 오늘날에는 모호한 입력을 관대하게 받아들이면 <b>보안 취약점</b>이 된다는 반성도 있다(RFC 9413).</p></div>
+  <div class="card"><h4 style="margin-top:0">모래시계 모델 (Hourglass)</h4><p>위로는 수많은 응용, 아래로는 수많은 링크 기술, 허리에는 <b>오직 IP 하나</b>. 모든 것이 IP 위에서 돌아가므로 "IP 위에 올리기만 하면" 인터넷에 참여할 수 있다. 이 좁은 허리가 IPv6 전환을 어렵게 만든 이유이기도 하다.</p></div>
+</div>
+<div class="figure card">
+  <svg viewBox="0 0 600 240">
+    <path d="M60 20 H540 L330 120 L540 220 H60 L270 120 Z" fill="var(--primary-soft)" stroke="var(--primary)" stroke-width="2"/>
+    <text x="300" y="48" text-anchor="middle" font-size="13" font-weight="700">HTTP · DNS · SMTP · SSH · RTP · gRPC · …</text>
+    <text x="300" y="78" text-anchor="middle" font-size="13">TCP · UDP · QUIC · SCTP</text>
+    <text x="300" y="126" text-anchor="middle" font-size="16" font-weight="800" fill="var(--primary-text)">IP</text>
+    <text x="300" y="170" text-anchor="middle" font-size="13">Ethernet · Wi‑Fi · LTE/5G · PPP · 광섬유</text>
+    <text x="300" y="200" text-anchor="middle" font-size="13" class="muted">구리 · 전파 · 빛</text>
+  </svg>
+  <div class="cap">모래시계: 모든 응용과 모든 링크 기술이 IP라는 하나의 허리를 통과한다.</div>
+</div>
+
+<h2 id="practice"><span class="num">1.8</span>실습: 내 컴퓨터에서 세 주소 확인하기</h2>
+<p>터미널에서 아래 명령을 실행해 MAC·IP·포트를 직접 찾아보세요.</p>
+<div class="tabs">
+  <div class="tab-bar"><button>macOS</button><button>Linux</button><button>Windows</button></div>
+  <div class="tab-panel"><pre><code># 인터페이스별 MAC(ether)와 IP(inet)
+ifconfig en0
+# 기본 게이트웨이(라우터) — 패킷이 LAN을 벗어날 때 가는 첫 홉
+netstat -rn | grep default
+# 현재 열린 TCP 연결과 포트
+netstat -an -p tcp | head
+# 게이트웨이의 MAC 주소 (ARP 캐시)
+arp -a</code></pre></div>
+  <div class="tab-panel"><pre><code>ip -br link        # MAC 주소
+ip -br addr        # IP 주소
+ip route           # 라우팅 테이블 (default via … 가 게이트웨이)
+ss -tn             # 열린 TCP 연결 (로컬/원격 포트)
+ip neigh           # ARP 캐시</code></pre></div>
+  <div class="tab-panel"><pre><code>ipconfig /all      # 물리적 주소(MAC), IPv4 주소, 기본 게이트웨이
+route print        # 라우팅 테이블
+netstat -an        # 연결과 포트
+arp -a             # ARP 캐시</code></pre></div>
+</div>
+<div class="callout tip"><div class="t">✅ 확인 질문</div><p>① 내 기본 게이트웨이의 IP와 MAC은 무엇인가? ② 브라우저로 아무 사이트나 연 뒤 <code>ss -tn</code>/<code>netstat</code>에서 원격 포트가 443인 연결을 찾아보라. 로컬 포트는 몇 번인가? (임시 포트 범위에 속하는지 확인)</p></div>
+
+<h2 id="quiz"><span class="num">1.9</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>TCP/IP는 서로 다른 네트워크를 잇기 위해 <b>계층</b>으로 설계되었고, 각 층은 아래 층의 서비스만 이용한다.</li>
+    <li>OSI 7계층은 용어, TCP/IP 4계층은 실제 구현. PDU: 메시지 → 세그먼트/데이터그램 → 패킷 → 프레임 → 비트.</li>
+    <li>송신은 헤더를 붙이며 내려가고(캡슐화), 수신은 벗기며 올라간다(역캡슐화).</li>
+    <li>스위치는 L2, 라우터는 L3, 호스트는 L7까지 본다. MAC은 홉마다 바뀌고 IP는 종단 간 유지된다.</li>
+    <li>종단 간 원칙 · 최선형 전달 · 모래시계 모델이 인터넷의 확장성을 만들었다.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, el, svg, Stepper, Quiz} = TCPIP;
+
+  /* ---------- 1.3 계층 모델 비교 ---------- */
+  const INFO = {
+    app:{t:'응용 계층 (Application)',c:'var(--l-app)',role:'사용자/프로그램이 쓰는 프로토콜. 데이터의 의미(형식·절차)를 정의한다. TCP/IP 모델에서는 OSI의 응용·표현·세션을 모두 포함한다.',proto:'HTTP, HTTPS(TLS), DNS, SMTP, SSH, FTP, DHCP, NTP',pdu:'메시지 (message)',addr:'URL, 도메인 이름, 이메일 주소 등',dev:'L7 방화벽/WAF, 로드밸런서(L7), 프록시'},
+    pres:{t:'표현 계층 (Presentation) — OSI',c:'var(--l-app)',role:'데이터 표현 형식 변환: 문자 인코딩, 압축, 암호화. TCP/IP에서는 응용 프로토콜(또는 TLS)이 흡수.',proto:'TLS(일부 관점), MIME, JSON/XML 인코딩, gzip',pdu:'데이터',addr:'—',dev:'—'},
+    sess:{t:'세션 계층 (Session) — OSI',c:'var(--l-app)',role:'대화의 시작·유지·종료, 동기화 지점 관리. TCP/IP에서는 응용이나 TCP 연결이 담당.',proto:'RPC, NetBIOS, PPTP (개념적)',pdu:'데이터',addr:'—',dev:'—'},
+    tr:{t:'전송 계층 (Transport)',c:'var(--l-tr)',role:'프로세스 간(end-to-end) 통신. 포트로 프로세스를 구분하고, TCP는 신뢰성·순서·흐름/혼잡 제어를, UDP는 최소한의 다중화만 제공.',proto:'TCP, UDP, QUIC(UDP 위), SCTP',pdu:'세그먼트(TCP) / 데이터그램(UDP)',addr:'포트 번호 (16 bit)',dev:'L4 로드밸런서, 상태 기반 방화벽, NAT'},
+    net:{t:'인터넷 계층 (Internet / Network)',c:'var(--l-net)',role:'서로 다른 네트워크를 넘어 목적지 호스트까지 패킷을 전달(라우팅). 최선형, 비연결.',proto:'IPv4, IPv6, ICMP, IGMP, IPsec, 라우팅 프로토콜(OSPF, BGP)',pdu:'패킷 (IP 데이터그램)',addr:'IP 주소 (32/128 bit)',dev:'라우터, L3 스위치'},
+    link:{t:'링크 계층 (Link / Network Access)',c:'var(--l-link)',role:'같은 물리 링크에 연결된 노드 사이의 프레임 전달. 주소 지정(MAC), 오류 검출(FCS), 매체 접근 제어. TCP/IP 모델에서는 OSI의 데이터링크+물리를 포함.',proto:'Ethernet(802.3), Wi‑Fi(802.11), ARP, PPP, VLAN(802.1Q)',pdu:'프레임 (frame)',addr:'MAC 주소 (48 bit)',dev:'스위치, 브리지, NIC, 무선 AP'},
+    phy:{t:'물리 계층 (Physical) — OSI',c:'var(--l-phy)',role:'비트를 전기/광/전파 신호로 변환. 커넥터, 전압, 변조 방식, 속도.',proto:'1000BASE-T, 10GBASE-SR, 802.11 PHY, DSL',pdu:'비트 / 심볼',addr:'—',dev:'허브, 리피터, 케이블, 트랜시버(SFP)'}
+  };
+  const osi = [['app','7 응용','Application'],['pres','6 표현','Presentation'],['sess','5 세션','Session'],['tr','4 전송','Transport'],['net','3 네트워크','Network'],['link','2 데이터링크','Data Link'],['phy','1 물리','Physical']];
+  const tcp = [['app','응용','Application','span3'],['tr','전송','Transport',''],['net','인터넷','Internet',''],['link','네트워크 액세스','Link + Physical','span2']];
+  const oc = $('#osi-col'), tc = $('#tcp-col'), mc = $('#mid-col');
+  osi.forEach(([k,n,e])=>{ const b = el('div','layer-box',`<span>${n}</span><small>${e}</small>`); b.style.background=INFO[k].c; b.style.color='#fff'; b.dataset.k=k; oc.appendChild(b); });
+  tcp.forEach(([k,n,e,sp])=>{ const b = el('div','layer-box '+sp,`<span>${n}</span><small>${e}</small>`); b.style.background=INFO[k].c; b.dataset.k=k; tc.appendChild(b); });
+  ['L7','L6','L5','L4','L3','L2','L1'].forEach(x=>mc.appendChild(el('div','',x+' ⟷')));
+  $$('.layer-box').forEach(b=>b.addEventListener('click',()=>{
+    const k=b.dataset.k, I=INFO[k];
+    $$('.layer-box').forEach(x=>x.classList.toggle('sel',x.dataset.k===k));
+    $('#layer-info').innerHTML=`<h4 style="color:${I.c}">${I.t}</h4><dl class="kv"><dt>역할</dt><dd style="font-family:var(--font)">${I.role}</dd><dt>대표 프로토콜</dt><dd>${I.proto}</dd><dt>PDU</dt><dd>${I.pdu}</dd><dt>주소</dt><dd>${I.addr}</dd><dt>대표 장비</dt><dd style="font-family:var(--font)">${I.dev}</dd></dl>`;
+  }));
+  $('.layer-box[data-k="tr"]').click();
+
+  /* ---------- 1.4 캡슐화 ---------- */
+  const lv = l => $(`#encap .lvl[data-l="${l}"]`);
+  const encSteps = [
+    {title:'응용 계층: 메시지 생성', text:'브라우저가 HTTP 요청 문자열을 만든다. 이 시점에는 "누가 받을지" 정보가 URL(호스트명)에만 있다.', run(){ lv(4).classList.add('on'); }},
+    {title:'전송 계층: TCP 헤더 추가 → 세그먼트', text:'소켓이 데이터를 받아 <b>TCP 헤더</b>(출발지/목적지 포트, 시퀀스 번호 등 20바이트+)를 앞에 붙인다. 목적지 포트 80은 "상대 호스트의 웹 서버 프로세스"를 가리킨다.', run(){ lv(3).classList.add('on'); $$('.seg',lv(3)).forEach(s=>s.classList.add('show')); }},
+    {title:'인터넷 계층: IP 헤더 추가 → 패킷', text:'<b>IP 헤더</b>(출발지/목적지 IP, TTL, 상위 프로토콜=TCP(6) 등 20바이트+)를 붙인다. 목적지 IP는 DNS로 알아낸 서버 주소. 라우터는 이 헤더만 보고 길을 찾는다.', run(){ lv(2).classList.add('on'); $$('.seg',lv(2)).forEach(s=>s.classList.add('show')); }},
+    {title:'링크 계층: Ethernet 헤더·트레일러 추가 → 프레임', text:'<b>Ethernet 헤더</b>(목적지/출발지 MAC, 타입=IPv4(0x0800), 14바이트)와 <b>FCS</b>(CRC-32, 4바이트)를 붙인다. 목적지 MAC은 <i>최종 서버가 아니라 다음 홉(게이트웨이)</i>의 MAC이다. ARP로 알아낸다(2장).', run(){ lv(1).classList.add('on'); $$('.seg',lv(1)).forEach(s=>s.classList.add('show')); }},
+    {title:'물리 계층: 비트 → 신호', text:'프레임은 비트열이 되어 NIC가 전기(또는 광, 전파) 신호로 내보낸다. 수신 측은 이 과정을 <b>거꾸로</b>: 비트 → 프레임(FCS 검사, MAC 확인) → IP(주소 확인, 상위 프로토콜 확인) → TCP(포트로 소켓 찾기) → 응용.', run(){ lv(0).classList.add('on'); $('#bits').classList.add('pulse'); setTimeout(()=>$('#bits').classList.remove('pulse'),3000); }},
+  ];
+  Stepper('#encap-anim',{steps:encSteps, intro:'송신 호스트에서 데이터가 내려가며 포장되는 과정입니다.', reset(){ $$('#encap .lvl').forEach(l=>l.classList.remove('on')); $$('#encap .seg:not(.data)').forEach(s=>s.classList.remove('show')); }});
+
+  /* ---------- 1.5 패킷의 여행 ---------- */
+  const NODES = [
+    {id:'A', x:60, label:'호스트 A', sub:'10.0.0.5\nMAC aa', layers:['app','tr','net','link']},
+    {id:'S', x:300, label:'스위치', sub:'L2', layers:['link']},
+    {id:'R1', x:480, label:'라우터 R1', sub:'10.0.0.1 / MAC r1\n198.51.100.1 / MAC r1b', layers:['net','link']},
+    {id:'R2', x:660, label:'라우터 R2', sub:'198.51.100.2 / MAC r2\n203.0.113.1 / MAC r2b', layers:['net','link']},
+    {id:'B', x:840, label:'호스트 B', sub:'203.0.113.10\nMAC bb', layers:['app','tr','net','link']},
+  ];
+  const LC = {app:'var(--l-app)',tr:'var(--l-tr)',net:'var(--l-net)',link:'var(--l-link)'};
+  const LN = {app:'L7',tr:'L4',net:'L3',link:'L2'};
+  const ng = $('#nodes');
+  NODES.forEach(n=>{
+    const g = svg('g',{id:'node-'+n.id});
+    const h = n.layers.length*22+8;
+    g.appendChild(svg('rect',{x:n.x-30,y:170-h-6,width:60,height:h,rx:8,class:'node'}));
+    n.layers.forEach((L,i)=>{
+      g.appendChild(svg('rect',{x:n.x-26,y:170-h-2+i*22,width:52,height:19,rx:4,fill:LC[L],opacity:.25,id:`${n.id}-${L}`,class:'fade'}));
+      g.appendChild(svg('text',{x:n.x,y:170-h+12+i*22,'text-anchor':'middle','font-size':10,'font-weight':'700',fill:LC[L]},LN[L]));
+    });
+    g.appendChild(svg('rect',{x:n.x-30,y:186,width:60,height:28,rx:6,fill:'var(--surface-3)',stroke:'var(--border)'}));
+    g.appendChild(svg('text',{x:n.x,y:204,'text-anchor':'middle','font-size':11,'font-weight':'700'},n.label));
+    n.sub.split('\n').forEach((s,i)=>g.appendChild(svg('text',{x:n.x,y:230+i*13,'text-anchor':'middle','font-size':9.5,class:'mono muted'},s)));
+    ng.appendChild(g);
+  });
+  const pkt = $('#pkt');
+  const movePkt = (x, show=true) => { pkt.style.transform=`translate(${x}px,140px)`; pkt.style.opacity = show?1:0; };
+  const lit = (nid, layers, on=true) => NODES.find(n=>n.id===nid).layers.forEach(L=>{ const e=$(`#${nid}-${L}`); if(e) e.setAttribute('opacity', (on&&layers.includes(L))?1:.25); });
+  const setInfo = (l2,l3) => { $('#j-l2').textContent=l2; $('#j-l3').textContent=l3; };
+  const allOff = () => NODES.forEach(n=>lit(n.id,[],false));
+  const journey = [
+    {title:'호스트 A: 캡슐화', text:'A의 응용→TCP→IP→Ethernet을 거쳐 프레임이 만들어진다. 목적지 IP(203.0.113.10)는 다른 네트워크이므로, 프레임의 목적지 MAC은 <b>기본 게이트웨이 R1</b>의 MAC(r1)이다.', run(){ allOff(); lit('A',['app','tr','net','link']); movePkt(60); setInfo('src MAC aa → dst MAC r1  (type 0x0800)','src 10.0.0.5 → dst 203.0.113.10  TTL=64'); }},
+    {title:'스위치: L2만 보고 포워딩', text:'스위치는 프레임의 <b>목적지 MAC(r1)</b>만 읽고 MAC 테이블에서 해당 포트로 내보낸다. IP 헤더는 열어보지도 않는다. (MAC 테이블 학습은 2장)', run(){ allOff(); lit('S',['link']); movePkt(300); }},
+    {title:'라우터 R1: L3까지 역캡슐화, 라우팅', text:'R1은 Ethernet 헤더를 벗기고(목적지 MAC이 자기 것이므로 수신) IP 헤더를 본다. 라우팅 테이블에서 203.0.113.0/24의 다음 홉이 R2(198.51.100.2)임을 찾는다. <b>TTL을 63으로 줄이고</b> 체크섬을 재계산한 뒤, <b>새 Ethernet 헤더</b>(src r1b → dst r2)를 씌워 내보낸다.', run(){ allOff(); lit('R1',['net','link']); movePkt(480); setInfo('src MAC r1b → dst MAC r2   ← 새로 만든 프레임','src 10.0.0.5 → dst 203.0.113.10  TTL=63  ← IP는 유지, TTL만 감소'); }},
+    {title:'라우터 R2: 다시 L3 처리', text:'같은 과정. 203.0.113.0/24는 R2에 직접 연결된 네트워크이므로, 다음 홉은 <b>목적지 호스트 자체</b>. R2는 ARP로 203.0.113.10의 MAC(bb)을 알아낸 뒤 프레임을 만든다. TTL=62.', run(){ allOff(); lit('R2',['net','link']); movePkt(660); setInfo('src MAC r2b → dst MAC bb   ← 또 새 프레임','src 10.0.0.5 → dst 203.0.113.10  TTL=62'); }},
+    {title:'호스트 B: 전 계층 역캡슐화', text:'B의 NIC가 목적지 MAC이 자기 것임을 확인 → IP 계층이 목적지 IP 확인, 프로토콜 번호 6 → TCP가 목적지 포트 80으로 소켓을 찾음 → 웹 서버 프로세스가 "GET /index.html"을 받는다. 응답은 이 과정을 거꾸로 밟는다.', run(){ allOff(); lit('B',['link','net','tr','app']); movePkt(840); setInfo('프레임 수신 → FCS 검사 → 헤더 제거','IP 수신 → 프로토콜 6(TCP) → 포트 80 → 웹 서버'); }},
+  ];
+  Stepper('#journey-anim',{steps:journey, autoplayMs:2600, intro:'A가 B의 웹 서버로 보내는 HTTP 요청 한 개를 따라갑니다.', reset(){ allOff(); movePkt(60,false); setInfo('—','—'); }});
+
+  /* ---------- 1.9 퀴즈 ---------- */
+  Quiz('#quiz',[
+    {q:'TCP/IP 모델의 "인터넷 계층"에 해당하는 OSI 계층은?',options:['2계층 (데이터링크)','3계층 (네트워크)','4계층 (전송)','5계층 (세션)'],answer:1,explain:'인터넷 계층(IP)은 OSI 3계층 네트워크 계층에 대응한다. 라우터가 동작하는 층이다.'},
+    {q:'전송 계층에서 TCP가 다루는 PDU의 이름은?',options:['프레임','패킷','세그먼트','메시지'],answer:2,explain:'TCP는 세그먼트, UDP는 데이터그램, IP는 패킷, 링크 계층은 프레임이다.'},
+    {q:'패킷이 라우터 세 대를 거쳐 목적지에 도착했다. 이 동안 변하지 <u>않는</u> 것은?',options:['목적지 MAC 주소','출발지 MAC 주소','TTL','목적지 IP 주소'],answer:3,explain:'MAC 주소는 홉마다 새로 쓰이고 TTL은 홉마다 1씩 감소한다. (NAT가 없다면) IP 주소는 종단 간 유지된다.'},
+    {q:'일반적인 L2 스위치가 프레임을 포워딩할 때 참조하는 정보는?',options:['목적지 IP 주소','목적지 MAC 주소','목적지 포트 번호','TTL'],answer:1,explain:'스위치는 링크 계층 장비로, 목적지 MAC과 MAC 테이블만으로 출력 포트를 결정한다.'},
+    {q:'"IP는 최선형(best-effort) 전달을 한다"의 의미로 옳은 것은?',options:['IP는 패킷 손실을 자동으로 복구한다','IP는 패킷의 순서를 보장한다','IP는 전달을 보장하지 않으며, 신뢰성은 상위 계층 책임이다','IP는 항상 가장 빠른 경로를 선택한다'],answer:2,explain:'IP는 손실·순서 변경·중복을 허용한다. 신뢰성은 TCP(종단)가 제공한다 — 종단 간 원칙.'},
+    {q:'호스트 A(10.0.0.5)가 다른 네트워크의 서버로 프레임을 보낼 때 Ethernet 헤더의 목적지 MAC은?',options:['서버의 MAC','기본 게이트웨이(라우터)의 MAC','브로드캐스트 MAC','스위치의 MAC'],answer:1,explain:'MAC 주소는 같은 링크 안에서만 의미가 있으므로, 다른 네트워크로 갈 패킷은 게이트웨이 MAC을 목적지로 한다. 서버의 MAC은 알 수도 없고 알 필요도 없다.'},
+    {q:'모래시계 모델에서 "허리"에 해당하는 프로토콜은?',options:['TCP','Ethernet','HTTP','IP'],answer:3,explain:'모든 응용과 모든 링크 기술이 IP 하나를 통해 연결된다. 이것이 인터넷 확장성의 핵심이자 IPv6 전환이 어려운 이유다.'},
+    {q:'포트 번호의 역할을 가장 잘 설명한 것은?',options:['네트워크 상에서 호스트를 식별한다','같은 링크 안에서 NIC를 식별한다','한 호스트 안에서 통신 중인 프로세스(소켓)를 식별한다','라우터의 인터페이스를 식별한다'],answer:2,explain:'IP가 호스트까지, 포트가 그 안의 프로세스까지 데이터를 전달한다(다중화/역다중화).'},
+  ]);
+})();
+</script>
+</body>
+</html>

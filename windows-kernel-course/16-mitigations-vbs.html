@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>커널 보안 메커니즘과 VBS</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+  .ctl-row > .lab { min-width: 108px; font-size: .84rem; font-weight: 700; color: var(--muted); }
+  .ctl-row .btn { font-size: .8rem; padding: 4px 10px; }
+  .ctl-row .btn.mono { font-family: var(--mono); }
+  .preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+  .preset-row .btn { font-size: .78rem; padding: 3px 9px; }
+  .verdict { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2); }
+  .verdict .big { font: 800 1.15rem var(--sans); }
+  .verdict.ok { border-color: var(--ok); background: var(--ok-bg); } .verdict.ok .big { color: var(--ok); }
+  .verdict.bad { border-color: var(--bad); background: var(--bad-bg); } .verdict.bad .big { color: var(--bad); }
+  .verdict.warn { border-color: var(--warn); background: var(--warn-bg); } .verdict.warn .big { color: var(--warn); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; font: 11px var(--mono); }
+  .chips span { padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel); }
+  .chips span.on { border-color: var(--acc); color: var(--acc); background: var(--acc-bg); }
+
+  .prot-grid { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .prot-grid .btn { font-size: .8rem; padding: 4px 10px; }
+  .prot-grid .btn.vbs { border-style: dashed; }
+  .prot-grid .btn.vbs.on { border-color: var(--hv); color: var(--hv); background: var(--hv-bg); border-style: solid; }
+  .mx td { vertical-align: middle; }
+  .mx td:first-child { font-size: .88rem; }
+  .st { display: inline-block; font: 700 .74rem var(--sans); padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+  .st.l0 { color: var(--bad); background: var(--bad-bg); }
+  .st.l1 { color: var(--acc); background: var(--acc-bg); }
+  .st.l2 { color: var(--warn); background: var(--warn-bg); }
+  .st.l3 { color: var(--ok); background: var(--ok-bg); }
+  .st.l4 { color: var(--hv); background: var(--hv-bg); }
+  .by { font-size: .8rem; color: var(--muted); }
+  .by b { color: var(--text); font-weight: 700; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; font-size: .8rem; color: var(--muted); align-items: center; }
+
+  ul.check { list-style: none; padding-left: 0; }
+  ul.check > li { position: relative; padding-left: 28px; margin: .45rem 0; }
+  ul.check > li::before { content: "☐"; position: absolute; left: 4px; top: 0; color: var(--acc); font-weight: 800; }
+</style>
+</head>
+<body data-chapter="16">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part V · Chapter 16</div>
+  <h1>커널 보안 메커니즘과 VBS</h1>
+  <p class="sub">Windows 커널을 지키는 하드웨어·소프트웨어·하이퍼바이저 계층의 보호 기능. 각 기능이 무엇을 막고, 드라이버 개발자는 무엇을 지켜야 하는지 방어자 관점에서 정리합니다.</p>
+  <div class="meta"><span class="pill lv-expert">전문가</span><span class="pill">⏱ 약 120분</span><span class="pill">선수: 08 가상 메모리 · 13 보안 모델 · 14 드라이버 개발</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>KASLR, NX, SMEP/SMAP, KVA Shadow가 페이지 테이블과 CPU 제어 레지스터 수준에서 어떻게 동작하는지 설명할 수 있다.</li>
+    <li>PatchGuard·DSE·취약 드라이버 차단 목록이 각각 무엇을 보호하며, 드라이버가 이를 위반하지 않으려면 어떻게 설계해야 하는지 안다.</li>
+    <li>VBS의 VTL0/VTL1 분리와 SLAT(EPT) 권한으로 HVCI가 커널 W^X를 "커널보다 높은 곳에서" 강제하는 원리를 그릴 수 있다.</li>
+    <li>보안 제품이 써야 하는 공식 인터페이스(콜백, 미니필터, ETW, ELAM)를 구분하고, HVCI 호환 드라이버 체크리스트를 적용할 수 있다.</li>
+  </ul>
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">이 챕터의 범위</div>
+  <p>이 챕터는 <b>방어자·시스템 관리자·드라이버 개발자</b>의 시선으로 보호 기능의 목적과 동작, 호환성 규칙을 다룹니다. 보호 기능을 우회하는 방법이나 익스플로잇 기법은 다루지 않습니다.
+  "어떤 범주의 시도가 막히는가"는 개념 수준으로만 설명합니다.</p>
+</div>
+
+<h2 id="defense">심층 방어와 보호 기능의 역사</h2>
+<p>
+  커널 버그 하나는 곧 시스템 전체의 권한입니다. 그래서 Windows는 "버그를 없앤다"는 목표와 별개로, <b>버그가 있어도 악용을 어렵게 만드는 층</b>을 겹겹이 쌓아 왔습니다. 이 접근을 <strong>심층 방어(defense in depth)</strong>라고 합니다.
+  각 층은 서로 다른 단계를 겨냥합니다.
+</p>
+<div class="grid3">
+  <div class="card hw"><h4>① 정보 숨기기</h4><p>KASLR, KVA Shadow. 공격에 필요한 커널 주소·메모리 내용을 얻기 어렵게 한다.</p></div>
+  <div class="card kernel"><h4>② 실행 제한</h4><p>NX, SMEP/SMAP, CFG, CET. 손상된 메모리가 있어도 "그 내용을 코드로 실행"하거나 "흐름을 엉뚱한 곳으로 돌리는" 것을 막는다.</p></div>
+  <div class="card kernel"><h4>③ 로드·무결성 통제</h4><p>DSE, 차단 목록, PatchGuard. 신뢰할 수 없는 코드의 진입과 커널 핵심 구조의 변조를 막거나 탐지한다.</p></div>
+  <div class="card hv"><h4>④ 상위 계층 강제</h4><p>VBS, HVCI, KDP, Credential Guard. 커널(ring 0)이 장악돼도 하이퍼바이저와 VTL1이 규칙을 강제한다.</p></div>
+  <div class="card user"><h4>⑤ 관찰·대응</h4><p>커널 콜백, 미니필터, ETW, ELAM. 보안 제품이 공식 경로로 행위를 보고 차단한다.</p></div>
+  <div class="card"><h4>핵심 아이디어</h4><p>어느 한 층도 완벽하지 않다. 공격자가 넘어야 할 <b>조건의 개수와 비용</b>을 늘리는 것이 목표다.</p></div>
+</div>
+
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 250" role="img" aria-label="Windows 커널 보호 기능 연대표">
+    <line class="sep" x1="30" y1="125" x2="850" y2="125"/>
+    <g>
+      <circle cx="80" cy="125" r="7" class="box kernel"/>
+      <text x="80" y="58" text-anchor="middle" class="b">2004 · XP SP2</text>
+      <text x="80" y="76" text-anchor="middle" class="sm">DEP / NX</text>
+      <path class="ln noarr dash" d="M80 84 L80 116"/>
+    </g>
+    <g>
+      <circle cx="160" cy="125" r="7" class="box kernel"/>
+      <text x="160" y="162" text-anchor="middle" class="b">2005 · x64 XP/2003</text>
+      <text x="160" y="180" text-anchor="middle" class="sm">PatchGuard (KPP)</text>
+      <path class="ln noarr dash" d="M160 134 L160 148"/>
+    </g>
+    <g>
+      <circle cx="240" cy="125" r="7" class="box kernel"/>
+      <text x="240" y="40" text-anchor="middle" class="b">2007 · Vista x64</text>
+      <text x="240" y="58" text-anchor="middle" class="sm">커널 코드 서명 강제</text>
+      <text x="240" y="74" text-anchor="middle" class="sm">ASLR (커널 이미지 포함)</text>
+      <path class="ln noarr dash" d="M240 84 L240 116"/>
+    </g>
+    <g>
+      <circle cx="320" cy="125" r="7" class="box kernel"/>
+      <text x="320" y="162" text-anchor="middle" class="b">2012 · Windows 8</text>
+      <text x="320" y="180" text-anchor="middle" class="sm">SMEP · NX 풀</text>
+      <text x="320" y="196" text-anchor="middle" class="sm">ELAM · Secure Boot</text>
+      <path class="ln noarr dash" d="M320 134 L320 148"/>
+    </g>
+    <g>
+      <circle cx="400" cy="125" r="8" class="box hv"/>
+      <text x="400" y="40" text-anchor="middle" class="b c-hv">2015 · Windows 10</text>
+      <text x="400" y="58" text-anchor="middle" class="sm">VBS · HVCI</text>
+      <text x="400" y="74" text-anchor="middle" class="sm">Credential Guard</text>
+      <path class="ln noarr dash" d="M400 84 L400 116"/>
+    </g>
+    <g>
+      <circle cx="480" cy="125" r="7" class="box kernel"/>
+      <text x="480" y="162" text-anchor="middle" class="b">2016 · 10 1607</text>
+      <text x="480" y="180" text-anchor="middle" class="sm">신규 드라이버</text>
+      <text x="480" y="196" text-anchor="middle" class="sm">MS 서명 필요</text>
+      <path class="ln noarr dash" d="M480 134 L480 148"/>
+    </g>
+    <g>
+      <circle cx="560" cy="125" r="7" class="box kernel"/>
+      <text x="560" y="40" text-anchor="middle" class="b">2018</text>
+      <text x="560" y="58" text-anchor="middle" class="sm">KVA Shadow</text>
+      <text x="560" y="74" text-anchor="middle" class="sm">(Meltdown 대응)</text>
+      <path class="ln noarr dash" d="M560 84 L560 116"/>
+    </g>
+    <g>
+      <circle cx="640" cy="125" r="8" class="box hv"/>
+      <text x="640" y="162" text-anchor="middle" class="b c-hv">2020</text>
+      <text x="640" y="180" text-anchor="middle" class="sm">KDP</text>
+      <text x="640" y="196" text-anchor="middle" class="sm">(커널 데이터 보호)</text>
+      <path class="ln noarr dash" d="M640 134 L640 148"/>
+    </g>
+    <g>
+      <circle cx="720" cy="125" r="8" class="box hv"/>
+      <text x="720" y="40" text-anchor="middle" class="b c-hv">2021 · Windows 11</text>
+      <text x="720" y="58" text-anchor="middle" class="sm">메모리 무결성 기본</text>
+      <text x="720" y="74" text-anchor="middle" class="sm">(신규 설치·호환 HW)</text>
+      <path class="ln noarr dash" d="M720 84 L720 116"/>
+    </g>
+    <g>
+      <circle cx="800" cy="125" r="8" class="box hv"/>
+      <text x="800" y="162" text-anchor="middle" class="b c-hv">2022~ · 11 22H2</text>
+      <text x="800" y="180" text-anchor="middle" class="sm">취약 드라이버 차단</text>
+      <text x="800" y="196" text-anchor="middle" class="sm">목록 기본 · 커널 CET</text>
+      <path class="ln noarr dash" d="M800 134 L800 148"/>
+    </g>
+    <text x="30" y="232" class="sm">주황 = 같은 특권 수준(ring 0)에서 동작하는 보호 · 보라 = 하이퍼바이저/VTL1이 강제하는 보호</text>
+  </svg>
+  <figcaption><b>그림 16-1.</b> 주요 커널 보호 기능 연대표. 연도는 처음 도입된 대략적 시점이며, 많은 기능이 이후 업데이트로 기본값·적용 범위가 바뀌었습니다.</figcaption>
+</figure>
+
+<div class="callout expert">
+  <div class="callout-title">전문가 관점 — "누가 강제하는가"를 먼저 물어라</div>
+  <p>보호 기능을 평가할 때 가장 중요한 질문은 <b>"그 규칙을 누가 강제하는가"</b>입니다. NX 비트나 PatchGuard는 커널 자신과 같은 ring 0에서 동작하므로, 커널 권한을 완전히 얻은 공격자와 <b>같은 높이</b>에 서 있습니다.
+  반면 HVCI·KDP·Credential Guard는 하이퍼바이저와 VTL1이 강제하므로 VTL0 커널이 장악돼도 규칙이 유지됩니다. 2015년 이후 Windows 보안의 큰 흐름은 이 "높이 차이"를 만드는 것이었습니다.</p>
+</div>
+
+<h2 id="hw">하드웨어 기반 보호: KASLR · NX · SMEP · SMAP</h2>
+
+<h3>KASLR — 커널 주소 무작위화</h3>
+<p>
+  <strong>KASLR(Kernel Address Space Layout Randomization)</strong>은 부팅마다 <code>ntoskrnl.exe</code>, <code>hal.dll</code>, 드라이버 이미지, 그리고 여러 커널 영역(풀, 페이지 테이블 셀프맵 등)의 기준 주소를 바꿉니다.
+  메모리 손상 버그를 악용하려면 대개 "어디에 무엇이 있는지" 알아야 하므로, 주소를 숨기는 것만으로 공격 비용이 크게 늘어납니다. Windows 10 1607에서는 페이지 테이블 셀프맵(PML4 자기 참조 인덱스)도 무작위화되었습니다(→ 08장).
+</p>
+<p>
+  KASLR의 한계는 <b>정보 유출(info leak)</b> 하나로 무력화될 수 있다는 점입니다. 그래서 Windows는 낮은 권한(예: Medium 미만 무결성 수준)의 프로세스가 커널 주소를 얻는 경로를 줄여 왔습니다.
+  드라이버 개발자에게 주는 교훈은 명확합니다: <b>커널 포인터를 유저 모드로 돌려주지 마라.</b> IOCTL 출력 버퍼에 구조체를 통째로 복사하다가 커널 주소나 초기화되지 않은 스택/풀 내용이 새는 것이 대표적인 실수입니다.
+</p>
+
+<h3>NX / DEP — 데이터는 실행하지 않는다</h3>
+<p>
+  x64 페이지 테이블 엔트리의 <b>비트 63(XD, Execute Disable — AMD 용어 NX)</b>이 1이면 그 페이지에서 명령어를 가져올 수 없습니다(<code>IA32_EFER.NXE</code>가 켜져 있어야 의미가 있음).
+  Windows는 커널 스택, 대부분의 풀(<code>NonPagedPoolNx</code>, Windows 8 이후), 이미지의 데이터 섹션을 NX로 매핑합니다. 커널이 NX 페이지에서 실행을 시도하면 <code>ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY</code>(0xFC)로 버그체크합니다.
+</p>
+
+<h3>SMEP / SMAP — 커널과 유저 페이지 사이의 벽</h3>
+<p>
+  커널은 유저 주소 공간도 함께 매핑된 상태로 실행됩니다. 이 설계는 빠르지만, "커널 모드에서 유저가 통제하는 메모리를 코드나 데이터로 쓰는" 위험을 낳습니다. 이를 하드웨어로 막는 것이 두 개의 CR4 비트입니다.
+</p>
+<table>
+  <thead><tr><th>기능</th><th>제어 비트</th><th>규칙</th><th>위반 시</th></tr></thead>
+  <tbody>
+    <tr><td><b>SMEP</b><br><span class="muted">Supervisor Mode Execution Prevention</span></td><td><code>CR4.SMEP</code> (비트 20)</td><td>CPL 0에서 <b>유저 페이지(U/S=1)의 명령어를 가져오면</b> 페이지 폴트</td><td>#PF → 커널 모드 폴트이므로 버그체크</td></tr>
+    <tr><td><b>SMAP</b><br><span class="muted">Supervisor Mode Access Prevention</span></td><td><code>CR4.SMAP</code> (비트 21)<br><code>RFLAGS.AC</code></td><td>CPL 0에서 <b>유저 페이지의 데이터를 읽거나 쓰면</b> 페이지 폴트. 단, <code>RFLAGS.AC=1</code>이면 허용(<code>stac</code>/<code>clac</code> 명령으로 의도된 구간만 열기)</td><td>#PF</td></tr>
+    <tr><td><b>CR0.WP</b></td><td><code>CR0.WP</code> (비트 16)</td><td>1이면 커널도 읽기 전용 페이지(R/W=0)에 쓸 수 없음</td><td>#PF → <code>ATTEMPTED_WRITE_TO_READONLY_MEMORY</code>(0xBE)</td></tr>
+  </tbody>
+</table>
+<p>
+  SMEP은 Windows 8부터 지원 CPU에서 켜집니다. SMAP은 운영체제가 유저 메모리에 접근하는 <b>모든</b> 지점을 <code>stac</code>/<code>clac</code>로 감싸야 하므로 도입 비용이 크고, Windows에서의 적용 범위는 버전에 따라 제한적이며 공식 문서화도 적습니다.
+  확실하게 알고 싶다면 대상 시스템에서 <code>r cr4</code>로 비트를 직접 확인하세요. 아래 시뮬레이터로 페이지 권한 판정 규칙을 직접 조작해 보세요.
+</p>
+
+<div class="sim" id="pfSim">
+  <div class="sim-title">페이지 권한 판정 시뮬레이터 — 이 접근은 허용될까?</div>
+  <div class="preset-row">
+    <span class="muted" style="font-size:.8rem;align-self:center">예시 상황:</span>
+    <button class="btn" data-preset="kcode">커널 코드 실행</button>
+    <button class="btn" data-preset="kstack">커널 스택에서 실행</button>
+    <button class="btn" data-preset="uexec">커널이 유저 페이지 코드 실행</button>
+    <button class="btn" data-preset="uread">커널이 유저 버퍼 직접 읽기</button>
+    <button class="btn" data-preset="ucopy">의도된 유저 복사 (AC=1)</button>
+    <button class="btn" data-preset="rowrite">커널 코드 페이지에 쓰기</button>
+    <button class="btn" data-preset="ukread">유저가 커널 페이지 읽기</button>
+  </div>
+  <div class="ctl-row"><span class="lab">접근 주체</span>
+    <button class="btn" data-k="cpl" data-v="0">CPL 0 (커널)</button><button class="btn" data-k="cpl" data-v="3">CPL 3 (유저)</button></div>
+  <div class="ctl-row"><span class="lab">접근 종류</span>
+    <button class="btn" data-k="acc" data-v="r">읽기</button><button class="btn" data-k="acc" data-v="w">쓰기</button><button class="btn" data-k="acc" data-v="x">실행(명령어 페치)</button></div>
+  <div class="ctl-row"><span class="lab">PTE U/S</span>
+    <button class="btn" data-k="us" data-v="s">0 · 슈퍼바이저 페이지</button><button class="btn" data-k="us" data-v="u">1 · 유저 페이지</button></div>
+  <div class="ctl-row"><span class="lab">PTE R/W</span>
+    <button class="btn" data-k="rw" data-v="0">0 · 읽기 전용</button><button class="btn" data-k="rw" data-v="1">1 · 쓰기 가능</button></div>
+  <div class="ctl-row"><span class="lab">PTE XD(63)</span>
+    <button class="btn" data-k="xd" data-v="0">0 · 실행 가능</button><button class="btn" data-k="xd" data-v="1">1 · 실행 금지(NX)</button></div>
+  <div class="ctl-row"><span class="lab">CPU 설정</span>
+    <button class="btn mono" data-t="smep">CR4.SMEP</button><button class="btn mono" data-t="smap">CR4.SMAP</button><button class="btn mono" data-t="wp">CR0.WP</button><button class="btn mono" data-t="ac">RFLAGS.AC</button></div>
+  <div class="verdict"><span class="big"></span><div class="chips"></div></div>
+  <div class="console" style="min-height:6em"></div>
+</div>
+
+<div class="callout tip">
+  <div class="callout-title">드라이버 개발자가 가져갈 규칙</div>
+  <p>유저 버퍼는 항상 <b>정해진 경로</b>로 다루세요: METHOD_BUFFERED/Direct I/O(MDL) 사용, 또는 <code>ProbeForRead</code>/<code>ProbeForWrite</code> + <code>__try/__except</code> 안에서 복사. 유저 포인터를 커널 구조체에 저장해 두고 나중에(다른 프로세스 문맥, 높은 IRQL에서) 역참조하는 코드는 SMAP 여부와 무관하게 버그입니다(→ 11·14장).
+  그리고 실행 가능한 메모리를 동적으로 만들 이유가 없습니다 — 이는 아래 HVCI 절에서 "규칙"이 됩니다.</p>
+</div>
+
+<h2 id="kvas">KVA Shadow</h2>
+<p>
+  2018년 공개된 Meltdown(CVE-2017-5754, Rogue Data Cache Load)은 일부 CPU에서 <b>유저 모드 코드가 투기적 실행(speculative execution)을 통해 커널 메모리를 읽어낼 수 있는</b> 하드웨어 취약점이었습니다. 페이지 권한 검사가 투기적 실행 결과의 캐시 흔적까지는 막지 못했기 때문입니다.
+  Windows의 대응이 <strong>KVA Shadow(Kernel Virtual Address Shadow)</strong>이며, Linux의 KPTI와 같은 개념입니다.
+</p>
+
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="KVA Shadow 두 개의 페이지 테이블">
+    <text x="210" y="26" text-anchor="middle" class="lg">유저 모드 실행 중</text>
+    <text x="210" y="44" text-anchor="middle" class="sm mono">CR3 = 사용자용 페이지 테이블</text>
+    <text x="670" y="26" text-anchor="middle" class="lg">커널 모드 실행 중</text>
+    <text x="670" y="44" text-anchor="middle" class="sm mono">CR3 = 커널용 페이지 테이블</text>
+
+    <rect class="box user" x="60" y="60" width="300" height="80" rx="8"/>
+    <text x="210" y="96" text-anchor="middle" class="b">유저 주소 공간</text>
+    <text x="210" y="116" text-anchor="middle" class="sm">정상 매핑</text>
+    <rect class="box kernel" x="60" y="150" width="300" height="46" rx="8"/>
+    <text x="210" y="170" text-anchor="middle" class="b">커널 최소 영역 (shadow)</text>
+    <text x="210" y="187" text-anchor="middle" class="sm">진입/복귀 전환 코드 · IDT/GDT/TSS · 전환 스택</text>
+    <rect class="box plain" x="60" y="206" width="300" height="94" rx="8" style="stroke-dasharray:5 4"/>
+    <text x="210" y="246" text-anchor="middle" class="b c-muted">커널의 나머지 전부</text>
+    <text x="210" y="266" text-anchor="middle" class="sm">매핑되지 않음 → 투기적으로도 읽을 대상이 없음</text>
+
+    <rect class="box user" x="520" y="60" width="300" height="80" rx="8"/>
+    <text x="670" y="96" text-anchor="middle" class="b">유저 주소 공간</text>
+    <text x="670" y="116" text-anchor="middle" class="sm">커널이 유저 버퍼에 접근하기 위해 매핑</text>
+    <rect class="box kernel" x="520" y="150" width="300" height="150" rx="8"/>
+    <text x="670" y="218" text-anchor="middle" class="b">커널 주소 공간 전체</text>
+    <text x="670" y="238" text-anchor="middle" class="sm">ntoskrnl · 드라이버 · 풀 · 페이지 테이블 …</text>
+
+    <path class="ln kernel flow" d="M370 160 C 430 160, 460 160, 510 160"/>
+    <text x="440" y="148" text-anchor="middle" class="sm b c-kernel">syscall · 인터럽트</text>
+    <text x="440" y="178" text-anchor="middle" class="sm">CR3 전환</text>
+    <path class="ln user flow" d="M510 250 C 460 250, 430 250, 370 250"/>
+    <text x="440" y="240" text-anchor="middle" class="sm b c-user">sysret · iret</text>
+    <text x="440" y="268" text-anchor="middle" class="sm">CR3 복원</text>
+  </svg>
+  <figcaption><b>그림 16-2.</b> KVA Shadow. 프로세스마다 두 벌의 최상위 페이지 테이블을 두고, 커널 진입·복귀 때마다 CR3를 바꿉니다. 비용을 줄이기 위해 PCID를 활용합니다.</figcaption>
+</figure>
+
+<ul>
+  <li><b>무엇을 보호하나</b>: 유저 모드 실행 중에는 커널 대부분이 아예 매핑되어 있지 않으므로, 투기적 실행으로도 커널 메모리 내용을 끌어낼 수 없습니다.</li>
+  <li><b>비용</b>: 모든 시스템 콜·인터럽트마다 CR3 전환이 추가됩니다. PCID(Process-Context Identifier)를 지원하는 CPU에서는 TLB를 통째로 비우지 않아 오버헤드가 줄어듭니다. 시스템 콜이 많은 워크로드에서 차이가 납니다.</li>
+  <li><b>언제 켜지나</b>: 취약한 CPU에서만 켜집니다. 하드웨어 수준에서 수정된 CPU(예: <code>IA32_ARCH_CAPABILITIES.RDCL_NO</code>를 보고하는 CPU)나 해당 취약점이 없는 CPU에서는 꺼집니다.</li>
+  <li><b>드라이버 영향</b>: 공식 API만 쓰는 드라이버에는 영향이 없습니다. 인터럽트 진입 경로나 CR3를 직접 다루는 비정상적 드라이버만 문제가 됩니다.</li>
+</ul>
+
+<h2 id="kpp">Kernel Patch Protection (PatchGuard)</h2>
+<p>
+  x64 Windows 초기(2005)부터 들어간 <strong>Kernel Patch Protection(KPP, 통칭 PatchGuard)</strong>은 커널 핵심 코드와 구조체가 변조되지 않았는지 <b>주기적으로 검사</b>하고, 변조를 발견하면 시스템을 <code>CRITICAL_STRUCTURE_CORRUPTION</code>(버그체크 0x109)으로 멈춥니다.
+  x86 시절 보안 제품과 악성코드가 너도나도 SSDT를 후킹해 시스템 안정성을 망가뜨린 경험에서 나온 정책입니다.
+</p>
+<div class="grid2">
+  <div class="card kernel"><h4>감시 대상 (대표적)</h4>
+    <ul>
+      <li>ntoskrnl·HAL 등 핵심 모듈의 코드</li>
+      <li>시스템 서비스 디스패치 테이블(SSDT)</li>
+      <li>IDT, GDT 등 디스크립터 테이블</li>
+      <li>시스템 콜 진입점 MSR 등 중요 MSR</li>
+      <li>일부 커널 객체 타입·리스트 등 내부 구조</li>
+    </ul>
+    <p class="muted" style="font-size:.86rem">정확한 목록은 공개되지 않으며 버전마다 늘어납니다.</p></div>
+  <div class="card"><h4>동작 특성</h4>
+    <ul>
+      <li><b>사후 탐지</b>: 변조 순간이 아니라 무작위 시점의 검사에서 발견 → 버그체크가 몇 분 뒤에 날 수도 있다</li>
+      <li>부팅 시 커널 디버거가 연결되어 있으면 동작하지 않는다</li>
+      <li>VBS가 켜지면 <b>HyperGuard</b>(Secure Kernel)가 일부 구조를 실시간으로 보호한다(위반 시 0x18C <code>HYPERGUARD_VIOLATION</code>)</li>
+    </ul></div>
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">드라이버 개발자를 위한 규칙</div>
+  <ul>
+    <li><b>커널 코드나 디스패치 테이블을 패치하지 않는다</b> — SSDT/IDT 후킹, 인라인 후킹, MSR 변경 모두 금지.</li>
+    <li><b>문서화되지 않은 커널 구조를 수정하지 않는다</b> — 내부 리스트에서 항목 떼어내기, 객체 타입 구조 변경 등.</li>
+    <li><b>필요한 기능은 공식 콜백·프레임워크로 얻는다</b> — 프로세스 감시는 <code>PsSetCreateProcessNotifyRoutineEx</code>, 파일은 미니필터, 레지스트리는 <code>CmRegisterCallbackEx</code>, 네트워크는 WFP (→ <a href="#interfaces">공식 인터페이스</a>).</li>
+    <li><b>디버거를 붙인 상태의 테스트 통과는 증거가 아니다</b> — 디버거 없이, 가능하면 VBS/HVCI를 켠 상태로 장시간 테스트한다.</li>
+  </ul>
+</div>
+
+<h2 id="ci">드라이버 서명 강제(DSE)와 코드 무결성</h2>
+<p>
+  <strong>DSE(Driver Signature Enforcement)</strong>는 서명되지 않은 커널 코드의 로드를 막는 정책이고, 이를 실제로 판정하는 구성요소가 <strong>코드 무결성(Code Integrity, <code>ci.dll</code>)</strong>입니다.
+  커널은 부팅 초기에 <code>ci.dll</code>을 초기화하고, 이후 모든 커널 이미지 로드 시 서명 검증을 요청합니다.
+</p>
+<table>
+  <thead><tr><th>정책</th><th>내용</th></tr></thead>
+  <tbody>
+    <tr><td>x64 커널 모드 코드 서명</td><td>Vista x64부터 커널 드라이버는 반드시 서명되어야 로드된다.</td></tr>
+    <tr><td>Microsoft 서명 요구 (1607~)</td><td>Secure Boot가 켜진 Windows 10 1607 이후 새 설치에서는, 새로 로드되는 커널 드라이버가 <b>Microsoft(하드웨어 개발자 센터)의 서명</b>을 받아야 한다 — HLK 테스트 기반 인증 서명 또는 attestation 서명. 일부 레거시 교차 서명 예외가 있다.</td></tr>
+    <tr><td>테스트 서명 모드</td><td><code>bcdedit /set testsigning on</code> — 개발용. Secure Boot가 켜져 있으면 설정할 수 없다. 운영 환경에서 켜 두면 안 된다.</td></tr>
+    <tr><td>취약 드라이버 차단 목록</td><td>서명은 정상이지만 <b>악용 가능한 취약점이 알려진</b> 드라이버를 해시·서명자 기준으로 차단한다. HVCI·Smart App Control·S 모드에서 강제되며, Windows 11 2022 업데이트부터는 모든 장치에서 기본 켜짐. 목록은 Windows 업데이트로 갱신된다.</td></tr>
+    <tr><td>App Control for Business (WDAC)</td><td>조직이 직접 커널·유저 코드 허용 정책을 정의. 차단 목록을 더 자주 반영하거나 특정 서명자만 허용할 때 사용.</td></tr>
+  </tbody>
+</table>
+
+<figure class="fig stepper" data-interval="3200">
+  <svg class="dia" viewBox="0 0 880 470" role="img" aria-label="드라이버 로드와 코드 무결성 검사">
+    <g class="lane">
+      <text x="20" y="47" class="sm b c-user">요청</text>
+      <text x="20" y="107" class="sm b c-kernel">I/O 관리자</text>
+      <text x="20" y="167" class="sm b c-kernel">메모리 관리자</text>
+      <text x="20" y="227" class="sm b c-kernel">코드 무결성</text>
+      <text x="20" y="287" class="sm b c-hv">VTL1 (HVCI)</text>
+      <text x="20" y="347" class="sm b c-kernel">정책</text>
+      <text x="20" y="417" class="sm b c-acc">결과</text>
+    </g>
+    <g data-hl="1"><rect class="box user" x="150" y="24" width="660" height="40" rx="8"/><text x="166" y="49" class="mono">SCM(services.exe) → NtLoadDriver(서비스 레지스트리 키)</text></g>
+    <g data-hl="2" data-on="2"><rect class="box kernel" x="150" y="84" width="660" height="40" rx="8"/><text x="166" y="109" class="mono">SeLoadDriverPrivilege 확인 → IopLoadDriver → 이미지 경로 해석</text></g>
+    <g data-hl="3" data-on="3"><rect class="box kernel" x="150" y="144" width="660" height="40" rx="8"/><text x="166" y="169" class="mono">MmLoadSystemImage: 이미지 섹션 생성 → 서명 검증 요청</text></g>
+    <g data-hl="4" data-on="4"><rect class="box kernel" x="150" y="204" width="660" height="40" rx="8"/><text x="166" y="229" class="mono">ci.dll: 서명 체인 · 서명 수준(Microsoft 서명 여부) · 해시 확인</text></g>
+    <g data-hl="5" data-on="5"><rect class="box hv" x="150" y="264" width="660" height="40" rx="8"/><text x="166" y="289" class="mono">skci.dll(Secure Kernel): 검증 통과 페이지에만 EPT 실행 권한 부여</text></g>
+    <g data-hl="6" data-on="6"><rect class="box kernel" x="150" y="324" width="660" height="40" rx="8"/><text x="166" y="349" class="mono">취약 드라이버 차단 목록 · App Control(WDAC) 정책 대조</text></g>
+    <g data-only="7"><rect class="box ok" x="150" y="394" width="660" height="44" rx="8"/><text x="166" y="421" class="mono">✓ 이미지 재배치·임포트 해석 → DriverEntry 호출</text></g>
+    <g data-only="8"><rect class="box bad" x="150" y="394" width="660" height="44" rx="8"/><text x="166" y="421" class="mono">✗ STATUS_INVALID_IMAGE_HASH (0xC0000428) · CodeIntegrity 이벤트 로그</text></g>
+    <g data-at="1:0,0|2:0,60|3:0,120|4:0,180|5:0,240|6:0,300|7:0,372|8:0,372">
+      <circle class="token" cx="120" cy="44" r="9"/>
+    </g>
+  </svg>
+  <ol class="steps">
+    <li><b>로드 요청</b>: 서비스 제어 관리자가 드라이버 서비스를 시작하면 <code>NtLoadDriver</code>가 호출됩니다. 인자는 파일 경로가 아니라 <b>서비스 레지스트리 키 경로</b>입니다(PnP 드라이버는 PnP 관리자가 같은 경로로 로드).</li>
+    <li><b>I/O 관리자</b>: 호출자에게 <code>SeLoadDriverPrivilege</code>가 있는지 확인하고(관리자에게만 기본 부여), 서비스 키의 <code>ImagePath</code>로 이미지 파일을 찾습니다.</li>
+    <li><b>메모리 관리자</b>: <code>MmLoadSystemImage</code>가 이미지를 시스템 공간에 매핑하는 과정에서 코드 무결성에 서명 검증을 요청합니다. 검증 실패면 이미지는 실행 가능 상태가 되지 못합니다.</li>
+    <li><b>ci.dll</b>: Authenticode 서명이 신뢰할 수 있는 루트로 이어지는지, 현재 정책이 요구하는 <b>서명 수준</b>(예: Microsoft 서명)을 만족하는지, 이미지 해시가 서명과 일치하는지 확인합니다.</li>
+    <li><b>HVCI가 켜져 있으면</b>: 최종 판단과 실행 권한 부여는 VTL1의 Secure Kernel(<code>skci.dll</code>)이 담당합니다. VTL0 커널은 "이 페이지를 실행 가능하게 해 달라"고 요청할 뿐, 스스로 결정할 수 없습니다.</li>
+    <li><b>정책 대조</b>: 서명이 유효해도 Microsoft 취약 드라이버 차단 목록이나 조직의 App Control 정책에 걸리면 로드가 거부됩니다. "서명됨 = 안전함"이 아니라는 점이 핵심입니다.</li>
+    <li><b>성공</b>: 재배치와 임포트 해석이 끝나면 I/O 관리자가 <code>DRIVER_OBJECT</code>를 만들고 <code>DriverEntry</code>를 호출합니다.</li>
+    <li><b>실패</b>: 로드가 <code>STATUS_INVALID_IMAGE_HASH</code>(Win32 오류 577)로 실패하고, <i>Microsoft-Windows-CodeIntegrity/Operational</i> 이벤트 로그에 원인이 기록됩니다. 관리자는 이 로그로 어떤 정책에 걸렸는지 확인합니다.</li>
+  </ol>
+  <figcaption><b>그림 16-3.</b> 드라이버 로드 경로와 코드 무결성 검사. 5단계는 HVCI가 켜진 시스템에서만 적용됩니다.</figcaption>
+</figure>
+
+<div class="callout note">
+  <div class="callout-title">관리자 관점: BYOVD 대응</div>
+  <p>관리자 권한을 얻은 공격자가 <b>정상 서명된 취약 드라이버를 직접 설치</b>해 커널 권한을 얻으려는 시도(BYOVD, Bring Your Own Vulnerable Driver)는 DSE만으로는 막을 수 없습니다. 대응은 ① 취약 드라이버 차단 목록 켜기(Windows 보안 → 장치 보안 → 코어 격리), ② HVCI 켜기, ③ App Control 정책으로 허용 드라이버 제한, ④ 드라이버 로드 이벤트(서비스 생성, CodeIntegrity 로그) 모니터링입니다.</p>
+</div>
+
+<h2 id="vbs">VBS 아키텍처: VTL0 · VTL1 · Secure Kernel</h2>
+<p>
+  지금까지의 보호는 모두 ring 0에서 커널이 스스로를 지키는 방식이었습니다. <strong>VBS(Virtualization-Based Security)</strong>는 질문을 바꿉니다: "커널이 뚫려도 지켜야 할 것을 <b>커널보다 높은 곳</b>에 두면 어떨까?"
+  VBS가 켜지면 부팅 시 Hyper-V 하이퍼바이저가 먼저 올라오고, Windows 자체는 그 위의 루트 파티션으로 실행됩니다. 하이퍼바이저는 같은 파티션 안에 <b>VTL(Virtual Trust Level)</b>이라는 두 개의 세계를 만듭니다.
+</p>
+
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 470" role="img" aria-label="VBS 구조">
+    <rect class="zone kernel" x="10" y="10" width="420" height="300" rx="12"/>
+    <text x="24" y="31" class="b c-kernel">VTL0 · 일반 세계 (Normal World)</text>
+    <rect class="zone hv" x="450" y="10" width="420" height="300" rx="12"/>
+    <text x="464" y="31" class="b c-hv">VTL1 · 보안 세계 (Secure World)</text>
+
+    <g data-info="v0u"><rect class="box user" x="30" y="44" width="380" height="100" rx="8"/>
+      <text x="220" y="80" text-anchor="middle" class="b">유저 모드 (Ring 3)</text>
+      <text x="220" y="102" text-anchor="middle" class="sm">애플리케이션 · 서비스 · lsass.exe</text>
+      <text x="220" y="122" text-anchor="middle" class="sm">브라우저 · 보안 제품 에이전트</text></g>
+    <g data-info="v0k"><rect class="box kernel" x="30" y="160" width="380" height="134" rx="8"/>
+      <text x="220" y="196" text-anchor="middle" class="b">커널 모드 (Ring 0)</text>
+      <text x="220" y="218" text-anchor="middle" class="sm mono">ntoskrnl.exe · 드라이버 · ci.dll</text>
+      <text x="220" y="246" text-anchor="middle" class="sm">자기 페이지 테이블은 제어하지만</text>
+      <text x="220" y="264" text-anchor="middle" class="sm">EPT 권한은 바꿀 수 없음</text></g>
+
+    <g data-info="v1u"><rect class="box hv" x="470" y="44" width="380" height="100" rx="8"/>
+      <text x="660" y="80" text-anchor="middle" class="b">IUM — 격리된 사용자 모드</text>
+      <text x="660" y="102" text-anchor="middle" class="sm">트러스트릿(Trustlet)</text>
+      <text x="660" y="122" text-anchor="middle" class="sm mono">LsaIso.exe · …</text></g>
+    <g data-info="v1k"><rect class="box hv" x="470" y="160" width="380" height="134" rx="8"/>
+      <text x="660" y="196" text-anchor="middle" class="b">Secure Kernel</text>
+      <text x="660" y="218" text-anchor="middle" class="sm mono">securekernel.exe · skci.dll</text>
+      <text x="660" y="246" text-anchor="middle" class="sm">코드 무결성 판정 · VTL0 메모리 권한 요청</text>
+      <text x="660" y="264" text-anchor="middle" class="sm">HyperGuard · KDP · 섀도 스택 관리</text></g>
+
+    <g data-info="call"><path class="ln acc" d="M412 200 L466 200"/><path class="ln acc" d="M468 252 L414 252"/>
+      <rect x="422" y="216" width="36" height="20" rx="5" style="fill:var(--panel);stroke:var(--acc);stroke-width:1.2"/><text x="440" y="230" text-anchor="middle" class="sm b c-acc">VTL</text></g>
+    <g data-info="rpc"><path class="ln acc dash" d="M412 94 L466 94"/>
+      <rect x="422" y="66" width="36" height="20" rx="5" style="fill:var(--panel);stroke:var(--acc);stroke-width:1.2"/><text x="440" y="80" text-anchor="middle" class="sm b c-acc">IPC</text></g>
+
+    <g data-info="hv"><rect class="box hv" x="10" y="326" width="860" height="50" rx="10"/>
+      <text x="440" y="356" text-anchor="middle"><tspan style="font-weight:700;fill:var(--hv)">Hyper-V 하이퍼바이저</tspan>  hvix64.exe / hvax64.exe — VTL 전환 · SLAT 권한 강제</text></g>
+    <g data-info="slat"><rect class="box hw" x="10" y="392" width="280" height="60" rx="10"/>
+      <text x="150" y="418" text-anchor="middle" class="b">CPU 가상화 + SLAT</text>
+      <text x="150" y="438" text-anchor="middle" class="sm">VT-x/AMD-V · EPT/NPT · MBEC/GMET</text></g>
+    <g data-info="iommu"><rect class="box hw" x="300" y="392" width="280" height="60" rx="10"/>
+      <text x="440" y="418" text-anchor="middle" class="b">IOMMU</text>
+      <text x="440" y="438" text-anchor="middle" class="sm">DMA 리매핑 (VT-d / AMD-Vi)</text></g>
+    <g data-info="tpm"><rect class="box hw" x="590" y="392" width="280" height="60" rx="10"/>
+      <text x="730" y="418" text-anchor="middle" class="b">UEFI Secure Boot · TPM</text>
+      <text x="730" y="438" text-anchor="middle" class="sm">신뢰할 수 있는 부팅 체인</text></g>
+  </svg>
+
+  <template data-key="v0u">
+    <h4>VTL0 유저 모드</h4>
+    <p>우리가 아는 일반 프로세스가 모두 여기에 있습니다. 인증을 담당하는 <code>lsass.exe</code>도 VTL0 프로세스입니다. Credential Guard가 켜지면 lsass는 비밀(NTLM 해시, Kerberos 키 등)을 직접 보관하지 않고, VTL1의 <code>LsaIso.exe</code>에 맡긴 뒤 필요한 연산만 요청합니다.</p>
+  </template>
+  <template data-key="v0k">
+    <h4>VTL0 커널 — 평소의 Windows 커널</h4>
+    <p><code>ntoskrnl.exe</code>와 모든 서드파티 드라이버가 실행되는 곳입니다. VBS가 켜져도 ring 0이라는 사실은 바뀌지 않으며, 자기 페이지 테이블(CR3가 가리키는 것)은 여전히 마음대로 수정할 수 있습니다.</p>
+    <p>달라지는 점: 그 페이지 테이블로 계산된 "게스트 물리 주소"가 실제 메모리에 닿기 전에 <b>SLAT(EPT) 권한 검사</b>를 한 번 더 받습니다. 이 EPT는 VTL0이 바꿀 수 없습니다. 그래서 VTL0 커널이 장악돼도 VTL1 메모리를 읽거나, 코드 페이지에 쓰거나, 검증되지 않은 페이지를 실행할 수 없습니다.</p>
+  </template>
+  <template data-key="v1u">
+    <h4>IUM (Isolated User Mode)과 트러스트릿</h4>
+    <p>VTL1의 유저 모드에서 실행되는 특수 프로세스를 <b>트러스트릿</b>이라 합니다. Microsoft가 서명한 지정 바이너리만 실행될 수 있으며, 대표가 Credential Guard의 <code>LsaIso.exe</code>입니다. 작업 관리자에서는 "Secure System" 프로세스와 함께 보이지만, VTL0에서 그 메모리를 읽을 수는 없습니다.</p>
+    <p>트러스트릿은 의도적으로 기능이 제한된 환경(파일·네트워크 등은 VTL0의 도움을 받음)이라 공격 표면이 작습니다.</p>
+  </template>
+  <template data-key="v1k">
+    <h4>Secure Kernel (<code>securekernel.exe</code>)</h4>
+    <p>VTL1의 커널입니다. 의도적으로 작게 설계되어 있고, 서드파티 드라이버를 로드하지 않습니다. 주요 역할:</p>
+    <ul>
+      <li><b>코드 무결성</b>(<code>skci.dll</code>): VTL0 커널 이미지의 서명을 검증하고, 통과한 페이지에만 실행 권한을 부여하도록 하이퍼바이저에 요청 → HVCI</li>
+      <li><b>HyperGuard</b>: 일부 VTL0 핵심 구조·레지스터 변경을 감시</li>
+      <li><b>KDP</b>: VTL0 커널이 지정한 데이터를 읽기 전용으로 고정</li>
+      <li>트러스트릿 실행 환경과 커널 CET 섀도 스택 관리</li>
+    </ul>
+  </template>
+  <template data-key="call">
+    <h4>VTL 전환 (Secure Call / 반환)</h4>
+    <p>VTL0 커널은 하이퍼콜을 통해 VTL1에 서비스를 요청합니다(커널 쪽 관련 함수는 <code>Vsl*</code> 접두사, 01장 표 참고). 예: "이 드라이버 이미지를 검증하고 코드 페이지를 실행 가능하게 해 달라". 전환은 하이퍼바이저가 중재하며, VTL1은 VTL0의 모든 메모리를 볼 수 있지만 반대는 불가능합니다.</p>
+    <p>비대칭성이 핵심입니다: <b>높은 VTL은 낮은 VTL의 메모리 권한을 정할 수 있고, 낮은 VTL은 높은 VTL을 건드릴 수 없습니다.</b></p>
+  </template>
+  <template data-key="rpc">
+    <h4>lsass ↔ LsaIso 통신</h4>
+    <p>Credential Guard 구성에서 lsass.exe는 자격 증명 연산을 LsaIso.exe에 요청하고 결과만 돌려받습니다. 비밀 자체는 VTL1 밖으로 나오지 않습니다. 단, 사용자가 입력하는 순간의 자격 증명(키 입력)이나 이미 발급된 다른 토큰까지 보호하지는 않는다는 한계가 있습니다.</p>
+  </template>
+  <template data-key="hv">
+    <h4>Hyper-V 하이퍼바이저</h4>
+    <p>Intel은 <code>hvix64.exe</code>, AMD는 <code>hvax64.exe</code>. 부팅 과정에서 Windows 커널보다 먼저 로드되어 VMX root(→ 01장 링 그림의 중심)에서 실행됩니다. VBS 구성에서 하이퍼바이저는 VTL별 SLAT 테이블을 관리하고, VTL 간 전환을 수행합니다.</p>
+    <p><code>bcdedit</code>의 <code>hypervisorlaunchtype</code>가 Off이거나 펌웨어에서 가상화가 꺼져 있으면 VBS 전체가 동작하지 않습니다.</p>
+  </template>
+  <template data-key="slat">
+    <h4>SLAT — 2단계 주소 변환</h4>
+    <p>게스트(여기서는 VTL0 커널)의 페이지 테이블은 "가상 주소 → 게스트 물리 주소"까지만 변환하고, CPU가 SLAT(Intel EPT, AMD NPT)으로 "게스트 물리 → 실제 물리"를 한 번 더 변환합니다. <b>두 단계의 권한이 모두 허용해야</b> 접근이 성공합니다.</p>
+    <p><b>MBEC</b>(Intel Mode-Based Execution Control)·<b>GMET</b>(AMD)은 EPT에서 커널 모드 실행과 유저 모드 실행 권한을 따로 지정하게 해 줍니다. 이것이 없는 CPU에서는 HVCI가 소프트웨어 에뮬레이션(Restricted User Mode)을 써야 해 성능 비용이 큽니다.</p>
+  </template>
+  <template data-key="iommu">
+    <h4>IOMMU와 DMA 보호</h4>
+    <p>장치는 CPU를 거치지 않고 DMA로 메모리를 직접 읽고 쓸 수 있습니다. 하이퍼바이저는 IOMMU를 이용해 장치가 접근할 수 있는 메모리 범위를 제한하여, DMA로 VTL1 메모리나 보호된 페이지를 건드리는 것을 막습니다. Thunderbolt 등 외부 포트를 겨냥한 <b>Kernel DMA Protection</b>도 IOMMU를 기반으로 합니다(msinfo32에서 상태 확인).</p>
+  </template>
+  <template data-key="tpm">
+    <h4>Secure Boot · TPM</h4>
+    <p>하이퍼바이저와 Secure Kernel이 신뢰받으려면 그것들을 로드하는 부팅 체인이 먼저 신뢰할 수 있어야 합니다. UEFI Secure Boot가 부트로더·커널의 서명을 확인하고, TPM은 부팅 측정값을 기록해 원격 증명(attestation)에 쓰입니다. VBS의 일부 설정은 UEFI 변수로 잠글 수 있어(UEFI lock) 원격에서 쉽게 끌 수 없게 합니다(→ 03장).</p>
+  </template>
+  <figcaption><b>그림 16-4.</b> VBS 구조. 보라색 영역(VTL1, 하이퍼바이저)은 VTL0 커널이 장악돼도 접근할 수 없습니다.</figcaption>
+</figure>
+
+<h3>SLAT(EPT) 권한과 HVCI — 커널 W^X를 위에서 강제하기</h3>
+<p>
+  <strong>HVCI(Hypervisor-protected Code Integrity)</strong>, Windows 보안 UI 이름으로 <strong>메모리 무결성(Memory integrity)</strong>은 VBS 위에서 동작하는 핵심 기능입니다. 원리는 하나의 불변식으로 요약됩니다.
+</p>
+<div class="callout expert">
+  <div class="callout-title">HVCI의 불변식: VTL0 커널 메모리는 W^X</div>
+  <p>VTL0 커널의 어떤 물리 페이지도 <b>쓰기 가능하면서 동시에 커널 모드에서 실행 가능할 수 없다.</b> 그리고 실행 가능해지는 페이지는 <b>VTL1의 코드 무결성 검증을 통과한 이미지의 코드뿐</b>이다. 이 규칙은 VTL0의 페이지 테이블이 아니라 EPT로 강제되므로, VTL0 커널이 자기 PTE를 어떻게 바꾸든 깨지지 않는다.</p>
+</div>
+
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 420" role="img" aria-label="HVCI의 EPT 권한 판정">
+    <text x="110" y="34" text-anchor="middle" class="b">페이지</text>
+    <text x="345" y="28" text-anchor="middle" class="b c-kernel">VTL0 페이지 테이블 (PTE)</text>
+    <text x="345" y="46" text-anchor="middle" class="sm">VTL0 커널이 수정 가능</text>
+    <text x="590" y="28" text-anchor="middle" class="b c-hv">SLAT / EPT</text>
+    <text x="590" y="46" text-anchor="middle" class="sm">VTL1·하이퍼바이저만 수정</text>
+    <text x="790" y="34" text-anchor="middle" class="b">결과</text>
+
+    <g data-hl="2-3"><rect class="box plain" x="20" y="64" width="180" height="70" rx="8"/>
+      <text x="110" y="94" text-anchor="middle" class="b">드라이버 코드</text>
+      <text x="110" y="114" text-anchor="middle" class="sm">.text 섹션 페이지</text></g>
+    <g data-hl="2-3"><rect class="box kernel" x="240" y="64" width="210" height="70" rx="8"/>
+      <text x="345" y="96" text-anchor="middle" class="lg mono" data-text="1:R-X|2:RWX|6:R-X">R-X</text>
+      <text x="345" y="118" text-anchor="middle" class="sm" data-text="1:정상 매핑|2:커널이 PTE를 쓰기 가능으로 변경|6:정상 매핑">정상 매핑</text></g>
+    <g data-hl="3"><rect class="box hv" x="490" y="64" width="200" height="70" rx="8"/>
+      <text x="590" y="96" text-anchor="middle" class="lg mono">R-X</text>
+      <text x="590" y="118" text-anchor="middle" class="sm">쓰기 권한 없음</text></g>
+    <g data-hl="3"><rect class="box plain" x="720" y="64" width="140" height="70" rx="8"/>
+      <text x="790" y="96" text-anchor="middle" class="b" data-text="1:✓ 실행|3:✗ 쓰기 거부|4:✓ 실행">✓ 실행</text>
+      <text x="790" y="118" text-anchor="middle" class="sm" data-text="1:읽기·실행 허용|3:EPT 위반|4:읽기·실행 허용">읽기·실행 허용</text></g>
+
+    <g data-hl="4-5"><rect class="box plain" x="20" y="164" width="180" height="70" rx="8"/>
+      <text x="110" y="194" text-anchor="middle" class="b">드라이버 데이터</text>
+      <text x="110" y="214" text-anchor="middle" class="sm">풀 · .data · 스택</text></g>
+    <g data-hl="4-5"><rect class="box kernel" x="240" y="164" width="210" height="70" rx="8"/>
+      <text x="345" y="196" text-anchor="middle" class="lg mono" data-text="1:RW-|4:RWX|6:RW-">RW-</text>
+      <text x="345" y="218" text-anchor="middle" class="sm" data-text="1:NX 매핑|4:커널이 PTE의 NX를 해제|6:NX 매핑">NX 매핑</text></g>
+    <g data-hl="5"><rect class="box hv" x="490" y="164" width="200" height="70" rx="8"/>
+      <text x="590" y="196" text-anchor="middle" class="lg mono">RW-</text>
+      <text x="590" y="218" text-anchor="middle" class="sm">커널 실행 권한 없음</text></g>
+    <g data-hl="5"><rect class="box plain" x="720" y="164" width="140" height="70" rx="8"/>
+      <text x="790" y="196" text-anchor="middle" class="b" data-text="1:✓ 읽기·쓰기|5:✗ 실행 거부|6:✓ 읽기·쓰기">✓ 읽기·쓰기</text>
+      <text x="790" y="218" text-anchor="middle" class="sm" data-text="1:실행은 불가|5:EPT 위반|6:실행은 불가">실행은 불가</text></g>
+
+    <g data-on="6" data-hl="6"><rect class="box plain" x="20" y="264" width="180" height="70" rx="8"/>
+      <text x="110" y="294" text-anchor="middle" class="b">새 드라이버 코드</text>
+      <text x="110" y="314" text-anchor="middle" class="sm">막 로드된 이미지</text></g>
+    <g data-on="6" data-hl="6"><rect class="box kernel" x="240" y="264" width="210" height="70" rx="8"/>
+      <text x="345" y="296" text-anchor="middle" class="lg mono">R-X</text>
+      <text x="345" y="318" text-anchor="middle" class="sm">VTL0가 매핑 요청</text></g>
+    <g data-on="6" data-hl="6"><rect class="box hv" x="490" y="264" width="200" height="70" rx="8"/>
+      <text x="590" y="296" text-anchor="middle" class="lg mono" data-text="6:R-X">R-X</text>
+      <text x="590" y="318" text-anchor="middle" class="sm">skci 검증 후 부여</text></g>
+    <g data-on="6" data-hl="6"><rect class="box ok" x="720" y="264" width="140" height="70" rx="8"/>
+      <text x="790" y="296" text-anchor="middle" class="b c-ok">✓ 실행</text>
+      <text x="790" y="318" text-anchor="middle" class="sm">서명 검증 통과</text></g>
+    <path class="ln acc flow" d="M590 380 L590 340" data-on="6" data-off="7"/>
+    <text x="600" y="398" class="sm b c-hv" data-on="6" data-off="7">Secure Kernel(skci)이 EPT 설정</text>
+
+    <path class="ln kernel" d="M455 99 L486 99" data-only="3"/>
+    <path class="ln kernel" d="M455 199 L486 199" data-only="5"/>
+    <text x="440" y="398" text-anchor="middle" class="b c-acc" data-only="7">불변식: 쓰기 가능 ⊕ 실행 가능 — 그리고 실행은 검증된 코드만</text>
+  </svg>
+  <ol class="steps">
+    <li><b>초기 상태</b>: 정상 로드된 드라이버의 코드 페이지는 두 단계 모두 R-X, 데이터 페이지는 두 단계 모두 RW-(실행 불가)입니다. 실제 접근 권한은 <b>PTE 권한 ∩ EPT 권한</b>입니다.</li>
+    <li><b>VTL0 PTE 변경</b>: ring 0 코드(버그가 있는 드라이버든 공격자든)가 코드 페이지의 PTE를 쓰기 가능으로 바꿉니다. VBS가 없는 시스템이라면 이것으로 커널 코드를 수정할 수 있었습니다.</li>
+    <li><b>EPT가 거부</b>: 쓰기 접근이 PTE 검사는 통과하지만, EPT에 W 권한이 없으므로 <b>EPT 위반</b>이 발생해 하이퍼바이저로 제어가 넘어갑니다. 쓰기는 반영되지 않으며, 시스템은 보통 버그체크로 중단됩니다.</li>
+    <li><b>데이터 페이지 실행 시도</b>: 이번에는 데이터 페이지의 PTE에서 NX를 해제합니다. VTL0 기준으로는 실행 가능한 페이지가 되었습니다.</li>
+    <li><b>EPT가 거부</b>: 명령어 페치가 EPT의 실행 권한 검사에서 막힙니다. 데이터 영역에 무엇이 쓰여 있든 커널 코드로 실행될 수 없습니다 — 이것이 NX와 HVCI의 결정적 차이입니다.</li>
+    <li><b>정상 경로</b>: 새 드라이버가 로드되면 VTL0는 VTL1에 요청하고, Secure Kernel의 <code>skci.dll</code>이 서명을 검증한 뒤 해당 페이지만 EPT에서 R-X로 설정합니다. 실행 권한을 "부여할 권한"은 오직 VTL1에 있습니다.</li>
+    <li><b>정리</b>: 커널 메모리의 W^X와 "검증된 코드만 실행"이 VTL0보다 높은 곳에서 강제됩니다. 반대로 말하면, 실행 가능한 메모리를 동적으로 만들거나 자기 코드를 수정하는 드라이버는 HVCI 환경에서 동작할 수 없습니다.</li>
+  </ol>
+  <figcaption><b>그림 16-5.</b> HVCI의 2단계 권한 판정. VTL0 PTE를 바꾸는 것만으로는 EPT 권한을 넘을 수 없습니다.</figcaption>
+</figure>
+
+<h3>Credential Guard와 KDP</h3>
+<div class="grid2">
+  <div class="card hv"><h4>Credential Guard</h4>
+    <p><b>보호 대상</b>: NTLM 해시, Kerberos TGT 관련 키 등 lsass가 보관하던 파생 자격 증명.</p>
+    <p><b>방법</b>: 비밀을 VTL1 트러스트릿 <code>LsaIso.exe</code>에 보관. VTL0의 관리자·커널 권한으로도 그 메모리를 읽을 수 없다.</p>
+    <p><b>한계</b>: 입력 순간의 자격 증명, 일부 레거시 프로토콜(NTLMv1, Kerberos DES 등은 사용 불가해짐)은 보호 범위 밖. 레거시 인증에 의존하는 앱은 호환성 검토 필요.</p></div>
+  <div class="card hv"><h4>KDP (Kernel Data Protection)</h4>
+    <p><b>보호 대상</b>: 초기화 후 바뀌면 안 되는 커널 데이터(설정, 정책, 콜백 테이블 등).</p>
+    <p><b>정적 KDP</b>: 드라이버가 <code>MmProtectDriverSection</code>으로 자기 이미지의 섹션을 지정하면, VTL1이 EPT로 해당 페이지를 읽기 전용으로 고정한다.</p>
+    <p><b>동적 KDP</b>: 보안 풀(secure pool, <code>ExCreatePool</code>/<code>ExAllocatePool3</code> 계열)에 데이터를 두고 VTL1을 통해서만 갱신한다.</p>
+    <p class="muted" style="font-size:.86rem">VBS가 켜져 있어야 실제 보호가 적용됩니다.</p></div>
+</div>
+
+<h2 id="cfi">제어 흐름 보호: 커널 CET · kCFG · XFG</h2>
+<p>
+  NX·HVCI가 "새 코드를 실행하는 것"을 막자, 공격의 초점은 <b>이미 있는 정상 코드를 비정상적인 순서로 실행하는 것</b>(제어 흐름 탈취)으로 옮겨 갔습니다. 이를 겨냥한 것이 제어 흐름 무결성(CFI) 계열 보호입니다.
+</p>
+<div class="grid2">
+  <div class="card hv"><h4>커널 모드 하드웨어 강제 스택 보호 (kCET)</h4>
+    <p>Intel CET의 <b>섀도 스택</b>을 커널에 적용. <code>call</code> 시 반환 주소가 일반 스택과 함께 별도의 섀도 스택에도 기록되고, <code>ret</code> 시 CPU가 두 값을 비교해 다르면 <b>#CP(Control Protection) 예외</b>를 일으킵니다 → 시스템 버그체크.</p>
+    <p>섀도 스택 페이지는 일반 쓰기로 수정할 수 없는 특수 페이지이며, 커널에서는 Secure Kernel이 관리합니다.</p>
+    <p><b>요건</b>: Windows 11 22H2 이상, VBS·HVCI 켜짐, CET 지원 CPU(Intel 11세대 이후, AMD Zen 3 이후). 기본값은 꺼짐.</p></div>
+  <div class="card kernel"><h4>kCFG / XFG</h4>
+    <p><b>kCFG</b>(Kernel Control Flow Guard): 커널·드라이버를 <code>/guard:cf</code>로 빌드하면 컴파일러가 간접 호출 앞에 검사를 넣고, 대상이 "유효한 함수 시작 주소" 비트맵에 있는지 확인합니다. 커널에서는 VBS가 켜져 있을 때 활성화되어 비트맵이 보호됩니다.</p>
+    <p><b>XFG</b>(eXtended Flow Guard): 간접 호출 대상을 "함수 프로토타입 해시가 일치하는 함수"로 더 좁히는 CFG 확장입니다. 공개 정보가 제한적이므로 개념만 알아 두세요.</p>
+    <p class="muted" style="font-size:.86rem">CFG는 "유효한 함수라면 어디든" 허용하므로 완화(mitigation)이지 완전한 차단은 아닙니다.</p></div>
+</div>
+<div class="callout tip">
+  <div class="callout-title">드라이버 빌드 설정</div>
+  <p>링커 옵션 <code>/CETCOMPAT</code>(섀도 스택 호환 표시)와 컴파일러 옵션 <code>/guard:cf</code>를 켜세요. kCET가 켜진 시스템에서는 비호환 드라이버가 기능 활성화를 막거나 로드되지 못할 수 있으며, Windows 보안 UI가 비호환 드라이버를 표시합니다.
+  반환 주소를 직접 조작하거나 스택을 수동으로 전환하는 코드(커스텀 코루틴, 비표준 예외 처리)는 섀도 스택과 충돌하므로 피해야 합니다.</p>
+</div>
+
+<h2 id="matrix">보호 기능 매트릭스</h2>
+<p>
+  이제 전체를 한눈에 봅시다. 아래에서 보호 기능을 켜고 끄면, <b>어떤 범주의 시도</b>가 어떤 수준으로 다뤄지는지 표시됩니다. 구체적 공격 절차가 아니라 "무엇을 하려는 시도인가"의 범주만 다룹니다.
+  VBS 기반 기능은 VBS가 꺼지면 함께 꺼지는 <b>의존 관계</b>도 확인해 보세요.
+</p>
+
+<div class="sim" id="mxSim">
+  <div class="sim-title">보호 기능 ↔ 차단 범주 매트릭스</div>
+  <div class="preset-row">
+    <span class="muted" style="font-size:.8rem;align-self:center">프리셋:</span>
+    <button class="btn" data-mp="none">모두 끄기</button>
+    <button class="btn" data-mp="w7">Windows 7 x64 수준</button>
+    <button class="btn" data-mp="w10">Windows 10 (VBS 꺼짐)</button>
+    <button class="btn" data-mp="w11">Windows 11 (메모리 무결성 켜짐)</button>
+    <button class="btn" data-mp="all">모두 켜기</button>
+  </div>
+  <div class="prot-grid" id="mxProt"></div>
+  <div class="legend">수준:
+    <span class="st l0">무방비</span><span class="st l1">완화</span><span class="st l2">사후 탐지</span><span class="st l3">차단 (ring 0 강제)</span><span class="st l4">차단 (상위 계층 강제)</span>
+  </div>
+  <table class="mx">
+    <thead><tr><th>시도 범주</th><th>현재 수준</th><th>관여하는 기능</th></tr></thead>
+    <tbody id="mxBody"></tbody>
+  </table>
+  <div class="console" style="margin-top:12px;min-height:3.2em"></div>
+</div>
+
+<div class="callout note">
+  <div class="callout-title">매트릭스를 읽는 법</div>
+  <p>"차단 (ring 0 강제)"는 정상 동작 중에는 확실히 막지만, 커널 권한을 완전히 얻은 주체는 같은 높이에서 설정을 바꿀 수 있다는 의미입니다. "차단 (상위 계층 강제)"는 하이퍼바이저·VTL1이 강제하므로 VTL0 커널 장악만으로는 무너지지 않습니다. 실제 시스템에서는 펌웨어·하드웨어 결함 등 이 표 밖의 변수도 있습니다.
+  KVA Shadow는 취약한 CPU에서만 켜지고, Credential Guard는 버전·에디션·도메인 가입 여부에 따라 기본값이 다릅니다.</p>
+</div>
+
+<h2 id="interfaces">보안 제품을 위한 공식 인터페이스</h2>
+<p>
+  PatchGuard와 HVCI가 "커널을 고치는" 길을 막은 대신, Windows는 보안 제품이 <b>커널을 고치지 않고도</b> 필요한 것을 보고 막을 수 있는 공식 인터페이스를 제공합니다. EDR·백신·DLP 제품의 커널 구성요소는 모두 이 위에 만들어져야 합니다.
+</p>
+
+<div class="tabs">
+  <div class="tab-bar"><button>프로세스·스레드·이미지</button><button>객체 콜백</button><button>레지스트리</button><button>미니필터 · WFP</button><button>ETW · Threat Intelligence</button><button>ELAM</button></div>
+  <div class="tab-panel">
+    <table>
+      <thead><tr><th>API</th><th>알림 시점</th><th>할 수 있는 일</th></tr></thead>
+      <tbody>
+        <tr><td><code>PsSetCreateProcessNotifyRoutineEx</code> / <code>Ex2</code></td><td>프로세스 생성·종료</td><td>이미지 경로, 명령줄, 부모 정보를 보고 <code>CreationStatus</code>에 실패 코드를 넣어 <b>생성 거부</b> 가능</td></tr>
+        <tr><td><code>PsSetCreateThreadNotifyRoutine(Ex)</code></td><td>스레드 생성·종료</td><td>원격 스레드 생성(생성자 프로세스 ≠ 대상 프로세스) 관찰</td></tr>
+        <tr><td><code>PsSetLoadImageNotifyRoutine(Ex)</code></td><td>이미지(EXE/DLL/드라이버) 매핑</td><td>로드되는 모듈 관찰, 서명 정보 등 확인</td></tr>
+      </tbody>
+    </table>
+    <p><code>PsSetCreateProcessNotifyRoutineEx</code>와 <code>ObRegisterCallbacks</code>는 드라이버가 <code>/INTEGRITYCHECK</code> 링커 옵션으로 빌드되어 있어야 등록에 성공합니다(아니면 <code>STATUS_ACCESS_DENIED</code>). 모든 콜백은 <b>DriverUnload에서 반드시 해제</b>해야 하며, 콜백은 빠르게 끝내야 합니다(시스템 전체 경로에 놓이므로).</p>
+  </div>
+  <div class="tab-panel">
+    <p><code>ObRegisterCallbacks</code>는 프로세스·스레드(및 데스크톱) 객체에 대한 <b>핸들 생성·복제</b> 시점에 호출됩니다. 사전 콜백에서 요청된 접근 권한을 <b>깎을</b> 수 있어, 자사 에이전트 프로세스를 다른 프로세스의 종료·메모리 쓰기로부터 보호하는 데 씁니다.</p>
+<pre data-title="C — 객체 콜백 (요약)"><code class="lang-c">OB_PREOP_CALLBACK_STATUS
+PreOpenProcess(PVOID Ctx, POB_PRE_OPERATION_INFORMATION Info)
+{
+    UNREFERENCED_PARAMETER(Ctx);
+    if (Info-&gt;KernelHandle) return OB_PREOP_SUCCESS;      // 커널 핸들은 건드리지 않음
+    if (IsProtectedAgent((PEPROCESS)Info-&gt;Object)) {      // 자사 프로세스인지 판단(구현 생략)
+        ACCESS_MASK strip = PROCESS_TERMINATE | PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
+        if (Info-&gt;Operation == OB_OPERATION_HANDLE_CREATE)
+            Info-&gt;Parameters-&gt;CreateHandleInformation.DesiredAccess &amp;= ~strip;
+        else
+            Info-&gt;Parameters-&gt;DuplicateHandleInformation.DesiredAccess &amp;= ~strip;
+    }
+    return OB_PREOP_SUCCESS;
+}
+
+OB_OPERATION_REGISTRATION g_Op = {
+    PsProcessType, OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE,
+    PreOpenProcess, NULL
+};
+OB_CALLBACK_REGISTRATION g_Reg = {
+    OB_FLT_REGISTRATION_VERSION, 1, RTL_CONSTANT_STRING(L"321000"), NULL, &amp;g_Op
+};
+
+// DriverEntry:  status = ObRegisterCallbacks(&amp;g_Reg, &amp;g_ObHandle);
+// DriverUnload: ObUnRegisterCallbacks(g_ObHandle);</code></pre>
+    <p class="muted" style="font-size:.88rem">고도(altitude) 문자열은 여러 드라이버의 콜백 순서를 정합니다. 상용 제품은 Microsoft에 고도를 할당받습니다.</p>
+  </div>
+  <div class="tab-panel">
+    <p><code>CmRegisterCallbackEx</code>로 레지스트리 작업(키 생성·열기, 값 설정·삭제, 이름 변경 등)의 사전·사후 알림을 받습니다. 사전 알림에서 실패 상태를 반환하면 작업을 <b>거부</b>할 수 있어, 자동 실행 키·서비스 키 변조 방지나 자사 설정 보호에 씁니다.</p>
+    <p>고도(altitude)를 지정하며, <code>CmUnRegisterCallback</code>으로 해제합니다. 콜백 안에서 레지스트리를 다시 호출하면 재귀가 일어날 수 있으므로 주의합니다.</p>
+  </div>
+  <div class="tab-panel">
+    <p><b>파일 시스템 미니필터</b>(Filter Manager, <code>FltRegisterFilter</code>): 파일 생성·읽기·쓰기·이름 변경 등 IRP 단위 작업을 사전·사후 콜백으로 관찰·차단합니다. 실시간 검사, 랜섬웨어 행위 탐지, DLP의 기반입니다. 고도로 필터 스택 내 위치가 정해집니다(→ 12장).</p>
+    <p><b>WFP 콜아웃 드라이버</b>(Windows Filtering Platform): 네트워크 연결·패킷을 공식 계층에서 검사·차단합니다. NDIS나 TCP/IP 스택을 후킹할 이유가 없습니다.</p>
+  </div>
+  <div class="tab-panel">
+    <p><b>ETW</b>(Event Tracing for Windows)는 커널과 OS 구성요소가 내보내는 고성능 이벤트 스트림입니다. 프로세스·파일·네트워크·레지스트리 등 다양한 공급자가 있어, 많은 탐지를 커널 드라이버 없이도 구현할 수 있습니다.</p>
+    <p><b>Microsoft-Windows-Threat-Intelligence</b> 공급자는 커널 내부에서 보안상 민감한 작업(다른 프로세스의 메모리 할당·보호 변경·읽기/쓰기, 원격 APC 큐잉 등)을 이벤트로 알려 줍니다. 이 공급자는 아무나 구독할 수 없으며, <b>Antimalware PPL로 실행되는 보안 제품 프로세스</b>만 구독할 수 있습니다. 그 자격은 다음 탭의 ELAM 등록과 연결됩니다.</p>
+  </div>
+  <div class="tab-panel">
+    <p><b>ELAM(Early Launch Anti-Malware)</b> 드라이버는 다른 부트 시작 드라이버보다 먼저 로드되어, 이후 로드되는 부트 드라이버를 <code>IoRegisterBootDriverCallback</code>으로 보고 "양호·불량·알 수 없음"으로 분류합니다. 정책에 따라 불량 드라이버의 초기화를 막을 수 있습니다(→ 03장).</p>
+    <p>ELAM 드라이버는 Microsoft의 특별한 서명을 받아야 하고, ELAM에 등록된 공급업체의 사용자 모드 서비스는 <b>Antimalware-Light PPL</b>로 실행될 수 있습니다. PPL은 관리자 권한 프로세스라도 보호 프로세스의 메모리를 읽거나 종료하지 못하게 합니다(→ 13장).</p>
+  </div>
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">보안 제품 드라이버의 책임</div>
+  <p>보안 제품 드라이버는 거의 모든 프로세스·파일 작업 경로에 놓입니다. 콜백 하나의 버그는 시스템 전체의 장애로 이어지며, 이는 실제 대규모 장애 사례로도 확인된 교훈입니다. 콜백에서 무거운 작업·차단 대기·유저 모드 왕복을 최소화하고, 외부 입력(정의 파일, 설정)을 커널에서 해석할 때는 철저한 검증과 단계적 배포를 적용하세요.</p>
+</div>
+
+<h2 id="checklist">HVCI 호환 드라이버 체크리스트</h2>
+<p>
+  HVCI가 켜진 시스템(Windows 11 새 설치 장치 다수)에서 비호환 드라이버는 로드되지 않거나, 사용자가 메모리 무결성을 켜지 못하게 막는 원인이 됩니다. Microsoft 문서의 요구 사항을 실무 체크리스트로 정리하면 다음과 같습니다.
+</p>
+<ul class="check">
+  <li><b>기본 NX 메모리 사용</b>: <code>ExAllocatePool2(POOL_FLAG_NON_PAGED, …)</code>(기본 NX) 또는 <code>NonPagedPoolNx</code>. 구형 대상은 <code>POOL_NX_OPTIN</code> + <code>ExInitializeDriverRuntime(DrvRtPoolNxOptIn)</code>.</li>
+  <li><b>매핑도 NX로</b>: <code>MmMapLockedPagesSpecifyCache</code>에 <code>MdlMappingNoExecute</code>, <code>MmMapIoSpaceEx</code>에 <code>PAGE_READWRITE</code> 등 실행 권한 없는 보호값.</li>
+  <li><b>W+X 섹션 금지</b>: PE 이미지에 쓰기와 실행이 동시에 가능한 섹션이 없어야 한다. 코드와 데이터를 합치는 링커 옵션(<code>/MERGE</code> 등)에 주의.</li>
+  <li><b>섹션 페이지 정렬</b>: 코드와 데이터가 같은 페이지를 공유하지 않도록 섹션을 페이지 단위로 정렬.</li>
+  <li><b>동적 코드 금지</b>: 런타임 코드 생성, 자기 수정 코드, 실행 가능 메모리에 코드 복사 후 실행 — 모두 불가.</li>
+  <li><b>커널 코드·구조 패치 금지</b>: PatchGuard 규칙과 동일. 필요한 기능은 공식 콜백으로.</li>
+  <li><b>빌드 옵션</b>: <code>/guard:cf</code>, <code>/CETCOMPAT</code>, 필요 시 <code>/INTEGRITYCHECK</code>.</li>
+  <li><b>검증</b>: 테스트 장치에서 메모리 무결성을 켜고 실행, Driver Verifier의 코드 무결성 검사 옵션, HLK의 HVCI 호환성 테스트.</li>
+</ul>
+
+<pre data-title="C — HVCI 비호환 vs 호환"><code class="lang-c">// ✗ 비호환: 실행 가능한 커널 메모리를 만든다
+PVOID buf = ExAllocatePoolWithTag(NonPagedPool, size, 'vrDM');          // 실행 가능 풀
+PVOID va  = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmCached, NULL,
+                                         FALSE, NormalPagePriority);     // 실행 가능 매핑
+PVOID io  = MmMapIoSpaceEx(pa, len, PAGE_EXECUTE_READWRITE);
+
+// ✓ 호환: 데이터는 데이터로만
+PVOID buf = ExAllocatePool2(POOL_FLAG_NON_PAGED, size, 'vrDM');          // 기본 NX (Win10 2004+)
+PVOID va  = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmCached, NULL,
+                                         FALSE, NormalPagePriority | MdlMappingNoExecute);
+PVOID io  = MmMapIoSpaceEx(pa, len, PAGE_READWRITE | PAGE_NOCACHE);
+
+// 읽기 전용으로 고정할 설정 데이터가 있다면 (VBS 켜짐 시 적용)
+// MmProtectDriverSection(&amp;g_Config, 0, MM_PROTECT_DRIVER_SECTION_ALLOW_UNLOAD);</code></pre>
+
+<h3>상태 확인 방법</h3>
+<table>
+  <thead><tr><th>도구</th><th>확인 항목</th></tr></thead>
+  <tbody>
+    <tr><td><code>msinfo32</code> (시스템 요약)</td><td>"가상화 기반 보안: 실행 중", "가상화 기반 보안 실행 중인 서비스"(Credential Guard, 하이퍼바이저 적용 코드 무결성 등), "커널 DMA 보호"</td></tr>
+    <tr><td>Windows 보안 → 장치 보안 → 코어 격리</td><td>메모리 무결성, 취약 드라이버 차단 목록, 커널 모드 하드웨어 강제 스택 보호. 메모리 무결성을 켤 수 없으면 비호환 드라이버 목록이 표시됨</td></tr>
+    <tr><td><code>Get-CimInstance Win32_DeviceGuard</code></td><td>VBS 상태, 구성/실행 중인 보안 서비스 번호</td></tr>
+    <tr><td>레지스트리 <code>…\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity</code></td><td><code>Enabled</code> 값(정책 구성 여부)</td></tr>
+    <tr><td>이벤트 뷰어 <i>CodeIntegrity/Operational</i></td><td>서명·정책·차단 목록에 걸린 드라이버 로드 실패 기록</td></tr>
+    <tr><td><code>Get-SpeculationControlSettings</code> (SpeculationControl 모듈)</td><td>KVA Shadow 및 투기적 실행 관련 완화 상태</td></tr>
+  </tbody>
+</table>
+
+<pre data-title="PowerShell (관리자)"><code class="lang-ps">PS> Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard |
+>>   Select-Object VirtualizationBasedSecurityStatus, SecurityServicesConfigured, SecurityServicesRunning
+
+VirtualizationBasedSecurityStatus SecurityServicesConfigured SecurityServicesRunning
+--------------------------------- -------------------------- -----------------------
+                                2 {1, 2}                     {1, 2}
+
+# VirtualizationBasedSecurityStatus : 0 = 꺼짐, 1 = 활성화됨(실행 안 됨), 2 = 실행 중
+# SecurityServices*                 : 1 = Credential Guard, 2 = 메모리 무결성(HVCI),
+#                                     3 = System Guard Secure Launch, 이후 값은 버전별로 추가(문서 참조)
+
+PS> reg query "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled
+PS> bcdedit /enum "{current}" | findstr /i hypervisorlaunchtype
+PS> Get-WinEvent -LogName "Microsoft-Windows-CodeIntegrity/Operational" -MaxEvents 20</code></pre>
+<p class="muted" style="font-size:.88rem">출력값은 예시입니다. 실제 값은 장치·정책·버전마다 다릅니다.</p>
+
+<h2 id="lab">실습: 내 시스템의 보호 상태 점검</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 16-1 · 보호 기능 인벤토리 만들기</div>
+  <p>테스트용 가상 머신(Hyper-V의 경우 중첩 가상화를 켜야 VM 안에서 VBS 가능)과 실제 장치 각각에서 아래를 확인하고 표로 정리해 보세요. 실습은 모두 <b>관찰</b>만 하며 보호 기능을 끄지 않습니다.</p>
+</div>
+<ol>
+  <li><code>msinfo32</code>에서 VBS 상태, 실행 중인 서비스, 커널 DMA 보호를 기록합니다.</li>
+  <li>PowerShell로 <code>Win32_DeviceGuard</code>를 조회해 msinfo32 결과와 대조합니다.</li>
+  <li>Windows 보안의 코어 격리 페이지에서 메모리 무결성과 취약 드라이버 차단 목록 상태를 확인합니다. 켤 수 없다면 어떤 드라이버가 비호환으로 표시되는지 기록합니다.</li>
+  <li>CodeIntegrity/Operational 로그에서 최근 로드가 거부된 이미지가 있는지 확인합니다.</li>
+  <li>커널 디버거(또는 로컬 커널 디버깅)에서 CR4의 보호 비트를 확인합니다.</li>
+</ol>
+<pre data-title="WinDbg"><code class="lang-windbg">kd> r cr4
+kd> ? (@cr4 >> 0n20) &amp; 1        $$ SMEP (비트 20)
+kd> ? (@cr4 >> 0n21) &amp; 1        $$ SMAP (비트 21)
+kd> ? (@cr4 >> 0n23) &amp; 1        $$ CET  (비트 23)
+
+kd> !pte nt!KeBugCheckEx          $$ 커널 코드 페이지: VTL0 PTE 권한 확인 (-E 실행 가능, W 없음)
+kd> !pool &lt;풀 주소&gt;               $$ 드라이버의 풀 할당이 NX 풀인지 확인</code></pre>
+<p class="muted" style="font-size:.88rem">
+  VTL0 커널 디버거가 보여주는 것은 <b>VTL0 페이지 테이블</b>입니다. EPT 권한과 VTL1 메모리(Secure Kernel, 트러스트릿)는 VTL0 디버거로 볼 수 없습니다 — 이것 자체가 VBS 격리의 증거입니다.
+  CPU마다 값이 다르므로 결과 숫자보다 "어떤 비트가 켜져 있는가"에 집중하세요.
+</p>
+<div class="callout lab">
+  <div class="callout-title">실습 16-2 · 자작 드라이버 HVCI 호환성 점검 (14장 드라이버 사용)</div>
+  <p>14장에서 만든 드라이버를 메모리 무결성이 켜진 테스트 VM에 설치하고, Driver Verifier로 코드 무결성 검사를 켭니다(<code>verifier /?</code>로 해당 옵션 확인). 이어서 체크리스트 항목을 하나씩 대조하고, 실행 가능 풀을 쓰는 코드를 일부러 넣었다 빼 보며 Verifier와 로드 결과가 어떻게 달라지는지 관찰합니다.</p>
+</div>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">CR4.SMEP이 켜진 상태에서 페이지 폴트가 발생하는 경우는?</p>
+  <ol class="opts">
+    <li>유저 모드 코드가 커널 페이지를 읽을 때</li>
+    <li data-correct>커널 모드(CPL 0)에서 U/S=1(유저) 페이지의 명령어를 실행하려 할 때</li>
+    <li>커널 모드에서 유저 페이지의 데이터를 읽을 때</li>
+    <li>커널이 읽기 전용 페이지에 쓸 때</li>
+  </ol>
+  <div class="explain">SMEP은 슈퍼바이저 모드의 <b>명령어 페치</b>만 다룹니다. ①은 SMEP과 무관하게 U/S=0 페이지라서 막히고, ③은 SMAP의 영역, ④는 CR0.WP의 영역입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">HVCI가 켜진 시스템에서 VTL0 커널 권한을 가진 코드가 데이터 페이지의 PTE에서 NX 비트를 해제했습니다. 이 페이지를 커널 코드로 실행할 수 없는 이유는?</p>
+  <ol class="opts">
+    <li>PatchGuard가 PTE 변경을 즉시 되돌리기 때문에</li>
+    <li>CPU가 PTE 변경 후 TLB를 비우지 않기 때문에</li>
+    <li data-correct>실행 권한은 VTL1·하이퍼바이저가 관리하는 EPT에서도 허용되어야 하는데, 검증되지 않은 페이지에는 EPT 실행 권한이 없기 때문에</li>
+    <li>SMEP이 데이터 페이지 실행을 막기 때문에</li>
+  </ol>
+  <div class="explain">실제 권한은 VTL0 PTE와 EPT 권한의 교집합입니다. VTL0는 EPT를 바꿀 수 없고, EPT 실행 권한은 Secure Kernel의 코드 무결성 검증을 통과한 페이지에만 부여됩니다. PatchGuard는 사후·주기적 검사이고, SMEP은 유저 페이지 실행에 관한 규칙입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">EDR 드라이버가 새 프로세스 생성을 감시하고 필요 시 차단하려 합니다. 올바른 방법은?</p>
+  <ol class="opts">
+    <li>SSDT의 <code>NtCreateUserProcess</code> 항목을 자체 함수로 바꾼다</li>
+    <li>ntoskrnl의 프로세스 생성 함수 앞부분에 점프 명령을 패치한다</li>
+    <li data-correct><code>PsSetCreateProcessNotifyRoutineEx</code>로 콜백을 등록하고 <code>CreationStatus</code>로 생성을 거부한다</li>
+    <li>내부 프로세스 리스트를 주기적으로 스캔해 새 항목을 찾는다</li>
+  </ol>
+  <div class="explain">①②는 PatchGuard가 탐지하는 커널 변조이며 HVCI 환경에서는 코드 패치 자체가 불가능합니다. ④는 문서화되지 않은 구조에 의존해 빌드마다 깨지고 경쟁 조건이 있습니다. 공식 콜백은 <code>/INTEGRITYCHECK</code>로 빌드한 드라이버에서 등록할 수 있습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">정상적인 공급업체 서명을 가진, 그러나 취약점이 알려진 드라이버의 로드를 막는 기능은?</p>
+  <ol class="opts">
+    <li>DSE(드라이버 서명 강제) — 서명을 확인하므로</li>
+    <li data-correct>Microsoft 취약 드라이버 차단 목록(또는 App Control 정책)</li>
+    <li>KASLR</li>
+    <li>KVA Shadow</li>
+  </ol>
+  <div class="explain">DSE는 "서명이 유효한가"만 묻기 때문에 정상 서명된 취약 드라이버는 통과합니다. 차단 목록은 해시·서명자 기준으로 알려진 취약 드라이버를 거부하며, Windows 11 2022 업데이트부터 기본으로 켜져 있습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">다음 중 HVCI(메모리 무결성)와 <b>호환되지 않는</b> 드라이버 구현은?</p>
+  <ol class="opts">
+    <li><code>ExAllocatePool2(POOL_FLAG_NON_PAGED, …)</code>로 버퍼 할당</li>
+    <li><code>MmMapLockedPagesSpecifyCache</code>에 <code>MdlMappingNoExecute</code> 지정</li>
+    <li data-correct>런타임에 실행 가능 풀을 할당하고 코드를 복사해 호출</li>
+    <li>콜백 등록을 위해 <code>/INTEGRITYCHECK</code>로 링크</li>
+  </ol>
+  <div class="explain">HVCI 환경에서 VTL0 커널은 실행 가능한 메모리를 새로 만들 수 없습니다. 동적 코드 생성·자기 수정 코드는 설계 단계에서 배제해야 합니다. 나머지는 모두 권장 패턴입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">KVA Shadow가 직접 겨냥하는 위협은?</p>
+  <ol class="opts">
+    <li>서명되지 않은 드라이버 로드</li>
+    <li data-correct>유저 모드 코드가 투기적 실행을 통해 커널 메모리 내용을 유출하는 것 (Meltdown)</li>
+    <li>커널 스택의 반환 주소 변조</li>
+    <li>lsass 메모리에서 자격 증명 탈취</li>
+  </ol>
+  <div class="explain">KVA Shadow는 유저 모드 실행 중에 커널 대부분을 매핑에서 빼 버려, 투기적 실행으로 읽을 대상 자체를 없앱니다. 반환 주소 변조는 kCET, 자격 증명 탈취는 Credential Guard의 영역입니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>커널 보호는 심층 방어다: 정보 숨기기(KASLR, KVA Shadow) → 실행 제한(NX, SMEP/SMAP, CFG, CET) → 로드·무결성 통제(DSE, 차단 목록, PatchGuard) → 상위 계층 강제(VBS).</li>
+    <li>SMEP은 커널의 유저 페이지 <b>실행</b>을, SMAP은 유저 페이지 <b>데이터 접근</b>을, CR0.WP는 읽기 전용 페이지 쓰기를 막는다. NX는 데이터 페이지 실행을 막는다.</li>
+    <li>PatchGuard는 커널 코드·SSDT·IDT·MSR 등의 변조를 사후 탐지해 0x109로 중단시킨다. 드라이버는 커널을 고치지 말고 공식 콜백을 써야 한다.</li>
+    <li>DSE는 "서명 여부"를, 취약 드라이버 차단 목록은 "서명됐지만 위험한 드라이버"를 다룬다.</li>
+    <li>VBS는 VTL0/VTL1을 나누고, HVCI는 EPT로 커널 W^X와 "검증된 코드만 실행"을 VTL0보다 높은 곳에서 강제한다. Credential Guard·KDP·kCET도 같은 높이 차이를 이용한다.</li>
+    <li>HVCI 호환 드라이버: NX 메모리, W+X 섹션 금지, 동적 코드 금지, 페이지 정렬, <code>/guard:cf</code>·<code>/CETCOMPAT</code>, 메모리 무결성을 켠 환경에서 검증.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  // ---------------- 페이지 권한 판정 시뮬레이터 ----------------
+  const sim = document.getElementById('pfSim');
+  const S = { cpl: '0', acc: 'r', us: 's', rw: '1', xd: '1', smep: true, smap: true, wp: true, ac: false };
+  const PRESETS = {
+    kcode:   { cpl: '0', acc: 'x', us: 's', rw: '0', xd: '0', ac: false },
+    kstack:  { cpl: '0', acc: 'x', us: 's', rw: '1', xd: '1', ac: false },
+    uexec:   { cpl: '0', acc: 'x', us: 'u', rw: '0', xd: '0', ac: false },
+    uread:   { cpl: '0', acc: 'r', us: 'u', rw: '1', xd: '1', ac: false },
+    ucopy:   { cpl: '0', acc: 'r', us: 'u', rw: '1', xd: '1', ac: true },
+    rowrite: { cpl: '0', acc: 'w', us: 's', rw: '0', xd: '0', ac: false },
+    ukread:  { cpl: '3', acc: 'r', us: 's', rw: '1', xd: '1', ac: false },
+  };
+  const ACC = { r: '읽기', w: '쓰기', x: '실행' };
+
+  function judge(s) {
+    const L = [];
+    let fail = null, warn = null;
+    const pass = t => L.push('<span class="ok">✓</span> ' + t);
+    const no = t => { L.push('<span class="bad">✗</span> ' + t); fail = fail || t; };
+    const caution = t => { L.push('<span class="warn">△</span> ' + t); warn = warn || t; };
+    L.push(`<span class="dim">CPL=${s.cpl} · ${ACC[s.acc]} · PTE{U/S=${s.us === 'u' ? 1 : 0}, R/W=${s.rw}, XD=${s.xd}} · SMEP=${+s.smep} SMAP=${+s.smap} WP=${+s.wp} AC=${+s.ac}</span>`);
+    if (s.cpl === '3') {
+      if (s.us === 's') no('U/S=0 슈퍼바이저 페이지 — 유저 모드에서는 어떤 접근도 불가');
+      else pass('U/S=1 — 유저 모드 접근 가능한 페이지');
+      if (!fail && s.acc === 'w') { if (s.rw === '1') pass('R/W=1 — 쓰기 허용'); else no('R/W=0 — 유저 모드 쓰기는 CR0.WP와 무관하게 항상 금지'); }
+      if (!fail && s.acc === 'x') { if (s.xd === '1') no('XD=1 — 실행 금지 페이지 (DEP)'); else pass('XD=0 — 실행 허용'); }
+      if (!fail && s.acc === 'r') pass('읽기 허용');
+    } else {
+      pass('CPL=0 — 슈퍼바이저 접근: U/S=0 페이지는 기본 접근 가능');
+      if (s.acc === 'x') {
+        if (s.xd === '1') no('XD=1 — NX 페이지에서 명령어 페치 → 0xFC ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY');
+        else pass('XD=0 — 실행 가능 페이지');
+        if (!fail && s.us === 'u') {
+          if (s.smep) no('SMEP: 커널 모드에서 유저 페이지 명령어 페치 금지');
+          else caution('SMEP 꺼짐 — 커널이 유저가 통제하는 페이지의 코드를 실행 (위험)');
+        }
+      } else {
+        if (s.us === 'u') {
+          if (s.smap && !s.ac) no('SMAP: 커널 모드에서 유저 페이지 데이터 접근, RFLAGS.AC=0');
+          else if (s.smap && s.ac) pass('SMAP 켜짐 + AC=1 — stac로 열어 둔 "의도된" 유저 메모리 접근 구간');
+          else caution('SMAP 꺼짐 — 허용됨. 실수로 유저 포인터를 역참조해도 하드웨어가 막지 못함');
+        }
+        if (!fail && s.acc === 'w') {
+          if (s.rw === '1') pass('R/W=1 — 쓰기 허용');
+          else if (s.wp) no('R/W=0 + CR0.WP=1 — 커널도 읽기 전용 페이지에 쓸 수 없음 → 0xBE ATTEMPTED_WRITE_TO_READONLY_MEMORY');
+          else caution('CR0.WP=0 — 커널이 읽기 전용 페이지에 쓸 수 있음 (Windows는 WP=1 유지)');
+        }
+        if (!fail && s.acc === 'r') pass('읽기 허용');
+      }
+    }
+    if (s.cpl === '0') L.push('<span class="dim">※ HVCI가 켜져 있으면 이 판정을 통과한 뒤 EPT 권한 판정이 한 번 더 적용됩니다.</span>');
+    return { L, fail, warn };
+  }
+
+  function paint() {
+    sim.querySelectorAll('[data-k]').forEach(b => b.classList.toggle('on', S[b.dataset.k] === b.dataset.v));
+    sim.querySelectorAll('[data-t]').forEach(b => b.classList.toggle('on', !!S[b.dataset.t]));
+    const r = judge(S);
+    const v = sim.querySelector('.verdict');
+    v.className = 'verdict ' + (r.fail ? 'bad' : r.warn ? 'warn' : 'ok');
+    v.querySelector('.big').textContent = r.fail ? '✗ #PF — 접근 거부' : r.warn ? '△ 허용됨 (보호 꺼짐)' : '✓ 접근 허용';
+    const chip = (t, on) => `<span class="${on ? 'on' : ''}">${t}</span>`;
+    v.querySelector('.chips').innerHTML =
+      chip('P=1', true) + chip('R/W=' + S.rw, S.rw === '1') + chip('U/S=' + (S.us === 'u' ? 1 : 0), S.us === 'u') + chip('XD=' + S.xd, S.xd === '1') +
+      chip('CR4.SMEP', S.smep) + chip('CR4.SMAP', S.smap) + chip('CR0.WP', S.wp) + chip('AC', S.ac);
+    sim.querySelector('.console').innerHTML = r.L.join('\n');
+  }
+  sim.querySelectorAll('[data-k]').forEach(b => b.addEventListener('click', () => { S[b.dataset.k] = b.dataset.v; paint(); }));
+  sim.querySelectorAll('[data-t]').forEach(b => b.addEventListener('click', () => { S[b.dataset.t] = !S[b.dataset.t]; paint(); }));
+  sim.querySelectorAll('[data-preset]').forEach(b => b.addEventListener('click', () => { Object.assign(S, PRESETS[b.dataset.preset], { smep: true, smap: true, wp: true }); paint(); }));
+  paint();
+
+  // ---------------- 보호 기능 매트릭스 ----------------
+  const PROT = [
+    { id: 'kaslr', name: 'KASLR' },
+    { id: 'nx', name: 'NX/DEP' },
+    { id: 'smep', name: 'SMEP' },
+    { id: 'smap', name: 'SMAP' },
+    { id: 'kvas', name: 'KVA Shadow' },
+    { id: 'pg', name: 'PatchGuard' },
+    { id: 'dse', name: 'DSE' },
+    { id: 'bl', name: '취약 드라이버 차단 목록' },
+    { id: 'vbs', name: 'VBS', vbs: true },
+    { id: 'hvci', name: 'HVCI', vbs: true, dep: ['vbs'] },
+    { id: 'kdp', name: 'KDP', vbs: true, dep: ['vbs'] },
+    { id: 'kcfg', name: 'kCFG', vbs: true, dep: ['vbs'] },
+    { id: 'kcet', name: 'kCET', vbs: true, dep: ['vbs', 'hvci'] },
+    { id: 'cg', name: 'Credential Guard', vbs: true, dep: ['vbs'] },
+  ];
+  const NAME = Object.fromEntries(PROT.map(p => [p.id, p.name]));
+  const LV = ['무방비', '완화', '사후 탐지', '차단 (ring 0 강제)', '차단 (상위 계층 강제)'];
+  const CATS = [
+    { t: '커널 주소를 알아야 성립하는 시도 전반', r: { kaslr: 1 } },
+    { t: '커널 데이터 영역(스택·풀)에 놓인 내용을 코드로 실행', r: { nx: 3, hvci: 4 } },
+    { t: '커널 모드에서 유저 페이지의 코드 실행', r: { smep: 3, hvci: 4 } },
+    { t: '커널이 유저 모드 메모리를 의도치 않게 참조', r: { smap: 3 } },
+    { t: '유저 모드에서 투기적 실행으로 커널 메모리 유출 (Meltdown 계열)', r: { kvas: 3 } },
+    { t: '커널 코드·SSDT·IDT·MSR 등 핵심 구조 변조', r: { pg: 2, hvci: 4 } },
+    { t: '서명되지 않은 드라이버 로드', r: { dse: 3, hvci: 4 } },
+    { t: '서명은 유효하지만 취약점이 알려진 드라이버 로드', r: { bl: 3 } },
+    { t: '보호 지정된 읽기 전용 커널 데이터 변조', r: { kdp: 4 } },
+    { t: '반환 주소 변조로 제어 흐름 탈취', r: { kcet: 4 } },
+    { t: '함수 포인터 변조로 간접 호출 흐름 탈취', r: { kcfg: 1 } },
+    { t: '코드 무결성 판정·정책의 런타임 변조', r: { hvci: 4, kdp: 4 } },
+    { t: 'lsass 메모리에서 파생 자격 증명(해시·티켓 키) 탈취', r: { cg: 4 } },
+  ];
+  const MP = {
+    none: [],
+    w7: ['kaslr', 'nx', 'pg', 'dse'],
+    w10: ['kaslr', 'nx', 'smep', 'kvas', 'pg', 'dse'],
+    w11: ['kaslr', 'nx', 'smep', 'pg', 'dse', 'bl', 'vbs', 'hvci', 'kdp', 'kcfg'],
+    all: PROT.map(p => p.id),
+  };
+  const on = new Set(MP.w11);
+  const mx = document.getElementById('mxSim');
+  const grid = document.getElementById('mxProt');
+  const body = document.getElementById('mxBody');
+  const log = mx.querySelector('.console');
+
+  PROT.forEach(p => {
+    const b = document.createElement('button');
+    b.className = 'btn' + (p.vbs ? ' vbs' : '');
+    b.textContent = p.name;
+    b.dataset.p = p.id;
+    b.addEventListener('click', () => toggle(p.id));
+    grid.appendChild(b);
+  });
+
+  function toggle(id) {
+    const msgs = [];
+    if (on.has(id)) {
+      on.delete(id);
+      msgs.push(`<span class="dim">${NAME[id]} 끔</span>`);
+      PROT.forEach(p => {
+        if (p.dep && p.dep.includes(id) && on.has(p.id)) { on.delete(p.id); msgs.push(`<span class="warn">△ ${p.name}은(는) ${NAME[id]}에 의존하므로 함께 꺼짐</span>`); }
+      });
+    } else {
+      const p = PROT.find(x => x.id === id);
+      (p.dep || []).forEach(d => { if (!on.has(d)) { on.add(d); msgs.push(`<span class="warn">△ ${p.name}에는 ${NAME[d]}이(가) 필요하므로 함께 켬</span>`); } });
+      on.add(id);
+      msgs.push(`<span class="ok">${p.name} 켬</span>`);
+      if (id === 'hvci' && on.has('dse')) msgs.push('<span class="dim">HVCI가 켜지면 코드 무결성 판정이 VTL1(skci)로 올라갑니다.</span>');
+    }
+    log.innerHTML = msgs.join('\n');
+    render();
+  }
+
+  function render() {
+    grid.querySelectorAll('[data-p]').forEach(b => b.classList.toggle('on', on.has(b.dataset.p)));
+    let open = 0;
+    body.innerHTML = CATS.map(c => {
+      let best = 0;
+      const by = [];
+      Object.entries(c.r).forEach(([id, lv]) => {
+        if (on.has(id)) { best = Math.max(best, lv); by.push(`<b>${NAME[id]}</b>(${LV[lv]})`); }
+        else by.push(`<span style="opacity:.55">${NAME[id]}</span>`);
+      });
+      if (best === 0) open++;
+      return `<tr><td>${c.t}</td><td><span class="st l${best}">${LV[best]}</span></td><td class="by">${by.join(' · ')}</td></tr>`;
+    }).join('');
+    mx.querySelector('.sim-title').textContent = `보호 기능 ↔ 차단 범주 매트릭스 — 무방비 범주 ${open} / ${CATS.length}`;
+  }
+  mx.querySelectorAll('[data-mp]').forEach(b => b.addEventListener('click', () => {
+    on.clear(); MP[b.dataset.mp].forEach(id => on.add(id));
+    log.innerHTML = `<span class="dim">프리셋 적용: ${b.textContent}</span>`;
+    render();
+  }));
+  render();
+  log.innerHTML = '<span class="dim">기본: Windows 11 (메모리 무결성 켜짐) 프리셋. 기능 버튼을 눌러 켜고 꺼 보세요.</span>';
+})();
+</script>
+</body>
+</html>

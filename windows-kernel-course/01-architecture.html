@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>윈도우 아키텍처 개관</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .ring-wrap { display: grid; grid-template-columns: 320px minmax(0,1fr); gap: 18px; align-items: center; }
+  @media (max-width: 760px) { .ring-wrap { grid-template-columns: 1fr; } }
+  .ins-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ins-grid .btn { font-family: var(--mono); font-size: .82rem; }
+  .prefix-out { margin-top: 10px; }
+  .prefix-out .big { font: 700 1.3rem var(--mono); }
+  .prefix-out .big .p { color: var(--kernel); }
+  .prefix-out .big .i { color: var(--hv); }
+</style>
+</head>
+<body data-chapter="01">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part I · Chapter 01</div>
+  <h1>윈도우 아키텍처 개관</h1>
+  <p class="sub">Windows NT 커널을 이루는 큰 그림. 이후 모든 챕터는 이 지도 위의 한 구역을 확대하는 과정입니다.</p>
+  <div class="meta"><span class="pill lv-basic">입문</span><span class="pill">⏱ 약 60분</span><span class="pill">선수: C, 운영체제 기초</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>CPU 특권 수준(Ring)과 유저/커널 모드의 실제 차이를 하드웨어 관점에서 설명할 수 있다.</li>
+    <li>NT 아키텍처의 계층(서브시스템 DLL → ntdll → Executive → Kernel → HAL)과 각 구성요소의 책임을 구분할 수 있다.</li>
+    <li>커널 함수 이름의 접두사만 보고 어느 구성요소 소속인지, 공개/내부 함수인지 판단할 수 있다.</li>
+    <li><code>CreateFileW</code> 한 번의 호출이 커널을 거쳐 파일 시스템 드라이버까지 가는 경로를 그릴 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="why">왜 커널인가</h2>
+<p>
+  애플리케이션이 하는 거의 모든 일 — 파일 열기, 메모리 할당, 스레드 생성, 네트워크 송신 — 은 결국 커널에 대한 <strong>요청</strong>입니다.
+  커널은 하드웨어를 독점적으로 다루고, 여러 프로세스가 서로를 침범하지 못하도록 격리하며, 한정된 CPU와 메모리를 배분하는 <strong>중재자</strong>입니다.
+</p>
+<p>
+  커널 전문가는 크게 세 갈래에서 활약합니다. <b>드라이버/시스템 개발</b>(디바이스, 파일 시스템 필터, 가상화),
+  <b>장애 분석</b>(블루스크린, 행, 성능 저하의 근본 원인), <b>보안</b>(EDR, 취약점 연구, 익스플로잇 완화).
+  세 분야 모두 같은 기반 지식 — 이 코스에서 다루는 내부 구조 — 위에 서 있습니다.
+</p>
+
+<div class="callout expert">
+  <div class="callout-title">전문가 관점</div>
+  <p>Windows 커널은 소스가 공개되어 있지 않습니다. 그래서 전문가의 핵심 역량은 <b>"공개 심볼 + 디버거 + 문서 + 리버싱"으로 사실을 검증하는 습관</b>입니다.
+  이 코스의 모든 구조체·함수는 WinDbg에서 <code>dt</code>, <code>x</code>, <code>u</code>로 직접 확인할 수 있으니, 읽기만 하지 말고 반드시 대조해 보세요.</p>
+</div>
+
+<h2 id="modes">유저 모드와 커널 모드</h2>
+<p>
+  "커널 모드"는 소프트웨어 개념이 아니라 <strong>CPU 상태</strong>입니다. x86-64 CPU는 현재 코드 세그먼트의 하위 2비트,
+  즉 <b>CPL(Current Privilege Level)</b>로 특권 수준을 판단합니다. Windows는 4개 링 중 <b>Ring 0(커널)</b>과 <b>Ring 3(유저)</b> 두 개만 사용합니다.
+</p>
+
+<div class="ring-wrap">
+  <figure class="fig" style="margin:0">
+    <svg class="dia" viewBox="0 0 300 300" role="img" aria-label="CPU 링 구조">
+      <circle cx="150" cy="150" r="140" class="box user"/>
+      <circle cx="150" cy="150" r="108" class="box" style="opacity:.6"/>
+      <circle cx="150" cy="150" r="80" class="box" style="opacity:.6"/>
+      <circle cx="150" cy="150" r="54" class="box kernel"/>
+      <circle cx="150" cy="150" r="24" class="box hv"/>
+      <text x="150" y="30" text-anchor="middle" class="b c-user">Ring 3 · 유저</text>
+      <text x="150" y="60" text-anchor="middle" class="sm">Ring 2 (미사용)</text>
+      <text x="150" y="86" text-anchor="middle" class="sm">Ring 1 (미사용)</text>
+      <text x="150" y="116" text-anchor="middle" class="b c-kernel">Ring 0 · 커널</text>
+      <text x="150" y="154" text-anchor="middle" class="sm" style="font-size:9px;fill:var(--hv)">VMX root</text>
+    </svg>
+    <figcaption>중앙의 VMX root는 엄밀히 '링'이 아니라 링과 직교하는 CPU 모드입니다(흔히 Ring -1이라 부름).</figcaption>
+  </figure>
+  <div>
+    <div class="grid2" style="margin:0">
+      <div class="card user"><h4>유저 모드 (CPL=3)</h4>
+        <p>특권 명령 실행 불가. 페이지 테이블의 <code>U/S=1</code>인 페이지만 접근. 크래시해도 해당 프로세스만 종료.</p></div>
+      <div class="card kernel"><h4>커널 모드 (CPL=0)</h4>
+        <p>모든 명령·모든 메모리 접근 가능. 커널 코드의 버그는 시스템 전체를 멈춤 → <b>버그체크(BSOD)</b>.</p></div>
+    </div>
+    <p class="muted" style="font-size:.9rem;margin-top:12px">
+      중요: 커널 모드는 "커널 프로세스"가 아닙니다. 대부분의 커널 코드는 <b>요청한 유저 스레드의 문맥에서</b> 실행됩니다.
+      스레드가 <code>syscall</code>을 실행하면 같은 스레드가 CPL 0으로 전환되어 커널 코드를 수행하고 다시 돌아옵니다.
+    </p>
+  </div>
+</div>
+
+<div class="sim" id="insSim">
+  <div class="sim-title">특권 명령 실험실 — 이 명령은 어느 모드에서 실행될까?</div>
+  <div class="sim-controls">
+    <span>현재 모드:</span>
+    <button class="btn on" data-mode="3">Ring 3 (유저)</button>
+    <button class="btn" data-mode="0">Ring 0 (커널)</button>
+  </div>
+  <div class="ins-grid"></div>
+  <div class="console" style="margin-top:12px;min-height:5em">명령을 클릭해 실행해 보세요.</div>
+</div>
+
+<h2 id="layers">NT 아키텍처 전체 지도</h2>
+<p>
+  아래 도식은 Windows의 주요 구성요소를 계층으로 나타낸 것입니다. <b>각 상자를 클릭</b>하면 역할, 실제 파일, 대표 함수가 표시됩니다.
+  유저 모드의 모든 경로는 결국 <code>ntdll.dll</code>로 모이고, 거기서 시스템 콜 경계를 넘어 커널로 들어갑니다.
+</p>
+
+<figure class="fig explore" id="archMap">
+  <svg class="dia" viewBox="0 0 880 660" role="img" aria-label="Windows NT 아키텍처">
+    <!-- 유저 모드 -->
+    <rect class="zone user" x="10" y="10" width="860" height="215" rx="12"/>
+    <text x="24" y="31" class="b c-user">사용자 모드 · Ring 3</text>
+    <g data-info="sysproc"><rect class="box user" x="30" y="44" width="260" height="58" rx="8"/>
+      <text x="160" y="68" text-anchor="middle" class="b">시스템 프로세스</text>
+      <text x="160" y="88" text-anchor="middle" class="sm">smss · csrss · wininit · winlogon · lsass</text></g>
+    <g data-info="services"><rect class="box user" x="310" y="44" width="260" height="58" rx="8"/>
+      <text x="440" y="68" text-anchor="middle" class="b">서비스 프로세스</text>
+      <text x="440" y="88" text-anchor="middle" class="sm">services.exe · svchost.exe · …</text></g>
+    <g data-info="apps"><rect class="box user" x="590" y="44" width="260" height="58" rx="8"/>
+      <text x="720" y="68" text-anchor="middle" class="b">사용자 애플리케이션</text>
+      <text x="720" y="88" text-anchor="middle" class="sm">explorer.exe · notepad.exe · …</text></g>
+    <g data-info="subsys"><rect class="box user" x="30" y="114" width="820" height="40" rx="8"/>
+      <text x="440" y="139" text-anchor="middle"><tspan class="b" style="font-weight:700">서브시스템 DLL</tspan>  kernel32 · kernelbase · user32 · gdi32 · advapi32 · win32u</text></g>
+    <g data-info="ntdll"><rect class="box user" x="30" y="166" width="820" height="44" rx="8" style="stroke-width:2.4"/>
+      <text x="440" y="193" text-anchor="middle"><tspan style="font-weight:700">ntdll.dll</tspan>  — 네이티브 API(Nt*/Zw*) 스텁 · 로더(Ldr*) · 힙 · Rtl*</text></g>
+
+    <line class="sep" x1="10" y1="238" x2="870" y2="238"/>
+    <rect x="330" y="228" width="220" height="20" rx="10" style="fill:var(--panel)"/>
+    <text x="440" y="243" text-anchor="middle" class="sm b" style="fill:var(--acc)">▼ syscall 경계 ▼</text>
+
+    <!-- 커널 모드 -->
+    <rect class="zone kernel" x="10" y="252" width="860" height="292" rx="12"/>
+    <text x="24" y="272" class="b c-kernel">커널 모드 · Ring 0</text>
+    <rect class="box plain" x="30" y="280" width="620" height="146" rx="10" style="stroke:var(--kernel);stroke-dasharray:4 4"/>
+    <text x="42" y="298" class="sm b" style="fill:var(--kernel)">EXECUTIVE  (ntoskrnl.exe 상위 계층)</text>
+
+    <g data-info="io"><rect class="box kernel" x="40" y="306" width="112" height="50" rx="7"/><text x="96" y="327" text-anchor="middle" class="b">I/O 관리자</text><text x="96" y="345" text-anchor="middle" class="sm mono">Io*</text></g>
+    <g data-info="mm"><rect class="box kernel" x="161" y="306" width="112" height="50" rx="7"/><text x="217" y="327" text-anchor="middle" class="b">메모리 관리자</text><text x="217" y="345" text-anchor="middle" class="sm mono">Mm* / Mi*</text></g>
+    <g data-info="ps"><rect class="box kernel" x="282" y="306" width="112" height="50" rx="7"/><text x="338" y="327" text-anchor="middle" class="b">프로세스 관리자</text><text x="338" y="345" text-anchor="middle" class="sm mono">Ps* / Psp*</text></g>
+    <g data-info="ob"><rect class="box kernel" x="403" y="306" width="112" height="50" rx="7"/><text x="459" y="327" text-anchor="middle" class="b">객체 관리자</text><text x="459" y="345" text-anchor="middle" class="sm mono">Ob*</text></g>
+    <g data-info="se"><rect class="box kernel" x="524" y="306" width="112" height="50" rx="7"/><text x="580" y="327" text-anchor="middle" class="b">보안 (SRM)</text><text x="580" y="345" text-anchor="middle" class="sm mono">Se*</text></g>
+    <g data-info="cm"><rect class="box kernel" x="40" y="366" width="112" height="50" rx="7"/><text x="96" y="387" text-anchor="middle" class="b">구성 관리자</text><text x="96" y="405" text-anchor="middle" class="sm mono">Cm* (레지스트리)</text></g>
+    <g data-info="pnp"><rect class="box kernel" x="161" y="366" width="112" height="50" rx="7"/><text x="217" y="387" text-anchor="middle" class="b">PnP 관리자</text><text x="217" y="405" text-anchor="middle" class="sm mono">Pp* / Pnp*</text></g>
+    <g data-info="po"><rect class="box kernel" x="282" y="366" width="112" height="50" rx="7"/><text x="338" y="387" text-anchor="middle" class="b">전원 관리자</text><text x="338" y="405" text-anchor="middle" class="sm mono">Po*</text></g>
+    <g data-info="cc"><rect class="box kernel" x="403" y="366" width="112" height="50" rx="7"/><text x="459" y="387" text-anchor="middle" class="b">캐시 관리자</text><text x="459" y="405" text-anchor="middle" class="sm mono">Cc*</text></g>
+    <g data-info="alpc"><rect class="box kernel" x="524" y="366" width="112" height="50" rx="7"/><text x="580" y="387" text-anchor="middle" class="b">ALPC</text><text x="580" y="405" text-anchor="middle" class="sm mono">Alpc*</text></g>
+
+    <g data-info="win32k"><rect class="box kernel" x="665" y="280" width="185" height="70" rx="8"/><text x="757" y="309" text-anchor="middle" class="b">win32k*.sys</text><text x="757" y="329" text-anchor="middle" class="sm">윈도 관리 · GDI</text></g>
+    <g data-info="drivers"><rect class="box kernel" x="665" y="358" width="185" height="68" rx="8"/><text x="757" y="386" text-anchor="middle" class="b">디바이스 드라이버</text><text x="757" y="406" text-anchor="middle" class="sm">*.sys · 파일시스템 · 필터</text></g>
+
+    <g data-info="ke"><rect class="box kernel" x="30" y="436" width="820" height="44" rx="8" style="stroke-width:2.2"/>
+      <text x="440" y="463" text-anchor="middle"><tspan style="font-weight:700">Kernel (Ke* / Ki*)</tspan>  — 스레드 디스패치 · 동기화 프리미티브 · 인터럽트/예외 디스패치 · IRQL</text></g>
+    <g data-info="hal"><rect class="box kernel" x="30" y="490" width="820" height="42" rx="8"/>
+      <text x="440" y="516" text-anchor="middle"><tspan style="font-weight:700">HAL (Hal*)</tspan>  — 인터럽트 컨트롤러 · 타이머 · 플랫폼 차이 추상화</text></g>
+
+    <g data-info="hv"><rect class="box hv" x="10" y="556" width="860" height="44" rx="10"/>
+      <text x="440" y="583" text-anchor="middle"><tspan style="font-weight:700;fill:var(--hv)">Hyper-V 하이퍼바이저</tspan>  — VBS/HVCI 활성 시 커널 아래에서 실행 (VMX root)</text></g>
+    <g data-info="hw"><rect class="box hw" x="10" y="610" width="860" height="42" rx="10"/>
+      <text x="440" y="636" text-anchor="middle"><tspan style="font-weight:700">하드웨어</tspan>  — CPU · MMU · Local APIC/IOAPIC · 메모리 · 디바이스</text></g>
+  </svg>
+
+  <template data-key="sysproc">
+    <h4>시스템 프로세스</h4>
+    <p>OS 동작에 필수인 유저 모드 프로세스들입니다. <code>smss.exe</code>(세션 관리자, 커널이 최초로 만드는 유저 프로세스) → <code>csrss.exe</code>(Windows 서브시스템 서버) / <code>wininit.exe</code>(세션 0 초기화) / <code>winlogon.exe</code>(로그온) → <code>lsass.exe</code>(인증)·<code>services.exe</code>(SCM).</p>
+    <p>csrss·wininit 등은 <b>Critical Process</b>로 표시되어 있어 종료되면 시스템이 <code>CRITICAL_PROCESS_DIED</code>(0xEF)로 버그체크합니다. → 03장 부팅 과정</p>
+  </template>
+  <template data-key="services">
+    <h4>서비스 프로세스</h4>
+    <p>서비스 제어 관리자(<code>services.exe</code>)가 시작·관리하는 백그라운드 프로세스. 다수의 서비스 DLL이 <code>svchost.exe</code>에 호스팅됩니다. 커널 관점에선 그냥 일반 유저 프로세스이며, 보통 <code>SYSTEM</code>·<code>LocalService</code>·<code>NetworkService</code> 토큰으로 실행됩니다.</p>
+  </template>
+  <template data-key="apps">
+    <h4>사용자 애플리케이션</h4>
+    <p>Win32 API(kernel32/user32 등)를 호출하는 일반 프로그램. 직접 시스템 콜을 하지 않고 <b>서브시스템 DLL → ntdll</b> 경로를 탑니다. 이 경로를 우회해 직접 <code>syscall</code>을 실행하는 기법(direct syscall)은 보안 제품의 유저 모드 훅을 피하려는 악성코드가 자주 씁니다. → 02장</p>
+  </template>
+  <template data-key="subsys">
+    <h4>서브시스템 DLL</h4>
+    <p>문서화된 Win32 API를 구현합니다. <code>kernel32.dll</code>의 상당수 함수는 <code>kernelbase.dll</code>로 포워딩되며, 결국 <code>ntdll.dll</code>의 네이티브 API를 호출합니다. GUI 관련 호출(<code>user32</code>/<code>gdi32</code>)은 <code>win32u.dll</code>을 거쳐 <b>win32k 계열 드라이버</b>로 가는 별도 시스템 콜 테이블(Shadow SSDT)을 사용합니다.</p>
+    <p>Win32 API는 안정적인 계약이고, 네이티브 API는 대부분 <b>비공식</b>입니다(시스템 콜 번호도 빌드마다 바뀜).</p>
+  </template>
+  <template data-key="ntdll">
+    <h4>ntdll.dll</h4>
+    <p>모든 유저 프로세스에 가장 먼저 매핑되는 DLL이자 유저↔커널의 관문입니다.</p>
+    <ul>
+      <li><b>시스템 콜 스텁</b>: <code>NtCreateFile</code> 등 — 시스템 콜 번호를 <code>eax</code>에 넣고 <code>syscall</code> 실행</li>
+      <li><b>이미지 로더</b>: <code>Ldr*</code> — DLL 로딩, 임포트 해석, TLS 초기화</li>
+      <li><b>힙 관리자</b>: <code>RtlAllocateHeap</code> 등</li>
+      <li><b>런타임 라이브러리</b>: <code>Rtl*</code> — 문자열, 비트맵, 해시 등 (커널에도 동일 계열 존재)</li>
+      <li><b>유저 모드 디스패처</b>: <code>KiUserExceptionDispatcher</code>, <code>KiUserApcDispatcher</code> — 커널이 유저 모드로 "되돌려 보내는" 진입점</li>
+    </ul>
+  </template>
+  <template data-key="io">
+    <h4>I/O 관리자 (<code>Io*</code>)</h4>
+    <p>디바이스 독립적인 I/O 프레임워크. 요청을 <b>IRP(I/O Request Packet)</b>로 만들어 계층형 드라이버 스택에 전달하고, 완료를 처리합니다. 대표 함수: <code>IoCallDriver</code>, <code>IoCompleteRequest</code>, <code>IoCreateDevice</code>. → 11장</p>
+  </template>
+  <template data-key="mm">
+    <h4>메모리 관리자 (<code>Mm*</code>, 내부 <code>Mi*</code>)</h4>
+    <p>가상 주소 공간, 페이지 테이블, 물리 메모리(PFN 데이터베이스), 페이징 파일, 섹션 객체(메모리 매핑 파일), 커널 풀을 관리합니다. 커널에서 가장 크고 복잡한 구성요소 중 하나입니다. → 08·09장</p>
+  </template>
+  <template data-key="ps">
+    <h4>프로세스 관리자 (<code>Ps*</code>)</h4>
+    <p>프로세스·스레드·잡 객체의 생성과 종료를 담당합니다. 실제 스케줄링은 Kernel(Ke)이 하고, Ps는 그 위에서 <code>EPROCESS</code>/<code>ETHREAD</code> 같은 Executive 수준 구조를 관리합니다. 보안 제품이 많이 쓰는 <code>PsSetCreateProcessNotifyRoutineEx</code> 콜백도 여기 있습니다. → 04장</p>
+  </template>
+  <template data-key="ob">
+    <h4>객체 관리자 (<code>Ob*</code>)</h4>
+    <p>프로세스·파일·이벤트 등 모든 커널 리소스를 <b>객체</b>로 통일해 관리합니다. 이름 공간(<code>\Device</code>, <code>\BaseNamedObjects</code>…), 핸들 테이블, 참조 카운트, 객체 타입별 콜백을 제공합니다. → 10장</p>
+  </template>
+  <template data-key="se">
+    <h4>보안 참조 모니터 (SRM, <code>Se*</code>)</h4>
+    <p>접근 토큰과 보안 설명자(DACL)를 비교해 접근 허용 여부를 결정합니다(<code>SeAccessCheck</code>). 특권 검사, 감사(audit) 이벤트 생성도 담당합니다. 유저 모드의 <code>lsass.exe</code>와 ALPC로 협력합니다. → 13장</p>
+  </template>
+  <template data-key="cm">
+    <h4>구성 관리자 (<code>Cm*</code>)</h4>
+    <p>레지스트리를 구현합니다. 하이브 파일을 메모리에 매핑하고 키/값 연산을 처리합니다. 레지스트리 하이브는 별도의 <b>Registry</b> 프로세스 주소 공간에 매핑됩니다. <code>CmRegisterCallbackEx</code>로 레지스트리 작업을 감시할 수 있습니다.</p>
+  </template>
+  <template data-key="pnp">
+    <h4>PnP 관리자</h4>
+    <p>장치 열거, 드라이버 로드, 리소스 할당, 장치 트리(devnode) 관리. 장치가 추가되면 버스 드라이버의 보고를 받아 적절한 드라이버를 찾아 <code>AddDevice</code>를 호출합니다. → 11장</p>
+  </template>
+  <template data-key="po">
+    <h4>전원 관리자 (<code>Po*</code>)</h4>
+    <p>시스템/장치 전원 상태(S0~S5, D0~D3) 전환을 조정하고 <code>IRP_MJ_POWER</code>를 드라이버 스택에 보냅니다. Modern Standby, 프로세서 유휴 상태 관리도 관여합니다.</p>
+  </template>
+  <template data-key="cc">
+    <h4>캐시 관리자 (<code>Cc*</code>)</h4>
+    <p>파일 데이터를 시스템 가상 주소 공간에 매핑해 캐싱합니다. 자체 버퍼를 갖지 않고 <b>메모리 관리자의 섹션/매핑 기능 위에</b> 구현된 것이 특징입니다. Lazy Writer가 더티 페이지를 디스크로 내보냅니다. → 12장</p>
+  </template>
+  <template data-key="alpc">
+    <h4>ALPC (Advanced Local Procedure Call)</h4>
+    <p>같은 머신 내 프로세스 간 고속 메시지 전달 메커니즘. RPC의 로컬 전송, csrss·lsass·SCM 등 시스템 구성요소 간 통신 대부분이 ALPC 위에서 동작합니다.</p>
+  </template>
+  <template data-key="win32k">
+    <h4>win32k.sys / win32kbase.sys / win32kfull.sys</h4>
+    <p>창 관리자(USER)와 그래픽(GDI)의 커널 측 구현. NT 4.0에서 성능을 위해 커널로 옮겨졌고, 이후 수많은 권한 상승 취약점의 무대가 되었습니다. 그래서 브라우저 렌더러 등 샌드박스 프로세스는 <b>Win32k 시스템 콜 차단 정책</b>을 사용합니다. 세션 공간에 로드되는 특수한 드라이버입니다.</p>
+  </template>
+  <template data-key="drivers">
+    <h4>디바이스 드라이버</h4>
+    <p>커널에 동적으로 로드되는 모듈(<code>.sys</code>, PE 포맷). 하드웨어 드라이버뿐 아니라 파일 시스템(NTFS), 네트워크 스택(tcpip.sys), 필터 드라이버, 보안 제품 드라이버 등이 모두 이 범주입니다. 커널과 <b>동일한 권한·동일한 주소 공간</b>을 공유하므로 드라이버 버그 = 시스템 크래시입니다. → 14장</p>
+  </template>
+  <template data-key="ke">
+    <h4>Kernel (<code>Ke*</code>, 내부 <code>Ki*</code>)</h4>
+    <p>ntoskrnl.exe의 하위 계층으로, 정책이 아닌 <b>메커니즘</b>을 제공합니다.</p>
+    <ul>
+      <li>스레드 스케줄링·컨텍스트 스위치 (<code>KiSwapContext</code>)</li>
+      <li>디스패처 객체(이벤트, 뮤텍스, 세마포어, 타이머)와 대기 (<code>KeWaitForSingleObject</code>)</li>
+      <li>인터럽트·예외 트랩 처리 (<code>KiPageFault</code>, <code>KiSystemCall64</code>)</li>
+      <li>IRQL, DPC, APC</li>
+    </ul>
+    <p>Executive가 "무엇을"을 결정하면 Kernel은 "어떻게"를 실행합니다.</p>
+  </template>
+  <template data-key="hal">
+    <h4>HAL (Hardware Abstraction Layer)</h4>
+    <p>인터럽트 컨트롤러(APIC), 타이머, 플랫폼별 차이를 추상화합니다. 과거에는 여러 HAL 중 하나를 골라 설치했지만, 현대 x64 Windows는 사실상 단일 HAL을 사용하며 Windows 10 2004부터는 HAL 코드 상당 부분이 ntoskrnl.exe로 통합되었습니다(<code>hal.dll</code>은 남아 있음).</p>
+  </template>
+  <template data-key="hv">
+    <h4>Hyper-V 하이퍼바이저</h4>
+    <p>VBS(Virtualization-Based Security)가 켜져 있으면 Windows 자체가 하이퍼바이저 위의 "루트 파티션"으로 실행됩니다. 하이퍼바이저는 <b>VTL0</b>(일반 커널)과 <b>VTL1</b>(Secure Kernel, <code>securekernel.exe</code>)을 분리하고, HVCI는 SLAT(EPT)로 커널 코드 페이지의 쓰기를 막습니다. → 16장</p>
+  </template>
+  <template data-key="hw">
+    <h4>하드웨어</h4>
+    <p>CPU(특권 수준, MSR, 제어 레지스터), MMU(페이지 테이블 워크, TLB), 인터럽트 컨트롤러(Local APIC, I/O APIC, MSI), 메모리, PCIe 장치. 커널 개념의 상당수는 이 하드웨어 기능을 그대로 반영한 것입니다.</p>
+  </template>
+  <figcaption><b>그림 1-1.</b> Windows NT 아키텍처. 주황 = 커널 모드, 파랑 = 유저 모드, 보라 = 하이퍼바이저.</figcaption>
+</figure>
+
+<div class="callout note">
+  <div class="callout-title">ntoskrnl.exe 하나에 Executive와 Kernel이 함께 있다</div>
+  <p>도식에서 Executive와 Kernel은 별개의 상자지만 <b>같은 바이너리</b>(<code>ntoskrnl.exe</code>) 안에 있습니다. 계층은 논리적 구분이며, NT는 순수 마이크로커널이 아닌 <b>하이브리드(모놀리식에 가까운) 설계</b>입니다. 모든 Executive 구성요소가 같은 주소 공간에서 함수 호출로 소통하므로 빠르지만, 한 구성요소의 버그가 전체를 무너뜨릴 수 있습니다.</p>
+</div>
+
+<h3>NT의 설계 원칙</h3>
+<div class="grid3">
+  <div class="card"><h4>객체 기반</h4><p>모든 리소스를 객체 + 핸들로 다룬다. 이름 공간·보안·참조 관리가 일관된다.</p></div>
+  <div class="card"><h4>이식성</h4><p>HAL과 아키텍처 의존 코드를 분리. x86, x64, ARM64를 같은 코드베이스로 지원.</p></div>
+  <div class="card"><h4>대칭형 다중처리(SMP)</h4><p>커널 코드가 모든 CPU에서 동시에 실행된다. 그래서 동기화(07장)가 핵심이다.</p></div>
+  <div class="card"><h4>선점형 커널</h4><p>커널 모드 스레드도 더 높은 우선순위 스레드에 선점될 수 있다(IRQL이 DISPATCH 미만일 때).</p></div>
+  <div class="card"><h4>비동기 I/O 중심</h4><p>모든 I/O는 본질적으로 비동기. 동기 I/O는 비동기 I/O + 대기로 구현된다.</p></div>
+  <div class="card"><h4>보안 내재화</h4><p>모든 객체 열기는 SRM의 접근 검사를 거친다(C2 인증 설계 목표).</p></div>
+</div>
+
+<h2 id="files">핵심 바이너리</h2>
+<table>
+  <thead><tr><th>파일</th><th>모드</th><th>역할</th></tr></thead>
+  <tbody>
+    <tr><td><code>ntoskrnl.exe</code></td><td>커널</td><td>Executive + Kernel. 커널의 본체</td></tr>
+    <tr><td><code>hal.dll</code></td><td>커널</td><td>하드웨어 추상화 계층</td></tr>
+    <tr><td><code>win32k.sys</code>, <code>win32kbase.sys</code>, <code>win32kfull.sys</code></td><td>커널</td><td>USER/GDI 커널 구현</td></tr>
+    <tr><td><code>ci.dll</code></td><td>커널</td><td>코드 무결성(드라이버 서명 검증, DSE)</td></tr>
+    <tr><td><code>securekernel.exe</code></td><td>VTL1 커널</td><td>VBS의 Secure Kernel</td></tr>
+    <tr><td><code>hvix64.exe</code> / <code>hvax64.exe</code></td><td>하이퍼바이저</td><td>Hyper-V (Intel / AMD)</td></tr>
+    <tr><td><code>ntdll.dll</code></td><td>유저</td><td>네이티브 API, 로더, 힙</td></tr>
+    <tr><td><code>kernel32.dll</code>, <code>kernelbase.dll</code></td><td>유저</td><td>Win32 기본 API</td></tr>
+    <tr><td><code>win32u.dll</code></td><td>유저</td><td>win32k 시스템 콜 스텁</td></tr>
+    <tr><td><code>smss.exe</code>, <code>csrss.exe</code>, <code>wininit.exe</code></td><td>유저</td><td>세션·서브시스템·초기화 프로세스</td></tr>
+  </tbody>
+</table>
+
+<div class="callout tip">
+  <div class="callout-title">특수 "프로세스"들</div>
+  <p>작업 관리자의 <b>System</b>(PID 4)은 커널 시스템 스레드를 담는 컨테이너 프로세스이고, <b>Idle</b>(PID 0)은 CPU당 하나씩 유휴 스레드를 가진 가상 프로세스입니다.
+  <b>Registry</b>는 레지스트리 하이브를, <b>Memory Compression</b>은 압축된 페이지를 보관하는 최소(minimal) 프로세스입니다. VBS가 켜져 있으면 <b>Secure System</b>도 보입니다.</p>
+</div>
+
+<h2 id="prefix">함수 접두사 읽는 법</h2>
+<p>
+  커널 함수 이름은 <code>&lt;접두사&gt;&lt;동작&gt;&lt;대상&gt;</code> 규칙을 따릅니다. 예: <code>Ke</code>+<code>Wait</code>+<code>ForSingleObject</code>.
+  접두사 뒤에 <b>i</b>가 붙거나(<code>Ke→Ki</code>, <code>Mm→Mi</code>) <b>p</b>가 붙으면(<code>Io→Iop</code>, <code>Ps→Psp</code>) <b>내부(비공개) 함수</b>입니다.
+  덤프 분석에서 콜스택을 읽을 때 이 규칙만 알아도 "어느 구성요소에서 문제가 났는지" 바로 감이 옵니다.
+</p>
+
+<div class="sim" id="prefixSim">
+  <div class="sim-title">접두사 디코더</div>
+  <div class="sim-controls">
+    <input type="text" id="fnInput" value="KiSwapContext" style="flex:1;min-width:220px" aria-label="함수 이름">
+    <span class="muted" style="font-size:.85rem">예시:</span>
+    <button class="btn" data-fn="MiResolveDemandZeroFault">MiResolveDemandZeroFault</button>
+    <button class="btn" data-fn="IopParseDevice">IopParseDevice</button>
+    <button class="btn" data-fn="ObReferenceObjectByHandle">ObReferenceObjectByHandle</button>
+    <button class="btn" data-fn="ZwQuerySystemInformation">ZwQuerySystemInformation</button>
+  </div>
+  <div class="prefix-out"></div>
+</div>
+
+<details>
+  <summary>주요 접두사 전체 표</summary>
+  <table>
+    <thead><tr><th>접두사</th><th>구성요소</th><th>접두사</th><th>구성요소</th></tr></thead>
+    <tbody>
+      <tr><td><code>Alpc</code></td><td>ALPC</td><td><code>Ke</code> / <code>Ki</code></td><td>Kernel</td></tr>
+      <tr><td><code>Cc</code></td><td>캐시 관리자</td><td><code>Mm</code> / <code>Mi</code></td><td>메모리 관리자</td></tr>
+      <tr><td><code>Cm</code></td><td>구성 관리자(레지스트리)</td><td><code>Nt</code> / <code>Zw</code></td><td>시스템 서비스 / 커널에서 호출용 래퍼</td></tr>
+      <tr><td><code>Dbg</code> / <code>Kd</code></td><td>디버그 / 커널 디버거</td><td><code>Ob</code></td><td>객체 관리자</td></tr>
+      <tr><td><code>Etw</code></td><td>이벤트 추적</td><td><code>Pf</code></td><td>프리페처(SuperFetch)</td></tr>
+      <tr><td><code>Ex</code></td><td>Executive 지원(풀, 락, 워커)</td><td><code>Po</code></td><td>전원 관리자</td></tr>
+      <tr><td><code>FsRtl</code></td><td>파일 시스템 런타임</td><td><code>Pp</code> / <code>Pnp</code></td><td>PnP 관리자</td></tr>
+      <tr><td><code>Flt</code></td><td>Filter Manager(미니필터)</td><td><code>Ps</code></td><td>프로세스 관리자</td></tr>
+      <tr><td><code>Hal</code></td><td>HAL</td><td><code>Rtl</code></td><td>런타임 라이브러리</td></tr>
+      <tr><td><code>Hvl</code></td><td>하이퍼바이저 라이브러리</td><td><code>Se</code></td><td>보안</td></tr>
+      <tr><td><code>Inbv</code></td><td>부트 비디오</td><td><code>Vf</code></td><td>Driver Verifier</td></tr>
+      <tr><td><code>Io</code></td><td>I/O 관리자</td><td><code>Whea</code></td><td>하드웨어 오류 아키텍처</td></tr>
+    </tbody>
+  </table>
+</details>
+
+<div class="callout expert">
+  <div class="callout-title">Nt vs Zw — 같은 함수, 다른 PreviousMode</div>
+  <p>커널 코드가 <code>ZwCreateFile</code>을 호출하면 시스템 콜 진입 경로(<code>KiServiceInternal</code>)를 거치면서 스레드의 <b>PreviousMode가 KernelMode</b>로 설정됩니다. 그래서 인자 검증(프로브)과 접근 검사가 완화됩니다.
+  커널에서 <code>NtCreateFile</code>을 직접 호출하면 PreviousMode가 그대로(유저 요청 처리 중이라면 UserMode) 남아 커널 버퍼가 거부되거나, 반대로 보안 검사가 잘못 생략될 수 있습니다. 드라이버는 원칙적으로 <b>Zw</b> 버전을 씁니다. → 02장에서 자세히</p>
+</div>
+
+<h2 id="journey">API 호출이 커널까지 가는 여정</h2>
+<p>메모장이 파일을 여는 순간을 따라가 봅시다. <b>▶ 자동 재생</b>을 누르거나 한 단계씩 넘겨 보세요.</p>
+
+<figure class="fig stepper" data-interval="3000">
+  <svg class="dia" viewBox="0 0 880 470" role="img" aria-label="CreateFile 호출 경로">
+    <g class="lane">
+      <text x="20" y="47" class="sm b c-user">앱</text>
+      <text x="20" y="107" class="sm b c-user">Win32</text>
+      <text x="20" y="167" class="sm b c-user">Native</text>
+      <text x="20" y="237" class="sm b c-kernel">트랩</text>
+      <text x="20" y="297" class="sm b c-kernel">Executive</text>
+      <text x="20" y="357" class="sm b c-kernel">Ob</text>
+      <text x="20" y="417" class="sm b c-kernel">드라이버</text>
+    </g>
+    <g data-hl="1,8"><rect class="box user" x="150" y="24" width="640" height="40" rx="8"/><text x="166" y="49" class="mono">notepad.exe  →  CreateFileW(L"C:\\memo.txt", GENERIC_READ, …)</text></g>
+    <g data-hl="2" data-on="2"><rect class="box user" x="150" y="84" width="640" height="40" rx="8"/><text x="166" y="109" class="mono">kernelbase!CreateFileW → RtlDosPathNameToNtPathName → NtCreateFile</text></g>
+    <g data-hl="3" data-on="3"><rect class="box user" x="150" y="144" width="640" height="40" rx="8"/><text x="166" y="169" class="mono">ntdll!NtCreateFile:  mov r10,rcx · mov eax,55h · syscall</text></g>
+    <line class="sep" x1="60" y1="198" x2="860" y2="198" data-hl="4"/>
+    <text x="800" y="193" class="sm" text-anchor="end">CPL 3 → 0</text>
+    <g data-hl="4" data-on="4"><rect class="box kernel" x="150" y="214" width="640" height="40" rx="8"/><text x="166" y="239" class="mono">nt!KiSystemCall64 → 커널 스택 전환 · KTRAP_FRAME · SSDT[0x55]</text></g>
+    <g data-hl="5" data-on="5"><rect class="box kernel" x="150" y="274" width="640" height="40" rx="8"/><text x="166" y="299" class="mono">nt!NtCreateFile → IoCreateFileEx → ObOpenObjectByName</text></g>
+    <g data-hl="6" data-on="6"><rect class="box kernel" x="150" y="334" width="640" height="40" rx="8"/><text x="166" y="359" class="mono">\??\C: → \Device\HarddiskVolume3 → IopParseDevice (접근 검사)</text></g>
+    <g data-hl="7" data-on="7"><rect class="box kernel" x="150" y="394" width="640" height="40" rx="8"/><text x="166" y="419" class="mono">IRP_MJ_CREATE → FltMgr(미니필터들) → Ntfs.sys → FILE_OBJECT</text></g>
+
+    <path class="ln acc flow" d="M820 414 C 860 414, 860 44, 800 44" data-on="8"/>
+    <text x="852" y="230" class="sm b c-acc" data-on="8" text-anchor="end" transform="rotate(-90 852 230)">HANDLE 반환</text>
+    <g data-at="1:0,0|2:0,60|3:0,120|4:0,190|5:0,250|6:0,310|7:0,370|8:0,0">
+      <circle class="token" cx="120" cy="44" r="9" data-hl="8"/>
+    </g>
+    <text x="120" y="20" text-anchor="middle" class="sm b c-acc" data-only="8" data-text="8:✓ 0x1a4">✓</text>
+  </svg>
+  <ol class="steps">
+    <li><b>앱</b>: <code>CreateFileW</code>를 호출합니다. 경로는 Win32 형식(<code>C:\memo.txt</code>)입니다.</li>
+    <li><b>kernelbase.dll</b>: Win32 경로를 NT 경로(<code>\??\C:\memo.txt</code>)로 변환하고, Win32 플래그를 네이티브 인자(<code>OBJECT_ATTRIBUTES</code>, <code>IO_STATUS_BLOCK</code>)로 변환해 <code>NtCreateFile</code>을 호출합니다.</li>
+    <li><b>ntdll.dll</b>: 스텁이 <code>rcx</code>를 <code>r10</code>에 복사(syscall이 rcx를 덮어쓰므로)하고, 시스템 콜 번호(여기서는 0x55, 빌드마다 다름)를 <code>eax</code>에 넣은 뒤 <code>syscall</code>을 실행합니다.</li>
+    <li><b>KiSystemCall64</b>: CPU가 <code>IA32_LSTAR</code> MSR의 주소로 점프합니다. 커널은 <code>swapgs</code>로 KPCR에 접근하고, 커널 스택으로 전환해 트랩 프레임을 저장한 뒤 <b>SSDT</b>에서 0x55번 엔트리를 찾아 호출합니다.</li>
+    <li><b>NtCreateFile (I/O 관리자)</b>: PreviousMode가 UserMode이므로 유저 포인터를 프로브하고, <code>IoCreateFileEx</code> → <code>ObOpenObjectByName</code>으로 이름 기반 열기를 요청합니다.</li>
+    <li><b>객체 관리자</b>: <code>\??\C:</code> 심볼릭 링크를 따라 <code>\Device\HarddiskVolume3</code> 디바이스 객체에 도달하고, 디바이스 타입의 Parse 프로시저(<code>IopParseDevice</code>)에 나머지 경로를 넘깁니다. 여기서 보안 검사가 일어납니다.</li>
+    <li><b>드라이버 스택</b>: I/O 관리자가 <code>FILE_OBJECT</code>와 <code>IRP_MJ_CREATE</code> IRP를 만들어 볼륨의 파일 시스템 스택 최상단으로 보냅니다. Filter Manager가 미니필터(백신 등)에 사전 콜백을 돌린 뒤 NTFS가 실제로 파일을 엽니다.</li>
+    <li><b>반환</b>: 성공하면 객체 관리자가 호출 프로세스의 핸들 테이블에 엔트리를 만들고, 핸들 값이 <code>sysret</code>을 통해 유저 모드까지 거슬러 올라가 <code>CreateFileW</code>의 반환값이 됩니다.</li>
+  </ol>
+  <figcaption><b>그림 1-2.</b> <code>CreateFileW</code>의 커널 경로. 각 단계는 이후 챕터(02, 10, 11, 12)에서 해부합니다.</figcaption>
+</figure>
+
+<h2 id="lab">실습: 커널 지도를 눈으로 확인하기</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 1-1 · 로컬 커널 디버깅</div>
+  <p>관리자 권한으로 <code>bcdedit /debug on</code> 후 재부팅하고, WinDbg에서 <b>File → Attach to kernel → Local</b>을 선택합니다(가상 머신 사용을 권장. 설정은 15장 참고).
+  Sysinternals <b>LiveKD</b>를 쓰면 디버그 모드 없이도 비슷한 관찰이 가능합니다.</p>
+</div>
+<pre data-title="WinDbg"><code class="lang-windbg">lkd> lm m nt
+start             end                 module name
+fffff801`6a200000 fffff801`6b246000   nt         (pdb symbols)
+
+lkd> x nt!Ke*Wait*
+fffff801`6a4b2f10 nt!KeWaitForSingleObject (void)
+fffff801`6a4b37a0 nt!KeWaitForMultipleObjects (void)
+...
+
+lkd> !process 0 0 System
+PROCESS ffffa60c`a2e7e040
+    SessionId: none  Cid: 0004    Peb: 00000000  ParentCid: 0000
+    DirBase: 001ad002  ObjectTable: ffffbb8c`3d43ce00  HandleCount: 3410.
+    Image: System
+
+lkd> dt nt!_KPCR @$pcr Prcb.CurrentThread
+   +0x180 Prcb               :
+      +0x008 CurrentThread      : 0xffffa60c`a8d1f080 _KTHREAD</code></pre>
+<p class="muted" style="font-size:.88rem">주소·오프셋은 시스템과 빌드마다 다릅니다. 숫자 자체보다 <b>명령이 무엇을 보여주는지</b>에 집중하세요.</p>
+
+<ol>
+  <li><code>lm</code>으로 로드된 커널 모듈 목록을 보고, <code>nt</code>, <code>hal</code>, <code>win32k*</code>, <code>ntfs</code>를 찾아보세요.</li>
+  <li><code>x nt!Mi*</code>와 <code>x nt!Mm*</code>의 개수를 비교해 보세요. 내부 함수가 훨씬 많다는 것을 확인할 수 있습니다.</li>
+  <li><code>!process 0 0</code>으로 smss, csrss, wininit의 부모-자식 관계(ParentCid)를 추적해 보세요.</li>
+  <li><code>u ntdll!NtCreateFile</code>(유저 프로세스 문맥에서)로 시스템 콜 스텁을 직접 디스어셈블해 보세요.</li>
+</ol>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">유저 스레드가 <code>ReadFile</code>을 호출해 커널 코드가 실행되는 동안, 그 커널 코드는 어느 문맥에서 실행되나요?</p>
+  <ol class="opts">
+    <li>System 프로세스(PID 4)의 커널 스레드</li>
+    <li data-correct>호출한 바로 그 유저 스레드 (CPL만 0으로 바뀜)</li>
+    <li>커널 전용 프로세스의 워커 스레드</li>
+    <li>하이퍼바이저</li>
+  </ol>
+  <div class="explain">시스템 콜은 스레드 전환이 아니라 <b>같은 스레드의 모드 전환</b>입니다. 스레드는 유저 스택과 별도로 커널 스택을 가지고 있으며, syscall 시 커널 스택으로 바꿔 실행합니다. 그래서 커널 코드에서 "현재 프로세스"는 호출한 프로세스입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">콜스택에 <code>nt!MiDeleteVirtualAddresses</code>가 보입니다. 올바른 해석은?</p>
+  <ol class="opts">
+    <li>Mi = Microsoft 내부 유틸리티</li>
+    <li>공개 문서화된 메모리 관리자 API</li>
+    <li data-correct>메모리 관리자(Mm)의 내부(비공개) 함수</li>
+    <li>Minifilter 관련 함수</li>
+  </ol>
+  <div class="explain">접두사의 두 번째 글자가 <b>i</b>로 바뀐 형태(<code>Mm→Mi</code>, <code>Ke→Ki</code>)는 내부 함수입니다. 미니필터는 <code>Flt</code> 접두사를 씁니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">Executive와 Kernel(Ke)에 대한 설명으로 옳은 것은?</p>
+  <ol class="opts">
+    <li>Executive는 ntoskrnl.exe, Kernel은 hal.dll에 있다</li>
+    <li data-correct>둘 다 ntoskrnl.exe에 있으며, Kernel은 스케줄링·동기화·트랩 같은 저수준 메커니즘을 제공한다</li>
+    <li>Executive는 유저 모드에서 실행된다</li>
+    <li>Kernel 계층은 마이크로커널로서 별도 주소 공간에서 실행된다</li>
+  </ol>
+  <div class="explain">둘은 같은 바이너리의 논리적 계층입니다. Executive(Io, Mm, Ps, Ob, Se…)가 정책과 서비스를, Kernel(Ke)이 메커니즘을 제공합니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">GUI 함수(예: <code>NtUserGetMessage</code>)의 시스템 콜이 처리되는 곳은?</p>
+  <ol class="opts">
+    <li>ntoskrnl.exe의 SSDT(KiServiceTable)</li>
+    <li data-correct>win32k 계열 드라이버 — Shadow SSDT를 통해</li>
+    <li>csrss.exe 프로세스</li>
+    <li>user32.dll 내부에서 처리되어 커널로 가지 않음</li>
+  </ol>
+  <div class="explain"><code>win32u.dll</code>의 스텁은 0x1000 이상의 시스템 콜 번호를 사용하며, 커널은 번호의 비트 12로 두 번째 서비스 테이블(win32k)을 선택합니다. → 02장</div>
+</div>
+<div class="quiz">
+  <p class="q">드라이버가 커널 내부에서 파일을 열 때 <code>NtCreateFile</code> 대신 <code>ZwCreateFile</code>을 써야 하는 이유는?</p>
+  <ol class="opts">
+    <li>Zw 버전이 더 빠르다</li>
+    <li>Nt 버전은 유저 모드에만 존재한다</li>
+    <li data-correct>Zw는 PreviousMode를 KernelMode로 설정해, 커널 버퍼를 정상적인 커널 요청으로 처리하게 한다</li>
+    <li>Zw는 IRQL을 자동으로 낮춰준다</li>
+  </ol>
+  <div class="explain">PreviousMode는 "이 요청이 어디서 왔는가"를 나타내며 인자 프로브·접근 검사 여부를 결정합니다. 잘못 쓰면 정상 동작 실패나 보안 취약점(권한 검사 우회)으로 이어집니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>유저/커널 모드는 CPU의 CPL 상태이며, Windows는 Ring 3와 Ring 0만 쓴다. VBS가 켜지면 하이퍼바이저가 그 아래에 있다.</li>
+    <li>Win32 API → 서브시스템 DLL → <b>ntdll</b> → <code>syscall</code> → <b>KiSystemCall64</b> → Executive 서비스 순으로 내려간다.</li>
+    <li>ntoskrnl.exe = Executive(Io/Mm/Ps/Ob/Se/Cm/Cc/Po…) + Kernel(Ke). HAL이 하드웨어 차이를 숨긴다.</li>
+    <li>드라이버는 커널과 같은 권한·주소 공간을 공유한다 — 드라이버 버그는 곧 시스템 크래시다.</li>
+    <li>함수 접두사(+i/+p 규칙)만으로 콜스택의 구성요소를 판별할 수 있다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  // ---- 특권 명령 실험실 ----
+  const INS = [
+    { op: 'mov rax, rbx', priv: false, note: '일반 명령. 어느 모드에서든 실행됩니다.' },
+    { op: 'rdtsc', priv: false, note: 'CR4.TSD=0이므로 유저 모드에서도 허용됩니다(Windows 기본).' },
+    { op: 'cpuid', priv: false, note: '유저 모드 허용. 단, 하이퍼바이저가 가로챌 수 있습니다(VM exit).' },
+    { op: 'syscall', priv: false, user: '정상: CPL 3→0 전환, RIP ← IA32_LSTAR (KiSystemCall64)', kern: '커널에서 syscall을 실행하는 일은 없습니다. 커널 내부 호출은 KiServiceInternal 경로를 씁니다.' },
+    { op: 'cli', priv: true, note: 'IOPL(=0) < CPL이므로 유저 모드에서 #GP. 커널에서는 인터럽트 플래그를 끕니다(실제 드라이버는 IRQL을 올리는 방식을 씁니다).' },
+    { op: 'hlt', priv: true, note: 'CPU를 다음 인터럽트까지 정지. 유휴 루프(HalProcessorIdle 계열)에서 사용.' },
+    { op: 'mov cr3, rax', priv: true, note: 'CR3 = 현재 페이지 테이블 루트(PML4) 물리 주소. 프로세스 전환 시 커널이 변경합니다.' },
+    { op: 'wrmsr', priv: true, note: 'MSR 쓰기. 예: IA32_LSTAR(0xC0000082) = 시스템 콜 진입점. PatchGuard가 감시하는 대상입니다.' },
+    { op: 'in al, dx', priv: true, note: 'I/O 포트 접근. Windows는 IOPL=0, I/O 권한 비트맵을 열어두지 않으므로 유저 모드에서 #GP.' },
+    { op: 'invlpg [rax]', priv: true, note: '특정 가상 주소의 TLB 엔트리 무효화. 메모리 관리자가 PTE 변경 후 사용.' },
+  ];
+  const sim = document.getElementById('insSim');
+  const grid = sim.querySelector('.ins-grid');
+  const out = sim.querySelector('.console');
+  let mode = 3;
+  INS.forEach(i => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = i.op;
+    b.addEventListener('click', () => run(i));
+    grid.appendChild(b);
+  });
+  sim.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
+    mode = +b.dataset.mode;
+    sim.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b));
+    out.innerHTML = `<span class="dim">모드 전환: CPL=${mode}</span>`;
+  }));
+  function run(i) {
+    let html = `<span class="dim">CPL=${mode} &gt;</span> ${i.op}\n`;
+    if (i.priv && mode === 3) {
+      html += `<span class="bad">✗ #GP(0) 일반 보호 예외</span>\n<span class="dim">→ 커널의 KiGeneralProtectionFault가 처리 → 유저 예외(STATUS_PRIVILEGED_INSTRUCTION 0xC0000096)로 변환 → 처리 안 되면 프로세스 종료</span>\n${i.note}`;
+    } else if (i.user && mode === 3) {
+      html += `<span class="ok">✓ ${i.user}</span>`;
+    } else if (i.kern && mode === 0) {
+      html += `<span class="warn">△ ${i.kern}</span>`;
+    } else {
+      html += `<span class="ok">✓ 실행됨</span>\n${i.note}`;
+    }
+    out.innerHTML = html;
+  }
+
+  // ---- 접두사 디코더 ----
+  const PUB = {
+    Alpc: 'ALPC', Cc: '캐시 관리자', Cm: '구성 관리자(레지스트리)', Dbgk: '디버깅 프레임워크(유저 디버거 지원)', Dbg: '디버그 지원', Etw: 'ETW(이벤트 추적)', Ex: 'Executive 지원 루틴(풀·락·워커)',
+    FsRtl: '파일 시스템 런타임 라이브러리', Flt: 'Filter Manager', Hal: 'HAL', Hvl: '하이퍼바이저 라이브러리', Inbv: '부트 비디오', Io: 'I/O 관리자', Kd: '커널 디버거', Ke: 'Kernel',
+    Ldr: '이미지 로더', Lpc: 'LPC(레거시)', Mm: '메모리 관리자', Nt: '시스템 서비스(시스템 콜 진입점)', Ob: '객체 관리자', Pf: '프리페처', Po: '전원 관리자', Pnp: 'PnP 관리자', Pp: 'PnP 관리자', Ps: '프로세스 관리자',
+    Rtl: '런타임 라이브러리', Se: '보안 참조 모니터', Sm: '스토어 관리자(메모리 압축)', Tm: '트랜잭션 관리자', Vf: 'Driver Verifier', Whea: 'WHEA(하드웨어 오류)', Wmi: 'WMI', Zw: '시스템 서비스 커널용 진입점'
+  };
+  const INTERNAL = { Ki: 'Ke', Mi: 'Mm', Iop: 'Io', Psp: 'Ps', Obp: 'Ob', Sep: 'Se', Cmp: 'Cm', Exp: 'Ex', Pop: 'Po', Halp: 'Hal', Alpcp: 'Alpc', Ccp: 'Cc', Etwp: 'Etw', Pip: 'Pnp', Vi: 'Vf', Kdp: 'Kd', Hvlp: 'Hvl', Pfp: 'Pf', Smp: 'Sm' };
+  const byLen = o => Object.keys(o).sort((a, b) => b.length - a.length);
+  const input = document.getElementById('fnInput');
+  const pout = document.querySelector('#prefixSim .prefix-out');
+  const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  function decode() {
+    const fn = input.value.trim().replace(/^nt!/i, '');
+    const next = p => fn.length > p.length && /[A-Z]/.test(fn[p.length]);
+    let ip = byLen(INTERNAL).find(p => fn.startsWith(p) && next(p));
+    let pp = byLen(PUB).find(p => fn.startsWith(p) && next(p));
+    if (ip && (!pp || ip.length >= pp.length)) {
+      const base = INTERNAL[ip];
+      pout.innerHTML = `<div class="big"><span class="i">${esc(ip)}</span>${esc(fn.slice(ip.length))}</div>
+        <p>🔒 <b>내부 함수</b> — <code>${base}</code>(${PUB[base]})의 비공개 구현. 문서화되지 않았고 빌드마다 바뀔 수 있습니다. 드라이버에서 호출 불가(익스포트되지 않음).</p>`;
+    } else if (pp) {
+      let extra = '';
+      if (pp === 'Nt') extra = ' 유저 모드에서 오면 PreviousMode=UserMode로 인자 검증을 수행합니다.';
+      if (pp === 'Zw') extra = ' 커널 코드가 호출하며, KiServiceInternal을 거쳐 PreviousMode=KernelMode로 해당 Nt 함수를 실행합니다.';
+      pout.innerHTML = `<div class="big"><span class="p">${esc(pp)}</span>${esc(fn.slice(pp.length))}</div>
+        <p>📦 <b>${PUB[pp]}</b> 소속 공개(익스포트) 루틴일 가능성이 높습니다.${extra} 동작 부분: <code>${esc(fn.slice(pp.length))}</code></p>`;
+    } else {
+      pout.innerHTML = `<p class="muted">알려진 접두사를 찾지 못했습니다. 대소문자를 확인하세요 (예: KeBugCheckEx).</p>`;
+    }
+  }
+  input.addEventListener('input', decode);
+  document.querySelectorAll('#prefixSim [data-fn]').forEach(b => b.addEventListener('click', () => { input.value = b.dataset.fn; decode(); }));
+  decode();
+})();
+</script>
+</body>
+</html>

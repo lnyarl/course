@@ -1,0 +1,1199 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반응 커브</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 03장 전용 */
+.mono { font-family: var(--mono); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 16px 0; }
+.gallery .g-item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px 8px; }
+.gallery .g-item b { display: block; font-size: 13.5px; }
+.gallery .g-item small { display: block; font-size: 12px; color: var(--muted); font-family: var(--mono); line-height: 1.4; min-height: 2.8em; }
+.gallery svg { width: 100%; height: auto; display: block; }
+.ed-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 720px) { .ed-grid { grid-template-columns: minmax(0, 1fr); } }
+.plot-box svg { width: 100%; max-width: 460px; height: auto; display: block; margin: 0 auto; }
+.sliders { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr) 4.2em; gap: 6px 10px; align-items: center; font-size: 14px; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.sliders .hide { display: none; }
+.sliders .pname { font-family: var(--mono); font-weight: 700; }
+.sliders .pname small { font-family: var(--sans); font-weight: 400; color: var(--muted); margin-left: 4px; }
+.preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.preset-row .btn { font-size: 12.5px; padding: 4px 10px; }
+.preset-row .btn.on { background: var(--accent-soft); border-color: var(--accent); }
+.json-out { width: 100%; font-family: var(--mono); font-size: 13px; resize: vertical; min-height: 3.2em; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; font-size: 13px; }
+.chips span { background: var(--surface-2); border-radius: 999px; padding: 2px 10px; }
+.chips span.w { background: var(--warn-soft); color: var(--warn); }
+.chips span.bad { background: var(--bad-soft); color: var(--bad); }
+.chips span.ok { background: var(--ok-soft); color: var(--ok); }
+.formula.small { font-size: 13.5px; }
+details.adv { border: 1px dashed var(--border); border-radius: 10px; padding: 4px 12px 10px; margin-top: 10px; }
+details.adv summary { cursor: pointer; font-weight: 700; font-size: 14px; color: var(--violet); padding: 4px 0; }
+.pipe-svg { min-width: 600px; }
+.pipe-svg .stage-box { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.2; transition: fill .25s, stroke .25s; }
+.pipe-svg .stage-box.hl { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.2; }
+.pipe-svg .v { font-family: var(--mono); font-weight: 700; font-size: 15px; }
+.pipe-svg .arr { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#arrow03); }
+.pipe-svg .mini { fill: none; stroke: var(--accent); stroke-width: 2; }
+.pipe-svg .mini-ax { stroke: var(--muted); stroke-width: 1; }
+.pw-svg { touch-action: none; cursor: crosshair; }
+.pw-svg .pt { fill: var(--surface); stroke: var(--accent); stroke-width: 2.2; cursor: grab; }
+.pw-svg .pt.sel { fill: var(--accent); }
+.pw-svg .pt.fixed { stroke: var(--teal); }
+.checks { list-style: none; padding: 0; margin: 8px 0; font-size: 14px; }
+.checks li::before { content: "○ "; color: var(--muted); }
+.checks li.pass::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+.checks li.fail::before { content: "✗ "; color: var(--bad); font-weight: 700; }
+.wolf-svg { min-width: 560px; }
+.wolf-svg .lane { fill: var(--surface-2); stroke: var(--border); transition: fill .25s; }
+.wolf-svg .lane.flee { fill: var(--bad-soft); stroke: var(--bad); }
+.wolf-svg .vill { transition: transform .35s ease-out; }
+.wolf-svg .tick { stroke: var(--muted); }
+.wolf-svg .emo { font-size: 28px; }
+.vrow { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) 3.4em 6.5em; gap: 8px; align-items: center; font-size: 14px; margin: 6px 0; }
+.vrow .bar { height: 12px; }
+.vrow .act { font-weight: 700; }
+@media (max-width: 520px) { .vrow { grid-template-columns: 6em minmax(0, 1fr) 3em; } .vrow .act { grid-column: 1 / -1; font-size: 13px; } }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); margin: 6px 0; }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+.legend i.dash { background: repeating-linear-gradient(90deg, var(--warn) 0 4px, transparent 4px 7px) !important; }
+.duel-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 720px) { .duel-grid { grid-template-columns: minmax(0, 1fr); } }
+.cmp td.num, .cmp th.num { text-align: right; }
+.flow-svg { min-width: 520px; }
+.flow-svg .step { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; }
+.flow-svg .note { fill: var(--surface-2); stroke: var(--border); }
+.flow-svg .warnbox { fill: var(--warn-soft); stroke: var(--warn); }
+.flow-svg .num-c { fill: var(--accent); }
+.flow-svg .num-t { fill: var(--surface); font-weight: 700; }
+td.hi { background: var(--warn-soft); }
+td.vt { background: var(--bad-soft); }
+</style>
+</head>
+<body data-chapter="03">
+<main>
+  <header class="chapter-head">
+    <span class="label">기초 · Chapter 03</span>
+    <h1>반응 커브: 상태를 효용으로</h1>
+    <p class="lead">체력 37, 늑대까지 9칸, 탄약 2발, 배고픔 64. 게임 상태는 단위도 범위도 제각각인 숫자다. 효용 AI는 이 숫자들을 먼저 0~1 사이의 "얼마나 원하나"로 바꿔야 비교하고 결합할 수 있다. 그 변환을 맡는 함수가 반응 커브(response curve)이고, 캐릭터의 성격과 게임의 손맛은 대부분 여기서 정해진다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>bookend 정규화로 원시 입력을 [0, 1]로 옮기고, 범위 밖 입력이 끝값에 고정되는 이유를 설명한다.</li>
+      <li>선형·다항·로지스틱·로짓·종형·사인·스위치·구간 선형 커브의 모양과 쓰임새를 구별한다.</li>
+      <li><code>uai.js</code>의 m, k, b, c 관례를 읽고, IAUS 매뉴얼·ProjectBorealis 구현과 의미가 어떻게 다른지 비교한다.</li>
+      <li>커브 에디터와 구간 선형 에디터로 직접 커브를 만들어 엔진 spec(JSON)으로 내보낸다.</li>
+      <li>같은 입력에 서로 다른 커브를 주면 "성격"이 생긴다는 것을 Hamlet 주민과 Graham의 결투 데모로 확인한다.</li>
+      <li>커브 선택 체크리스트와 실무 함정(거부권, 극단 지수, clamp, 비정수 지수)을 적용한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>UAI.normalize()</code> <code>UAI.CURVES</code> <code>UAI.curve()</code> <code>UAI.piecewise()</code> <code>UAI.PRESETS</code> — 원시 게임 값을 bookend로 정규화하고, 커브 spec 하나로 0~1 효용 함수를 만든다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 커브인가</a></li>
+    <li><a href="#s2">bookend 정규화: 먼저 [0, 1]로</a></li>
+    <li><a href="#s3">커브 도감</a></li>
+    <li><a href="#s4">엔진 구현: m, k, b, c와 CURVES</a></li>
+    <li><a href="#s5">구현마다 파라미터 의미가 다르다</a></li>
+    <li><a href="#s6">커브 에디터</a></li>
+    <li><a href="#s7">구간 선형 커브와 Sims의 배고픔</a></li>
+    <li><a href="#s8">같은 입력, 다른 성격</a></li>
+    <li><a href="#s9">Graham의 결투 데모: 커브 네 개로 만든 적</a></li>
+    <li><a href="#s10">커브 선택 체크리스트와 프리셋 팔레트</a></li>
+    <li><a href="#s11">실무 함정</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. 왜 커브인가</h2>
+    <p><a class="xref" href="02-utility-expected-utility.html">02장</a>에서 효용은 값(value)과 다르다고 했다. 같은 붕대라도 다쳤을 때 더 가치 있다. 이제 이 "맥락에 따라 달라지는 선호"를 코드로 옮겨야 한다. 방법은 단순하다. 게임이 이미 알고 있는 숫자(체력, 거리, 탄약, 욕구 수치)를 입력으로 받아 0~1 점수를 내는 함수를 하나 고르면 된다.</p>
+    <p>문제는 어떤 함수를 고르느냐다. Graham은 Game AI Pro 9장에서 이 단계를 이렇게 평가한다. 게임 값을 효용으로 바꾸는 일은 "매우 주관적"이어서, <em>같은 입력을 받아도 프로그래머 둘이 서로 다른 출력을 내는 함수를 쓴다</em>. 그리고 알맞은 함수를 찾는 일은 "과학이라기보다 예술(more art than science)"이며 대부분의 시간이 여기에 든다고 덧붙인다. 이 코스의 출발점인 DeepBlue의 블로그 글도 같은 맥락에서 선형·2차·로지스틱·구간 선형(piecewise) 커브를 소개한다.</p>
+    <p>정답 수식이 없으니 커브를 고르는 기준이 필요하다. 이 장은 세 가지를 갖춘다.</p>
+    <ul>
+      <li><b>어휘</b>: 자주 쓰는 커브 모양 몇 가지와, 각 모양이 행동에 주는 느낌.</li>
+      <li><b>표현</b>: 커브를 코드가 아닌 <em>데이터</em>(spec)로 적는 방법. 디자이너가 프로그래머 없이 바꿀 수 있어야 한다.</li>
+      <li><b>절차</b>: 입력 범위 → 방향 → 단조성 → 끝점 순으로 고르는 체크리스트(<a href="#s10">10절</a>).</li>
+    </ul>
+    <div class="callout">
+      <span class="title">커브는 "얼마나"를 담당한다</span>
+      <p>if 문은 "도망칠까 말까"만 답한다. 커브는 "지금 얼마나 도망치고 싶은가"를 답한다. 늑대가 14칸 밖에 있을 때와 3칸 앞에 있을 때의 차이, 체력 40과 체력 39의 미세한 차이까지 연속적인 점수로 바뀌기 때문에, 행동이 문턱에서 갑자기 뒤집히지 않고 상황에 맞게 부드럽게 바뀐다.</p>
+    </div>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. bookend 정규화: 먼저 [0, 1]로</h2>
+    <p>커브에 넣기 전에 입력부터 공통 눈금으로 맞춘다. Mike Lewis(Game AI Pro 3, 13장, Guild Wars 2: Heart of Thorns)는 이를 <b>bookend</b>라고 부른다. 거리라면 "0 m는 최솟값, 100 m는 최댓값"처럼 양 끝을 정하고, 그 사이 값을 0~1로 옮긴다. 최댓값을 넘는 거리는 자동으로 1이 된다. 그의 예에서 25 m 떨어진 대상의 원시 점수는 25/100 = 0.25이고, 가까울수록 좋다는 커브를 거치면 "예컨대 0.95" 같은 점수가 된다.</p>
+    <p>IAUS 매뉴얼(Dave Mark)도 같은 일을 Input Parameter로 한다. 거리 consideration에 <code>RangeMax</code>를 20으로 주면 20 m가 <code>x = 1.0</code>이 되도록 커브가 자동으로 맞춰진다. 오픈소스 ProjectBorealis IAUS 플러그인은 <code>(Input − Minimum) / (Maximum − Minimum)</code>을 계산한 뒤 clamp한다. 우리 엔진의 한 줄도 같은 일을 한다.</p>
+<pre class="engine"><code>// ───────────────────────── 0. 공통 ─────────────────────────
+const clamp01 = x =&gt; (x &gt; 1 ? 1 : x &gt; 0 ? x : 0); // NaN → 0
+UAI.clamp01 = clamp01;
+
+// bookend 정규화: [lo, hi] 구간을 [0, 1]로. 범위를 벗어나면 끝값에 고정 (GAP3 13장)
+UAI.normalize = (v, lo, hi) =&gt; (hi === lo ? 0 : clamp01((v - lo) / (hi - lo)));</code></pre>
+    <p>clamp가 중요한 이유는 두 가지다. 첫째, 커브 함수는 [0, 1] 밖에서 이상하게 행동할 수 있다(다항 커브는 1을 넘으면 폭주하고, 로짓은 정의되지 않는다). 둘째, 디자이너가 "100 m 밖이면 다 똑같이 멀다"는 결정을 데이터로 표현하게 해 준다. 결정 범위 바깥의 차이는 의미 없는 잡음이기 때문이다.</p>
+
+    <div class="widget" id="w-pipe">
+      <div class="w-title">파이프라인 따라가기: 원시 입력 → bookend → 커브 → 점수</div>
+      <div class="w-desc">Lewis의 예(0–100 m, 25 m)를 그대로 재현한다. 단계 버튼으로 값이 흘러가는 순서를 보고, 거리와 bookend를 바꿔 결과가 어떻게 바뀌는지 확인하라. 계산은 <code>UAI.normalize</code>와 <code>UAI.curve</code>를 그대로 호출한다.</div>
+      <div class="controls">
+        <label>거리 <input type="range" id="pp-d" min="0" max="160" step="1" value="25"> <span class="num" id="pp-dv">25 m</span></label>
+        <label>lo <input type="number" id="pp-lo" value="0" step="5" style="width:5em"></label>
+        <label>hi <input type="number" id="pp-hi" value="100" step="5" style="width:5em"></label>
+        <label>커브 <select id="pp-curve"><option>로지스틱 감소</option><option>선형 감소</option><option>2차 감소 (1−x²)</option></select></label>
+      </div>
+      <div class="stage">
+        <svg class="diagram pipe-svg" viewBox="0 0 760 160" id="pp-svg" role="img" aria-label="정규화 파이프라인">
+          <defs><marker id="arrow03" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+          <rect class="stage-box" id="pp-b0" x="8" y="20" width="160" height="120" rx="10"/>
+          <text x="88" y="46" text-anchor="middle" style="font-weight:700">① 원시 입력</text>
+          <text x="88" y="70" text-anchor="middle" class="muted">대상까지 거리</text>
+          <text x="88" y="104" text-anchor="middle" class="v" id="pp-t0">25 m</text>
+          <path class="arr" d="M170,80 L196,80"/>
+          <rect class="stage-box" id="pp-b1" x="200" y="20" width="160" height="120" rx="10"/>
+          <text x="280" y="46" text-anchor="middle" style="font-weight:700">② bookend</text>
+          <text x="280" y="70" text-anchor="middle" class="muted" id="pp-range">[0, 100] → [0, 1]</text>
+          <text x="280" y="104" text-anchor="middle" class="v" id="pp-t1">x = 0.25</text>
+          <text x="280" y="126" text-anchor="middle" class="muted" id="pp-clamp" style="font-size:11.5px"></text>
+          <path class="arr" d="M362,80 L388,80"/>
+          <rect class="stage-box" id="pp-b2" x="392" y="20" width="180" height="120" rx="10"/>
+          <text x="482" y="38" text-anchor="middle" style="font-weight:700">③ 반응 커브</text>
+          <g id="pp-mini" transform="translate(422,46)"></g>
+          <path class="arr" d="M574,80 L600,80"/>
+          <rect class="stage-box" id="pp-b3" x="604" y="20" width="148" height="120" rx="10"/>
+          <text x="678" y="46" text-anchor="middle" style="font-weight:700">④ 점수</text>
+          <text x="678" y="70" text-anchor="middle" class="muted">consideration</text>
+          <text x="678" y="104" text-anchor="middle" class="v" id="pp-t3">0.95</text>
+          <text x="678" y="126" text-anchor="middle" class="muted" style="font-size:11.5px">→ 04장에서 곱셈</text>
+        </svg>
+      </div>
+      <div id="pp-step"></div>
+    </div>
+    <div class="callout tip">
+      <span class="title">bookend는 커브만큼 중요한 튜닝 손잡이다</span>
+      <p>위 위젯에서 hi를 100에서 40으로 줄여 보라. 25 m의 x가 0.25에서 0.625로 뛰고 점수가 크게 떨어진다. 커브 모양은 그대로인데 행동이 바뀐다. 실무에서 "커브를 고쳤는데 효과가 없다"거나 "조금만 고쳐도 확 바뀐다"는 일은 대개 bookend가 문제다. 커브를 만지기 전에 입력 범위가 실제 플레이에서 나오는 값 분포와 맞는지부터 확인하라.</p>
+    </div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. 커브 도감</h2>
+    <p>Graham은 자주 쓰는 형태를 수식으로 정리한다. 여기서 x는 입력값, m은 그 입력의 최댓값이다.</p>
+    <div class="formula">(9.2) 선형 &nbsp; U = x / m &nbsp;&nbsp;&nbsp;&nbsp; (9.3) 2차 &nbsp; U = (x / m)<sup>k</sup> &nbsp;&nbsp;&nbsp;&nbsp; (9.4) 로지스틱 &nbsp; U = 1 / (1 + e<sup>−x</sup>)</div>
+    <ul>
+      <li><b>선형</b>(9.2)은 사실상 정규화 그 자체다. 입력이 두 배면 욕구도 두 배다.</li>
+      <li><b>2차</b>(9.3)는 지수 k가 커질수록 가팔라진다. 출력이 0과 1로 수렴하도록 정규화되어 있으니 큰 k는 작은 x에서 거의 영향이 없다. 0 &lt; k &lt; 1이면 커브가 "회전"해서 작은 x에서 더 급해진다(Graham의 예는 k = 0.333).</li>
+      <li><b>로지스틱</b>(9.4)은 시그모이드의 하나로, 변화가 가운데 몰리고 양 끝에서 0과 1로 잦아든다. 입력은 사실상 [−10, 10]이면 충분하고, x = 6이면 이미 0.9975다. 밑 e를 키우면 계단처럼 날카로워지고 줄이면 부드러워진다.</li>
+      <li><b>구간 선형</b>은 디자이너가 점 몇 개를 찍고 사이를 직선으로 잇는 맞춤 커브다. The Sims가 배고픔에 이 방식을 쓴다고 Graham은 적는다(<a href="#s7">7절</a>).</li>
+    </ul>
+    <p>IAUS 매뉴얼은 여기에 로짓(Logit), 정규 분포 모양(Normal), 사인(Sine)을 더해 여섯 타입을 둔다. 우리 엔진은 그 여섯에 <b>스위치(step)</b>와 <b>상수(constant)</b>, <b>구간 선형</b>을 더했다. 아래 도감의 모든 그림은 <code>UAI.curve(spec)</code>로 그렸다. 카드 아래 회색 글씨가 그 spec이다.</p>
+    <div class="gallery" id="gallery"></div>
+    <p>모양을 행동 언어로 읽는 연습을 해 두면 좋다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>모양</th><th>행동에서의 느낌</th><th>Hamlet 예</th></tr>
+      <tr><td>선형</td><td>고르게 반응. 기준선, 혹은 판단이 정말 비례적일 때.</td><td>엔진의 기본 도망 커브: 늑대가 가까울수록 비례해서 도망치고 싶다</td></tr>
+      <tr><td>x<sup>k</sup>, k &gt; 1 (지연)</td><td>"정말 급해질 때까지 미룬다". 끝 무렵 급등.</td><td>Merrill(GAP 10장)은 재장전 효용에 <code>cube()</code>를 씌워 탄약이 정말 부족할 때까지 긴급도를 늦췄다</td></tr>
+      <tr><td>x<sup>k</sup>, 0 &lt; k &lt; 1 (회전)</td><td>조금만 생겨도 크게 반응하고 곧 포화.</td><td>사교 욕구가 약간만 줄어도 대화 상대를 찾는 외향적 주민</td></tr>
+      <tr><td>로지스틱</td><td>문턱 근처에서 결심이 바뀐다. 양 끝은 둔감.</td><td>배고픔 60을 넘으면 "이제 먹어야겠다"로 돌아서는 주민</td></tr>
+      <tr><td>로짓</td><td>가운데는 둔감, 양 끝에서 민감.</td><td>"아주 많거나 아주 적을 때만" 신경 쓰는 재고 판단</td></tr>
+      <tr><td>종형</td><td>적정값을 선호(비단조).</td><td>대화하기 좋은 적당한 거리, 너무 붙지도 멀지도 않게</td></tr>
+      <tr><td>사인</td><td>주기적 선호.</td><td>하루 주기에 따라 오르내리는 산책 욕구</td></tr>
+      <tr><td>스위치</td><td>참/거짓 조건을 점수로. 0이면 행동 전체가 꺼진다.</td><td>엔진의 "위협 존재", "상대 한가함" consideration</td></tr>
+      <tr><td>구간 선형</td><td>수식으로 못 만드는 손맛을 점으로.</td><td>엔진의 <code>NEED_CURVE.hunger</code></td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 엔진 구현: m, k, b, c와 CURVES</h2>
+    <p>Graham의 수식은 커브마다 변수 이름이 제각각이다. 데이터로 다루려면 모든 커브가 같은 모양의 파라미터를 받는 편이 낫다. IAUS를 따라 우리 엔진도 네 변수 <b>m, k, b, c</b>로 통일했다. 관례는 다음과 같다.</p>
+    <div class="formula">m = 기울기/세기 &nbsp;·&nbsp; k = 지수 &nbsp;·&nbsp; b = 수직 이동 &nbsp;·&nbsp; c = 수평 이동</div>
+    <p>실제 수식은 아래가 전부다. 커브마다 m과 k가 맡는 역할이 조금씩 다르다는 점에 주의해서 읽자. 특히 <code>logistic</code>은 k가 높이, <code>normal</code>은 m이 높이이고 k가 폭이다.</p>
+<pre class="engine"><code>// ───────────────────────── 1. 반응 커브 (03장) ─────────────────────────
+// 파라미터 관례: m=기울기/세기, k=지수, b=수직 이동, c=수평 이동
+const CURVES = {
+  linear: (x, p) =&gt; p.m * (x - p.c) + p.b,
+  // 다항: 음수 밑에 비정수 지수를 쓰면 NaN이 되므로 부호를 보존해 계산
+  poly: (x, p) =&gt; {
+    const d = x - p.c;
+    return p.m * Math.sign(d) ** (Number.isInteger(p.k) ? p.k : 1) * Math.pow(Math.abs(d), p.k) + p.b;
+  },
+  // 로지스틱: c가 변곡점, m이 가파름, k가 높이
+  logistic: (x, p) =&gt; p.k / (1 + Math.exp(-p.m * (x - p.c))) + p.b,
+  // 로짓: 로지스틱의 역함수 꼴. 가운데가 평평하고 양 끝이 가파르다 (IAUS 구현과 같은 /5 스케일)
+  logit: (x, p) =&gt; {
+    const z = Math.min(Math.max(x - p.c, 1e-4), 1 - 1e-4);
+    return p.m * Math.log(z / (1 - z)) / 5 + 0.5 + p.b;
+  },
+  // 정규(종형): c가 봉우리 위치, k가 폭(작을수록 좁음), m이 높이
+  normal: (x, p) =&gt; p.m * Math.exp(-((x - p.c) ** 2) / (2 * p.k * p.k)) + p.b,
+  // 사인: 주기적 선호 (하루 주기 등)
+  sine: (x, p) =&gt; p.m * 0.5 * Math.sin(2 * Math.PI * p.k * (x - p.c)) + 0.5 + p.b,
+  // 스위치: x ≥ c 이면 1, 아니면 0 (m &lt; 0 이면 반대)
+  step: (x, p) =&gt; ((p.m &gt;= 0 ? x &gt;= p.c : x &lt; p.c) ? 1 : 0),
+  constant: (x, p) =&gt; p.b,
+};
+UAI.CURVES = CURVES;
+const DEFAULTS = { m: 1, k: 1, b: 0, c: 0 };</code></pre>
+    <p>그다음 <code>UAI.curve(spec)</code>가 spec 객체 하나를 <code>x → [0, 1]</code> 함수로 바꾼다. 빠진 파라미터는 <code>DEFAULTS</code>로 채우고, <code>invert</code>면 입력을 1 − x로 뒤집고, 결과는 항상 <code>clamp01</code>을 거친다. 문자열을 주면 프리셋 이름으로, 함수를 주면 그 함수의 출력을 clamp해서 쓴다.</p>
+<pre class="engine"><code>// 구간 선형 커브: points = [[x0,y0],[x1,y1],...] (x 오름차순)
+function piecewise(points) {
+  return x =&gt; {
+    if (x &lt;= points[0][0]) return points[0][1];
+    for (let i = 1; i &lt; points.length; i++) {
+      const [x1, y1] = points[i];
+      if (x &lt;= x1) {
+        const [x0, y0] = points[i - 1];
+        return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0 || 1);
+      }
+    }
+    return points[points.length - 1][1];
+  };
+}
+UAI.piecewise = piecewise;
+
+// spec → (x∈[0,1]) → y∈[0,1]. spec.invert면 입력을 1−x로 뒤집는다
+UAI.curve = function (spec) {
+  if (typeof spec === "function") return x =&gt; clamp01(spec(x));
+  if (typeof spec === "string") spec = UAI.PRESETS[spec];
+  const f = spec.type === "piecewise" ? piecewise(spec.points) : null;
+  const p = Object.assign({}, DEFAULTS, spec);
+  const g = f || (x =&gt; CURVES[p.type](x, p));
+  return x =&gt; clamp01(g(p.invert ? 1 - x : x));
+};</code></pre>
+    <details class="deep"><summary>왜 invert를 따로 두나</summary><div>
+      <p>"늑대가 가까울수록 도망치고 싶다"를 만들 때, 감소 커브를 새로 설계하는 대신 증가 커브에 <code>invert: true</code>만 붙이면 된다. <code>{type:"poly", m:1, k:2, invert:true}</code>는 (1 − x)<sup>2</sup>이다. 엔진의 <code>NEED_CURVE</code>가 기력·재미·사교 긴급도를 전부 이렇게 적는다. 욕구 수치는 "충족도"(100이면 가득)인데 긴급도는 결핍에 비례해야 하기 때문이다.</p>
+      <p>invert는 <em>입력</em>을 뒤집는다는 점을 기억하라. 출력을 뒤집는 1 − f(x)와는 다르다. 예를 들어 x<sup>2</sup>에 invert를 주면 (1 − x)<sup>2</sup>이지만, 출력을 뒤집으면 1 − x<sup>2</sup>이다. 둘 다 감소 커브지만 모양이 정반대로 휜다. 아래 에디터에서 "2차 증가"에 invert를 켠 것과 "2차 감소 (1−x²)" 프리셋을 비교해 보라.</p>
+    </div></details>
+    <p>마지막으로 프리셋 팔레트가 있다. 이름만 적으면 되는 커브 14개다. 아래 셋은 Lewis가 Heart of Thorns의 "Evade Dangerous Areas" 결정에 쓴 곡선을 그대로 옮긴 것이다. 영향 맵 위험도 <code>1−(x−1)⁴</code>, 무한 회피를 막는 runtime <code>1−x⁶</code>, 쿨다운이 끝날 무렵에야 급등해 같은 행동이 깜빡이듯 반복되는(strobing) 것을 막는 cooldown <code>x⁵</code>.</p>
+<pre class="engine"><code>// 프리셋 팔레트: "소수의 프리셋 + 고급 모드" (GAP3 13장 권고)
+UAI.PRESETS = {
+  "선형 증가": { type: "linear", m: 1, b: 0, c: 0 },
+  "선형 감소": { type: "linear", m: -1, b: 1, c: 0 },
+  "2차 증가 (x²)": { type: "poly", m: 1, k: 2 },
+  "2차 감소 (1−x²)": { type: "poly", m: -1, k: 2, b: 1 },
+  "제곱근 (√x)": { type: "poly", m: 1, k: 0.5 },
+  "3차 지연 (x³)": { type: "poly", m: 1, k: 3 },
+  "로지스틱 중앙": { type: "logistic", m: 12, k: 1, c: 0.5 },
+  "로지스틱 감소": { type: "logistic", m: -12, k: 1, c: 0.5 },
+  "로짓": { type: "logit", m: 1, c: 0 },
+  "종형 (적정값)": { type: "normal", m: 1, k: 0.15, c: 0.5 },
+  "스위치 (≥0.5)": { type: "step", m: 1, c: 0.5 },
+  "회피: 1−(x−1)⁴": { type: "poly", m: -1, k: 4, b: 1, c: 1 },
+  "runtime: 1−x⁶": { type: "poly", m: -1, k: 6, b: 1 },
+  "cooldown: x⁵": { type: "poly", m: 1, k: 5 },
+};</code></pre>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 구현마다 파라미터 의미가 다르다</h2>
+    <p>"m, k, b, c를 쓴다"는 말은 생각보다 많은 것을 약속하지 않는다. IAUS 매뉴얼은 변수 이름과 의미만 정의하고 실제 수식은 싣지 않는다(계산은 <code>Consideration::GetConsiderationValue</code>에 있다고만 적는다). 그래서 구현마다 같은 이름에 다른 의미가 붙는다. 아래 표는 매뉴얼, 오픈소스 ProjectBorealis(PB) 플러그인의 <code>IAUSResponseCurve.h</code>, 우리 <code>uai.js</code>를 나란히 놓은 것이다.</p>
+    <div class="tbl-wrap"><table class="cmp">
+      <tr><th>타입</th><th>IAUS 매뉴얼의 의미</th><th>ProjectBorealis 수식 (원문 변수명)</th><th>uai.js 수식</th></tr>
+      <tr><td>Linear</td><td>m 기울기(+상승/−하강), b y절편, c x절편</td><td class="mono">Slope·(x−XShift)+YShift</td><td class="mono">m·(x−c)+b</td></tr>
+      <tr><td>Polynomial</td><td>m 기울기, k 지수(1이면 선형), b, c 동일</td><td class="mono">Slope·Pow(x−XShift, Exponent)+YShift</td><td class="mono">m·sign(d)<sup>…</sup>·|d|<sup>k</sup>+b, d=x−c</td></tr>
+      <tr><td>Logistic</td><td>m <b>가운데 기울기</b>, k <b>세로 크기·방향</b>, b 세로 이동, c 가로 이동</td><td class="mono">Slope/(1+Exp(−10·Exponent·(x−0.5−XShift)))+YShift</td><td class="mono">k/(1+e<sup>−m(x−c)</sup>)+b</td></tr>
+      <tr><td>Logit</td><td>(매뉴얼에 변수 설명 없음)</td><td class="mono">Slope·Loge((x−XShift)/(1−(x−XShift)))/5+0.5+YShift</td><td class="mono">m·ln(z/(1−z))/5+0.5+b, z=clamp(x−c)</td></tr>
+      <tr><td>Normal</td><td>m <b>혹의 폭</b>(표준편차와 비슷), k <b>혹의 높이</b>, b, c 이동</td><td class="mono">Slope·Exp(−30·Exponent·(x−XShift−0.5)²)+YShift</td><td class="mono">m·e<sup>−(x−c)²/(2k²)</sup>+b</td></tr>
+      <tr><td>Sine</td><td>(매뉴얼에 변수 설명 없음)</td><td class="mono">0.5·Slope·Sin(2π(x−XShift))+0.5+YShift</td><td class="mono">m·0.5·sin(2πk(x−c))+0.5+b</td></tr>
+      <tr><td>Boolean / step</td><td>타입 없음. Boolean 입력은 곡선을 [0,0]–[1,1] 또는 [0,1]–[1,0]으로</td><td>—</td><td class="mono">x≥c ? 1 : 0 (m&lt;0이면 반대)</td></tr>
+      <tr><td>Constant</td><td>—</td><td class="mono">StaticValue</td><td class="mono">b</td></tr>
+      <tr><td>후처리</td><td>—</td><td>Sanitize: 유한값이 아니면 0, 그 외 [0, 1] clamp</td><td>clamp01 (NaN → 0)</td></tr>
+    </table></div>
+    <div class="callout danger">
+      <span class="title">실무 함정: 같은 이름, 다른 커브</span>
+      <ul>
+        <li><b>Normal</b>: 매뉴얼은 m이 폭이고 k가 높이다. PB는 Slope가 높이이고 Exponent가 클수록 혹이 <em>좁아진다</em>. uai.js는 m이 높이이고 k가 σ라서 클수록 <em>넓어진다</em>. 세 구현 중 같은 것이 하나도 없다.</li>
+        <li><b>Logistic</b>: 매뉴얼과 uai.js는 m이 기울기, k가 높이다. PB는 반대로 Slope가 높이, Exponent가 기울기(×10)다. 변곡점도 PB는 기본이 x = 0.5이고 XShift는 거기서부터의 이동량인데, uai.js의 c는 변곡점의 절대 위치다.</li>
+        <li><b>Sine</b>: PB에는 진동수 파라미터가 없다. uai.js의 k(주기 수)는 PB로 옮길 방법이 없다.</li>
+        <li><b>Logit</b>: PB는 x − XShift가 정확히 1이면 1/0 = ∞가 되고, Sanitize가 "유한값이 아님"으로 보고 <b>0</b>을 돌려준다. 가장 높아야 할 끝점에서 점수가 0으로 떨어진다. uai.js는 z를 [10<sup>−4</sup>, 1 − 10<sup>−4</sup>]로 막아 이 문제를 피한다.</li>
+      </ul>
+      <p>엔진을 옮기거나, 다른 툴에서 만든 커브 데이터를 가져오거나, 블로그 수식을 복사할 때마다 이 차이에 걸린다. 커브 데이터에는 반드시 "어느 구현의 m, k, b, c인지"를 함께 기록하라.</p>
+    </div>
+
+    <div class="widget" id="w-cmp">
+      <div class="w-title">같은 숫자, 다른 커브: uai.js vs ProjectBorealis</div>
+      <div class="w-desc">같은 m, k, b, c를 uai.js(실선)와 PB 수식(점선, Slope=m, Exponent=k, XShift=c, YShift=b로 이름만 맞춤)에 넣는다. "PB 의미로 번역"을 켜면 아래 변환식으로 옮겨 넣어 두 커브가 겹치는지 확인할 수 있다. PB 수식은 비교용으로 이 장 안에 따로 구현했다(엔진에는 없음).</div>
+      <div class="controls">
+        <label>타입 <select id="cm-type"></select></label>
+        <label><input type="checkbox" id="cm-tr"> PB 의미로 번역</label>
+        <span class="preset-row" id="cm-presets" style="margin:0"></span>
+      </div>
+      <div class="ed-grid">
+        <div class="plot-box"><svg id="cm-plot"></svg>
+          <div class="legend"><span><i style="background:var(--accent)"></i>uai.js</span><span><i class="dash"></i>ProjectBorealis</span></div>
+        </div>
+        <div>
+          <div class="sliders" id="cm-sliders"></div>
+          <div class="formula small" id="cm-pb" style="text-align:left"></div>
+          <div class="tbl-wrap"><table class="cmp" id="cm-tbl"></table></div>
+        </div>
+      </div>
+    </div>
+    <details class="deep"><summary>uai.js → PB 변환식</summary><div>
+      <ul>
+        <li>linear, poly, logit: 그대로. Slope = m, Exponent = k, XShift = c, YShift = b (단, poly의 음수 밑 처리는 다르다. <a href="#s11">11절</a>)</li>
+        <li>logistic: Slope = k, Exponent = m / 10, XShift = c − 0.5, YShift = b</li>
+        <li>normal: Slope = m, Exponent = 1 / (60·k²), XShift = c − 0.5, YShift = b (−30·E = −1/(2k²)에서 유도)</li>
+        <li>sine: Slope = m, XShift = c, YShift = b. k = 1일 때만 대응된다</li>
+      </ul>
+    </div></details>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 커브 에디터</h2>
+    <p>이제 직접 만들어 볼 차례다. Lewis의 권고대로 위에는 <b>프리셋 팔레트</b>를 두고, 임의의 파라미터 조절은 <b>고급 모드</b> 안에 넣었다. 그래프는 <code>MM.plotCurve</code>가 <code>UAI.curve(spec)</code>를 그대로 그린 것이고, 아래 JSON은 엔진에 그대로 넣을 수 있는 spec이다. <a class="xref" href="12-capstone-hamlet.html">12장 캡스톤</a>에서 주민의 consideration 커브를 바꿀 때 이 JSON을 복사해 쓰면 된다.</p>
+    <div class="widget" id="w-ed">
+      <div class="w-title">반응 커브 에디터</div>
+      <div class="w-desc">프리셋을 고르거나 고급 모드에서 타입과 m·k·b·c를 바꿔 보라. 입력 x 슬라이더로 커브 위 한 점의 출력을 읽는다. 오른쪽 진단은 10절 체크리스트(방향·단조성·끝점·0점 구간)를 자동으로 검사한 결과다.</div>
+      <div class="preset-row" id="ed-presets"></div>
+      <div class="ed-grid">
+        <div class="plot-box"><svg id="ed-plot"></svg>
+          <div class="controls"><label style="flex:1">입력 x <input type="range" id="ed-x" min="0" max="1" step="0.01" value="0.3" style="flex:1"> <span class="num" id="ed-xv">0.30</span></label></div>
+          <div class="stat-row"><div class="stat"><div class="k">입력 x</div><div class="v" id="ed-sx">0.30</div></div><div class="stat"><div class="k">출력 UAI.curve(spec)(x)</div><div class="v c-warn" id="ed-sy">0.00</div></div></div>
+        </div>
+        <div>
+          <details class="adv" open><summary>고급 모드: 타입과 파라미터 직접 편집</summary>
+            <div class="controls"><label>타입 <select id="ed-type"></select></label><label><input type="checkbox" id="ed-inv"> invert (x ← 1 − x)</label></div>
+            <div class="sliders" id="ed-sliders"></div>
+          </details>
+          <div class="formula small" id="ed-formula" style="text-align:left"></div>
+          <div class="chips" id="ed-diag"></div>
+          <label style="font-size:13px;color:var(--muted)">spec (JSON)</label>
+          <textarea class="json-out" id="ed-json" rows="2" readonly></textarea>
+          <div class="controls"><button class="btn" id="ed-copy">JSON 복사</button><span id="ed-copied" class="c-ok" style="font-size:13px"></span></div>
+          <div class="num" id="ed-samples" style="font-size:12.5px;color:var(--muted)"></div>
+        </div>
+      </div>
+    </div>
+    <div class="callout tip">
+      <span class="title">해 볼 것</span>
+      <ol>
+        <li>"로지스틱 중앙"에서 m을 12 → 40으로 올려 보라. 커브가 거의 스위치가 된다. Graham이 "밑 e를 키우면 square wave처럼 된다"고 한 것과 같은 효과다.</li>
+        <li>"종형 (적정값)"의 k를 0.05와 0.4로 바꿔 보라. 진단 칩의 "단조: 아니오"를 확인하라. Lewis가 말한 역U 커브, 즉 적당한 거리를 유지하는 커브다.</li>
+        <li>"선형 감소"를 고르고 b를 1 → 1.3으로 올려 보라. x가 0.3 이하인 구간이 1에 붙는다. b를 위로 밀면 "충분히 가까우면 모두 만점"인 포화 구간이 생긴다.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 구간 선형 커브와 Sims의 배고픔</h2>
+    <p>Graham은 수식 커브의 한계를 The Sims의 배고픔으로 보여 준다. 심(Sim)의 Hunger 수치는 "얼마나 배부른가"를 잰다. 낮을수록 배고프다. 이걸 회전된 2차 커브로 점수화하면 배고플 때는 잘 먹지만, <em>거의 배부를 때도 먹을 확률이 0이 아니다</em>. 작더라도 0이 아니면 가중 랜덤 선택(<a class="xref" href="05-action-selection.html">05장</a>)에서 언젠가는 뽑힌다. 디자이너가 원하는 것은 "어느 문턱까지는 배고픔을 완전히 무시하다가, 조금 배고파지다가, 갑자기 매우 배고파지는" 모양인데, 이건 간단한 수식 하나로는 만들 수 없다.</p>
+    <p>해법이 구간 선형 커브다. 원하는 문턱을 나타내는 2D 점 몇 개를 손으로 찍어 두고, x가 주어지면 가장 가까운 두 점 사이를 선형 보간한다. Graham은 이것이 "바로 The Sims가 쓰는 방식"이라고 적는다. 엔진 구현은 <a href="#s4">4절</a>의 <code>piecewise()</code>다. x 오름차순 점 배열을 받아 첫 점 왼쪽과 끝 점 오른쪽은 끝값으로 고정한다.</p>
+    <p>Hamlet의 배고픔 긴급도 커브도 이 방식이다. 욕구 수치 0~100을 100으로 나눈 값이 x이고, 결핍이 클수록(x가 작을수록) 긴급도가 높다.</p>
+<pre class="engine"><code>// 욕구 → 긴급도 커브: 결핍이 클수록 급격히 중요해진다 (07장)
+UAI.NEED_CURVE = {
+  hunger: { type: "piecewise", points: [[0, 1], [0.3, 0.85], [0.6, 0.25], [0.85, 0.02], [1, 0]] },</code></pre>
+
+    <div class="widget" id="w-pw">
+      <div class="w-title">구간 선형 커브 에디터: Sims식 배고픔 커브 만들기</div>
+      <div class="w-desc">x축은 포만도(0 = 굶주림, 1 = 배부름), y축은 "먹기" 긴급도. 점을 <b>드래그</b>해서 옮기고, <b>빈 곳을 더블클릭</b>하면 점을 추가, <b>점을 더블클릭</b>하면 삭제한다(양 끝점은 x가 0과 1에 고정). 터치 환경에서는 아래 버튼을 쓰라. 점선은 비교용 수식 커브 (1 − x)², 즉 <code>{type:"poly", m:1, k:2, invert:true}</code>다.</div>
+      <div class="ed-grid">
+        <div class="plot-box"><svg id="pw-plot" class="pw-svg" viewBox="0 0 240 200"></svg>
+          <div class="controls"><label style="flex:1">포만도 x <input type="range" id="pw-x" min="0" max="1" step="0.01" value="0.9" style="flex:1"> <span class="num" id="pw-xv">0.90</span></label></div>
+        </div>
+        <div>
+          <div class="controls">
+            <button class="btn" id="pw-add">점 추가</button>
+            <button class="btn" id="pw-del">선택 점 삭제</button>
+            <button class="btn" id="pw-reset">처음으로</button>
+            <button class="btn" id="pw-eng">엔진 NEED_CURVE.hunger</button>
+            <button class="btn" id="pw-fig">Graham 그림 9.6 근사</button>
+          </div>
+          <div class="stat-row">
+            <div class="stat"><div class="k">내 커브 f(x)</div><div class="v c-accent" id="pw-y">0</div></div>
+            <div class="stat"><div class="k">수식 (1−x)²</div><div class="v" id="pw-y2">0</div></div>
+          </div>
+          <b style="font-size:14px">과제 체크리스트</b>
+          <ul class="checks" id="pw-checks"></ul>
+          <label style="font-size:13px;color:var(--muted)">points 배열 (spec)</label>
+          <textarea class="json-out" id="pw-json" rows="3" readonly></textarea>
+          <div class="controls"><button class="btn" id="pw-copy">JSON 복사</button><span id="pw-copied" class="c-ok" style="font-size:13px"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="callout">
+      <span class="title">과제</span>
+      <p>"처음으로"를 눌러 직선에서 시작해, 체크리스트 네 항목을 모두 통과하는 배고픔 커브를 만들어 보라. 통과한 뒤에는 포만도 x = 0.95에서 내 커브와 점선 수식 커브의 값을 비교하라. 수식 커브는 0.0025처럼 아주 작지만 0은 아니다. 구간 선형 커브는 정확히 0을 줄 수 있다. 이 차이가 "배부른 심이 가끔 냉장고를 여는" 버그와 그렇지 않은 게임의 차이다.</p>
+      <p style="font-size:14px;color:var(--muted)">"Graham 그림 9.6 근사"의 점 좌표는 원문 그림을 눈으로 읽은 근삿값이다. 원문은 점 좌표를 수치로 밝히지 않는다.</p>
+    </div>
+    <details class="deep"><summary>구간 선형의 대가: 데이터, 툴, 그리고 매끄러움</summary><div>
+      <p>구간 선형은 어떤 모양이든 만들 수 있지만 대가가 있다. 점마다 손으로 튜닝해야 하고, 점이 많아지면 의도를 읽기 어렵다. 꺾이는 지점에서 기울기가 갑자기 변하므로 입력이 그 근처를 오가면 점수 변화율이 튄다. Graham도 그림 9.6의 15~60 구간만 2차 커브로 바꾸는 식의 혼합을 예로 든다. "필요한 곳만 맞춤 커브로"가 현실적인 타협이다.</p>
+      <p>또 하나: 구간 선형은 그래프 툴이 있어야 의미가 있다. 숫자 배열만 보고 커브를 튜닝하는 디자이너는 없다. 위 에디터 정도의 툴이 엔진과 함께 가야 한다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 같은 입력, 다른 성격</h2>
+    <p>커브가 성격을 만든다는 말을 눈으로 확인해 보자. Hamlet에 늑대가 나타났다. 세 주민 모두 같은 입력, 즉 늑대까지의 맨해튼 거리를 엔진의 도망 행동과 같은 bookend [0, 14칸]으로 정규화해 받는다. 다른 것은 커브뿐이다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>주민</th><th>성격</th><th>도망 커브 spec</th><th>읽는 법</th></tr>
+      <tr><td>은솔</td><td>겁쟁이</td><td class="mono">{type:"logistic", m:-10, k:1, c:0.75}</td><td>꽤 멀리(약 10칸)서부터 이미 도망칠 생각이 크다</td></tr>
+      <tr><td>보람</td><td>보통</td><td class="mono">"선형 감소"</td><td>엔진 <code>hamletActions</code>의 도망 커브 그대로. 거리에 비례</td></tr>
+      <tr><td>찬</td><td>용감</td><td class="mono">{type:"poly", m:1, k:4, invert:true}</td><td>(1 − x)⁴. 코앞에 올 때까지 거의 무시</td></tr>
+    </table></div>
+    <p>이 위젯에서는 커브의 효과만 보기 위해 "하던 일(빵집에서 식사)"의 점수를 0.45로 고정하고, 도망 점수가 이를 넘으면 도망친다고 단순화했다. 실제 엔진은 도망에 rank 10을 주어 점수가 0보다 크기만 하면 욕구 행동보다 우선하게 만든다. 이 dual utility 구조는 <a class="xref" href="05-action-selection.html">05장</a>에서 다룬다.</p>
+    <div class="widget" id="w-wolf">
+      <div class="w-title">늑대가 다가온다: 세 주민의 도망 점수</div>
+      <div class="w-desc">거리 슬라이더를 움직이거나 "늑대 접근"을 눌러 늑대가 14칸에서 0칸까지 다가오는 애니메이션을 보라. 막대는 각 주민의 <code>UAI.curve(spec)(UAI.normalize(거리, 0, 14))</code> 값이고, 점선은 하던 일 점수 0.45다.</div>
+      <div class="controls">
+        <label>늑대 거리 <input type="range" id="wf-d" min="0" max="14" step="0.1" value="12"> <span class="num" id="wf-dv">12.0칸</span></label>
+        <button class="btn primary" id="wf-play">▶ 늑대 접근</button>
+        <button class="btn" id="wf-reset">초기화</button>
+      </div>
+      <div class="stage">
+        <svg class="diagram wolf-svg" viewBox="0 0 640 228" id="wf-svg" role="img" aria-label="늑대와 주민 세 명"></svg>
+      </div>
+      <div id="wf-rows"></div>
+      <div class="ed-grid" style="margin-top:8px">
+        <div class="plot-box"><svg id="wf-plot"></svg></div>
+        <div>
+          <div class="legend"><span><i style="background:var(--violet)"></i>은솔 (겁쟁이)</span><span><i style="background:var(--accent)"></i>보람 (보통)</span><span><i style="background:var(--teal)"></i>찬 (용감)</span><span><i style="background:var(--muted)"></i>하던 일 0.45</span></div>
+          <div class="log" id="wf-log" style="max-height:150px"></div>
+        </div>
+      </div>
+    </div>
+    <p>늑대가 다가올 때 주민들이 한꺼번에 도망치지 않고 은솔 → 보람 → 찬 순서로 하나씩 흩어진다. 아무도 "if 거리 &lt; N" 코드를 따로 갖고 있지 않은데도 그렇다. 성격을 코드가 아니라 <em>데이터</em>(커브 spec)로 표현했기 때문에, 새 주민을 만들 때 커브만 바꾸면 된다. Lewis가 Heart of Thorns에서 미리 정의한 결정 패턴을 조합해 새 생물을 몇 분 만에 만들었다고 한 것도 같은 구조 덕분이다.</p>
+  </section>
+
+  <!-- ============================== S9 ============================== -->
+  <section id="s9">
+    <h2>9. Graham의 결투 데모: 커브 네 개로 만든 적</h2>
+    <p>Graham의 데모는 80년대 메뉴식 RPG를 닮은 텍스트 결투다. 적은 공격, 회복 물약 사용(물약 3개), 도주(성공률 50%) 중 하나를 고르고, <code>ChooseNextAction()</code>이 점수를 계산한 뒤 가중 랜덤으로 고른다. 판단 재료(decision factor)는 네 개의 커브다.</p>
+    <div class="formula" style="text-align:left;white-space:normal;line-height:2">
+      (9.5) Attack &nbsp; U = max(min((1 − (hp − minDmg)/(maxDmg − minDmg)) × (1 − a) + a, 1), 0)<br>
+      (9.6) Threat &nbsp; U = min(maxDmg / hp, 1)<br>
+      (9.7) Health &nbsp; U = 1 − 1 / (1 + (e × 0.68)<sup>−(hp/maxHp)×12 + 6</sup>)<br>
+      (9.8) Run &nbsp;&nbsp;&nbsp; U = 1 − (hp / maxHp)<sup>(1/(p+1)⁴) × 0.25</sup>
+    </div>
+    <ul>
+      <li><b>Attack Desire</b>: 상대를 한 방에 죽일 수 있게 될수록 선형으로 오른다. a는 튜닝된 공격성, 즉 기본 점수다(그림은 a = 0.6). 막판에 더 공격적이 되고 위험을 감수한다. 여기서 hp는 <em>상대</em>의 체력이다.</li>
+      <li><b>Threat</b>: 상대가 최대 피해로 때리면 내 현재 체력의 몇 %가 날아가는가.</li>
+      <li><b>Health Desire</b>: 로지스틱의 변형. 지수의 +6이 커브를 양의 x축 쪽으로 민다. 체력이 줄수록 회복 욕구가 오른다.</li>
+      <li><b>Run Desire</b>: 남은 물약 수 p가 가파름을 정하는 2차형 커브. 물약이 여럿이면 도주 가능성은 극히 작고, 0개면 훨씬 빨리 커진다.</li>
+    </ul>
+    <p>행동 점수는 이 넷을 조합한다. <b>공격 = Attack Desire</b>, <b>회복 = Health Desire × Threat</b>, <b>도주 = Run Desire × Threat</b>. Threat을 곱하는 이유는 너무 이른 회복을 막고 상대의 최대 피해에 따라 행동을 바꾸기 위해서다. Graham은 원래 Threat에 상대의 <em>평균</em> 피해를 썼다고 한다. 기대 효용의 정신에는 그쪽이 맞지만 결과가 충분히 엄격하지 않아서 <em>최대</em> 피해로 바꿨고, 그는 이 일을 "커브와 수식 튜닝이 과학보다 예술인 좋은 예"로 든다.</p>
+    <div class="callout warn">
+      <span class="title">원문 식 (9.5)와 그림 9.8은 일치하지 않는다</span>
+      <p>그림 9.8(a = 0.6)은 상대 hp 약 10까지 1, 약 30까지 직선으로 0.6까지 내려가고, 그 뒤로는 0.6에서 평평하다. 그런데 식 (9.5)를 글자 그대로 계산하면 hp가 maxDmg를 넘은 뒤에도 계속 내려가 결국 0이 된다. 그림과 같은 모양을 얻으려면 분수 항 (hp − minDmg)/(maxDmg − minDmg)를 먼저 [0, 1]로 clamp해야 한다. 아래 위젯은 기본값으로 그림 형태를 쓰고, 체크박스로 식 그대로의 버전을 볼 수 있다. 문헌의 수식을 옮길 때는 그림과 대조해 보는 습관이 필요하다.</p>
+      <p style="font-size:14px">원문은 minDmg, maxDmg 값을 밝히지 않는다. 그림 9.8에서는 대략 10과 30, 그림 9.9(Threat이 hp 약 25부터 내려가 hp 100에서 약 0.25)에서는 maxDmg가 대략 25로 읽힌다. 위젯 기본값은 10/30이다.</p>
+    </div>
+    <div class="widget" id="w-duel">
+      <div class="w-title">결투 AI 커브 플로터</div>
+      <div class="w-desc">x축은 hp / maxHp (maxHp = 100). 네 커브를 동시에 그리고, 세로 점선은 내 hp(Threat·Health·Run 입력)와 상대 hp(Attack 입력)다. 오른쪽은 세 행동 점수와, 그 점수로 가중 랜덤을 했을 때의 선택 확률(<code>UAI.select</code>, strategy "weighted")이다.</div>
+      <div class="duel-grid">
+        <div class="plot-box"><svg id="du-plot"></svg>
+          <div class="legend"><span><i style="background:var(--bad)"></i>Attack (상대 hp)</span><span><i style="background:var(--warn)"></i>Threat</span><span><i style="background:var(--ok)"></i>Health</span><span><i style="background:var(--violet)"></i>Run</span></div>
+        </div>
+        <div>
+          <div class="sliders" id="du-sliders"></div>
+          <div class="controls"><label><input type="checkbox" id="du-lit"> 식 (9.5) 글자 그대로 (clamp 없음)</label></div>
+          <div id="du-scores"></div>
+          <div class="controls"><button class="btn" id="du-roll">가중 랜덤 100회</button><span class="num" id="du-rollv" style="font-size:13px"></span></div>
+        </div>
+      </div>
+    </div>
+    <p>해 볼 것: 물약 p를 3에서 0으로 줄이면 Run 커브가 확 부풀어 오른다. 내 hp를 20 근처로 내리고 p = 0으로 두면 도주 확률이 눈에 띄게 커지지만, 물약이 하나라도 있으면 회복이 압도한다. 공격성 a를 0.9로 올리면 상대 hp와 무관하게 공격 점수가 높게 깔린다. 이것이 Graham이 말한 "적은 값과 가중치로 성격을 더하는" 방식이다.</p>
+    <p style="font-size:14px;color:var(--muted)">위젯은 물약이 0개일 때 회복 점수를 0으로 둔다. 물약 없이 회복할 수 없다는 상식적인 가정이며, 원문 수식에는 이 조건이 적혀 있지 않다.</p>
+  </section>
+
+  <!-- ============================== S10 ============================== -->
+  <section id="s10">
+    <h2>10. 커브 선택 체크리스트와 프리셋 팔레트</h2>
+    <p>Lewis는 응답 곡선 선택이 효용 AI를 "살리거나 망친다"고 말하며 간단한 체크리스트를 제시한다. 에디터의 진단 칩이 바로 이 순서를 따른다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram flow-svg" viewBox="0 0 680 330" role="img" aria-label="커브 선택 체크리스트">
+        <defs><marker id="arrow03b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <g>
+          <rect class="step" x="20" y="14" width="300" height="58" rx="10"/><circle class="num-c" cx="44" cy="43" r="13"/><text class="num-t" x="44" y="48" text-anchor="middle">1</text>
+          <text x="66" y="38" style="font-weight:700">무엇을 점수화하나? bookend는?</text><text x="66" y="58" class="muted">어떤 입력이 0이고 어떤 입력이 1인가</text>
+          <rect class="note" x="350" y="14" width="310" height="58" rx="10"/><text x="364" y="38">거리 0–100 m, 체력 0–1, 늑대 0–14칸</text><text x="364" y="58" class="muted">범위 밖은 끝값으로 clamp</text>
+        </g>
+        <path class="line" d="M170,74 L170,92" style="marker-end:url(#arrow03b)"/>
+        <g>
+          <rect class="step" x="20" y="94" width="300" height="58" rx="10"/><circle class="num-c" cx="44" cy="123" r="13"/><text class="num-t" x="44" y="128" text-anchor="middle">2</text>
+          <text x="66" y="118" style="font-weight:700">증가인가, 감소인가?</text><text x="66" y="138" class="muted">입력이 1에 가까울수록 더 중요해지나</text>
+          <rect class="note" x="350" y="94" width="310" height="58" rx="10"/><text x="364" y="118">도둑: 대상의 재산 → 증가</text><text x="364" y="138">도둑: 대상까지 거리 → 감소</text>
+        </g>
+        <path class="line" d="M170,154 L170,172" style="marker-end:url(#arrow03b)"/>
+        <g>
+          <rect class="step" x="20" y="174" width="300" height="58" rx="10"/><circle class="num-c" cx="44" cy="203" r="13"/><text class="num-t" x="44" y="208" text-anchor="middle">3</text>
+          <text x="66" y="198" style="font-weight:700">단조인가?</text><text x="66" y="218" class="muted">중간에 꼭대기·골짜기가 필요한가</text>
+          <rect class="warnbox" x="350" y="174" width="310" height="58" rx="10"/><text x="364" y="198">예외: 역U 거리 커브(종형)</text><text x="364" y="218" class="muted">너무 가깝지도 멀지도 않게 거리 유지</text>
+        </g>
+        <path class="line" d="M170,234 L170,252" style="marker-end:url(#arrow03b)"/>
+        <g>
+          <rect class="step" x="20" y="254" width="300" height="58" rx="10"/><circle class="num-c" cx="44" cy="283" r="13"/><text class="num-t" x="44" y="288" text-anchor="middle">4</text>
+          <text x="66" y="278" style="font-weight:700">끝점은?</text><text x="66" y="298" class="muted">x = 0과 x = 1에서의 점수</text>
+          <rect class="note" x="350" y="254" width="310" height="58" rx="10"/><text x="364" y="278">완벽한 입력이면 1</text><text x="364" y="298" class="muted">0으로 떨어뜨려 무효화할까, 낮추기만 할까</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>Lewis(GAP3 13장)의 응답 곡선 체크리스트. 오른쪽은 각 단계의 예와 주의점.</figcaption>
+    </figure>
+    <ol>
+      <li><b>입력과 bookend</b>: 무엇을 점수화하는지 정하고, 어떤 값이 0이고 어떤 값이 1인지 clamp 범위를 정한다.</li>
+      <li><b>방향</b>: 입력이 1에 가까워질수록 이 결정이 더 중요해지는가, 덜 중요해지는가. Lewis의 예에서 도둑은 대상의 재산에 증가 커브를, 대상까지의 거리에 감소 커브를 쓴다. 멀수록 접근이 위험하기 때문이다.</li>
+      <li><b>단조성</b>: 특별한 행동이 필요하지 않다면 단조 커브가 낫다. 점수를 이해하기가 훨씬 쉽다. Heart of Thorns의 커브도 대부분 단조였다. 예외는 역U 모양 거리 커브로, 적이 너무 가깝지도 너무 멀지도 않을 때만 다가가게 만든다.</li>
+      <li><b>끝점</b>: 최소·최대 입력에서 점수가 0이 되어야 하는가, 아니면 우선순위만 낮춰야 하는가. 대부분은 "완벽한 상황이면 완벽한 점수", 즉 1로 두는 것이 가장 단순하다.</li>
+    </ol>
+    <h3>프리셋 팔레트와 advanced mode</h3>
+    <p>Lewis에 따르면 Heart of Thorns에서 쓴 응답 곡선은 "대부분 작은 프리셋 팔레트에서 골랐다". 임의 곡선을 허용하는 것은 강력하지만 겁을 주고 직관적이지 않을 수 있으므로, 그런 설정 능력은 "advanced mode" 뒤에 숨기고 대부분의 경우 프리셋을 쓰게 하라는 것이 그의 권고다. 우리 엔진의 <code>UAI.PRESETS</code>와 위 에디터의 구조(프리셋 버튼이 먼저, 파라미터 슬라이더는 접히는 고급 모드)가 이 원칙을 따른다.</p>
+    <div class="callout deep">
+      <span class="title">왜 프리셋이 결국 더 빠른가</span>
+      <ul>
+        <li><b>공유 어휘</b>: "이건 cooldown 커브야"라는 한마디로 팀 전체가 모양과 의도를 안다. m = 4.37 같은 숫자는 대화가 되지 않는다.</li>
+        <li><b>재사용 단위</b>: Heart of Thorns는 미리 정의한 결정 패턴이 100개가 넘었고, 그것을 조합해 새 생물을 몇 분 만에 구성했다. 패턴이 재사용되려면 그 안의 커브도 표준화되어 있어야 한다.</li>
+        <li><b>버그 표면 축소</b>: 프리셋은 한 번 검증해 두면 된다. 자유 커브는 데이터 하나하나가 검증 대상이다(<a href="#s11">11절</a>의 함정들).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================== S11 ============================== -->
+  <section id="s11">
+    <h2>11. 실무 함정</h2>
+
+    <h3>11.1 0으로 떨어지는 커브 = 거부권</h3>
+    <p>Lewis의 구조에서 consideration 점수는 모두 곱해진다. 그래서 <em>어떤 consideration이든 결정 전체를 무효화할 수 있다</em>. 하나가 0이면 나머지가 아무리 높아도 0이다. 우리 엔진의 Reasoner도 같은 성질을 이용해, 점수가 0이 되는 순간 남은 consideration 계산을 건너뛴다(early-out).</p>
+<pre class="engine"><code>for (const c of a.considerations) {
+  if (!alive) { parts.push({ name: c.name, raw: null, x: null, y: null, skipped: true }); continue; }
+  const raw = c.input(ctx);
+  const x = UAI.normalize(raw, c.lo, c.hi);
+  const y = c.fn(x);
+  parts.push({ name: c.name, raw, x, y });
+  if (y &lt;= 0) alive = false;
+}</code></pre>
+    <p>이 성질은 스위치 커브의 존재 이유이기도 하지만, 의도치 않게 생기면 찾기 어려운 버그가 된다. "선형 감소"는 x = 1에서 정확히 0이다. bookend 끝까지 간 입력이 조용히 행동 전체를 꺼 버린다. 끝점을 0으로 둘지 조금 띄울지(b = 0.05 등)는 체크리스트 4단계에서 <em>의도적으로</em> 정해야 한다. 여러 커브를 곱했을 때 점수가 깎이는 문제와 그 보정은 <a class="xref" href="04-considerations.html">04장</a>의 주제다.</p>
+
+    <h3>11.2 극단 지수의 민감도</h3>
+    <p>x<sup>k</sup>에서 k가 크면 커브 대부분이 0 근처에 깔리고 모든 변화가 1 바로 앞에 몰린다. 입력이 조금만 흔들려도 점수가 크게 출렁인다. 아래 표는 <code>UAI.curve({type:"poly", m:1, k})</code>의 실제 값이다.</p>
+    <div class="tbl-wrap"><table class="cmp" id="sens-tbl"></table></div>
+    <p>k = 10이면 x가 0.90에서 0.95로 0.05만 움직여도 점수가 두 배 가까이 뛰고, x = 0.5까지는 사실상 0이다. 이 커브가 곱셈 결합에 들어가면 x = 0.5 근처에서 사실상 거부권을 행사한다. Lewis의 cooldown x<sup>5</sup>처럼 "끝 무렵에 급등"이 정확히 원하는 효과라면 괜찮지만, 그렇지 않다면 k를 낮추거나 로지스틱으로 문턱 위치(c)를 직접 정하는 편이 튜닝하기 쉽다. 또한 bookend가 실제 입력 분포보다 넓으면 입력이 늘 x = 0.3~0.6에 머물러 커브의 평평한 부분만 쓰게 된다. 지수를 올리기 전에 bookend부터 의심하라.</p>
+
+    <h3>11.3 범위 밖 입력과 clamp</h3>
+    <p><code>UAI.normalize</code>는 범위 밖 입력을 끝값으로 고정하고, <code>UAI.curve</code>는 출력도 [0, 1]로 자른다. 두 clamp 모두 필요하다. 입력 clamp가 없으면 x = 1.3 같은 값이 다항 커브에 들어가 1을 훌쩍 넘거나(1.3<sup>6</sup> ≈ 4.8), 로짓처럼 [0, 1] 밖에서 정의되지 않는 커브에서 NaN이 나온다. 출력 clamp가 없으면 b로 위로 민 커브(<a href="#s6">에디터</a>의 "해 볼 것" 3번)가 1을 넘어 다른 consideration과 곱할 때 점수를 부풀린다. 반대로 clamp는 정보를 버린다는 점도 기억하라. 100 m와 1000 m가 같은 점수라는 것은 의도한 결정이어야 한다.</p>
+
+    <h3>11.4 비정수 지수와 음수 밑</h3>
+    <p>c로 수평 이동한 다항 커브에서 x &lt; c이면 밑 x − c가 음수가 된다. 정수 지수라면 문제없지만, k = 0.5 같은 비정수 지수에서 <code>Math.pow(-0.2, 0.5)</code>는 <b>NaN</b>이다. 엔진은 이를 피하려고 부호를 따로 떼어 |d|<sup>k</sup>를 계산하고 부호를 다시 붙인다(<a href="#s4">4절</a>의 <code>poly</code>). PB는 <code>FMath::Pow</code>를 그대로 쓰고 NaN을 Sanitize가 0으로 바꾼다. 같은 spec <code>{type:"poly", m:-1, k:0.5, b:1, c:0.5}</code>, 즉 "x가 0.5를 넘으면 1 − √(x − 0.5)"를 세 방식으로 계산하면 이렇다.</p>
+    <div class="tbl-wrap"><table class="cmp" id="neg-tbl"></table></div>
+    <p>x &lt; 0.5 구간에서 엔진은 1(1 + √|d|가 clamp됨), PB는 0이다. 디자이너가 "0.5 아래는 만점"을 기대했다면 PB에서는 정반대로 <b>거부권</b>이 걸린다. 이런 커브는 어느 엔진에서나 같은 결과가 나오도록 c = 0인 형태로 다시 쓰거나(예: 구간 선형), 이동 없이 invert로 방향을 바꾸는 편이 안전하다. 마지막 행은 5절에서 본 PB 로짓의 끝점 문제를 같은 방식으로 보여 준다.</p>
+    <div class="callout danger">
+      <span class="title">커브 데이터 검증 체크</span>
+      <ul>
+        <li>모든 커브를 x = 0, 0.25, 0.5, 0.75, 1에서 샘플링해 NaN·무한대가 없는지 툴에서 검사한다(에디터 아래의 샘플 행).</li>
+        <li>0이 되는 구간이 있는 커브는 "의도한 거부권인가?" 표시를 데이터에 남긴다.</li>
+        <li>엔진을 옮기면 프리셋 전체를 두 구현에서 샘플링해 비교하는 테스트를 만든다. 이 장의 비교 위젯이 그 테스트의 축소판이다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>반응 커브는 게임 상태값을 0~1 효용으로 바꾸는 함수다. 정답 수식은 없고, Graham의 말대로 "과학보다 예술"에 가깝다. 그래서 어휘·데이터 표현·체크리스트가 필요하다.</li>
+    <li>커브 앞에는 항상 bookend 정규화가 있다. <code>UAI.normalize(v, lo, hi)</code>는 범위 밖을 끝값에 고정한다. bookend는 커브만큼 강력한 튜닝 손잡이다.</li>
+    <li>선형·다항(지연/회전)·로지스틱·로짓·종형·사인·스위치·구간 선형은 각각 다른 행동 느낌을 준다. 구간 선형은 Sims의 배고픔처럼 수식으로 못 만드는 모양을 점으로 만든다.</li>
+    <li><code>uai.js</code>는 m, k, b, c 네 변수로 모든 커브를 spec 데이터로 표현한다. 그러나 IAUS 매뉴얼·ProjectBorealis·uai.js의 m, k, b, c 의미는 서로 다르다(특히 Normal, Logistic). 커브 데이터에는 구현을 함께 기록하라.</li>
+    <li>같은 입력에 다른 커브를 주면 성격이 생긴다. 성격을 코드가 아니라 데이터로 표현하면 새 캐릭터는 커브 교체로 만들어진다.</li>
+    <li>체크리스트: 입력·bookend → 증가/감소 → 단조성(역U 예외) → 끝점. 대부분은 프리셋 팔레트로 해결하고 임의 커브는 advanced mode 뒤에 둔다.</li>
+    <li>함정: 0이 되는 끝점은 곱셈 결합에서 거부권이다. 극단 지수는 민감하고, 비정수 지수와 음수 밑은 구현마다 다른 결과를 낸다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Lewis의 예처럼 거리 bookend를 [0 m, 100 m]로 두었다. 대상이 130 m에 있을 때 정규화된 입력 x는?</div>
+    <button class="opt">1.3</button>
+    <button class="opt">0.3</button>
+    <button class="opt">1</button>
+    <button class="opt">0</button>
+    <div class="explain">최댓값을 넘는 입력은 자동으로 1이 된다(<code>UAI.normalize</code>의 clamp01). 1.3이 그대로 커브에 들어가면 다항 커브는 1을 넘고 로짓은 NaN이 될 수 있다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">uai.js에서 <code>{type:"normal", m:1, k:0.15, c:0.5}</code>의 혹을 더 넓게 만들려면?</div>
+    <button class="opt">m을 키운다 (IAUS 매뉴얼에서 m이 폭이므로)</button>
+    <button class="opt">k를 키운다</button>
+    <button class="opt">k를 줄인다</button>
+    <button class="opt">c를 키운다</button>
+    <div class="explain">uai.js의 normal은 <code>m·exp(−(x−c)²/(2k²)) + b</code>여서 k가 σ 역할을 한다. 키우면 넓어진다. 매뉴얼에서는 m이 폭이고, PB에서는 Exponent가 클수록 오히려 좁아진다. 이 차이가 5절의 함정이다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Graham이 The Sims 배고픔 예에서 회전 2차 커브 대신 구간 선형 커브가 필요하다고 한 이유는?</div>
+    <button class="opt">수식 커브는 거의 배부를 때도 점수가 0이 아니어서, 가중 랜덤에서 언젠가는 "먹기"가 뽑히기 때문</button>
+    <button class="opt">구간 선형이 수식 커브보다 계산이 빠르기 때문</button>
+    <button class="opt">2차 커브는 [0, 1] 밖의 값을 내기 때문</button>
+    <button class="opt">구간 선형은 항상 단조이기 때문</button>
+    <div class="explain">디자이너는 "문턱까지 완전히 무시 → 조금 배고픔 → 갑자기 매우 배고픔"을 원한다. 간단한 수식으로는 이 모양을 만들기 어렵고, 작지만 0이 아닌 점수는 결국 선택된다. 구간 선형은 정확히 0을 줄 수 있다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">"상대와 거리" consideration에 <code>"선형 감소"</code>를 쓰고 bookend를 [0, 12]로 두었다. 상대가 15칸 떨어져 있을 때 그 행동의 최종 점수는?</div>
+    <button class="opt">다른 consideration이 높으면 0.5 정도</button>
+    <button class="opt">음수가 되어 다른 행동보다 낮아진다</button>
+    <button class="opt">거리 점수만 빠지고 나머지 점수의 곱이 된다</button>
+    <button class="opt">0. 곱셈 결합에서 거리 점수 0이 행동 전체를 거부한다</button>
+    <div class="explain">x = clamp(15/12) = 1이고, 선형 감소는 x = 1에서 정확히 0이다. 곱셈 결합이라 다른 점수와 상관없이 0이 되고, Reasoner는 early-out으로 나머지를 건너뛴다. 의도한 거부권이 아니라면 끝점을 b로 띄워야 한다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">spec <code>{type:"poly", m:-1, k:0.5, b:1, c:0.5}</code>를 x = 0.3에서 계산하면 uai.js와 ProjectBorealis 수식은 각각 얼마인가?</div>
+    <button class="opt">둘 다 NaN</button>
+    <button class="opt">uai.js 0, PB 1</button>
+    <button class="opt">uai.js 1, PB 0</button>
+    <button class="opt">둘 다 1 − √0.2 ≈ 0.553</button>
+    <div class="explain">밑 x − c = −0.2에 지수 0.5. uai.js는 부호를 보존해 −1·(−1)·√0.2 + 1 ≈ 1.447 → clamp 1. PB는 Pow(−0.2, 0.5) = NaN → Sanitize → 0. 같은 데이터가 한쪽에선 만점, 한쪽에선 거부권이다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Graham의 결투 데모에서 회복 행동 점수는 Health Desire × Threat이다. Threat에 상대의 평균 피해 대신 최대 피해를 쓰게 된 이유는?</div>
+    <button class="opt">기대 효용 이론상 최대 피해가 더 정확하기 때문</button>
+    <button class="opt">평균 피해로는 결과가 충분히 엄격하지 않았기 때문</button>
+    <button class="opt">평균 피해를 계산하려면 난수가 필요하기 때문</button>
+    <button class="opt">최대 피해를 쓰면 Threat이 항상 1이 되기 때문</button>
+    <div class="explain">Graham은 평균 피해가 기대 효용의 정신에는 더 맞지만 "충분히 엄격한 결과를 내지 못해" 최대 피해로 바꿨다고 적는다. 이론보다 플레이 결과로 커브를 고르는, "과학보다 예술"의 사례다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b>커브 하나는 consideration 하나의 점수만 만든다. 실제 행동에는 거리·체력·쿨다운 같은 consideration이 여럿 붙는다. 04장에서는 이 점수들을 하나로 합치는 방법(곱·평균·최솟값)과, 곱할수록 점수가 깎이는 문제를 IAUS의 보정식 <code>UAI.compensate</code>로 푸는 법을 다룬다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>David "Rez" Graham, "An Introduction to Utility Theory," <i>Game AI Pro</i>, Ch. 9. 식 9.2–9.8, 그림 9.6·9.8–9.11, 결투 데모.</li>
+    <li>Mike Lewis, "Choosing Effective Utility-Based Considerations," <i>Game AI Pro 3</i>, Ch. 13. bookend 예, Evade Dangerous Areas 곡선, 프리셋 팔레트와 advanced mode, 곡선 선택 체크리스트.</li>
+    <li>Bill Merrill, "Building Utility Decisions into Your Existing Behavior Tree," <i>Game AI Pro</i>, Ch. 10. 재장전에 cube()를 씌운 utility decorator.</li>
+    <li>Dave Mark, IAUS 매뉴얼(gameai.com/manuals), "Response Curve", "Input Parameters" 항목.</li>
+    <li>ProjectBorealis, IAUS 플러그인(Unreal Engine, GitHub) 소스 <code>IAUSResponseCurve.h</code>, <code>IAUSResponseCurve.cpp</code>(Sanitize).</li>
+    <li>Dave Mark, <i>Behavioral Mathematics for Game AI</i>, Charles River Media, 2009 (Graham 9장의 인용).</li>
+    <li>DeepBlue, "효용기반 의사결정 (Utility based Decision Making)," 네이버 블로그, 2015.</li>
+  </ul></div>
+</main>
+
+<script>
+/* ── 03장 순수 로직 (DOM 없음: node 검증 대상) ── */
+const CH3 = (function () {
+  // 타입별 파라미터: [이름, 의미, min, max, step]
+  const TYPES = {
+    linear:   { label: "선형 linear", def: { m: 1, b: 0, c: 0 }, p: { m: ["기울기", -3, 3, 0.05], b: ["수직 이동", -1, 2, 0.05], c: ["수평 이동", -1, 1, 0.05] } },
+    poly:     { label: "다항 poly", def: { m: 1, k: 2, b: 0, c: 0 }, p: { m: ["배율·방향", -3, 3, 0.05], k: ["지수", 0.1, 10, 0.05], b: ["수직 이동", -1, 2, 0.05], c: ["수평 이동", -1, 1.5, 0.05] } },
+    logistic: { label: "로지스틱 logistic", def: { m: 12, k: 1, b: 0, c: 0.5 }, p: { m: ["가파름(부호=방향)", -40, 40, 0.5], k: ["높이", -1.5, 1.5, 0.05], b: ["수직 이동", -1, 1, 0.05], c: ["변곡점", 0, 1, 0.01] } },
+    logit:    { label: "로짓 logit", def: { m: 1, b: 0, c: 0 }, p: { m: ["세기", -3, 3, 0.05], b: ["수직 이동", -1, 1, 0.05], c: ["수평 이동", -0.5, 0.5, 0.01] } },
+    normal:   { label: "종형 normal", def: { m: 1, k: 0.15, b: 0, c: 0.5 }, p: { m: ["높이", -1.5, 1.5, 0.05], k: ["폭 σ", 0.02, 0.6, 0.01], b: ["수직 이동", -1, 1, 0.05], c: ["봉우리 위치", 0, 1, 0.01] } },
+    sine:     { label: "사인 sine", def: { m: 1, k: 1, b: 0, c: 0 }, p: { m: ["진폭", -2, 2, 0.05], k: ["주기 수", 0.25, 4, 0.25], b: ["수직 이동", -1, 1, 0.05], c: ["위상", -0.5, 0.5, 0.01] } },
+    step:     { label: "스위치 step", def: { m: 1, c: 0.5 }, p: { m: ["방향(+1/−1)", -1, 1, 2], c: ["문턱", 0, 1, 0.01] } },
+    constant: { label: "상수 constant", def: { b: 0.5 }, p: { b: ["값", 0, 1, 0.01] } },
+  };
+  const KEYS = ["m", "k", "b", "c"];
+  const r4 = v => Math.round(v * 1e4) / 1e4;
+
+  // 에디터 상태 → 엔진 spec (그 타입이 쓰는 파라미터만)
+  function buildSpec(st) {
+    const spec = { type: st.type };
+    for (const key of KEYS) if (TYPES[st.type].p[key]) spec[key] = r4(st[key]);
+    if (st.invert) spec.invert = true;
+    return spec;
+  }
+  // 수식 문자열 (uai.js CURVES와 같은 식)
+  function formula(spec) {
+    const f = v => String(r4(v));
+    const s = Object.assign({ m: 1, k: 1, b: 0, c: 0 }, spec);
+    const t = {
+      linear: `y = ${f(s.m)}·(x − ${f(s.c)}) + ${f(s.b)}`,
+      poly: `y = ${f(s.m)}·(x − ${f(s.c)})^${f(s.k)} + ${f(s.b)}`,
+      logistic: `y = ${f(s.k)} / (1 + e^(−${f(s.m)}·(x − ${f(s.c)}))) + ${f(s.b)}`,
+      logit: `y = ${f(s.m)}·ln(z/(1−z))/5 + 0.5 + ${f(s.b)},  z = x − ${f(s.c)}`,
+      normal: `y = ${f(s.m)}·exp(−(x − ${f(s.c)})² / (2·${f(s.k)}²)) + ${f(s.b)}`,
+      sine: `y = ${f(s.m)}·0.5·sin(2π·${f(s.k)}·(x − ${f(s.c)})) + 0.5 + ${f(s.b)}`,
+      step: s.m >= 0 ? `y = (x ≥ ${f(s.c)}) ? 1 : 0` : `y = (x < ${f(s.c)}) ? 1 : 0`,
+      constant: `y = ${f(s.b)}`,
+    }[s.type];
+    return (spec.invert ? "x ← 1 − x;  " : "") + t + "  → clamp[0,1]";
+  }
+  // 체크리스트 진단: 방향·단조·끝점·0점 구간·비유한값
+  function analyze(fn) {
+    const N = 200, ys = [];
+    for (let i = 0; i <= N; i++) ys.push(fn(i / N));
+    let up = false, down = false;
+    for (let i = 1; i <= N; i++) { const d = ys[i] - ys[i - 1]; if (d > 1e-9) up = true; if (d < -1e-9) down = true; }
+    const zeros = ys.filter(y => y <= 0).length / ys.length;
+    return {
+      dir: up && !down ? "증가" : down && !up ? "감소" : up && down ? "오르내림" : "평탄",
+      monotonic: !(up && down), y0: ys[0], y1: ys[N], zeros,
+      nonFinite: ys.some(y => !Number.isFinite(y)),
+      maxSlope: Math.max(...ys.slice(1).map((y, i) => Math.abs(y - ys[i]) * N)),
+    };
+  }
+
+  // ProjectBorealis IAUSResponseCurve.h 수식 (비교용 재구현, 엔진에는 없음)
+  const sanitize = y => (!Number.isFinite(y) ? 0 : y < 0 ? 0 : y > 1 ? 1 : y);
+  function pb(type, P) {
+    const { Slope, Exponent, XShift, YShift } = P;
+    const F = {
+      linear: x => Slope * (x - XShift) + YShift,
+      poly: x => Slope * Math.pow(x - XShift, Exponent) + YShift,
+      logistic: x => Slope / (1 + Math.exp(-10 * Exponent * (x - 0.5 - XShift))) + YShift,
+      logit: x => Slope * Math.log((x - XShift) / (1 - (x - XShift))) / 5 + 0.5 + YShift,
+      normal: x => Slope * Math.exp(-30 * Exponent * (x - XShift - 0.5) * (x - XShift - 0.5)) + YShift,
+      sine: x => 0.5 * Slope * Math.sin(2 * Math.PI * (x - XShift)) + 0.5 + YShift,
+    }[type];
+    return x => sanitize(F(x));
+  }
+  // 이름만 맞춘 대응 (m→Slope, k→Exponent, c→XShift, b→YShift)
+  const pbNaive = p => ({ Slope: p.m, Exponent: p.k, XShift: p.c, YShift: p.b });
+  // 의미를 맞춘 번역 (uai.js와 같은 커브가 되도록)
+  function pbTranslate(type, p) {
+    if (type === "logistic") return { Slope: p.k, Exponent: p.m / 10, XShift: p.c - 0.5, YShift: p.b };
+    if (type === "normal") return { Slope: p.m, Exponent: 1 / (60 * p.k * p.k), XShift: p.c - 0.5, YShift: p.b };
+    return pbNaive(p);
+  }
+
+  // Graham 결투 데모 (GAP1 9장 식 9.5~9.8)
+  const G = {
+    attack(hp, a, mn, mx, literal) {
+      let f = (hp - mn) / (mx - mn);
+      if (!literal) f = Math.min(Math.max(f, 0), 1); // 그림 9.8 형태
+      return Math.max(Math.min((1 - f) * (1 - a) + a, 1), 0);
+    },
+    threat: (hp, mx) => Math.min(mx / hp, 1),
+    health: (hp, maxHp) => 1 - 1 / (1 + Math.pow(Math.E * 0.68, -(hp / maxHp) * 12 + 6)),
+    run: (hp, maxHp, p) => 1 - Math.pow(hp / maxHp, (1 / Math.pow(p + 1, 4)) * 0.25),
+    scores(s) {
+      const th = G.threat(s.hp, s.maxDmg);
+      return {
+        attack: G.attack(s.oppHp, s.a, s.minDmg, s.maxDmg, s.literal),
+        heal: s.p > 0 ? G.health(s.hp, s.maxHp) * th : 0,
+        run: G.run(s.hp, s.maxHp, s.p) * th,
+      };
+    },
+  };
+
+  // 8절: 세 주민
+  const VILLAGERS = [
+    { name: "은솔", trait: "겁쟁이", color: "--violet", spec: { type: "logistic", m: -10, k: 1, c: 0.75 } },
+    { name: "보람", trait: "보통", color: "--accent", spec: "선형 감소" },
+    { name: "찬", trait: "용감", color: "--teal", spec: { type: "poly", m: 1, k: 4, invert: true } },
+  ];
+  const FLEE = { lo: 0, hi: 14, busy: 0.45 };
+  const fleeScore = (v, d) => UAI.curve(v.spec)(UAI.normalize(d, FLEE.lo, FLEE.hi));
+
+  // 7절: 배고픔 커브
+  const FIG96 = [[0, 1], [0.1, 1], [0.25, 0.77], [0.4, 0.22], [0.6, 0.06], [0.8, 0], [1, 0]]; // 그림 9.6 눈대중 근삿값
+  const NAIVE_HUNGER = { type: "poly", m: 1, k: 2, invert: true };
+  function hungerChecks(points) {
+    const f = UAI.curve({ type: "piecewise", points });
+    let fullMax = 0;
+    for (let x = 0.9; x <= 1.0000001; x += 0.005) fullMax = Math.max(fullMax, f(x));
+    let mono = true, steep = 0;
+    for (let i = 1; i < points.length; i++) {
+      const dy = points[i][1] - points[i - 1][1], dx = points[i][0] - points[i - 1][0];
+      if (dy > 1e-9) mono = false;
+      if (dx > 0) steep = Math.min(steep, dy / dx);
+    }
+    return [
+      { ok: f(0) >= 0.95, text: `굶주릴 때(x = 0) 최우선: f(0) ≥ 0.95  (지금 ${f(0).toFixed(2)})` },
+      { ok: fullMax <= 0.02, text: `거의 배부를 때(x ≥ 0.9) 사실상 무시: max ≤ 0.02  (지금 ${fullMax.toFixed(3)})` },
+      { ok: mono, text: "배부를수록 덜 급하다: 단조 감소" },
+      { ok: steep <= -2, text: `"갑자기 매우 배고픔": 기울기 ≤ −2인 구간  (가장 가파른 기울기 ${steep.toFixed(2)})` },
+    ];
+  }
+
+  return { TYPES, KEYS, buildSpec, formula, analyze, pb, pbNaive, pbTranslate, sanitize, G, VILLAGERS, FLEE, fleeScore, FIG96, NAIVE_HUNGER, hungerChecks, r4 };
+})();
+</script>
+<script>
+/* ── 03장 위젯 (DOM) ── */
+(function () {
+  const $ = id => document.getElementById(id);
+  const fmt = (v, d) => (Number.isFinite(v) ? MM.fmt(v, d == null ? 2 : d) : String(v));
+  const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const PX = x => 30 + x * 200, PY = y => 10 + (1 - y) * 160; // MM.plotCurve 좌표계
+  function copyText(text, ta, msgEl) {
+    const done = () => { msgEl.textContent = "복사됨"; setTimeout(() => (msgEl.textContent = ""), 1500); };
+    try {
+      navigator.clipboard.writeText(text).then(done, () => { ta.select(); document.execCommand("copy"); done(); });
+    } catch (e) { ta.select(); try { document.execCommand("copy"); done(); } catch (e2) {} }
+  }
+  // 슬라이더 묶음: defs = {key: [label, min, max, step]}
+  function sliderGrid(el, onInput) {
+    const rows = {};
+    for (const key of CH3.KEYS) {
+      const lab = MM.el("div", { class: "pname" }, key);
+      const inp = MM.el("input", { type: "range" });
+      const out = MM.el("output");
+      inp.addEventListener("input", () => { out.textContent = fmt(+inp.value); onInput(key, +inp.value); });
+      el.append(lab, inp, out);
+      rows[key] = { lab, inp, out };
+    }
+    return {
+      config(defs, values) {
+        for (const key of CH3.KEYS) {
+          const r = rows[key], d = defs[key];
+          [r.lab, r.inp, r.out].forEach(e => e.classList.toggle("hide", !d));
+          if (!d) continue;
+          let [label, mn, mx, st] = d;
+          const v = values[key];
+          if (v < mn) mn = v; if (v > mx) mx = v; // 프리셋이 범위 밖이면 범위 확장
+          r.lab.innerHTML = `${key}<small>${label}</small>`;
+          r.inp.min = mn; r.inp.max = mx; r.inp.step = st; r.inp.value = v;
+          r.out.textContent = fmt(v);
+        }
+      },
+    };
+  }
+
+  /* ───── 갤러리 (3절) ───── */
+  const GAL = [
+    ["선형", "(9.2) U = x/m", "선형 증가"],
+    ["2차 k=2", "(9.3) U = (x/m)²", "2차 증가 (x²)"],
+    ["회전 2차 k=0.333", "(9.3) 0<k<1", { type: "poly", m: 1, k: 0.333 }],
+    ["3차 지연", "Merrill: cube()", "3차 지연 (x³)"],
+    ["로지스틱", "(9.4) x∈[−10,10]→[0,1]", { type: "logistic", m: 20, k: 1, c: 0.5 }],
+    ["로짓", "IAUS Logit", "로짓"],
+    ["종형", "역U: 적정값", "종형 (적정값)"],
+    ["사인", "주기적 선호", { type: "sine", m: 1, k: 1 }],
+    ["스위치", "x ≥ 0.5 → 1", "스위치 (≥0.5)"],
+    ["구간 선형", "NEED_CURVE.hunger", UAI.NEED_CURVE.hunger],
+    ["회피 1−(x−1)⁴", "Lewis: 위험도", "회피: 1−(x−1)⁴"],
+    ["cooldown x⁵", "Lewis: 끝 무렵 급등", "cooldown: x⁵"],
+  ];
+  const gal = $("gallery"), galPlots = [];
+  for (const [name, note, spec] of GAL) {
+    const box = MM.el("div", { class: "g-item" });
+    const shown = typeof spec === "string" ? `"${spec}"` : spec.type === "piecewise" ? "piecewise points×5" : JSON.stringify(spec).replace(/"(\w+)":/g, "$1:");
+    box.innerHTML = `<b>${esc(name)}</b><small>${esc(note)}<br>${esc(shown)}</small>`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    box.prepend(svg);
+    gal.append(box);
+    galPlots.push(MM.plotCurve(svg, UAI.curve(spec)));
+  }
+
+  /* ───── 파이프라인 (2절) ───── */
+  const pp = { d: 25, lo: 0, hi: 100, curve: "로지스틱 감소" };
+  function ppRender(stepI) {
+    const x = UAI.normalize(pp.d, pp.lo, pp.hi);
+    const fn = UAI.curve(pp.curve), y = fn(x);
+    $("pp-dv").textContent = pp.d + " m";
+    $("pp-t0").textContent = pp.d + " m";
+    $("pp-range").textContent = `[${pp.lo}, ${pp.hi}] → [0, 1]`;
+    $("pp-t1").textContent = "x = " + fmt(x);
+    const raw = pp.hi === pp.lo ? 0 : (pp.d - pp.lo) / (pp.hi - pp.lo);
+    $("pp-clamp").textContent = raw > 1 ? `원래 ${fmt(raw)} → 1로 clamp` : raw < 0 ? `원래 ${fmt(raw)} → 0으로 clamp` : `(${pp.d} − ${pp.lo}) / (${pp.hi} − ${pp.lo})`;
+    $("pp-t3").textContent = fmt(y);
+    // 미니 커브 (120×80)
+    let d = "";
+    for (let i = 0; i <= 60; i++) { const xx = i / 60; d += (i ? "L" : "M") + (xx * 120).toFixed(1) + "," + ((1 - fn(xx)) * 80).toFixed(1); }
+    $("pp-mini").innerHTML = `<line class="mini-ax" x1="0" y1="80" x2="120" y2="80"/><line class="mini-ax" x1="0" y1="0" x2="0" y2="80"/>
+      <path class="mini" d="${d}"/><line x1="${x * 120}" y1="80" x2="${x * 120}" y2="${(1 - y) * 80}" style="stroke:var(--warn);stroke-dasharray:3 3"/>
+      <circle cx="${x * 120}" cy="${(1 - y) * 80}" r="4" style="fill:var(--warn)"/>
+      <text x="60" y="94" text-anchor="middle" class="muted" style="font-size:10.5px">${esc(pp.curve)}</text>`;
+    for (let i = 0; i < 4; i++) $("pp-b" + i).classList.toggle("hl", i === stepI);
+    const caps = [
+      `① 게임이 아는 원시 값: 대상까지 <b>${pp.d} m</b>. 단위(미터)와 범위가 행동마다 제각각이다.`,
+      `② bookend [${pp.lo}, ${pp.hi}]로 정규화: <code>UAI.normalize(${pp.d}, ${pp.lo}, ${pp.hi})</code> = <b>${fmt(x)}</b>${raw > 1 || raw < 0 ? " (범위 밖이라 끝값에 고정)" : ""}.`,
+      `③ 반응 커브 "${esc(pp.curve)}"를 통과: <code>UAI.curve("${esc(pp.curve)}")(${fmt(x)})</code> = <b>${fmt(y)}</b>. 가까울수록 좋다는 판단이 커브 모양에 담겨 있다.`,
+      `④ 이 consideration의 점수는 <b>${fmt(y)}</b>. 같은 행동의 다른 consideration 점수와 곱해진다(<a class="xref" href="04-considerations.html">04장</a>).`,
+    ];
+    return caps[stepI];
+  }
+  const ppStep = MM.stepper($("pp-step"), { steps: 4, interval: 1600, render: i => ppRender(i) });
+  $("pp-d").addEventListener("input", e => { pp.d = +e.target.value; ppStep.refresh(); });
+  $("pp-lo").addEventListener("input", e => { pp.lo = +e.target.value || 0; ppStep.refresh(); });
+  $("pp-hi").addEventListener("input", e => { pp.hi = +e.target.value || 0; ppStep.refresh(); });
+  $("pp-curve").addEventListener("change", e => { pp.curve = e.target.value; ppStep.refresh(); });
+
+  /* ───── 비교 위젯 (5절) ───── */
+  const CMP_TYPES = ["linear", "poly", "logistic", "logit", "normal", "sine"];
+  const cm = { type: "logistic", m: 12, k: 1, b: 0, c: 0.5, tr: false };
+  const cmSel = $("cm-type");
+  CMP_TYPES.forEach(t => cmSel.append(MM.el("option", { value: t }, CH3.TYPES[t].label)));
+  const cmPlot = MM.plotCurve($("cm-plot"), x => 0, { xLabel: "x" });
+  const cmGrid = sliderGrid($("cm-sliders"), (k, v) => { cm[k] = v; cmDraw(); });
+  function cmAllDefs(t) { // 비교 위젯은 PB 대응을 보여 주려고 4개 모두 표시
+    const d = Object.assign({}, CH3.TYPES[t].p);
+    if (!d.k) d.k = ["(uai.js 미사용)", 0, 5, 0.05];
+    return d;
+  }
+  function cmDraw() {
+    const p = { m: cm.m, k: cm.k, b: cm.b, c: cm.c };
+    const eng = UAI.curve(Object.assign({ type: cm.type }, p));
+    const P = cm.tr ? CH3.pbTranslate(cm.type, p) : CH3.pbNaive(p);
+    const pbf = CH3.pb(cm.type, P);
+    cmPlot.opts.extra = [{ fn: pbf, color: "--warn", dash: true }];
+    cmPlot.update(eng);
+    $("cm-pb").innerHTML = `PB: Slope=${fmt(P.Slope, 3)}, Exponent=${fmt(P.Exponent, 3)}, XShift=${fmt(P.XShift, 3)}, YShift=${fmt(P.YShift, 3)}` +
+      (cm.tr && cm.type === "sine" && cm.k !== 1 ? `<br><span class="c-bad">k=${fmt(cm.k)}: PB Sine에는 진동수 파라미터가 없어 번역 불가</span>` : "");
+    let h = `<tr><th>x</th>`, r1 = `<tr><td>uai.js</td>`, r2 = `<tr><td>PB</td>`;
+    for (const x of [0, 0.25, 0.5, 0.75, 1]) {
+      const a = eng(x), b = pbf(x), diff = Math.abs(a - b) > 0.005;
+      h += `<th class="num">${x}</th>`; r1 += `<td class="num">${fmt(a)}</td>`; r2 += `<td class="num ${diff ? "hi" : ""}">${fmt(b)}</td>`;
+    }
+    $("cm-tbl").innerHTML = h + "</tr>" + r1 + "</tr>" + r2 + "</tr>";
+  }
+  function cmLoad(spec) {
+    const s = typeof spec === "string" ? UAI.PRESETS[spec] : spec;
+    Object.assign(cm, { m: 1, k: 1, b: 0, c: 0 }, s);
+    cmSel.value = cm.type;
+    cmGrid.config(cmAllDefs(cm.type), cm);
+    cmDraw();
+  }
+  cmSel.addEventListener("change", () => cmLoad(Object.assign({ type: cmSel.value }, CH3.TYPES[cmSel.value].def)));
+  $("cm-tr").addEventListener("change", e => { cm.tr = e.target.checked; cmDraw(); });
+  for (const name of ["로지스틱 중앙", "종형 (적정값)", "로짓", "2차 감소 (1−x²)"]) {
+    const b = MM.el("button", { class: "btn" }, esc(name));
+    b.onclick = () => cmLoad(name);
+    $("cm-presets").append(b);
+  }
+  cmLoad("로지스틱 중앙");
+
+  /* ───── 커브 에디터 (6절) ───── */
+  const ed = { type: "logistic", m: 12, k: 1, b: 0, c: 0.5, invert: false, x: 0.3, preset: "로지스틱 중앙" };
+  const edSel = $("ed-type");
+  Object.keys(CH3.TYPES).forEach(t => edSel.append(MM.el("option", { value: t }, CH3.TYPES[t].label)));
+  const edPlot = MM.plotCurve($("ed-plot"), x => 0, { marker: ed.x, xLabel: "입력 x", yLabel: "효용" });
+  const edGrid = sliderGrid($("ed-sliders"), (k, v) => { ed[k] = v; ed.preset = null; edDraw(); });
+  const presetBtns = {};
+  for (const name of Object.keys(UAI.PRESETS)) {
+    const b = MM.el("button", { class: "btn" }, esc(name));
+    b.onclick = () => edLoad(UAI.PRESETS[name], name);
+    presetBtns[name] = b;
+    $("ed-presets").append(b);
+  }
+  function edLoad(spec, presetName) {
+    Object.assign(ed, { m: 1, k: 1, b: 0, c: 0 }, spec, { invert: !!spec.invert, preset: presetName || null });
+    edSel.value = ed.type;
+    $("ed-inv").checked = ed.invert;
+    edGrid.config(CH3.TYPES[ed.type].p, ed);
+    edDraw();
+  }
+  function edDraw() {
+    const spec = CH3.buildSpec(ed);
+    const fn = UAI.curve(spec);
+    edPlot.update(fn, ed.x);
+    const y = fn(ed.x);
+    $("ed-xv").textContent = fmt(ed.x); $("ed-sx").textContent = fmt(ed.x); $("ed-sy").textContent = fmt(y, 3);
+    $("ed-formula").textContent = CH3.formula(spec);
+    const json = JSON.stringify(spec);
+    $("ed-json").value = json;
+    const a = CH3.analyze(fn), chips = [];
+    chips.push(`<span>방향: ${a.dir}</span>`);
+    chips.push(`<span class="${a.monotonic ? "" : "w"}">단조: ${a.monotonic ? "예" : "아니오"}</span>`);
+    chips.push(`<span>f(0) = ${fmt(a.y0)}</span><span>f(1) = ${fmt(a.y1)}</span>`);
+    if (a.zeros >= 0.02) chips.push(`<span class="bad">0점 구간 ${Math.round(a.zeros * 100)}% → 곱셈 결합에서 거부권</span>`);
+    else if (a.zeros > 0) chips.push(`<span class="bad">끝점에서 0 → 그 입력에서 거부권</span>`);
+    if (Math.max(a.y0, a.y1) < 0.98 && a.monotonic && spec.type !== "constant") chips.push(`<span class="w">최고 끝점이 1 미만</span>`);
+    if (a.maxSlope > 15 && spec.type !== "step") chips.push(`<span class="w">최대 기울기 ${fmt(a.maxSlope, 0)}: 입력 변화에 민감</span>`);
+    $("ed-diag").innerHTML = chips.join("");
+    $("ed-samples").textContent = "샘플 x=0,.25,.5,.75,1 → " + [0, 0.25, 0.5, 0.75, 1].map(v => fmt(fn(v))).join(", ");
+    for (const n in presetBtns) presetBtns[n].classList.toggle("on", n === ed.preset);
+  }
+  edSel.addEventListener("change", () => edLoad(Object.assign({ type: edSel.value }, CH3.TYPES[edSel.value].def, { invert: ed.invert })));
+  $("ed-inv").addEventListener("change", e => { ed.invert = e.target.checked; ed.preset = null; edDraw(); });
+  $("ed-x").addEventListener("input", e => { ed.x = +e.target.value; edDraw(); });
+  $("ed-copy").onclick = () => copyText($("ed-json").value, $("ed-json"), $("ed-copied"));
+  edLoad(UAI.PRESETS["로지스틱 중앙"], "로지스틱 중앙");
+
+  /* ───── 구간 선형 에디터 (7절) ───── */
+  const START = [[0, 1], [0.5, 0.5], [1, 0]];
+  let pts = START.map(p => p.slice()), sel = 1, drag = null, pwX = 0.9, lastDown = null;
+  const pwSvg = $("pw-plot");
+  const naive = UAI.curve(CH3.NAIVE_HUNGER);
+  const pwPlot = MM.plotCurve(pwSvg, x => 0, { xLabel: "포만도 x", yLabel: "먹기 긴급도", extra: [{ fn: naive, color: "--muted", dash: true }] });
+  function pwDraw() {
+    const spec = { type: "piecewise", points: pts };
+    const fn = UAI.curve(spec);
+    pwPlot.update(fn, pwX);
+    let h = "";
+    pts.forEach((p, i) => {
+      const fixed = i === 0 || i === pts.length - 1;
+      h += `<circle class="pt ${i === sel ? "sel" : ""} ${fixed ? "fixed" : ""}" data-i="${i}" cx="${PX(p[0])}" cy="${PY(p[1])}" r="6"/>`;
+    });
+    pwSvg.insertAdjacentHTML("beforeend", h);
+    $("pw-xv").textContent = fmt(pwX);
+    $("pw-y").textContent = fmt(fn(pwX), 3);
+    $("pw-y2").textContent = fmt(naive(pwX), 4);
+    $("pw-json").value = JSON.stringify(spec);
+    $("pw-checks").innerHTML = CH3.hungerChecks(pts).map(c => `<li class="${c.ok ? "pass" : "fail"}">${esc(c.text)}</li>`).join("");
+  }
+  function toUnit(e) {
+    const pt = pwSvg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const p = pt.matrixTransform(pwSvg.getScreenCTM().inverse());
+    return [Math.min(1, Math.max(0, (p.x - 30) / 200)), Math.min(1, Math.max(0, 1 - (p.y - 10) / 160))];
+  }
+  const q = v => Math.round(v * 100) / 100;
+  function movePt(i, ux, uy) {
+    let x = ux;
+    if (i === 0) x = 0; else if (i === pts.length - 1) x = 1;
+    else x = Math.min(pts[i + 1][0] - 0.01, Math.max(pts[i - 1][0] + 0.01, x));
+    pts[i] = [q(x), q(uy)];
+  }
+  function addPt(ux, uy) {
+    if (pts.some(p => Math.abs(p[0] - ux) < 0.02)) return;
+    pts.push([q(ux), q(uy)]); pts.sort((a, b) => a[0] - b[0]);
+    sel = pts.findIndex(p => p[0] === q(ux));
+  }
+  function delPt(i) { if (i > 0 && i < pts.length - 1) { pts.splice(i, 1); sel = Math.min(sel, pts.length - 2); } }
+  pwSvg.addEventListener("pointerdown", e => {
+    const i = e.target.dataset && e.target.dataset.i;
+    lastDown = i == null ? null : +i; // dblclick은 포인터 캡처 때문에 svg로 재지정되므로 여기서 기억
+    if (i == null) return;
+    drag = +i; sel = drag; pwSvg.setPointerCapture(e.pointerId); e.preventDefault(); pwDraw();
+  });
+  pwSvg.addEventListener("pointermove", e => { if (drag == null) return; const [ux, uy] = toUnit(e); movePt(drag, ux, uy); pwDraw(); });
+  const endDrag = () => { drag = null; };
+  pwSvg.addEventListener("pointerup", endDrag); pwSvg.addEventListener("pointercancel", endDrag);
+  pwSvg.addEventListener("dblclick", e => {
+    if (lastDown != null) delPt(lastDown); else { const [ux, uy] = toUnit(e); addPt(ux, uy); }
+    pwDraw();
+  });
+  $("pw-add").onclick = () => { // 가장 넓은 구간의 가운데에 추가
+    let w = 0, at = 1;
+    for (let i = 1; i < pts.length; i++) if (pts[i][0] - pts[i - 1][0] > w) { w = pts[i][0] - pts[i - 1][0]; at = i; }
+    const mx = (pts[at][0] + pts[at - 1][0]) / 2;
+    addPt(mx, UAI.piecewise(pts)(mx)); pwDraw();
+  };
+  $("pw-del").onclick = () => { delPt(sel); pwDraw(); };
+  $("pw-reset").onclick = () => { pts = START.map(p => p.slice()); sel = 1; pwDraw(); };
+  $("pw-eng").onclick = () => { pts = UAI.NEED_CURVE.hunger.points.map(p => p.slice()); sel = 1; pwDraw(); };
+  $("pw-fig").onclick = () => { pts = CH3.FIG96.map(p => p.slice()); sel = 1; pwDraw(); };
+  $("pw-x").addEventListener("input", e => { pwX = +e.target.value; pwDraw(); });
+  $("pw-copy").onclick = () => copyText($("pw-json").value, $("pw-json"), $("pw-copied"));
+  pwDraw();
+
+  /* ───── 늑대와 세 주민 (8절) ───── */
+  const V = CH3.VILLAGERS, wolf = { d: 12, anim: null, fleeing: V.map(() => false) };
+  const LANE_Y = [40, 104, 168], WX = d => 120 + d * 35;
+  const fns = V.map(v => UAI.curve(v.spec));
+  function wolfSvg() {
+    let h = "";
+    V.forEach((v, i) => {
+      h += `<rect class="lane" id="wf-lane${i}" x="6" y="${LANE_Y[i] - 28}" width="628" height="56" rx="10"/>`;
+      h += `<g class="vill" id="wf-v${i}"><text class="emo" x="62" y="${LANE_Y[i] + 10}" text-anchor="middle" id="wf-e${i}">🧑</text></g>`;
+      h += `<text x="16" y="${LANE_Y[i] - 10}" style="font-weight:700;font-size:12.5px">${v.name}</text><text x="16" y="${LANE_Y[i] + 6}" class="muted" style="font-size:11.5px">${v.trait}</text>`;
+    });
+    for (let t = 0; t <= 14; t += 2) h += `<line class="tick" x1="${WX(t)}" y1="200" x2="${WX(t)}" y2="206"/><text x="${WX(t)}" y="220" text-anchor="middle" class="muted" style="font-size:11px">${t}</text>`;
+    h += `<line class="tick" x1="${WX(0)}" y1="200" x2="${WX(14)}" y2="200"/><text x="${WX(14) + 8}" y="220" class="muted" style="font-size:11px">칸</text>`;
+    h += `<g id="wf-wolf" style="transition:transform .08s linear"><text class="emo" x="0" y="${LANE_Y[1] + 10}" text-anchor="middle" style="font-size:34px">🐺</text></g>`;
+    $("wf-svg").innerHTML = h;
+  }
+  wolfSvg();
+  $("wf-rows").innerHTML = V.map((v, i) => `<div class="vrow"><span><b>${v.name}</b> <small style="color:var(--muted)">${v.trait}</small></span><div class="bar"><i id="wf-bar${i}" style="background:var(${v.color})"></i></div><span class="num" id="wf-s${i}">0</span><span class="act" id="wf-a${i}">식사 중</span></div>`).join("");
+  const wfPlot = MM.plotCurve($("wf-plot"), fns[1], { color: "--accent", xLabel: "x = 거리 / 14", yLabel: "도망 점수", extra: [{ fn: fns[0], color: "--violet" }, { fn: fns[2], color: "--teal" }] });
+  function wolfDraw(logChange) {
+    const d = wolf.d, x = UAI.normalize(d, CH3.FLEE.lo, CH3.FLEE.hi);
+    $("wf-dv").textContent = d.toFixed(1) + "칸";
+    $("wf-wolf").setAttribute("transform", `translate(${WX(d)},0)`);
+    wfPlot.update(fns[1]);
+    let over = `<line x1="${PX(0)}" y1="${PY(CH3.FLEE.busy)}" x2="${PX(1)}" y2="${PY(CH3.FLEE.busy)}" style="stroke:var(--muted);stroke-dasharray:5 3"/>`;
+    over += `<line x1="${PX(x)}" y1="${PY(0)}" x2="${PX(x)}" y2="${PY(1)}" style="stroke:var(--warn);stroke-dasharray:3 3"/>`;
+    V.forEach((v, i) => {
+      const s = CH3.fleeScore(v, d), flee = s > CH3.FLEE.busy;
+      over += `<circle cx="${PX(x)}" cy="${PY(s)}" r="4.5" style="fill:var(${v.color})"/>`;
+      $("wf-bar" + i).style.width = (s * 100) + "%";
+      $("wf-s" + i).textContent = fmt(s);
+      $("wf-a" + i).textContent = flee ? "🏃 도망!" : s > 0.2 ? "👀 경계하며 식사" : "🍞 식사 중";
+      $("wf-a" + i).className = "act " + (flee ? "c-bad" : s > 0.2 ? "c-warn" : "c-ok");
+      $("wf-lane" + i).classList.toggle("flee", flee);
+      $("wf-v" + i).setAttribute("transform", flee ? "translate(-30,0)" : "translate(0,0)");
+      $("wf-e" + i).textContent = flee ? "🏃" : "🧑";
+      if (logChange && flee !== wolf.fleeing[i]) {
+        const L = $("wf-log");
+        L.textContent += `거리 ${d.toFixed(1)}칸: ${v.name}(${v.trait}) ${flee ? "도망 시작" : "다시 식사"} (점수 ${fmt(s)} ${flee ? ">" : "≤"} 0.45)\n`;
+        L.scrollTop = L.scrollHeight;
+      }
+      wolf.fleeing[i] = flee;
+    });
+    $("wf-plot").insertAdjacentHTML("beforeend", over);
+  }
+  function wolfStop() { if (wolf.anim) cancelAnimationFrame(wolf.anim); wolf.anim = null; $("wf-play").textContent = "▶ 늑대 접근"; }
+  $("wf-d").addEventListener("input", e => { wolfStop(); wolf.d = +e.target.value; wolfDraw(true); });
+  $("wf-play").onclick = () => {
+    if (wolf.anim) return wolfStop();
+    if (wolf.d <= 0.05) { wolf.d = 14; wolfDraw(true); }
+    $("wf-play").textContent = "⏸ 멈춤";
+    let last = null;
+    const stepFn = t => {
+      if (last != null) wolf.d = Math.max(0, wolf.d - ((t - last) / 1000) * 2.4); // 초당 2.4칸
+      last = t;
+      $("wf-d").value = wolf.d; wolfDraw(true);
+      if (wolf.d <= 0) return wolfStop();
+      wolf.anim = requestAnimationFrame(stepFn);
+    };
+    wolf.anim = requestAnimationFrame(stepFn);
+  };
+  $("wf-reset").onclick = () => { wolfStop(); wolf.d = 14; $("wf-d").value = 14; $("wf-log").textContent = ""; wolfDraw(true); };
+  wolfDraw(false);
+
+  /* ───── Graham 결투 (9절) ───── */
+  const du = { hp: 45, oppHp: 40, maxHp: 100, a: 0.6, p: 3, minDmg: 10, maxDmg: 30, literal: false };
+  const DU_DEFS = [["hp", "내 hp", 1, 100, 1], ["oppHp", "상대 hp", 1, 100, 1], ["a", "공격성 a", 0, 1, 0.05], ["p", "물약 p", 0, 3, 1], ["minDmg", "minDmg", 0, 50, 1], ["maxDmg", "maxDmg", 1, 60, 1]];
+  const duWrap = $("du-sliders");
+  for (const [key, label, mn, mx, st] of DU_DEFS) {
+    const inp = MM.el("input", { type: "range", min: mn, max: mx, step: st, value: du[key] }), out = MM.el("output", null, String(du[key]));
+    inp.addEventListener("input", () => { du[key] = +inp.value; out.textContent = inp.value; duDraw(); });
+    duWrap.append(MM.el("div", { class: "pname" }, label), inp, out);
+  }
+  const G = CH3.G;
+  const duPlot = MM.plotCurve($("du-plot"), x => 0, { xLabel: "hp / maxHp", color: "--ok" });
+  function duDraw() {
+    const s = du;
+    const att = x => G.attack(x * s.maxHp, s.a, s.minDmg, Math.max(s.maxDmg, s.minDmg + 1), s.literal);
+    const thr = x => G.threat(x * s.maxHp, s.maxDmg);
+    const hea = x => G.health(x * s.maxHp, s.maxHp);
+    const run = x => G.run(x * s.maxHp, s.maxHp, s.p);
+    duPlot.opts.extra = [{ fn: att, color: "--bad" }, { fn: thr, color: "--warn" }, { fn: run, color: "--violet" }];
+    duPlot.update(hea);
+    const xm = s.hp / s.maxHp, xo = s.oppHp / s.maxHp;
+    $("du-plot").insertAdjacentHTML("beforeend",
+      `<line x1="${PX(xm)}" y1="${PY(0)}" x2="${PX(xm)}" y2="${PY(1)}" style="stroke:var(--text);stroke-dasharray:3 3"/><text x="${PX(xm) + 3}" y="${PY(1) + 10}" style="fill:var(--text);font-size:10px">내 hp</text>` +
+      `<line x1="${PX(xo)}" y1="${PY(0)}" x2="${PX(xo)}" y2="${PY(1)}" style="stroke:var(--bad);stroke-dasharray:2 4"/><text x="${PX(xo) + 3}" y="${PY(1) + 22}" style="fill:var(--bad);font-size:10px">상대 hp</text>` +
+      [[att(xo), xo, "--bad"], [thr(xm), xm, "--warn"], [hea(xm), xm, "--ok"], [run(xm), xm, "--violet"]].map(([y, x, c]) => `<circle cx="${PX(x)}" cy="${PY(y)}" r="4" style="fill:var(${c})"/>`).join(""));
+    const sc = G.scores(Object.assign({}, s, { maxDmg: Math.max(s.maxDmg, s.minDmg + 1) }));
+    const cands = [{ id: "공격", score: sc.attack, cls: "bad" }, { id: "회복", score: sc.heal, cls: "ok" }, { id: "도주", score: sc.run, cls: "violet" }];
+    const res = UAI.select(cands, { strategy: "weighted" });
+    const prob = c => { const e = res.pool.find(q => q.cand === c); return e ? e.p : 0; };
+    const fac = `Threat=${fmt(G.threat(s.hp, s.maxDmg))} · Health=${fmt(G.health(s.hp, s.maxHp))} · Run=${fmt(G.run(s.hp, s.maxHp, s.p))}`;
+    $("du-scores").innerHTML = `<div class="num" style="font-size:12.5px;color:var(--muted);margin:6px 0">${fac}</div>` + cands.map(c =>
+      `<div class="vrow" style="grid-template-columns:3.5em minmax(0,1fr) 3.4em 4.6em"><b>${c.id}</b><div class="bar ${c.cls}"><i style="width:${prob(c) * 100}%"></i></div><span class="num">${fmt(c.score)}</span><span class="num">${MM.pct(prob(c))}</span></div>`).join("") +
+      `<div style="font-size:12.5px;color:var(--muted)">막대 = 선택 확률 (점수 / 점수 합). 숫자: 점수, 확률</div>`;
+    duDraw.cands = cands;
+  }
+  $("du-lit").addEventListener("change", e => { du.literal = e.target.checked; duDraw(); });
+  let duSeed = 1;
+  $("du-roll").onclick = () => {
+    const rng = UAI.rng(duSeed++), cnt = { 공격: 0, 회복: 0, 도주: 0 };
+    for (let i = 0; i < 100; i++) { const r = UAI.select(duDraw.cands, { strategy: "weighted" }, rng); if (r.chosen) cnt[r.chosen.id]++; }
+    $("du-rollv").textContent = `시드 ${duSeed - 1}: 공격 ${cnt.공격} · 회복 ${cnt.회복} · 도주 ${cnt.도주}`;
+  };
+  duDraw();
+
+  /* ───── 함정 표 (11절) ───── */
+  (function () {
+    const xs = [0.5, 0.8, 0.9, 0.95, 0.99];
+    let h = `<tr><th>x</th>${xs.map(x => `<th class="num">${x}</th>`).join("")}</tr>`;
+    for (const k of [2, 6, 10]) {
+      const f = UAI.curve({ type: "poly", m: 1, k });
+      h += `<tr><td class="mono">x^${k}</td>${xs.map(x => `<td class="num">${fmt(f(x), 3)}</td>`).join("")}</tr>`;
+    }
+    $("sens-tbl").innerHTML = h;
+    const S = { type: "poly", m: -1, k: 0.5, b: 1, c: 0.5 };
+    const eng = UAI.curve(S), pbf = CH3.pb("poly", CH3.pbNaive(Object.assign({ m: 1, k: 1, b: 0, c: 0 }, S)));
+    const naiveRaw = x => -1 * Math.pow(x - 0.5, 0.5) + 1;
+    const nx = [0.2, 0.4, 0.5, 0.6, 0.9];
+    let g = `<tr><th>방식</th>${nx.map(x => `<th class="num">x=${x}</th>`).join("")}</tr>`;
+    g += `<tr><td>순진한 JS <code>m*Math.pow(x−c,k)+b</code></td>${nx.map(x => { const v = naiveRaw(x); return `<td class="num ${Number.isNaN(v) ? "vt" : ""}">${Number.isNaN(v) ? "NaN" : fmt(v, 3)}</td>`; }).join("")}</tr>`;
+    g += `<tr><td>uai.js <code>UAI.curve(spec)</code></td>${nx.map(x => `<td class="num">${fmt(eng(x), 3)}</td>`).join("")}</tr>`;
+    g += `<tr><td>ProjectBorealis (Pow + Sanitize)</td>${nx.map(x => { const v = pbf(x); return `<td class="num ${x < 0.5 ? "vt" : ""}">${fmt(v, 3)}</td>`; }).join("")}</tr>`;
+    const le = UAI.curve("로짓"), lp = CH3.pb("logit", { Slope: 1, Exponent: 0, XShift: 0, YShift: 0 });
+    g += `<tr><td colspan="${nx.length + 1}" style="background:var(--surface-2);font-size:13px">로짓 끝점 (m=1, c=0): uai.js f(0)=${fmt(le(0))}, f(1)=${fmt(le(1))} · PB f(0)=${fmt(lp(0))}, <b class="c-bad">f(1)=${fmt(lp(1))}</b></td></tr>`;
+    $("neg-tbl").innerHTML = g;
+  })();
+
+  // 테마 전환: SVG는 CSS 변수를 쓰므로 자동 반영. 재그리기는 안전용
+  document.addEventListener("themechange", () => { edDraw(); pwDraw(); wolfDraw(false); duDraw(); cmDraw(); });
+})();
+</script>
+</body>
+</html>

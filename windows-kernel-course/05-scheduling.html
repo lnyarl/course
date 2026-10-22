@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스레드 스케줄링</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .pcells { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); gap: 2px; margin: 10px 0 4px; }
+  .pcells div { font: 10px/1 var(--mono); text-align: center; padding: 6px 0; border-radius: 3px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
+  .pcells div.dyn { background: var(--user-bg); }
+  .pcells div.rt { background: var(--warn-bg); }
+  .pcells div.boost { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .pcells div.base { border-color: var(--kernel); color: var(--kernel); font-weight: 700; }
+  .pcells div.cur { background: var(--acc); border-color: var(--acc); color: #fff; font-weight: 700; }
+  .calc-out { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-top: 8px; }
+  .calc-out .big { font: 800 2rem var(--mono); color: var(--acc); }
+  .sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .sim-row .lbl { font-size: .82rem; color: var(--muted); min-width: 64px; }
+  .cpus { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0; }
+  .cpu-card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--panel2); font-size: .84rem; }
+  .cpu-card h5 { margin: 0 0 6px; font-size: .86rem; color: var(--head); display: flex; justify-content: space-between; }
+  .cpu-card .run { border: 2px solid var(--line); border-radius: 8px; padding: 4px 8px; min-height: 2.4em; font-family: var(--mono); font-size: .8rem; }
+  .cpu-card .run.busy { border-color: var(--acc); background: var(--acc-bg); }
+  .cpu-card .run.flash { animation: wk-pulse .5s 2; }
+  .qbar { height: 5px; border-radius: 3px; background: var(--line); margin: 5px 0 6px; overflow: hidden; }
+  .qbar i { display: block; height: 100%; background: var(--acc); transition: width .25s; }
+  .rsum { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); gap: 1px; margin: 3px 0; }
+  .rsum span { height: 9px; border-radius: 2px; background: var(--line); }
+  .rsum span.on { background: var(--kernel); }
+  .rsum-l { display: flex; justify-content: space-between; font: 9px var(--mono); color: var(--muted); }
+  .rq { font: 11.5px/1.5 var(--mono); min-height: 1.5em; margin-top: 4px; }
+  .rq .lv { color: var(--kernel); font-weight: 700; }
+  .thr-table td, .thr-table th { padding: 5px 8px; font-size: .82rem; }
+  .thr-table tr { cursor: pointer; }
+  .thr-table tr.sel td { background: var(--acc-bg); }
+  .st { font: 700 .75rem var(--mono); padding: 1px 6px; border-radius: 4px; }
+  .st.Running { background: var(--acc-bg); color: var(--acc); }
+  .st.Ready { background: var(--kernel-bg); color: var(--kernel); }
+  .st.Waiting { background: var(--hw-bg); color: var(--hw); }
+  .boosted { color: var(--ok); font-weight: 700; }
+</style>
+</head>
+<body data-chapter="05">
+<main>
+
+<header class="hero">
+  <div class="kicker">Part II · Chapter 05</div>
+  <h1>스레드 스케줄링</h1>
+  <p class="sub">수천 개의 스레드가 몇 개의 코어를 나눠 쓰는 방법. 우선순위, 레디 큐, 퀀텀, 부스트, 선점, 그리고 멀티프로세서 위에서의 선택 알고리즘을 따라갑니다.</p>
+  <div class="meta"><span class="pill lv-core">핵심</span><span class="pill">⏱ 약 90분</span><span class="pill">선수: 04장</span></div>
+</header>
+
+<div class="objectives">
+  <h4>학습 목표</h4>
+  <ul>
+    <li>우선순위 클래스와 상대 우선순위로부터 스레드 우선순위(0–31)를 계산하고, 가변/실시간 범위의 차이를 설명할 수 있다.</li>
+    <li>스레드 상태(Ready, Running, Standby, Waiting, Transition, DeferredReady, Terminated)와 전이 조건을 말할 수 있다.</li>
+    <li>프로세서별 레디 큐와 <code>ReadySummary</code> 비트맵으로 다음 스레드를 O(1)에 고르는 원리를 이해한다.</li>
+    <li>퀀텀, 우선순위 부스트와 감쇠, 선점과 라운드 로빈이 실제 실행 순서에 어떻게 작용하는지 예측할 수 있다.</li>
+    <li>이상 프로세서·선호도·CPU Sets가 멀티프로세서 스레드 배치에 미치는 영향을 설명할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="overview">스케줄러 개관</h2>
+<p>
+  Windows 스케줄러는 <b>우선순위 기반 선점형</b>입니다. 원칙은 단순합니다. <strong>실행 가능한(Ready) 스레드 중 우선순위가 가장 높은 스레드가 실행된다.</strong>
+  같은 우선순위끼리는 <b>퀀텀</b>(시간 할당량) 단위로 돌아가며(라운드 로빈) 실행되고, 더 높은 우선순위 스레드가 준비되면 실행 중인 스레드는 퀀텀이 남아 있어도 즉시 <b>선점</b>됩니다.
+</p>
+<div class="grid3">
+  <div class="card kernel"><h4>별도의 "스케줄러 스레드"는 없다</h4><p>스케줄링 코드(<code>Ki*</code> 디스패처)는 이벤트가 생긴 그 자리에서 실행됩니다: 스레드가 대기할 때, 객체가 시그널될 때, 클록 인터럽트에서 퀀텀이 끝날 때, 우선순위·선호도가 바뀔 때.</p></div>
+  <div class="card kernel"><h4>DISPATCH_LEVEL에서 동작</h4><p>스레드 선택과 컨텍스트 스위치는 IRQL <code>DISPATCH_LEVEL</code>에서 일어납니다. 그래서 IRQL이 DISPATCH 이상인 코드는 스케줄러에게 선점되지 않습니다(06장).</p></div>
+  <div class="card kernel"><h4>단위는 스레드</h4><p>프로세스는 스케줄링 대상이 아닙니다. 스레드 10개인 프로세스는 스레드 1개인 프로세스보다 (같은 우선순위라면) CPU를 더 많이 얻을 수 있습니다.</p></div>
+</div>
+
+<h2 id="priority">우선순위 0–31</h2>
+<p>
+  커널 내부에서 스레드 우선순위는 0부터 31까지의 정수입니다. 숫자가 클수록 높습니다.
+</p>
+<figure class="fig">
+  <svg class="dia" viewBox="0 0 880 200" role="img" aria-label="우선순위 범위">
+    <text x="42" y="30" class="sm b" text-anchor="middle">0</text>
+    <path class="ln noarr" d="M56 40 V34 H430 V40"/>
+    <text x="243" y="28" text-anchor="middle" class="b c-user">가변(동적) 범위 1–15</text>
+    <path class="ln noarr" d="M455 40 V34 H829 V40"/>
+    <text x="642" y="28" text-anchor="middle" class="b" style="fill:var(--warn)">실시간 범위 16–31</text>
+    <g id="pbar"></g>
+    <path class="ln noarr" d="M142 92 V112"/><text x="142" y="128" text-anchor="middle" class="sm">Idle 4</text>
+    <path class="ln noarr" d="M192 92 V132"/><text x="192" y="148" text-anchor="middle" class="sm">Below Normal 6</text>
+    <path class="ln noarr" d="M242 92 V112"/><text x="242" y="128" text-anchor="middle" class="sm b">Normal 8</text>
+    <path class="ln noarr" d="M292 92 V152"/><text x="292" y="168" text-anchor="middle" class="sm">Above Normal 10</text>
+    <path class="ln noarr" d="M367 92 V112"/><text x="367" y="128" text-anchor="middle" class="sm">High 13</text>
+    <path class="ln noarr" d="M642 92 V112"/><text x="642" y="128" text-anchor="middle" class="sm">Realtime 24</text>
+    <text x="42" y="112" text-anchor="middle" class="sm">제로 페이지</text>
+    <text x="418" y="190" text-anchor="middle" class="sm c-ok">↑ 동적 부스트 상한 = 15</text>
+    <path class="ln ok" d="M418 176 V96"/>
+  </svg>
+  <figcaption><b>그림 5-1.</b> 우선순위 범위와 각 우선순위 클래스의 기본값. 0은 시스템의 제로 페이지 스레드 전용입니다.</figcaption>
+</figure>
+<ul>
+  <li><b>0</b>: 제로 페이지 스레드(빈 물리 페이지를 0으로 채우는 시스템 스레드) 전용. 유저 스레드는 0을 가질 수 없습니다. Idle 스레드는 별도 취급으로, 실행할 스레드가 없을 때만 돕니다.</li>
+  <li><b>1–15 가변 범위</b>: 일반 스레드. 커널이 상황에 따라 우선순위를 <b>일시적으로 올렸다가(부스트) 서서히 내립니다(감쇠)</b>. 부스트는 15를 넘지 않습니다.</li>
+  <li><b>16–31 실시간 범위</b>: 커널이 우선순위를 <b>절대 바꾸지 않습니다</b>. 부스트도 감쇠도 없습니다. 많은 커널 시스템 스레드와 MMCSS(멀티미디어) 스레드가 이 범위를 씁니다. 유저 프로세스가 <code>REALTIME_PRIORITY_CLASS</code>를 얻으려면 <code>SeIncreaseBasePriorityPrivilege</code>가 필요하며, 없으면 High로 조정됩니다.</li>
+</ul>
+<div class="callout warn">
+  <div class="callout-title">"실시간"은 하드 리얼타임이 아니다</div>
+  <p>16–31은 단지 "가변 범위보다 항상 우선"이라는 뜻입니다. 인터럽트·DPC는 여전히 어떤 스레드보다 먼저 실행되고(06장), 응답 시간 상한도 보장되지 않습니다. 또 실시간 우선순위의 CPU 바운드 스레드는 같은 코어의 모든 일반 스레드를 굶길 수 있습니다. 기아 방지 부스트는 15까지만 올리므로 이 상황을 구하지 못합니다.</p>
+</div>
+
+<h3>우선순위 클래스 × 상대 우선순위</h3>
+<p>Win32 API는 숫자를 직접 노출하지 않고, 프로세스의 <b>우선순위 클래스</b>(<code>SetPriorityClass</code>)와 스레드의 <b>상대 우선순위</b>(<code>SetThreadPriority</code>) 두 단계로 지정합니다.</p>
+<table>
+  <thead><tr><th>상대 \ 클래스</th><th>Realtime</th><th>High</th><th>Above Normal</th><th>Normal</th><th>Below Normal</th><th>Idle</th></tr></thead>
+  <tbody>
+    <tr><td><code>TIME_CRITICAL</code></td><td>31</td><td>15</td><td>15</td><td>15</td><td>15</td><td>15</td></tr>
+    <tr><td><code>HIGHEST</code> (+2)</td><td>26</td><td>15</td><td>12</td><td>10</td><td>8</td><td>6</td></tr>
+    <tr><td><code>ABOVE_NORMAL</code> (+1)</td><td>25</td><td>14</td><td>11</td><td>9</td><td>7</td><td>5</td></tr>
+    <tr><td><b><code>NORMAL</code></b> (0)</td><td><b>24</b></td><td><b>13</b></td><td><b>10</b></td><td><b>8</b></td><td><b>6</b></td><td><b>4</b></td></tr>
+    <tr><td><code>BELOW_NORMAL</code> (−1)</td><td>23</td><td>12</td><td>9</td><td>7</td><td>5</td><td>3</td></tr>
+    <tr><td><code>LOWEST</code> (−2)</td><td>22</td><td>11</td><td>8</td><td>6</td><td>4</td><td>2</td></tr>
+    <tr><td><code>IDLE</code></td><td>16</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td></tr>
+  </tbody>
+</table>
+<p class="muted" style="font-size:.88rem">Realtime 클래스에서는 <code>SetThreadPriority</code>에 −7~−3, 3~6을 넘겨 17~30 사이의 다른 값도 지정할 수 있습니다(문서화된 동작). 커널 드라이버는 <code>KeSetPriorityThread</code>로 숫자를 직접 설정합니다.</p>
+
+<div class="sim" id="calcSim">
+  <div class="sim-title">우선순위 계산기</div>
+  <div class="sim-row" id="calcClass"><span class="lbl">클래스</span></div>
+  <div class="sim-row" id="calcRel" style="margin-top:6px"><span class="lbl">상대</span></div>
+  <div class="pcells" id="calcCells"></div>
+  <div class="calc-out" id="calcOut"></div>
+</div>
+
+<h2 id="states">스레드 상태와 전이</h2>
+<p>
+  <code>KTHREAD.State</code>는 스레드가 지금 무엇을 하고 있는지 나타냅니다. 아래 상태도의 <b>각 상태를 클릭</b>하면 의미와 진입/이탈 조건이 표시됩니다. 괄호 안 숫자는 <code>KTHREAD_STATE</code> 열거 값입니다.
+</p>
+<figure class="fig explore">
+  <svg class="dia" viewBox="0 0 880 420" role="img" aria-label="스레드 상태 전이도">
+    <g data-info="init"><rect class="box plain" x="30" y="165" width="120" height="50" rx="25"/><text x="90" y="187" text-anchor="middle" class="b">Initialized</text><text x="90" y="204" text-anchor="middle" class="sm">(0)</text></g>
+    <g data-info="ready"><rect class="box warn" x="230" y="165" width="140" height="50" rx="25"/><text x="300" y="187" text-anchor="middle" class="b">Ready</text><text x="300" y="204" text-anchor="middle" class="sm">(1) 레디 큐</text></g>
+    <g data-info="standby"><rect class="box acc" x="450" y="35" width="140" height="50" rx="25"/><text x="520" y="57" text-anchor="middle" class="b">Standby</text><text x="520" y="74" text-anchor="middle" class="sm">(3) 다음 실행 예정</text></g>
+    <g data-info="running"><rect class="box acc" x="450" y="165" width="140" height="50" rx="25" style="stroke-width:2.6"/><text x="520" y="187" text-anchor="middle" class="b">Running</text><text x="520" y="204" text-anchor="middle" class="sm">(2) CPU에서 실행</text></g>
+    <g data-info="term"><rect class="box bad" x="710" y="165" width="140" height="50" rx="25"/><text x="780" y="187" text-anchor="middle" class="b">Terminated</text><text x="780" y="204" text-anchor="middle" class="sm">(4)</text></g>
+    <g data-info="waiting"><rect class="box hw" x="450" y="305" width="140" height="50" rx="25"/><text x="520" y="327" text-anchor="middle" class="b">Waiting</text><text x="520" y="344" text-anchor="middle" class="sm">(5) 객체 대기</text></g>
+    <g data-info="trans"><rect class="box hw" x="30" y="305" width="120" height="50" rx="25"/><text x="90" y="327" text-anchor="middle" class="b">Transition</text><text x="90" y="344" text-anchor="middle" class="sm">(6) 스택 없음</text></g>
+    <g data-info="deferred"><rect class="box warn" x="230" y="305" width="140" height="50" rx="25"/><text x="300" y="327" text-anchor="middle" class="b">DeferredReady</text><text x="300" y="344" text-anchor="middle" class="sm">(7) 배치 대기</text></g>
+
+    <path class="ln" d="M124 212 L248 308"/>
+    <text x="176" y="270" text-anchor="end" class="sm">시작/재개</text>
+    <path class="ln" d="M300 305 V219"/>
+    <text x="308" y="266" class="sm">큐 삽입</text>
+    <path class="ln" d="M350 170 L460 80"/>
+    <text x="402" y="112" text-anchor="end" class="sm">다음으로 선택</text>
+    <path class="ln acc" d="M520 85 V161"/>
+    <text x="528" y="128" class="sm c-acc">컨텍스트 스위치</text>
+    <path class="ln acc" d="M370 182 H446"/>
+    <text x="408" y="176" text-anchor="middle" class="sm">디스패치</text>
+    <path class="ln kernel" d="M450 202 H374"/>
+    <text x="410" y="230" text-anchor="middle" class="sm c-kernel">선점·퀀텀 종료</text>
+    <path class="ln" d="M520 215 V301"/>
+    <text x="528" y="262" class="sm">대기 시작</text>
+    <path class="ln ok" d="M450 330 H374"/>
+    <text x="410" y="322" text-anchor="middle" class="sm c-ok">대기 충족</text>
+    <path class="ln dash" d="M520 355 V392 H90 V359"/>
+    <text x="300" y="408" text-anchor="middle" class="sm">커널 스택이 메모리에 없는 상태에서 대기 충족</text>
+    <path class="ln dash" d="M150 330 H226"/>
+    <text x="188" y="322" text-anchor="middle" class="sm">스택 인</text>
+    <path class="ln bad" d="M590 190 H706"/>
+    <text x="648" y="182" text-anchor="middle" class="sm">종료</text>
+  </svg>
+  <template data-key="init"><h4>Initialized (0)</h4><p>스레드 객체가 만들어지고 초기화되는 중입니다(04장의 <code>PspAllocateThread</code> 단계). 아직 스케줄링 대상이 아니며, 생성이 끝나 재개되면 준비 상태로 넘어갑니다.</p></template>
+  <template data-key="ready"><h4>Ready (1)</h4><p>실행할 준비가 되어 <b>어느 프로세서의 레디 큐</b>에서 차례를 기다리는 상태입니다. 프로세서가 다음 스레드를 고를 때 가장 높은 우선순위 큐의 맨 앞에서 꺼냅니다.</p><p>실행 중에 선점된 스레드는 해당 우선순위 큐의 <b>맨 앞</b>으로, 퀀텀을 다 쓴 스레드는 <b>맨 뒤</b>로 들어갑니다.</p></template>
+  <template data-key="standby"><h4>Standby (3)</h4><p>특정 프로세서에서 <b>다음에 실행되도록 이미 선택된</b> 스레드입니다. 프로세서당 하나만 있을 수 있습니다(<code>KPRCB.NextThread</code>). 예: 다른 프로세서가 이 프로세서의 현재 스레드를 선점할 스레드를 정하면 그 스레드는 Standby가 되고, 대상 프로세서가 스케줄러에 들어가 실제로 전환합니다.</p><p>Standby 스레드도 더 높은 우선순위 스레드가 나타나면 실행되기 전에 밀려날 수 있습니다.</p></template>
+  <template data-key="running"><h4>Running (2)</h4><p>프로세서에서 실행 중입니다(<code>KPRCB.CurrentThread</code>). 다음 중 하나가 일어날 때까지 실행합니다.</p><ul><li>스스로 대기 → Waiting</li><li>퀀텀 종료 + 같은 우선순위 Ready 스레드 존재 → Ready (큐 꼬리)</li><li>더 높은 우선순위 스레드 준비 → 선점되어 Ready (큐 머리, 남은 퀀텀 유지)</li><li>종료 → Terminated</li></ul></template>
+  <template data-key="term"><h4>Terminated (4)</h4><p>실행을 마친 스레드. 04장에서 본 것처럼 객체는 모든 참조가 해제될 때까지 남아 있으며, 이 상태에서 종료 코드를 조회할 수 있습니다.</p></template>
+  <template data-key="waiting"><h4>Waiting (5)</h4><p>디스패처 객체(이벤트, 뮤텍스, 세마포어, 타이머, 프로세스, 스레드 …), I/O 완료, 일시 정지, 시간 지연(<code>Sleep</code>) 등을 기다리는 상태입니다. <code>KTHREAD.WaitReason</code>이 이유를 기록합니다.</p><p>대기가 충족되면 바로 Running이 되는 것이 아니라 <b>DeferredReady → Ready/Standby</b>를 거칩니다. 이때 우선순위 부스트를 받을 수 있습니다.</p></template>
+  <template data-key="trans"><h4>Transition (6)</h4><p>실행할 준비는 되었지만 <b>커널 스택이 메모리에 없는</b> 상태입니다. 오래 대기한 유저 모드 스레드의 커널 스택은 메모리 압박 시 페이지 아웃될 수 있는데, 이 스레드가 깨어나면 스택을 다시 들여오는 동안 Transition에 머뭅니다. 스택이 들어오면 DeferredReady로 이동합니다.</p></template>
+  <template data-key="deferred"><h4>DeferredReady (7)</h4><p>준비되었지만 아직 <b>어느 프로세서에 배치할지 결정되지 않은</b> 상태입니다. 대기 충족 등으로 스레드를 깨우는 코드는 스레드를 현재 프로세서의 지연 레디 리스트(<code>KPRCB.DeferredReadyListHead</code>)에 넣기만 하고, 나중에 <code>KiDeferredReadyThread</code>가 프로세서를 고릅니다.</p><p>깨우는 시점에 다른 프로세서의 락을 바로 잡지 않게 해, 락 경합을 줄이는 설계입니다.</p></template>
+  <figcaption><b>그림 5-2.</b> 스레드 상태 전이. 이 밖에 내부용 상태(예: WaitingForProcessInSwap)가 더 있습니다.</figcaption>
+</figure>
+
+<h2 id="readyq">레디 큐와 ReadySummary</h2>
+<p>
+  각 프로세서의 <code>KPRCB</code>(Processor Control Block)에는 우선순위별 레디 큐 32개 <code>DispatcherReadyListHead[32]</code>와,
+  어느 큐가 비어 있지 않은지를 나타내는 32비트 비트맵 <code>ReadySummary</code>가 있습니다. 비트 <i>n</i>이 1이면 우선순위 <i>n</i> 큐에 스레드가 있다는 뜻입니다.
+</p>
+<p>
+  다음 스레드를 고를 때 스케줄러는 큐를 하나씩 훑지 않고 <code>ReadySummary</code>에 <b>최상위 비트 검색</b>(x64의 <code>bsr</code>/<code>lzcnt</code>)을 한 번 수행해
+  가장 높은 우선순위를 찾습니다. 스레드 수와 무관한 <b>O(1)</b> 선택입니다.
+</p>
+<pre data-title="C (개념 코드)"><code class="lang-c">// 개념적 의사 코드: 실제 커널 코드와는 세부가 다름
+PKTHREAD KiSelectReadyThread(PKPRCB Prcb, KPRIORITY LowPriority)
+{
+    ULONG summary = Prcb-&gt;ReadySummary &gt;&gt; LowPriority;   // LowPriority 이상만 고려
+    if (summary == 0) return NULL;
+    ULONG idx;
+    _BitScanReverse(&amp;idx, summary);                       // 가장 높은 1 비트
+    KPRIORITY pri = idx + LowPriority;
+    PLIST_ENTRY e = RemoveHeadList(&amp;Prcb-&gt;DispatcherReadyListHead[pri]);
+    if (IsListEmpty(&amp;Prcb-&gt;DispatcherReadyListHead[pri]))
+        Prcb-&gt;ReadySummary &amp;= ~(1UL &lt;&lt; pri);               // 큐가 비면 비트 클리어
+    return CONTAINING_RECORD(e, KTHREAD, WaitListEntry);  // 레디 큐 링크는 대기 링크와 공용
+}</code></pre>
+
+<figure class="fig stepper" id="rqFig" data-interval="3600">
+  <svg class="dia" viewBox="0 0 880 340" role="img" aria-label="레디 큐 동작">
+    <g id="rqG"></g>
+  </svg>
+  <ol class="steps">
+    <li><b>초기 상태</b>: CPU 0은 T0(10)을 실행 중입니다. 레디 큐 10에 T3, 큐 8에 T1·T2가 있어 <code>ReadySummary</code>의 비트 8과 10이 켜져 있습니다.</li>
+    <li><b>T4(12) 준비</b>: 대기하던 T4가 깨어나 큐 12의 꼬리에 들어가고 비트 12가 켜집니다. T4가 실행 중인 T0(10)보다 높으므로 <b>선점</b>이 필요합니다.</li>
+    <li><b>선점</b>: T0은 퀀텀이 남았지만 즉시 밀려나 큐 10의 <b>머리</b>로 갑니다(남은 퀀텀 유지). <code>bsr(ReadySummary)</code> = 12 → T4를 꺼내 실행하고, 큐 12가 비었으므로 비트 12를 끕니다.</li>
+    <li><b>T4 대기</b>: T4가 I/O를 기다리며 Waiting이 됩니다. 다시 <code>bsr</code> = 10 → 큐 10의 머리인 T0이 선택됩니다. 선점된 스레드가 머리에 있었기 때문에 T3보다 먼저 다시 실행됩니다.</li>
+    <li><b>퀀텀 종료 → 라운드 로빈</b>: T0의 퀀텀이 끝났고 같은 우선순위 큐에 T3가 있습니다. T0은 큐 10의 <b>꼬리</b>로, T3가 실행됩니다.</li>
+    <li><b>우선순위 8의 처지</b>: T0과 T3가 CPU 바운드라면 우선순위 10끼리 계속 번갈아 실행되고 T1·T2(8)는 실행되지 못합니다. 이를 구하는 것이 뒤에서 볼 <b>기아 방지 부스트</b>입니다.</li>
+  </ol>
+  <figcaption><b>그림 5-3.</b> 한 프로세서의 레디 큐와 ReadySummary 비트맵 변화(우선순위 31 → 0, 왼쪽이 최상위 비트).</figcaption>
+</figure>
+
+<h2 id="quantum">퀀텀</h2>
+<p>
+  <b>퀀텀</b>은 같은 우선순위의 다른 스레드에게 차례를 넘기기 전까지 스레드가 연속으로 실행할 수 있는 시간입니다.
+  퀀텀은 <b>클록 인터벌</b>(클록 인터럽트 주기) 단위로 정의되며, 내부적으로 클록 틱 1회 = <b>퀀텀 단위 3</b>으로 셉니다.
+</p>
+<div class="grid2">
+  <div class="card"><h4>클라이언트 (Windows 10/11)</h4><p>기본 <b>2 클록 틱</b> = 6 단위. 클록 인터벌이 일반적인 15.625ms라면 약 31ms. 짧은 퀀텀으로 응답성을 우선합니다. 포그라운드 프로세스는 퀀텀이 늘어날 수 있습니다(아래).</p></div>
+  <div class="card"><h4>서버 (Windows Server)</h4><p>기본 <b>12 클록 틱</b> = 36 단위(약 188ms). 컨텍스트 스위치를 줄여 처리량을 우선합니다. 요청을 받은 서버 스레드가 한 번에 일을 끝낼 확률을 높입니다.</p></div>
+</div>
+<ul>
+  <li><b>클록 인터벌</b>은 하드웨어·전원 정책에 따라 다르며 Sysinternals <code>clockres</code>로 확인합니다. <code>timeBeginPeriod</code>로 타이머 해상도를 높일 수 있지만, Windows 10 2004부터 이 함수는 시스템 전체가 아닌 호출 프로세스의 타이머에만 영향을 주도록 바뀌었습니다.</li>
+  <li><b>사이클 기반 계산</b>: Vista 이후 퀀텀 소모는 틱 개수가 아니라 <b>CPU 사이클 카운터</b>로 정밀하게 측정됩니다. 스레드의 퀀텀 목표가 사이클 수(<code>KTHREAD.QuantumTarget</code>)로 정해지고, 인터럽트·DPC 처리에 쓰인 사이클은 스레드에 청구되지 않습니다. 그래서 인터럽트가 많은 시스템에서도 스레드가 퀀텀을 부당하게 잃지 않습니다.</li>
+  <li><b>퀀텀 종료 처리</b>: 클록 인터럽트가 실행 중 스레드의 사이클 소모를 확인하고, 목표를 넘었으면 DISPATCH_LEVEL에서 퀀텀 종료 처리를 요청합니다. 이때 같은 우선순위 이상의 Ready 스레드가 없으면 스레드는 <b>새 퀀텀을 받아 계속 실행</b>합니다.</li>
+</ul>
+
+<h3>포그라운드 퀀텀 증가와 Win32PrioritySeparation</h3>
+<p>
+  <code>HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl\Win32PrioritySeparation</code> 값(6비트)이 퀀텀 정책을 정합니다.
+  "시스템 속성 → 성능 옵션 → 고급 → 프로세서 사용 계획(프로그램/백그라운드 서비스)" UI가 이 값을 바꿉니다.
+</p>
+<div class="bitrow" style="max-width:520px">
+  <div class="g"><div class="lbl">5–4 · 길이 (짧게/길게)</div><div class="cells"><div class="bit">x</div><div class="bit">x</div></div></div>
+  <div class="g"><div class="lbl">3–2 · 가변/고정</div><div class="cells"><div class="bit">x</div><div class="bit">x</div></div></div>
+  <div class="g"><div class="lbl">1–0 · 포그라운드 증가 인덱스</div><div class="cells"><div class="bit">x</div><div class="bit">x</div></div></div>
+</div>
+<table>
+  <thead><tr><th>퀀텀 테이블 (단위)</th><th>인덱스 0 (배경)</th><th>인덱스 1</th><th>인덱스 2</th></tr></thead>
+  <tbody>
+    <tr><td>짧은 · 가변 <span class="muted">(클라이언트 기본)</span></td><td>6</td><td>12</td><td>18</td></tr>
+    <tr><td>짧은 · 고정</td><td>18</td><td>18</td><td>18</td></tr>
+    <tr><td>긴 · 가변</td><td>12</td><td>24</td><td>36</td></tr>
+    <tr><td>긴 · 고정 <span class="muted">(서버 방식)</span></td><td>36</td><td>36</td><td>36</td></tr>
+  </tbody>
+</table>
+<p>
+  클라이언트 기본값(<code>0x2</code>)은 "짧은·가변, 인덱스 2"입니다. 즉 배경 프로세스 스레드는 6단위(2틱), <b>포그라운드 창을 가진 프로세스</b>의 스레드는 18단위(6틱)를 받습니다.
+  포그라운드 앱은 우선순위가 아니라 <b>퀀텀이 3배</b>가 되는 것입니다. 같은 우선순위의 배경 작업과 경쟁할 때 포그라운드가 CPU를 더 오래 쓰게 됩니다.
+</p>
+
+<h2 id="boost">우선순위 부스트와 감쇠</h2>
+<p>
+  가변 범위(1–15) 스레드는 특정 사건이 일어나면 커널이 <b>현재 우선순위를 일시적으로 올립니다</b>. 목적은 응답성(I/O를 끝낸 스레드가 결과를 빨리 처리)과 공정성(기아 방지, 우선순위 역전 완화)입니다.
+</p>
+<table>
+  <thead><tr><th>부스트 원인</th><th>크기</th><th>메커니즘</th></tr></thead>
+  <tbody>
+    <tr><td>I/O 완료</td><td>드라이버가 지정</td><td><code>IoCompleteRequest(Irp, PriorityBoost)</code>의 인자. 관례값: 디스크·CD-ROM·비디오 <code>1</code>, 네트워크·시리얼·네임드 파이프 <code>2</code>, 키보드·마우스 <code>6</code>, 사운드 <code>8</code></td></tr>
+    <tr><td>이벤트·세마포어 대기 해제</td><td>보통 +1</td><td><code>KeSetEvent(Event, EVENT_INCREMENT, …)</code>, <code>KeReleaseSemaphore(…, SEMAPHORE_INCREMENT, …)</code>의 Increment 인자</td></tr>
+    <tr><td>포그라운드 프로세스의 대기 완료</td><td>PsPrioritySeparation</td><td>포그라운드 프로세스 스레드가 커널 객체 대기를 마치면 위 퀀텀 인덱스 값만큼 추가 부스트</td></tr>
+    <tr><td>GUI 스레드의 창 메시지 수신</td><td>+2</td><td>윈도 활동으로 깨어난 GUI 스레드 (win32k)</td></tr>
+    <tr><td>CPU 기아 방지</td><td>→ 15</td><td>Balance Set Manager 시스템 스레드가 1초마다 레디 큐를 검사해, 약 4초 이상 Ready에 머문 스레드를 15로 올려 한 퀀텀 실행 기회를 줌</td></tr>
+    <tr><td>락 소유자 부스트 (AutoBoost)</td><td>대기자 수준</td><td>Windows 8 이후 일부 커널 락에서, 높은 우선순위 스레드가 기다리는 락의 소유자 우선순위를 올려 <b>우선순위 역전</b> 완화</td></tr>
+    <tr><td>멀티미디어 (MMCSS)</td><td>실시간 범위</td><td>MMCSS 서비스가 등록된 오디오·비디오 스레드를 실시간 범위로 올렸다가 주기적으로 낮춰 다른 작업에 CPU를 양보</td></tr>
+  </tbody>
+</table>
+<div class="grid2">
+  <div class="card"><h4>부스트 규칙</h4><p>부스트는 <b>기본 우선순위</b>에 더해집니다: 새 우선순위 = max(현재, 기본 + 증가분), 단 <b>최대 15</b>. 실시간(16–31) 스레드는 부스트하지 않습니다. <code>SetProcessPriorityBoost</code>/<code>SetThreadPriorityBoost</code>로 끌 수 있습니다.</p></div>
+  <div class="card"><h4>감쇠 규칙</h4><p>부스트된 스레드는 <b>퀀텀이 끝날 때마다 1씩</b> 내려가 기본 우선순위에서 멈춥니다. 예외적으로 기아 방지 부스트는 그 퀀텀이 끝나면 곧바로 원래 우선순위로 돌아갑니다.</p></div>
+</div>
+<div class="callout expert">
+  <div class="callout-title">드라이버 개발자에게: PriorityBoost 인자는 정책이다</div>
+  <p><code>IoCompleteRequest</code>의 두 번째 인자는 단순한 숫자가 아니라 "이 I/O를 기다리던 스레드를 얼마나 빨리 깨울지"에 대한 결정입니다. 동기 I/O가 매우 빈번한 장치에서 큰 값을 쓰면 해당 스레드들이 다른 작업을 계속 선점해 시스템 응답성을 해칠 수 있고, <code>IO_NO_INCREMENT</code>를 쓰면 대화형 장치의 지연이 커질 수 있습니다. 장치 유형에 맞는 관례 상수를 쓰세요.</p>
+</div>
+
+<h2 id="switch">컨텍스트 스위치</h2>
+<p>
+  스케줄러가 새 스레드를 고르면 <code>KiSwapContext</code>(내부적으로 <code>SwapContext</code>)가 실제 전환을 수행합니다. 핵심은 "<b>나가는 스레드의 상태를 그 스레드의 커널 스택에 저장하고, 들어오는 스레드의 커널 스택에서 꺼낸다</b>"입니다.
+  유저 모드 레지스터는 이미 시스템 콜/인터럽트 진입 시 트랩 프레임에 저장되어 있으므로, 스위치 시점에는 커널 문맥만 다루면 됩니다.
+</p>
+<figure class="fig stepper" data-interval="3400">
+  <svg class="dia" viewBox="0 0 880 360" role="img" aria-label="컨텍스트 스위치 과정">
+    <g data-hl="2" data-dim="5+"><rect class="box kernel" x="20" y="30" width="250" height="280" rx="10"/>
+      <text x="145" y="54" text-anchor="middle" class="b">T1 · 나가는 스레드</text>
+      <text x="36" y="84" class="sm">State</text><text x="254" y="84" text-anchor="end" class="mono" data-text="1:Running|2:Ready / Waiting">Running</text>
+      <text x="36" y="110" class="sm">KTHREAD.KernelStack</text><text x="254" y="110" text-anchor="end" class="mono" data-text="1:—|2:저장된 RSP">—</text>
+      <text x="36" y="140" class="sm">T1 커널 스택</text>
+      <rect class="box plain" x="36" y="150" width="218" height="40" rx="5"/><text x="145" y="175" text-anchor="middle" class="sm">트랩 프레임 (유저 레지스터)</text>
+      <rect class="box plain" x="36" y="194" width="218" height="40" rx="5"/><text x="145" y="219" text-anchor="middle" class="sm">커널 호출 프레임들</text>
+      <g data-on="2"><rect class="box warn" x="36" y="238" width="218" height="52" rx="5"/><text x="145" y="259" text-anchor="middle" class="sm b">저장된 비휘발성 레지스터</text><text x="145" y="278" text-anchor="middle" class="mono">rbx rbp rsi rdi r12–r15</text></g>
+    </g>
+    <g><rect class="box acc" x="315" y="30" width="250" height="280" rx="10"/>
+      <text x="440" y="54" text-anchor="middle" class="b">CPU · KPRCB</text>
+      <g data-hl="2,5"><rect class="box plain" x="330" y="70" width="220" height="34" rx="5"/><text x="342" y="92" class="mono">RSP</text><text x="538" y="92" text-anchor="end" class="mono" data-text="1:T1 커널 스택|5:T2 커널 스택">T1 커널 스택</text></g>
+      <g data-hl="3"><rect class="box plain" x="330" y="112" width="220" height="34" rx="5"/><text x="342" y="134" class="mono">CR3</text><text x="538" y="134" text-anchor="end" class="mono" data-text="1:프로세스 A|3:프로세스 B">프로세스 A</text></g>
+      <g data-hl="4"><rect class="box plain" x="330" y="154" width="220" height="34" rx="5"/><text x="342" y="176" class="mono">CurrentThread</text><text x="538" y="176" text-anchor="end" class="mono" data-text="1:T1|4:T2">T1</text></g>
+      <g data-hl="4"><rect class="box plain" x="330" y="196" width="220" height="34" rx="5"/><text x="342" y="218" class="mono">인터럽트 스택</text><text x="538" y="218" text-anchor="end" class="mono" data-text="1:T1 스택|4:T2 스택">T1 스택</text></g>
+      <g data-hl="4"><rect class="box plain" x="330" y="238" width="220" height="34" rx="5"/><text x="342" y="260" class="mono">유저 GS 베이스</text><text x="538" y="260" text-anchor="end" class="mono" data-text="1:T1 TEB|4:T2 TEB">T1 TEB</text></g>
+      <text x="440" y="296" text-anchor="middle" class="sm" data-text="1:IRQL = DISPATCH_LEVEL|6:IRQL ↓ · APC 확인">IRQL = DISPATCH_LEVEL</text>
+    </g>
+    <g data-hl="5" data-dim="1-4"><rect class="box user" x="610" y="30" width="250" height="280" rx="10"/>
+      <text x="735" y="54" text-anchor="middle" class="b">T2 · 들어오는 스레드</text>
+      <text x="626" y="84" class="sm">State</text><text x="844" y="84" text-anchor="end" class="mono" data-text="1:Standby|5:Running">Standby</text>
+      <text x="626" y="110" class="sm">KTHREAD.KernelStack</text><text x="844" y="110" text-anchor="end" class="mono" data-text="1:저장된 RSP|5:— (복원됨)">저장된 RSP</text>
+      <text x="626" y="140" class="sm">T2 커널 스택</text>
+      <rect class="box plain" x="626" y="150" width="218" height="40" rx="5"/><text x="735" y="175" text-anchor="middle" class="sm">트랩 프레임 (유저 레지스터)</text>
+      <rect class="box plain" x="626" y="194" width="218" height="40" rx="5"/><text x="735" y="219" text-anchor="middle" class="sm">커널 호출 프레임들</text>
+      <g data-off="5"><rect class="box warn" x="626" y="238" width="218" height="52" rx="5"/><text x="735" y="259" text-anchor="middle" class="sm b">지난번 스위치 때 저장된</text><text x="735" y="278" text-anchor="middle" class="sm b">레지스터</text></g>
+    </g>
+    <path class="ln kernel flow" d="M330 87 C 300 87, 290 264, 258 264" data-only="2"/>
+    <path class="ln user flow" d="M622 264 C 590 264, 580 87, 554 87" data-only="5"/>
+    <text x="440" y="340" text-anchor="middle" class="sm b c-acc" data-text="1:트리거: 대기 · 퀀텀 종료 · 선점|2:① 저장|3:② 주소 공간 전환|4:③ 프로세서 상태 갱신|5:④ 복원 후 ret|6:⑤ 마무리">트리거</text>
+  </svg>
+  <ol class="steps">
+    <li><b>트리거</b>: 현재 스레드 T1이 대기하거나, 퀀텀이 끝났거나, 더 높은 우선순위 T2에게 선점되었습니다. 스케줄러는 DISPATCH_LEVEL에서 T2를 고르고 <code>KiSwapContext</code>를 호출합니다.</li>
+    <li><b>저장</b>: 호출 규약상 보존해야 하는 비휘발성 레지스터를 T1의 커널 스택에 push하고, 그 스택 포인터를 <code>T1.KernelStack</code>에 기록합니다. 휘발성 레지스터는 호출자가 이미 책임지므로 저장할 필요가 없습니다. 확장 상태(XSAVE 영역: SSE/AVX 등)도 필요에 따라 처리됩니다.</li>
+    <li><b>주소 공간 전환</b>: T2가 <b>다른 프로세스</b>의 스레드라면 CR3에 T2 프로세스의 <code>DirectoryTableBase</code>를 로드합니다. 같은 프로세스라면 이 단계를 건너뛰므로 TLB가 유지됩니다(같은 프로세스 내 스레드 전환이 더 싼 이유). PCID를 쓰는 구성에서는 프로세스 전환 시에도 TLB 전체 플러시를 피할 수 있습니다.</li>
+    <li><b>프로세서 상태 갱신</b>: <code>KPRCB.CurrentThread</code> ← T2. 인터럽트 발생 시 사용할 커널 스택 위치(TSS의 RSP0 등, KVA Shadow 구성에 따라 방식이 다름)를 T2의 스택으로, 유저 모드 GS 베이스를 T2의 TEB로 바꿉니다.</li>
+    <li><b>복원</b>: RSP ← <code>T2.KernelStack</code>. 저장해 둔 레지스터를 pop하고 <code>ret</code>하면, T2는 <b>자신이 예전에 스위치되어 나갔던 지점</b>에서 그대로 실행을 이어 갑니다. 처음 실행되는 스레드라면 생성 시 준비된 초기 프레임 덕분에 스레드 시작 루틴으로 들어갑니다.</li>
+    <li><b>마무리</b>: 대기 중인 커널 APC가 있으면 처리되도록 하고, IRQL을 원래 수준으로 낮춥니다. T2가 유저 모드로 돌아갈 때는 트랩 프레임에서 유저 레지스터를 복원합니다.</li>
+  </ol>
+  <figcaption><b>그림 5-4.</b> 컨텍스트 스위치. 각 스레드의 커널 스택이 곧 그 스레드의 "저장된 CPU 상태"입니다.</figcaption>
+</figure>
+<div class="callout tip">
+  <div class="callout-title">덤프에서 대기 중인 스레드의 콜스택이 늘 비슷한 이유</div>
+  <p>대기 중인 스레드는 모두 스위치 직전 지점에서 멈춰 있으므로 <code>!thread</code> 콜스택 맨 위가 거의 항상 <code>nt!KiSwapContext</code> → <code>nt!KiSwapThread</code> → <code>nt!KiCommitThreadWait</code> → <code>nt!KeWaitForSingleObject</code> 형태입니다. 분석할 때는 이 아래, <b>누가 무엇을 기다리는지</b>를 보여 주는 프레임부터 읽으면 됩니다.</p>
+</div>
+
+<h2 id="smp">멀티프로세서 스케줄링</h2>
+<p>
+  프로세서가 여럿이면 "누구를 실행할까"에 더해 "<b>어디서</b> 실행할까"를 정해야 합니다. 관련 개념은 다음과 같습니다.
+</p>
+<table>
+  <thead><tr><th>개념</th><th>설정 방법</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td><b>하드 선호도</b> (affinity)</td><td><code>SetThreadAffinityMask</code>, <code>SetThreadGroupAffinity</code>, 프로세스 선호도</td><td>스레드가 실행될 수 있는 프로세서 집합. 반드시 지켜짐</td></tr>
+    <tr><td><b>이상 프로세서</b> (ideal processor)</td><td>생성 시 자동 배정, <code>SetThreadIdealProcessorEx</code></td><td>가능하면 실행할 프로세서. 프로세스별 시작점에서 라운드 로빈으로 배정되어 스레드가 고르게 분산됨</td></tr>
+    <tr><td><b>마지막 프로세서</b></td><td>자동</td><td>캐시가 따뜻할 가능성이 높은 곳. 소프트 선호도로 작용</td></tr>
+    <tr><td><b>프로세서 그룹</b></td><td><code>GROUP_AFFINITY</code></td><td>그룹당 최대 64개 논리 프로세서. Windows 11 / Server 2022부터 프로세스와 스레드의 기본 선호도가 모든 그룹에 걸침</td></tr>
+    <tr><td><b>CPU Sets</b></td><td><code>SetProcessDefaultCpuSets</code>, <code>SetThreadSelectedCpuSets</code></td><td>Windows 10에서 도입된 소프트 선호도. 시스템이 일부 CPU를 특정 용도로 예약할 수 있음(아래)</td></tr>
+  </tbody>
+</table>
+
+<h3>준비된 스레드를 어느 프로세서에 둘까</h3>
+<p>
+  대기에서 깨어난 스레드는 DeferredReady를 거쳐 <code>KiDeferredReadyThread</code>에서 배치됩니다. 아래는 핵심 흐름을 단순화한 것입니다(실제로는 SMT 형제 코어, NUMA 노드, 공유 레디 큐, 전원 정책 등이 더 고려됩니다).
+</p>
+<figure class="fig stepper" data-interval="3600">
+  <svg class="dia" viewBox="0 0 880 330" role="img" aria-label="프로세서 선택">
+    <g data-hl="1"><rect class="box warn" x="330" y="20" width="220" height="70" rx="10"/>
+      <text x="440" y="44" text-anchor="middle" class="b">T · 우선순위 10</text>
+      <text x="440" y="63" text-anchor="middle" class="sm">이상 프로세서 = CPU 2</text>
+      <text x="440" y="79" text-anchor="middle" class="sm">선호도 = CPU 0–3</text></g>
+    <g data-hl="2"><rect class="box kernel" x="20" y="150" width="190" height="96" rx="10"/>
+      <text x="115" y="174" text-anchor="middle" class="b">CPU 0</text>
+      <text x="115" y="198" text-anchor="middle" class="mono">실행: A (13)</text>
+      <text x="115" y="222" text-anchor="middle" class="sm">레디 큐: —</text></g>
+    <g data-hl="2,6"><rect class="box kernel" x="240" y="150" width="190" height="96" rx="10"/>
+      <text x="335" y="174" text-anchor="middle" class="b">CPU 1</text>
+      <text x="335" y="198" text-anchor="middle" class="mono" data-text="1:실행: B (9)|6:실행: T (10)">실행: B (9)</text>
+      <text x="335" y="222" text-anchor="middle" class="sm" data-text="1:레디 큐: —|6:B는 대기 상태로">레디 큐: —</text></g>
+    <g data-hl="2-5"><rect class="box kernel" x="460" y="150" width="190" height="96" rx="10" style="stroke-width:2.4"/>
+      <text x="555" y="174" text-anchor="middle" class="b">CPU 2 (이상)</text>
+      <text x="555" y="198" text-anchor="middle" class="mono" data-text="1:실행: C (8)|3:C (8) · T Standby|4:실행: T (10)|5:실행: E (12)">실행: C (8)</text>
+      <text x="555" y="222" text-anchor="middle" class="sm" data-text="1:레디 큐: —|4:레디 큐: [8] C (머리)|5:레디 큐: [10] T|6:레디 큐: —">레디 큐: —</text></g>
+    <g data-hl="2"><rect class="box kernel" x="680" y="150" width="190" height="96" rx="10"/>
+      <text x="775" y="174" text-anchor="middle" class="b">CPU 3</text>
+      <text x="775" y="198" text-anchor="middle" class="mono">실행: D (11)</text>
+      <text x="775" y="222" text-anchor="middle" class="sm">레디 큐: —</text></g>
+    <path class="ln acc dash" d="M500 90 L540 146" data-only="3-4"/>
+    <text x="580" y="122" class="sm c-acc" data-only="3">IPI (선점 요청)</text>
+    <path class="ln dash" d="M380 90 L345 146" data-only="6"/>
+    <text x="250" y="122" class="sm" data-only="6">다른 CPU 큐에서 가져감</text>
+    <g data-at="1:0,0|3:115,128|4:115,128|5:115,128|6:-105,128">
+      <circle class="token" cx="440" cy="12" r="9"/>
+    </g>
+    <text x="440" y="292" text-anchor="middle" class="sm b" data-text="1:깨어난 T → DeferredReady|2:① 선호도 안의 유휴 프로세서? → 없음|3:② 이상 프로세서의 실행 스레드보다 높은가? 8 &lt; 10 → 선점|4:CPU 2: C는 큐 머리로, T 실행|5:다른 경우: 이상 프로세서가 12 실행 중 → T는 그 큐에서 대기|6:CPU 1이 비면 다른 프로세서 큐에서 T를 가져옴">깨어난 T → DeferredReady</text>
+    <text x="440" y="314" text-anchor="middle" class="sm" data-only="5">CPU 1(9)이 더 낮은데도 즉시 선점하지 않는다 — 엄격한 "전역 상위 N개" 보장은 없음</text>
+  </svg>
+  <ol class="steps">
+    <li><b>준비</b>: 대기가 충족된 T는 DeferredReady 상태로 현재 프로세서의 지연 레디 리스트에 들어가고, 곧 <code>KiDeferredReadyThread</code>가 배치를 결정합니다. 네 프로세서 모두 다른 스레드를 실행 중입니다.</li>
+    <li><b>유휴 프로세서 검색</b>: 선호도 안에 유휴 프로세서가 있으면 그곳에서 바로 실행합니다(이상 프로세서가 유휴면 최우선, SMT 시스템에서는 완전히 유휴인 물리 코어를 선호). 여기서는 유휴 프로세서가 없습니다.</li>
+    <li><b>이상 프로세서 선점 검사</b>: 이상 프로세서 CPU 2에서 실행 중인 C(8)가 T(10)보다 낮으므로 T를 CPU 2의 <b>Standby</b>로 지정하고, CPU 2에 프로세서 간 인터럽트(IPI)를 보내 스케줄러를 돌게 합니다.</li>
+    <li><b>전환</b>: CPU 2가 DISPATCH_LEVEL에서 스케줄러에 들어가 C를 우선순위 8 큐의 <b>머리</b>에 넣고(남은 퀀텀 유지) T로 컨텍스트 스위치합니다.</li>
+    <li><b>선점할 수 없는 경우</b>: 만약 CPU 2가 E(12)를 실행 중이었다면 T는 CPU 2의 우선순위 10 레디 큐에 들어갑니다. 이때 CPU 1이 더 낮은 B(9)를 실행 중이더라도 이 경로에서 B를 선점하지 않을 수 있습니다. Windows의 멀티프로세서 스케줄링은 "항상 전역 최고 우선순위 N개가 실행된다"를 엄격히 보장하지 않습니다.</li>
+    <li><b>다른 프로세서가 가져감</b>: CPU 1의 B가 대기에 들어가 CPU 1이 다음 스레드를 고를 때 자기 레디 큐가 비어 있으면, 다른 프로세서의 레디 큐에서 선호도가 맞는 스레드를 찾아 가져옵니다. T는 이렇게 CPU 1에서 실행됩니다.</li>
+  </ol>
+  <figcaption><b>그림 5-5.</b> 준비된 스레드의 프로세서 선택(단순화). 이상 프로세서가 배치의 중심입니다.</figcaption>
+</figure>
+<div class="callout note">
+  <div class="callout-title">공유 레디 큐</div>
+  <p>최근 Windows 10/11에는 프로세서별 레디 큐 외에 여러 프로세서가 함께 쓰는 <b>공유 레디 큐</b>(<code>KPRCB.SharedReadyQueue</code>)도 있어, 스레드를 특정 프로세서 하나에 묶지 않고 같은 큐를 쓰는 프로세서 중 먼저 비는 쪽이 실행하게 합니다. 어떤 스레드가 어느 큐를 쓰는지는 버전과 하드웨어 구성에 따라 다르며 공개 문서가 없으므로, 분석할 때는 해당 빌드의 심볼로 확인해야 합니다.</p>
+</div>
+
+<h2 id="cpusets">CPU Sets와 이종 코어</h2>
+<div class="grid2">
+  <div class="card"><h4>CPU Sets (Windows 10+)</h4>
+    <p>각 논리 프로세서를 ID가 있는 "CPU Set"으로 노출하고(<code>GetSystemCpuSetInformation</code>), 애플리케이션이 선호 집합을 지정하게 합니다. 하드 선호도와 달리 <b>제안</b>에 가깝고, 하드 선호도와 충돌하면 하드 선호도가 우선합니다.</p>
+    <p>시스템은 일부 CPU Set을 특정 프로세스용으로 <b>할당(예약)</b>할 수 있습니다. 예약된 CPU는 명시적으로 선택하지 않은 다른 스레드가 덜 쓰게 되어, 게임처럼 지연에 민감한 작업에 코어를 비워 줄 수 있습니다.</p></div>
+  <div class="card"><h4>이종 코어 (P-core / E-core)</h4>
+    <p>성능 코어와 효율 코어가 섞인 CPU에서 <code>SYSTEM_CPU_SET_INFORMATION</code>의 <code>EfficiencyClass</code>가 코어 종류를 구분합니다(값이 클수록 성능 지향).</p>
+    <p>Windows 11은 스레드의 <b>QoS(서비스 품질) 수준</b> — 포그라운드 여부, 창 가시성, <code>SetProcessInformation(ProcessPowerThrottling)</code>으로 요청하는 EcoQoS 등 — 과 하드웨어 피드백(예: Intel Thread Director)을 함께 사용해 스레드를 코어 종류에 배치합니다. 세부 정책은 버전과 전원 설정에 따라 달라집니다.</p></div>
+</div>
+<div class="callout expert">
+  <div class="callout-title">선호도를 고정하기 전에</div>
+  <p>성능을 위해 스레드를 특정 코어에 하드 고정하면, 그 코어가 인터럽트·DPC나 더 높은 우선순위 스레드로 바쁠 때 다른 코어가 놀아도 기다리게 됩니다. 이종 코어 시스템에서는 고정된 코어가 E-core일 수도 있습니다. 대부분의 경우 이상 프로세서 힌트나 CPU Sets처럼 <b>스케줄러에게 여지를 남기는 방법</b>이 더 안전합니다.</p>
+</div>
+
+<h2 id="sim">스케줄러 시뮬레이터</h2>
+<p>
+  이제 직접 스레드를 넣고 틱을 진행하며 지금까지의 규칙을 관찰해 봅시다. 프리셋으로 시작하거나 스레드를 직접 추가하세요. <b>표의 행을 클릭</b>하면 그 스레드를 선택해 대기·깨우기·종료·우선순위 변경을 할 수 있습니다.
+</p>
+<div class="sim" id="schedSim">
+  <div class="sim-title">우선순위 선점형 스케줄러</div>
+  <div class="sim-controls">
+    <span class="muted" style="font-size:.85rem">프리셋:</span>
+    <button class="btn" data-preset="preempt">선점</button>
+    <button class="btn" data-preset="rr">라운드 로빈</button>
+    <button class="btn" data-preset="starve">기아 방지 부스트</button>
+    <button class="btn" data-preset="rt">실시간 독점</button>
+    <button class="btn" data-preset="mp">멀티코어 · 선호도</button>
+  </div>
+  <div class="sim-controls">
+    <label>CPU <select id="sCpus"><option>1</option><option selected>2</option><option>4</option></select></label>
+    <label>퀀텀 <select id="sQuantum"><option value="6" selected>클라이언트 (6단위 = 2틱)</option><option value="36">서버 (36단위 = 12틱)</option></select></label>
+    <button class="btn primary" data-a="tick">틱 ▶</button>
+    <button class="btn" data-a="auto">⏵ 자동</button>
+    <span class="mono" id="sTick" style="font-size:.85rem"></span>
+  </div>
+  <div class="sim-controls">
+    <label>새 스레드 우선순위 <select id="sPrio"></select></label>
+    <label>종류 <select id="sKind"><option value="cpu">CPU 바운드</option><option value="io">I/O 바운드 (2틱 실행 → 3틱 대기)</option></select></label>
+    <span id="sAff"></span>
+    <button class="btn" data-a="add">+ 스레드 추가</button>
+  </div>
+  <div class="cpus" id="sCpuView"></div>
+  <table class="thr-table" id="sTable"></table>
+  <div class="sim-controls" style="margin-top:8px">
+    <span class="muted" style="font-size:.85rem" id="sSelInfo">선택: 없음</span>
+    <button class="btn" data-a="wait">대기시키기</button>
+    <button class="btn" data-a="wake">깨우기 (+2 부스트)</button>
+    <button class="btn" data-a="up">기본 우선순위 +1</button>
+    <button class="btn" data-a="down">기본 우선순위 −1</button>
+    <button class="btn" data-a="kill">종료</button>
+  </div>
+  <div class="console" id="sLog" style="min-height:8em"></div>
+</div>
+<details>
+  <summary>시뮬레이터 모델 (실제와 다른 점)</summary>
+  <ul>
+    <li>틱 1회 = 퀀텀 3단위. 실제 커널은 사이클 기반으로 퀀텀을 측정합니다.</li>
+    <li>준비된 스레드 배치: 선호도 안의 유휴 CPU(이상 프로세서 우선) → 이상 프로세서의 실행 스레드보다 높으면 선점 → 아니면 이상 프로세서 레디 큐 꼬리. 자기 큐가 빈 CPU는 다른 CPU의 큐에서 가져옵니다.</li>
+    <li>대기 완료 시 +2 부스트(최대 15), 퀀텀 종료마다 1씩 감쇠. 실시간(16+)은 부스트 없음.</li>
+    <li>기아 방지: Ready로 12틱 이상 기다린 가변 우선순위 스레드를 15로 올립니다. 실제로는 약 4초(수백 틱)이며, 1초 주기로 검사합니다.</li>
+    <li>깨어난 스레드는 새 퀀텀을 받습니다. 실제 퀀텀 재설정 규칙은 더 복잡합니다.</li>
+  </ul>
+</details>
+
+<h2 id="lab">실습: 스케줄링 관찰</h2>
+<div class="callout lab">
+  <div class="callout-title">실습 5-1 · 우선순위와 대기 상태 읽기</div>
+  <p>메모장과 CPU를 많이 쓰는 프로그램(예: 무한 루프 테스트 앱)을 실행한 뒤 커널 디버거에서 스레드 상태를 비교합니다. 주소와 값은 환경마다 다릅니다.</p>
+</div>
+<pre data-title="WinDbg"><code class="lang-windbg">lkd> !process 0 2 notepad.exe          $$ 스레드 목록 + 대기 이유
+        THREAD ffffc50a`1c4d5080  Cid 1a2c.1a30  Teb: ... WAIT: (WrUserRequest) UserMode Non-Alertable
+
+lkd> !thread ffffc50a`1c4d5080
+    ...
+    Priority 10  BasePriority 8  PriorityDecrement 2  IoPriority 2  PagePriority 5
+    ...                                $$ Priority &gt; BasePriority → 부스트가 남아 있음
+
+lkd> dt nt!_KTHREAD ffffc50a`1c4d5080 State Priority BasePriority WaitReason QuantumTarget
+lkd> !ready                             $$ 프로세서별 레디 큐에 있는 스레드 (우선순위별)
+lkd> !running -it                       $$ 각 프로세서의 현재/다음(Standby) 스레드와 스택
+lkd> !prcb 0                            $$ 0번 프로세서의 KPRCB 요약
+lkd> dt nt!_KPRCB ReadySummary DispatcherReadyListHead</code></pre>
+<ol>
+  <li>창을 클릭해 메모장을 포그라운드로 만든 뒤 키를 입력하고 곧바로 <code>!thread</code>로 확인하세요. <code>Priority</code>가 <code>BasePriority</code>보다 높게 나타나는지(입력 처리 후 부스트) 관찰합니다.</li>
+  <li>CPU 바운드 스레드를 우선순위 클래스별로 실행하고 <code>!ready</code>에서 어떤 우선순위 큐에 쌓이는지 확인하세요.</li>
+  <li>유저 모드에서는 Process Explorer의 스레드 탭(Dynamic/Base Priority, Context Switch Delta), 또는 Windows Performance Recorder의 CPU Usage (Precise) 그래프로 "Ready Time"과 "새 스레드를 깨운 스레드(ReadyingThread)"를 볼 수 있습니다.</li>
+</ol>
+<pre data-title="PowerShell"><code class="lang-ps">PS> Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl | Select Win32PrioritySeparation
+PS> (Get-Process notepad).PriorityClass = 'AboveNormal'       # 기본 우선순위 8 → 10
+PS> (Get-Process notepad).Threads | Select Id, PriorityLevel, BasePriority, CurrentPriority, ThreadState, WaitReason</code></pre>
+
+<h2 id="quiz">확인 문제</h2>
+<div class="quiz">
+  <p class="q">Normal 클래스 프로세스의 <code>THREAD_PRIORITY_HIGHEST</code> 스레드가 키보드 I/O(<code>IO_KEYBOARD_INCREMENT</code> = 6) 완료로 깨어났습니다. 부스트 직후 현재 우선순위는?</p>
+  <ol class="opts">
+    <li>16</li>
+    <li data-correct>15</li>
+    <li>14</li>
+    <li>10 (Normal 클래스는 부스트되지 않음)</li>
+  </ol>
+  <div class="explain">기본 우선순위는 8 + 2 = 10, 부스트 결과는 10 + 6 = 16이지만 가변 범위 부스트는 <b>15를 넘을 수 없습니다</b>. 그래서 15이고, 이후 퀀텀이 끝날 때마다 1씩 내려가 10에서 멈춥니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">우선순위 10 스레드가 퀀텀을 절반 쓴 상태에서 우선순위 12 스레드에게 선점되었습니다. 선점된 스레드는 어떻게 되나요?</p>
+  <ol class="opts">
+    <li>우선순위 10 레디 큐의 꼬리로 가고 새 퀀텀을 받는다</li>
+    <li data-correct>우선순위 10 레디 큐의 머리로 가고 남은 퀀텀을 유지한다</li>
+    <li>Standby 상태가 되어 같은 CPU에서 다음에 반드시 실행된다</li>
+    <li>우선순위가 1 감쇠된 뒤 큐 꼬리로 간다</li>
+  </ol>
+  <div class="explain">선점은 스레드의 잘못이 아니므로 같은 우선순위 큐의 <b>머리</b>에 넣어 먼저 재개되게 하고, 남은 퀀텀을 그대로 씁니다. 퀀텀을 다 쓴 경우에만 꼬리로 갑니다. 감쇠는 퀀텀 종료 시에만 일어납니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">스케줄러가 다음 스레드를 고를 때 32개 레디 큐를 순서대로 검사하지 않아도 되는 이유는?</p>
+  <ol class="opts">
+    <li>레디 큐가 우선순위별로 정렬된 하나의 연결 리스트이기 때문</li>
+    <li>가장 최근에 실행한 스레드를 캐시해 두기 때문</li>
+    <li data-correct><code>ReadySummary</code> 비트맵에서 최상위 비트를 한 번에 찾으면 비어 있지 않은 최고 우선순위 큐를 알 수 있기 때문</li>
+    <li>실시간 범위 큐만 검사하기 때문</li>
+  </ol>
+  <div class="explain">비트 n은 "우선순위 n 큐가 비어 있지 않음"을 뜻합니다. <code>bsr</code> 한 번으로 최고 우선순위를 찾고 그 큐의 머리를 꺼내므로 스레드 수와 무관하게 O(1)입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">CPU 바운드 실시간(24) 스레드가 단일 코어를 점유하고 있을 때, 같은 코어의 우선순위 8 스레드는?</p>
+  <ol class="opts">
+    <li>기아 방지 부스트로 15가 되어 결국 실행된다</li>
+    <li>퀀텀이 끝날 때마다 라운드 로빈으로 번갈아 실행된다</li>
+    <li data-correct>기아 방지 부스트를 받아도 15 &lt; 24이므로 실시간 스레드가 대기하거나 끝날 때까지 실행되지 못한다</li>
+    <li>커널이 실시간 스레드의 우선순위를 낮춰 공평하게 한다</li>
+  </ol>
+  <div class="explain">라운드 로빈은 <b>같은 우선순위</b>끼리만 일어납니다. 기아 방지 부스트는 15가 상한이고, 커널은 실시간 범위 스레드의 우선순위를 바꾸지 않습니다. 실시간 우선순위를 남용하면 시스템 스레드와 UI가 굶을 수 있습니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">같은 프로세스 내 스레드 간 컨텍스트 스위치가 다른 프로세스 스레드로의 전환보다 일반적으로 저렴한 주된 이유는?</p>
+  <ol class="opts">
+    <li>레지스터를 저장할 필요가 없어서</li>
+    <li data-correct>CR3(주소 공간)를 바꾸지 않아 TLB와 캐시의 유효한 변환을 유지하기 때문</li>
+    <li>커널 스택을 공유하기 때문</li>
+    <li>IRQL을 올릴 필요가 없어서</li>
+  </ol>
+  <div class="explain">레지스터 저장/복원과 IRQL 처리는 어느 경우든 필요하며, 스레드마다 커널 스택은 별개입니다. 차이는 주소 공간 전환과 그에 따른 TLB 비용입니다.</div>
+</div>
+<div class="quiz">
+  <p class="q">클라이언트 Windows의 기본 설정에서 포그라운드 앱이 받는 혜택으로 옳은 것은?</p>
+  <ol class="opts">
+    <li>모든 스레드의 기본 우선순위가 +2 된다</li>
+    <li>실시간 범위로 승격된다</li>
+    <li data-correct>스레드 퀀텀이 배경 프로세스의 3배(6 → 18 단위)가 된다</li>
+    <li>전용 CPU 코어가 예약된다</li>
+  </ol>
+  <div class="explain">기본 <code>Win32PrioritySeparation</code>(짧은·가변, 인덱스 2)는 포그라운드 프로세스에 18단위 퀀텀을 줍니다. 기본 우선순위는 바뀌지 않습니다. 별도로 포그라운드 프로세스의 스레드는 대기 완료 시 추가 부스트를 받을 수 있습니다.</div>
+</div>
+
+<div class="summary">
+  <h3>핵심 요약</h3>
+  <ul>
+    <li>Windows는 우선순위 기반 선점형 스케줄러다. 가장 높은 우선순위의 Ready 스레드가 실행되고, 같은 우선순위끼리는 퀀텀 단위 라운드 로빈.</li>
+    <li>우선순위 1–15는 가변(부스트·감쇠, 상한 15), 16–31은 실시간(커널이 바꾸지 않음). 클래스 기본값 + 상대값으로 정해진다.</li>
+    <li>각 KPRCB의 32개 레디 큐와 <code>ReadySummary</code> 비트맵으로 O(1) 선택. 선점된 스레드는 큐 머리, 퀀텀 소진 스레드는 큐 꼬리.</li>
+    <li>퀀텀은 클라이언트 2틱, 서버 12틱이 기본이며 사이클로 측정한다. 클라이언트 포그라운드 프로세스는 퀀텀이 3배.</li>
+    <li>부스트: I/O 완료, 이벤트, GUI 입력, 기아 방지(→15), 락 소유자. 컨텍스트 스위치는 커널 스택에 상태를 저장/복원하고, 프로세스가 다를 때만 CR3를 바꾼다.</li>
+    <li>멀티프로세서 배치는 유휴 프로세서 → 이상 프로세서 선점 → 레디 큐 순이며, 엄격한 전역 우선순위 보장은 없다. CPU Sets와 QoS가 현대 이종 코어 배치를 보완한다.</li>
+  </ul>
+</div>
+
+</main>
+
+<script>
+(function () {
+  /* ---------- 그림 5-1 우선순위 막대 ---------- */
+  const pbar = document.getElementById('pbar');
+  let pb = '';
+  for (let i = 0; i < 32; i++) {
+    const x = 30 + 25 * i, cls = i === 0 ? 'hw' : i <= 15 ? 'user' : 'warn';
+    pb += `<rect class="box ${cls}" x="${x}" y="50" width="24" height="40" rx="3"/><text x="${x + 12}" y="75" text-anchor="middle" class="sm">${i}</text>`;
+  }
+  pbar.innerHTML = pb;
+
+  /* ---------- 우선순위 계산기 ---------- */
+  const CLASSES = [['Idle', 4], ['Below Normal', 6], ['Normal', 8], ['Above Normal', 10], ['High', 13], ['Realtime', 24]];
+  const RELS = [['TIME_CRITICAL', 'tc'], ['HIGHEST', 2], ['ABOVE_NORMAL', 1], ['NORMAL', 0], ['BELOW_NORMAL', -1], ['LOWEST', -2], ['IDLE', 'idle']];
+  let cIdx = 2, rIdx = 3;
+  const cRow = document.getElementById('calcClass'), rRow = document.getElementById('calcRel');
+  const cells = document.getElementById('calcCells'), cOut = document.getElementById('calcOut');
+  CLASSES.forEach(([n, b], i) => { const e = document.createElement('button'); e.className = 'btn'; e.textContent = `${n} (${b})`; e.addEventListener('click', () => { cIdx = i; calc(); }); cRow.appendChild(e); });
+  RELS.forEach(([n, v], i) => { const e = document.createElement('button'); e.className = 'btn mono'; e.style.fontSize = '.78rem'; e.textContent = typeof v === 'number' ? `${n} (${v >= 0 ? '+' : ''}${v})` : n; e.addEventListener('click', () => { rIdx = i; calc(); }); rRow.appendChild(e); });
+  function calc() {
+    const [cn, base] = CLASSES[cIdx], [rn, rv] = RELS[rIdx], rt = base >= 16;
+    let p, how;
+    if (rv === 'tc') { p = rt ? 31 : 15; how = `TIME_CRITICAL은 클래스와 무관하게 ${rt ? '31 (실시간 최댓값)' : '15 (가변 범위 최댓값)'}로 포화`; }
+    else if (rv === 'idle') { p = rt ? 16 : 1; how = `IDLE은 ${rt ? '16 (실시간 최솟값)' : '1 (가변 범위 최솟값)'}로 포화`; }
+    else { p = base + rv; how = `클래스 기본 ${base} ${rv >= 0 ? '+' : '−'} ${Math.abs(rv)}`; }
+    cRow.querySelectorAll('.btn').forEach((b, i) => b.classList.toggle('on', i === cIdx));
+    rRow.querySelectorAll('.btn').forEach((b, i) => b.classList.toggle('on', i === rIdx));
+    let h = '';
+    for (let i = 0; i < 32; i++) {
+      let c = i === 0 ? '' : i <= 15 ? 'dyn' : 'rt';
+      if (!rt && i > p && i <= 15) c = 'boost';
+      if (i === base) c += ' base';
+      if (i === p) c = 'cur';
+      h += `<div class="${c}">${i}</div>`;
+    }
+    cells.innerHTML = h;
+    cOut.innerHTML = `<span class="big">${p}</span><span>${cn} × ${rn}: ${how}.</span>` +
+      (rt ? `<span class="muted">실시간 범위 — 커널은 부스트·감쇠를 하지 않습니다.</span>`
+          : `<span class="muted">가변 범위 — <span style="color:var(--ok)">초록 칸</span>까지 일시적 부스트 가능 (상한 15). 주황 테두리 = 클래스 기본값.</span>`);
+  }
+  calc();
+
+  /* ---------- 그림 5-3 레디 큐 스테퍼 ---------- */
+  const PRI = { T0: 10, T1: 8, T2: 8, T3: 10, T4: 12 };
+  const RQS = [
+    { run: 'T0', q: { 12: [], 10: ['T3'], 8: ['T1', 'T2'] }, note: '실행 중 T0(10) · bsr(ReadySummary) = 10 → 더 높은 Ready 없음' },
+    { run: 'T0', q: { 12: ['T4'], 10: ['T3'], 8: ['T1', 'T2'] }, hl: ['T4'], note: 'T4(12) 꼬리 삽입 · 비트 12 set · 12 > 10 → 선점 요청' },
+    { run: 'T4', q: { 12: [], 10: ['T0', 'T3'], 8: ['T1', 'T2'] }, hl: ['T0', 'T4'], note: 'bsr = 12 → T4 실행 · 큐 12 비어 비트 clear · T0은 큐 10 머리' },
+    { run: 'T0', q: { 12: [], 10: ['T3'], 8: ['T1', 'T2'] }, hl: ['T0'], note: 'T4 대기 · bsr = 10 → 큐 머리의 T0 선택' },
+    { run: 'T3', q: { 12: [], 10: ['T0'], 8: ['T1', 'T2'] }, hl: ['T3', 'T0'], note: 'T0 퀀텀 종료 → 큐 10 꼬리 · T3 실행 (라운드 로빈)' },
+    { run: 'T0', q: { 12: [], 10: ['T3'], 8: ['T1', 'T2'] }, hl: ['T1', 'T2'], warn: true, note: '10끼리 교대 실행 · 우선순위 8 큐는 계속 대기 → 기아' },
+  ];
+  const rqG = document.getElementById('rqG');
+  function chip(x, y, name, hl, warn) {
+    return `<rect class="box ${warn ? 'bad' : 'kernel'}${hl ? ' hl' : ''}" x="${x}" y="${y}" width="74" height="28" rx="6"/>` +
+      `<text x="${x + 37}" y="${y + 19}" text-anchor="middle" class="mono">${name}(${PRI[name]})</text>`;
+  }
+  function drawRq(k) {
+    const st = RQS[k - 1], hl = st.hl || [];
+    let s = `<text x="20" y="34" class="b mono">ReadySummary</text>`;
+    const set = Object.keys(st.q).filter(p => st.q[p].length).map(Number);
+    for (let b = 31; b >= 0; b--) {
+      const x = 140 + (31 - b) * 22, on = set.includes(b);
+      s += `<rect class="box ${on ? 'kernel' : 'plain'}" x="${x}" y="18" width="20" height="22" rx="3"/>`;
+      s += `<text x="${x + 10}" y="33" text-anchor="middle" class="sm"${on ? ' style="fill:var(--kernel);font-weight:700"' : ''}>${on ? 1 : 0}</text>`;
+      if (b === 31 || b === 0 || on) s += `<text x="${x + 10}" y="54" text-anchor="middle" class="sm">${b}</text>`;
+    }
+    [12, 10, 8].forEach((p, r) => {
+      const y = 90 + r * 54;
+      s += `<text x="20" y="${y + 19}" class="mono">ReadyList[${p}]</text>`;
+      s += `<path class="ln noarr" d="M128 ${y + 14} H146"/>`;
+      if (!st.q[p].length) s += `<text x="152" y="${y + 19}" class="sm">(비어 있음)</text>`;
+      st.q[p].forEach((n, i) => {
+        const x = 150 + i * 92;
+        s += chip(x, y, n, hl.includes(n), st.warn && p === 8);
+        if (i) s += `<path class="ln" d="M${x - 18} ${y + 14} H${x - 3}"/>`;
+      });
+      s += `<text x="${150 + Math.max(1, st.q[p].length) * 92 - 4}" y="${y + 19}" class="sm">${st.q[p].length ? '← 꼬리' : ''}</text>`;
+    });
+    s += `<rect class="box acc" x="610" y="86" width="250" height="140" rx="10"/>`;
+    s += `<text x="735" y="112" text-anchor="middle" class="b">CPU 0 · 실행 중</text>`;
+    s += `<rect class="box acc${hl.includes(st.run) ? ' hl' : ''}" x="675" y="134" width="120" height="44" rx="8"/>`;
+    s += `<text x="735" y="162" text-anchor="middle" class="lg">${st.run}(${PRI[st.run]})</text>`;
+    s += `<text x="735" y="208" text-anchor="middle" class="sm">KPRCB.CurrentThread</text>`;
+    s += `<text x="440" y="290" text-anchor="middle" class="b c-acc">${st.note}</text>`;
+    s += `<text x="440" y="318" text-anchor="middle" class="sm">머리 = 왼쪽 (다음에 꺼낼 스레드) · 선점된 스레드는 머리, 퀀텀을 다 쓴 스레드는 꼬리</text>`;
+    rqG.innerHTML = s;
+  }
+  document.getElementById('rqFig').addEventListener('wk:step', e => drawRq(e.detail.step));
+  drawRq(1);
+
+  /* ---------- 스케줄러 시뮬레이터 ---------- */
+  const STARVE = 12, WAIT_IO = 3, BURST_IO = 2;
+  const S = { cpus: [], threads: [], tick: 0, QR: 6, nextId: 1, seed: 0, sel: null, timer: null, flash: new Set() };
+  const $ = id => document.getElementById(id);
+  const logEl = $('sLog'), cpuView = $('sCpuView'), table = $('sTable');
+  const autoBtn = document.querySelector('#schedSim [data-a=auto]');
+  const PNAME = { 4: 'Idle', 6: 'Below Normal', 8: 'Normal', 10: 'Above Normal', 13: 'High', 24: 'Realtime' };
+  $('sPrio').innerHTML = Array.from({ length: 31 }, (_, i) => i + 1).map(p => `<option value="${p}"${p === 8 ? ' selected' : ''}>${p}${PNAME[p] ? ' · ' + PNAME[p] : ''}${p === 16 ? ' · 실시간 시작' : ''}</option>`).join('');
+
+  function log(h, cls) { logEl.innerHTML += `<span class="dim">[${String(S.tick).padStart(3)}]</span> ${cls ? `<span class="${cls}">${h}</span>` : h}\n`; logEl.scrollTop = logEl.scrollHeight; }
+  const mkCpu = () => ({ run: null, rq: Array.from({ length: 32 }, () => []) });
+  const firstBit = m => { for (let i = 0; i < 32; i++) if (m >> i & 1) return i; return 0; };
+  function highest(c) { for (let p = 31; p >= 0; p--) if (c.rq[p].length) return p; return -1; }
+  function removeQ(t) { S.cpus.forEach(c => c.rq.forEach(l => { const i = l.indexOf(t); if (i >= 0) l.splice(i, 1); })); }
+  function startRun(ci, t) { t.state = 'Running'; t.cpu = ci; S.cpus[ci].run = t; if (t.kind === 'io' && t.burst <= 0) t.burst = BURST_IO; S.flash.add(ci); }
+  function stopAuto() { if (S.timer) { clearInterval(S.timer); S.timer = null; } autoBtn.textContent = '⏵ 자동'; autoBtn.classList.remove('on'); }
+  function resetSim(n, quiet) {
+    stopAuto();
+    S.cpus = Array.from({ length: n }, mkCpu); S.threads = []; S.tick = 0; S.nextId = 1; S.seed = 0; S.sel = null;
+    $('sCpus').value = String(n);
+    logEl.innerHTML = quiet ? '' : `<span class="dim">CPU ${n}개로 초기화. 스레드를 추가하고 틱을 진행하세요.</span>\n`;
+    renderAff(); render();
+  }
+  function renderAff() {
+    const n = S.cpus.length;
+    $('sAff').innerHTML = '<span class="muted" style="font-size:.85rem">선호도</span> ' +
+      Array.from({ length: n }, (_, i) => `<label><input type="checkbox" data-aff="${i}" checked> CPU${i}</label>`).join(' ');
+  }
+  function readyT(t) {
+    t.state = 'Ready'; t.cpu = -1; t.readyTick = S.tick;
+    const cands = S.cpus.map((_, i) => i).filter(i => t.aff >> i & 1);
+    const idle = cands.filter(i => !S.cpus[i].run);
+    if (idle.length) {
+      const ci = idle.includes(t.ideal) ? t.ideal : idle[0];
+      startRun(ci, t);
+      log(`${t.name}(${t.prio}) → 유휴 CPU${ci}에서 바로 실행${ci === t.ideal ? ' (이상 프로세서)' : ''}`, 'ok');
+      return;
+    }
+    const ci = cands.includes(t.ideal) ? t.ideal : cands[0], c = S.cpus[ci], r = c.run;
+    if (r.prio < t.prio) {
+      r.state = 'Ready'; r.cpu = -1; r.readyTick = S.tick; c.rq[r.prio].unshift(r);
+      startRun(ci, t);
+      log(`선점! CPU${ci}: ${t.name}(${t.prio}) &gt; ${r.name}(${r.prio}) → ${r.name}는 큐[${r.prio}] 머리로 (남은 퀀텀 ${r.q})`, 'bad');
+    } else {
+      c.rq[t.prio].push(t);
+      log(`${t.name}(${t.prio}) → CPU${ci} 큐[${t.prio}] 꼬리 (실행 중 ${r.name}(${r.prio})를 선점할 수 없음)`);
+    }
+  }
+  function pickNext(ci) {
+    const c = S.cpus[ci];
+    if (c.run) return;
+    const h = highest(c);
+    if (h >= 0) { const t = c.rq[h].shift(); startRun(ci, t); log(`CPU${ci}: bsr(ReadySummary) = ${h} → ${t.name} 실행`); return; }
+    let best = null, bp = -1, from = -1;
+    S.cpus.forEach((o, cj) => {
+      if (cj === ci) return;
+      for (let p = 31; p > bp; p--) { const t = o.rq[p].find(x => x.aff >> ci & 1); if (t) { best = t; bp = p; from = cj; break; } }
+    });
+    if (best) { removeQ(best); startRun(ci, best); log(`CPU${ci}: 자기 큐가 비어 CPU${from}의 큐에서 ${best.name}(${bp})를 가져옴`, 'warn'); }
+  }
+  function wake(t, why) {
+    t.waitLeft = 0; t.burst = BURST_IO; t.q = S.QR;
+    let msg = '';
+    if (t.base < 16) { const nb = Math.min(15, Math.max(t.prio, t.base + 2)); if (nb !== t.prio) msg = ` 부스트 ${t.prio}→${nb}`; t.prio = nb; }
+    else msg = ' (실시간: 부스트 없음)';
+    log(`${t.name} ${why} → 대기 해제${msg}`, 'ok');
+    readyT(t);
+  }
+  function addThread(prio, kind, aff, name) {
+    const n = S.cpus.length;
+    aff &= (1 << n) - 1; if (!aff) aff = (1 << n) - 1;
+    let ideal = S.seed++ % n; if (!(aff >> ideal & 1)) ideal = firstBit(aff);
+    const id = S.nextId++;
+    const t = { id, name: name || 'T' + id, base: prio, prio, q: S.QR, state: 'Init', cpu: -1, ideal, aff, kind, burst: BURST_IO, waitLeft: 0, readyTick: 0, starve: false };
+    S.threads.push(t);
+    log(`+ ${t.name} 생성: 우선순위 ${prio}, ${kind === 'io' ? 'I/O 바운드' : 'CPU 바운드'}, 이상 CPU${ideal}`);
+    readyT(t);
+    return t;
+  }
+  function tickStep() {
+    S.tick++;
+    S.cpus.forEach((c, ci) => {
+      const t = c.run; if (!t) return;
+      t.q -= 3;
+      if (t.kind === 'io') {
+        t.burst--;
+        if (t.burst <= 0) { t.state = 'Waiting'; t.waitLeft = WAIT_IO; t.cpu = -1; c.run = null; log(`CPU${ci}: ${t.name} I/O 요청 → Waiting (${WAIT_IO}틱)`); return; }
+      }
+      if (t.q <= 0) {
+        const old = t.prio; let msg = '';
+        if (t.starve) { t.prio = t.base; t.starve = false; msg = `, 기아 방지 부스트 종료 ${old}→${t.base}`; }
+        else if (t.base < 16 && t.prio > t.base) { t.prio--; msg = `, 감쇠 ${old}→${t.prio}`; }
+        t.q = S.QR;
+        const h = highest(c);
+        if (h >= t.prio) {
+          t.state = 'Ready'; t.cpu = -1; t.readyTick = S.tick; c.rq[t.prio].push(t); c.run = null;
+          log(`CPU${ci}: ${t.name} 퀀텀 종료${msg} → 큐[${t.prio}] 꼬리`, 'warn');
+        } else log(`CPU${ci}: ${t.name} 퀀텀 종료${msg} → 같거나 높은 Ready 없음, 새 퀀텀으로 계속`, 'dim');
+      }
+    });
+    S.cpus.forEach((c, ci) => pickNext(ci));
+    S.threads.filter(t => t.state === 'Waiting' && isFinite(t.waitLeft)).forEach(t => { if (--t.waitLeft <= 0) wake(t, 'I/O 완료'); });
+    S.cpus.forEach((c, ci) => pickNext(ci));
+    S.cpus.forEach(c => c.rq.forEach(l => l.slice().forEach(t => {
+      if (t.base < 16 && !t.starve && t.prio < 15 && S.tick - t.readyTick >= STARVE) {
+        l.splice(l.indexOf(t), 1);
+        log(`기아 방지: ${t.name}가 ${S.tick - t.readyTick}틱 동안 Ready → 우선순위 ${t.prio}→15`, 'warn');
+        t.prio = 15; t.starve = true; t.q = S.QR;
+        readyT(t);
+      }
+    })));
+    render();
+  }
+  function selected() { return S.threads.find(t => t.id === S.sel); }
+  function action(a) {
+    if (a === 'tick') return tickStep();
+    if (a === 'auto') {
+      if (S.timer) return stopAuto();
+      S.timer = setInterval(tickStep, 700); autoBtn.textContent = '⏸ 정지'; autoBtn.classList.add('on'); return;
+    }
+    if (a === 'add') {
+      let aff = 0; document.querySelectorAll('#sAff [data-aff]').forEach(cb => { if (cb.checked) aff |= 1 << +cb.dataset.aff; });
+      addThread(+$('sPrio').value, $('sKind').value, aff); render(); return;
+    }
+    const t = selected();
+    if (!t) { log('표에서 스레드를 먼저 선택하세요.', 'dim'); return; }
+    if (a === 'wait') {
+      if (t.state === 'Waiting') { log(`${t.name}는 이미 대기 중`, 'dim'); return; }
+      if (t.state === 'Running') { const ci = t.cpu; S.cpus[ci].run = null; t.cpu = -1; t.state = 'Waiting'; t.waitLeft = Infinity; log(`${t.name} 대기 시작 (수동 깨우기 전까지)`); pickNext(ci); }
+      else { removeQ(t); t.state = 'Waiting'; t.waitLeft = Infinity; log(`${t.name} 대기 시작 (레디 큐에서 제거)`); }
+    } else if (a === 'wake') {
+      if (t.state !== 'Waiting') { log(`${t.name}는 대기 중이 아님`, 'dim'); return; }
+      wake(t, '이벤트 시그널');
+    } else if (a === 'up' || a === 'down') {
+      const nb = Math.max(1, Math.min(31, t.base + (a === 'up' ? 1 : -1)));
+      log(`${t.name} 기본 우선순위 ${t.base}→${nb}${nb >= 16 && t.base < 16 ? ' (실시간 범위 진입)' : ''}`);
+      t.base = nb; t.prio = nb; t.starve = false;
+      if (t.state === 'Running') {
+        const ci = t.cpu, c = S.cpus[ci];
+        if (highest(c) > t.prio) { c.run = null; t.state = 'Ready'; t.cpu = -1; t.readyTick = S.tick; c.rq[t.prio].unshift(t); log(`CPU${ci}: 더 높은 Ready 스레드가 있어 ${t.name} 선점됨`, 'bad'); pickNext(ci); }
+      } else if (t.state === 'Ready') { removeQ(t); readyT(t); }
+    } else if (a === 'kill') {
+      if (t.state === 'Running') { const ci = t.cpu; S.cpus[ci].run = null; pickNext(ci); }
+      else removeQ(t);
+      S.threads.splice(S.threads.indexOf(t), 1); S.sel = null;
+      log(`${t.name} 종료`, 'bad');
+    }
+    render();
+  }
+  const PRESETS = {
+    preempt() { resetSim(1, true); log('프리셋 「선점」: CPU 1개. A·B(8)는 CPU 바운드, C(12)는 I/O 바운드입니다. C가 I/O를 마칠 때마다 부스트를 받아 실행 중인 스레드를 선점하는지 관찰하세요.', 'dim');
+      addThread(8, 'cpu', 1, 'A'); addThread(8, 'cpu', 1, 'B'); addThread(12, 'io', 1, 'C'); },
+    rr() { resetSim(1, true); log('프리셋 「라운드 로빈」: 같은 우선순위 8의 CPU 바운드 스레드 3개. 퀀텀(2틱)마다 차례가 넘어갑니다.', 'dim');
+      addThread(8, 'cpu', 1, 'T1'); addThread(8, 'cpu', 1, 'T2'); addThread(8, 'cpu', 1, 'T3'); },
+    starve() { resetSim(1, true); log(`프리셋 「기아 방지」: L(4)과 H(10) 모두 CPU 바운드. H가 CPU를 독점하면 ${STARVE}틱 뒤 L이 15로 부스트됩니다.`, 'dim');
+      addThread(10, 'cpu', 1, 'H'); addThread(4, 'cpu', 1, 'L'); },
+    rt() { resetSim(1, true); log('프리셋 「실시간 독점」: RT(24) CPU 바운드와 N(8). N은 기아 방지로 15가 되어도 24를 이길 수 없습니다.', 'dim');
+      addThread(24, 'cpu', 1, 'RT'); addThread(8, 'cpu', 1, 'N'); },
+    mp() { resetSim(2, true); log('프리셋 「멀티코어」: CPU 2개. P(10)는 CPU1에만 선호도가 있습니다. 이상 프로세서·선점을 관찰하고, CPU1 큐에 들어간 B(8)가 CPU0의 A(8)와 같은 우선순위인데도 기다리는 점(엄격한 전역 보장 없음)에 주목하세요.', 'dim');
+      addThread(8, 'cpu', 3, 'A'); addThread(8, 'cpu', 3, 'B'); addThread(10, 'cpu', 2, 'P'); addThread(6, 'io', 3, 'D'); },
+  };
+  function render() {
+    $('sTick').textContent = `틱 ${S.tick} · 퀀텀 ${S.QR}단위`;
+    cpuView.innerHTML = S.cpus.map((c, ci) => {
+      const t = c.run;
+      const bits = Array.from({ length: 32 }, (_, k) => 31 - k).map(p => `<span class="${c.rq[p].length ? 'on' : ''}" title="우선순위 ${p}"></span>`).join('');
+      const qs = []; for (let p = 31; p >= 0; p--) if (c.rq[p].length) qs.push(`<span class="lv">[${p}]</span> ${c.rq[p].map(x => x.name).join(' → ')}`);
+      return `<div class="cpu-card"><h5><span>CPU ${ci}</span><span class="muted">${t ? '' : 'Idle 스레드'}</span></h5>
+        <div class="run${t ? ' busy' : ''}${S.flash.has(ci) ? ' flash' : ''}">${t ? `${t.name} · P${t.prio}${t.prio !== t.base ? ` <span class="boosted">(기본 ${t.base})</span>` : ''}` : '<span class="muted">—</span>'}</div>
+        <div class="qbar"><i style="width:${t ? Math.max(0, t.q) / S.QR * 100 : 0}%"></i></div>
+        <div class="rsum-l"><span>ReadySummary 31</span><span>0</span></div><div class="rsum">${bits}</div>
+        <div class="rq">${qs.length ? qs.join('<br>') : '<span class="muted">레디 큐 비어 있음</span>'}</div></div>`;
+    }).join('');
+    S.flash.clear();
+    const n = S.cpus.length;
+    table.innerHTML = '<thead><tr><th>스레드</th><th>종류</th><th>기본</th><th>현재</th><th>상태</th><th>CPU</th><th>이상</th><th>퀀텀</th><th>선호도</th></tr></thead><tbody>' +
+      (S.threads.length ? S.threads.map(t => `<tr data-id="${t.id}" class="${t.id === S.sel ? 'sel' : ''}">
+        <td><b>${t.name}</b></td><td>${t.kind === 'io' ? 'I/O' : 'CPU'}</td><td>${t.base}</td>
+        <td class="${t.prio > t.base ? 'boosted' : ''}">${t.prio}${t.starve ? ' ⚡' : ''}</td>
+        <td><span class="st ${t.state}">${t.state}</span>${t.state === 'Waiting' ? ` <span class="muted">${isFinite(t.waitLeft) ? t.waitLeft + '틱' : '수동'}</span>` : ''}</td>
+        <td>${t.cpu >= 0 ? t.cpu : '—'}</td><td>${t.ideal}</td><td>${t.q}/${S.QR}</td>
+        <td class="mono">${Array.from({ length: n }, (_, i) => t.aff >> i & 1 ? i : '·').join('')}</td></tr>`).join('')
+        : '<tr><td colspan="9" class="muted">스레드가 없습니다. 프리셋을 누르거나 + 스레드 추가를 사용하세요.</td></tr>') + '</tbody>';
+    const s = selected();
+    $('sSelInfo').textContent = s ? `선택: ${s.name} (${s.state}, 우선순위 ${s.prio})` : '선택: 없음 (표의 행을 클릭)';
+  }
+  table.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (!tr) return; S.sel = +tr.dataset.id; render(); });
+  document.querySelectorAll('#schedSim [data-a]').forEach(b => b.addEventListener('click', () => action(b.dataset.a)));
+  document.querySelectorAll('#schedSim [data-preset]').forEach(b => b.addEventListener('click', () => { PRESETS[b.dataset.preset](); render(); }));
+  $('sCpus').addEventListener('change', e => resetSim(+e.target.value));
+  $('sQuantum').addEventListener('change', e => { S.QR = +e.target.value; S.threads.forEach(t => { t.q = Math.min(t.q, S.QR); if (t.state !== 'Running') t.q = S.QR; }); log(`퀀텀을 ${S.QR}단위(${S.QR / 3}틱)로 변경`); render(); });
+  resetSim(2, true);
+  PRESETS.preempt(); render();
+})();
+</script>
+</body>
+</html>

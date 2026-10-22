@@ -1,0 +1,899 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>페이징과 주소 변환</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+.mono { font-family: var(--mono); }
+/* 비트 분할 */
+.bitrow { display: flex; flex-wrap: wrap; gap: 2px; margin: 10px 0 4px; }
+.bitrow .b { width: 17px; height: 26px; display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 12px; border-radius: 3px; border: 1px solid var(--border); }
+.bitrow .b.v { background: var(--violet-soft); border-color: var(--violet); }
+.bitrow .b.o { background: var(--accent-soft); border-color: var(--accent); }
+.bitrow .b.gap { margin-right: 5px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13.5px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+/* 변환 스텝 SVG */
+svg .tw { transition: opacity .35s; }
+svg .tw.dim { opacity: .12; }
+svg .hb rect, svg rect.hb { transition: fill .3s, stroke .3s; }
+svg .hb.on rect, svg rect.hb.on { fill: var(--accent-soft) !important; stroke: var(--accent) !important; stroke-width: 2.5; }
+/* 변환기 */
+.pt-tbl td, .pt-tbl th { text-align: center; padding: 4px 6px; font-family: var(--mono); font-size: 13px; }
+.pt-tbl th { font-family: var(--sans); }
+.pt-tbl td.u { font-family: var(--sans); text-align: left; color: var(--muted); }
+.pt-tbl tr.on td { background: var(--accent-soft); }
+.pt-tbl tr.np td { color: var(--muted); }
+.pt-tbl td.flip { animation: flip 1s; }
+@keyframes flip { from { background: var(--warn-soft); } to { background: transparent; } }
+.tr-steps { list-style: none; padding: 0; margin: 8px 0; font-size: 14.5px; }
+.tr-steps li { padding: 2px 0; }
+.tr-steps li.pass::before { content: "✔ "; color: var(--ok); font-weight: 700; }
+.tr-steps li.fail::before { content: "✘ "; color: var(--bad); font-weight: 700; }
+.result { margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 15px; }
+.result.ok { background: var(--ok-soft); border-left: 4px solid var(--ok); }
+.result.bad { background: var(--bad-soft); border-left: 4px solid var(--bad); }
+.result.info { background: var(--surface-2); border-left: 4px solid var(--muted); }
+/* PTE 비트 다이어그램 */
+.pte-grid { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px; max-width: 720px; }
+.pte-grid .pb { cursor: pointer; border-radius: 4px; border: 1px solid var(--border); text-align: center; padding: 2px 0 3px; user-select: none; }
+.pte-grid .pb .n { display: block; font-size: 9.5px; color: var(--muted); font-family: var(--mono); }
+.pte-grid .pb .val { display: block; font-family: var(--mono); font-size: 14px; font-weight: 700; }
+.pte-grid .pb.one .val { color: var(--text); }
+.pte-grid .pb.zero .val { color: var(--muted); opacity: .6; }
+.pte-grid .pb.sel { outline: 2px solid var(--text); outline-offset: 0; }
+.f-flag { background: var(--ok-soft); border-color: var(--ok) !important; }
+.f-cache { background: var(--teal-soft); border-color: var(--teal) !important; }
+.f-ign { background: var(--surface-2); }
+.f-pfn { background: var(--accent-soft); border-color: var(--accent) !important; }
+.f-rsv { background: var(--bad-soft); border-color: var(--bad) !important; }
+.f-pk { background: var(--warn-soft); border-color: var(--warn) !important; }
+.f-nx { background: var(--violet-soft); border-color: var(--violet) !important; }
+.pte-info { margin-top: 10px; padding: 10px 14px; background: var(--surface-2); border-radius: 8px; font-size: 14.5px; min-height: 4em; }
+.pte-dec { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; font-family: var(--mono); font-size: 12.5px; }
+.pte-dec span { padding: 2px 8px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); }
+.pte-dec span.on { background: var(--ok-soft); border-color: var(--ok); }
+@media (max-width: 600px) { .pte-grid .pb .val { font-size: 12px; } .pte-grid .pb .n { font-size: 8px; } }
+.calc-out td:nth-child(n+2) { font-family: var(--mono); text-align: right; }
+.big { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+</style>
+</head>
+<body data-chapter="03">
+<main>
+  <header class="chapter-head">
+    <span class="label">개론 · Chapter 03</span>
+    <h1>페이징과 주소 변환</h1>
+    <p class="lead">02장의 모든 문제(외부 단편화, 압축, 연속 할당)는 "프로세스가 물리적으로 연속이어야 한다"는 가정에서 나왔다. 페이징은 이 가정을 버린다. 주소 공간을 같은 크기의 조각으로 자르고, 조각마다 물리 위치를 따로 기록한다. 이 장에서는 그 기록, 곧 페이지 테이블 하나가 어떻게 생겼고 어떤 비용을 치르는지 비트 단위로 해부한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>페이지·프레임·페이지 테이블의 관계를 설명하고, 주소를 VPN과 오프셋으로 나누는 비트 연산을 손으로 할 수 있다.</li>
+      <li>단일 레벨 페이지 테이블로 가상 주소를 물리 주소로 변환하고, 무효 페이지·권한 위반에서 어떤 페이지 폴트(에러 코드)가 나는지 판정한다.</li>
+      <li>x86-64 PTE의 실제 비트 배치(P, R/W, U/S, PWT, PCD, A, D, PAT, G, PFN, PK, XD)와 각 비트를 누가 왜 쓰는지 안다.</li>
+      <li>페이지 테이블 크기를 계산해 단일 레벨 구조가 64비트에서 불가능한 이유를 보이고, 페이지 크기 트레이드오프를 설명한다.</li>
+      <li>공유 라이브러리 페이지 공유의 원리와, 역 페이지 테이블·해시 페이지 테이블의 장단점을 안다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">페이지와 프레임</a></li>
+    <li><a href="#s2">주소를 VPN | offset으로 자르기</a></li>
+    <li><a href="#s3">단일 레벨 페이지 테이블 변환</a></li>
+    <li><a href="#s4">직접 변환해 보기: 유효/무효와 페이지 폴트</a></li>
+    <li><a href="#s5">PTE의 구조: x86-64 실제 비트</a></li>
+    <li><a href="#s6">페이지 테이블은 얼마나 큰가</a></li>
+    <li><a href="#s7">페이지 크기 트레이드오프와 내부 단편화</a></li>
+    <li><a href="#s8">보호와 공유</a></li>
+    <li><a href="#s9">역 페이지 테이블과 해시 페이지 테이블</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 페이지와 프레임</h2>
+    <p>가상 주소 공간을 고정 크기 <b>페이지(page)</b>로, 물리 메모리를 같은 크기의 <b>프레임(frame, page frame)</b>으로 자른다. 프로세스의 각 페이지는 <b>아무</b> 빈 프레임에나 들어갈 수 있다. 어느 페이지가 어느 프레임에 있는지는 프로세스별 <b>페이지 테이블</b>에 적는다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 660 270" role="img" aria-label="페이지가 비연속 프레임에 매핑되는 그림">
+        <defs><marker id="a3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <text x="75" y="20" text-anchor="middle" style="font-weight:700">가상 주소 공간</text>
+        <g style="font-size:12px">
+          <rect x="30" y="34" width="90" height="34" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="75" y="56" text-anchor="middle">page 0</text>
+          <rect x="30" y="68" width="90" height="34" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="75" y="90" text-anchor="middle">page 1</text>
+          <rect x="30" y="102" width="90" height="34" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="75" y="124" text-anchor="middle">page 2</text>
+          <rect x="30" y="136" width="90" height="34" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="75" y="158" text-anchor="middle">page 3</text>
+        </g>
+        <text x="270" y="20" text-anchor="middle" style="font-weight:700">페이지 테이블</text>
+        <g style="font-size:12px" class="mono">
+          <rect x="220" y="34" width="100" height="34" class="box"/><text x="200" y="56" text-anchor="end" class="muted">0</text><text x="270" y="56" text-anchor="middle">→ 1</text>
+          <rect x="220" y="68" width="100" height="34" class="box"/><text x="200" y="90" text-anchor="end" class="muted">1</text><text x="270" y="90" text-anchor="middle">→ 4</text>
+          <rect x="220" y="102" width="100" height="34" class="box"/><text x="200" y="124" text-anchor="end" class="muted">2</text><text x="270" y="124" text-anchor="middle">→ 3</text>
+          <rect x="220" y="136" width="100" height="34" class="box"/><text x="200" y="158" text-anchor="end" class="muted">3</text><text x="270" y="158" text-anchor="middle">→ 7</text>
+        </g>
+        <text x="540" y="20" text-anchor="middle" style="font-weight:700">물리 메모리 (프레임)</text>
+        <g style="font-size:12px">
+          <rect x="490" y="30" width="100" height="28" class="box"/><text x="475" y="49" text-anchor="end" class="muted">0</text><text x="540" y="49" text-anchor="middle" class="muted">커널</text>
+          <rect x="490" y="58" width="100" height="28" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="475" y="77" text-anchor="end" class="muted">1</text><text x="540" y="77" text-anchor="middle">page 0</text>
+          <rect x="490" y="86" width="100" height="28" class="box"/><text x="475" y="105" text-anchor="end" class="muted">2</text><text x="540" y="105" text-anchor="middle" class="muted">다른 프로세스</text>
+          <rect x="490" y="114" width="100" height="28" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="475" y="133" text-anchor="end" class="muted">3</text><text x="540" y="133" text-anchor="middle">page 2</text>
+          <rect x="490" y="142" width="100" height="28" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="475" y="161" text-anchor="end" class="muted">4</text><text x="540" y="161" text-anchor="middle">page 1</text>
+          <rect x="490" y="170" width="100" height="28" class="box"/><text x="475" y="189" text-anchor="end" class="muted">5</text><text x="540" y="189" text-anchor="middle" class="muted">빈 프레임</text>
+          <rect x="490" y="198" width="100" height="28" class="box"/><text x="475" y="217" text-anchor="end" class="muted">6</text><text x="540" y="217" text-anchor="middle" class="muted">페이지 캐시</text>
+          <rect x="490" y="226" width="100" height="28" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="475" y="245" text-anchor="end" class="muted">7</text><text x="540" y="245" text-anchor="middle">page 3</text>
+        </g>
+        <path d="M320,51 C400,51 410,72 488,72" class="line" marker-end="url(#a3-a)"/>
+        <path d="M320,85 C400,85 410,156 488,156" class="line" marker-end="url(#a3-a)"/>
+        <path d="M320,119 C400,119 410,128 488,128" class="line" marker-end="url(#a3-a)"/>
+        <path d="M320,153 C400,153 410,240 488,240" class="line" marker-end="url(#a3-a)"/>
+        <text x="75" y="196" text-anchor="middle" class="muted" style="font-size:12px">연속</text>
+        <text x="540" y="268" text-anchor="middle" class="muted" style="font-size:12px">흩어져 있어도 된다</text>
+      </svg>
+      <figcaption>그림 3-1. 연속인 가상 페이지가 흩어진 물리 프레임에 놓인다. 외부 단편화가 사라진다. 어떤 빈 프레임이든 어떤 페이지를 받을 수 있다.</figcaption>
+    </figure>
+    <p>이 구조에서 얻는 것을 02장과 비교해 보자.</p>
+    <ul>
+      <li><b>외부 단편화 없음</b>: 모든 빈 프레임은 똑같이 쓸모 있다. 빈 프레임 <i>n</i>개면 <i>n</i>페이지짜리 요청을 반드시 채울 수 있다. 압축이 필요 없다.</li>
+      <li><b>부분 적재</b>: 페이지마다 "메모리에 있음/없음"을 표시할 수 있다. 프로세스 전체가 아니라 필요한 페이지만 올리면 된다(요구 페이징, 06장).</li>
+      <li><b>페이지 단위 보호·공유</b>: 페이지마다 권한을 따로 둘 수 있고, 두 테이블이 같은 프레임을 가리키게 하면 공유된다(8절).</li>
+      <li><b>대가</b>: 모든 메모리 접근에 변환이 필요하다(성능 → TLB, 04장). 테이블 자체가 메모리를 먹는다(크기 → 다단계, 05장). 마지막 페이지에 내부 단편화가 생긴다(7절).</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 주소를 VPN | offset으로 자르기</h2>
+    <p>페이지 크기가 2<sup>k</sup>바이트면 가상 주소의 <b>하위 k비트</b>는 페이지 안의 위치(<b>오프셋</b>)다. 나머지 상위 비트가 <b>가상 페이지 번호(VPN)</b>다. 페이지 크기를 2의 거듭제곱으로 정하는 이유가 여기에 있다. 나눗셈과 나머지가 비트 자르기로 바뀌어 하드웨어가 사실상 공짜로 계산한다.</p>
+<pre><code>VPN    = VA &gt;&gt; k                 // VA / 2^k
+offset = VA &amp; ((1 &lt;&lt; k) - 1)     // VA % 2^k
+PA     = (PFN &lt;&lt; k) | offset     // 오프셋은 변환 없이 그대로 복사</code></pre>
+    <p>변환되는 것은 VPN뿐이다. 오프셋은 가상 주소에서 물리 주소로 그대로 복사된다. 4 KB 페이지라면 주소의 하위 12비트(16진수 마지막 세 자리)는 가상이든 물리든 같다. 디버깅할 때 아주 유용한 사실이다.</p>
+
+    <div class="widget" id="w-split">
+      <div class="w-title">주소 비트 분할기</div>
+      <div class="w-desc">주소 폭과 페이지 크기를 바꾸면 경계가 움직인다. 주소(16진수)를 입력하면 VPN과 오프셋을 계산한다.</div>
+      <div class="controls">
+        <label>주소 비트 <input type="range" id="sp-va" min="16" max="64" step="1" value="32"> <b id="sp-va-v" class="mono">32</b></label>
+        <label>페이지 크기 <input type="range" id="sp-pg" min="9" max="30" step="1" value="12"> <b id="sp-pg-v" class="mono">4 KiB</b></label>
+      </div>
+      <div class="controls">
+        <label>주소 <input type="text" id="sp-addr" value="0x12345678" size="20" class="mono" spellcheck="false"></label>
+        <button class="btn" data-sp="32,12,0x12345678">32비트·4K</button>
+        <button class="btn" data-sp="48,12,0x7ffd8b6c1a38">x86-64·4K</button>
+        <button class="btn" data-sp="48,21,0x7ffd8b6c1a38">x86-64·2M</button>
+        <button class="btn" data-sp="48,14,0x16f5e3a48">ARM64·16K</button>
+      </div>
+      <div class="legend"><span><i style="background:var(--violet-soft);border:1px solid var(--violet)"></i>VPN</span><span><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>offset</span></div>
+      <div class="bitrow" id="sp-bits"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">VPN (<span id="sp-vb"></span>비트)</div><div class="v mono c-violet" id="sp-vpn"></div></div>
+        <div class="stat"><div class="k">offset (<span id="sp-ob"></span>비트)</div><div class="v mono c-accent" id="sp-off"></div></div>
+        <div class="stat"><div class="k">가상 페이지 수</div><div class="v mono" id="sp-np"></div></div>
+        <div class="stat"><div class="k">주소 공간 크기</div><div class="v mono" id="sp-as"></div></div>
+      </div>
+      <div id="sp-msg" style="font-size:14px"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. 단일 레벨 페이지 테이블 변환</h2>
+    <p>가장 단순한 페이지 테이블은 VPN으로 인덱싱하는 <b>배열</b> 하나다. 테이블의 물리 시작 주소는 <b>PTBR</b>(page-table base register)에 있다. x86에서는 CR3, ARM64에서는 TTBR0_EL1/TTBR1_EL1이 이 역할을 한다(실제로는 다단계 테이블의 루트를 가리킨다, 05장). 문맥 교환 때 OS는 PTBR만 바꾸면 주소 공간 전체가 바뀐다.</p>
+    <p>아래 애니메이션은 16비트 주소, 4 KB 페이지(VPN 4비트 + 오프셋 12비트), 4바이트 PTE, 20비트 물리 주소를 쓰는 작은 시스템이다.</p>
+
+    <div class="widget" id="w-step">
+      <div class="w-title">주소 변환 한 걸음씩</div>
+      <div class="w-desc">CPU가 <code>load [0x3A7C]</code>를 실행할 때 하드웨어가 하는 일. 메모리 접근이 몇 번 일어나는지 세어 보라.</div>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 680 300" style="min-width:520px" id="tr-svg">
+        <defs>
+          <marker id="a3-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--accent)"/></marker>
+        </defs>
+        <!-- VA -->
+        <g class="tw hb" id="t-va">
+          <text x="20" y="22" style="font-weight:700">가상 주소 0x3A7C</text>
+          <rect x="20" y="32" width="230" height="36" rx="4" class="box"/>
+          <text x="135" y="55" text-anchor="middle" class="mono" style="font-size:13px">0011 1010 0111 1100</text>
+        </g>
+        <g class="tw" id="t-split">
+          <rect x="20" y="32" width="58" height="36" rx="4" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+          <text x="49" y="55" text-anchor="middle" class="mono" style="font-size:13px">0011</text>
+          <rect x="78" y="32" width="172" height="36" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="164" y="55" text-anchor="middle" class="mono" style="font-size:13px">1010 0111 1100</text>
+          <text x="49" y="84" text-anchor="middle" style="font-size:12px" class="c-violet">VPN = 3</text>
+          <text x="164" y="84" text-anchor="middle" style="font-size:12px">offset = 0xA7C</text>
+        </g>
+        <!-- PTBR -->
+        <g class="tw hb" id="t-ptbr">
+          <rect x="20" y="110" width="150" height="34" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+          <text x="95" y="132" text-anchor="middle" class="mono" style="font-size:13px">PTBR = 0x09000</text>
+        </g>
+        <g class="tw" id="t-calc">
+          <text x="20" y="168" class="mono" style="font-size:12px">PTE 주소 = 0x09000 + 3×4</text>
+          <text x="20" y="186" class="mono" style="font-size:12px;font-weight:700">         = 0x0900C  (메모리 접근 ①)</text>
+        </g>
+        <!-- Page table -->
+        <text x="350" y="22" text-anchor="middle" style="font-weight:700">페이지 테이블 @0x09000</text>
+        <g class="mono" style="font-size:12px">
+          <text x="296" y="44" class="muted" style="font-family:var(--sans)">VPN</text><text x="340" y="44" class="muted" style="font-family:var(--sans)">P</text><text x="390" y="44" class="muted" style="font-family:var(--sans)">PFN</text>
+          <rect x="285" y="50" width="140" height="20" class="box"/><text x="300" y="64">0</text><text x="342" y="64">0</text><text x="392" y="64">—</text>
+          <rect x="285" y="70" width="140" height="20" class="box"/><text x="300" y="84">1</text><text x="342" y="84">1</text><text x="392" y="84">0x12</text>
+          <rect x="285" y="90" width="140" height="20" class="box"/><text x="300" y="104">2</text><text x="342" y="104">1</text><text x="392" y="104">0x07</text>
+          <rect x="285" y="110" width="140" height="20" class="box hb" id="t-row"/><text x="300" y="124">3</text><text x="342" y="124">1</text><text x="392" y="124">0x2D</text>
+          <rect x="285" y="130" width="140" height="20" class="box"/><text x="300" y="144">4</text><text x="342" y="144">1</text><text x="392" y="144">0x1F</text>
+          <rect x="285" y="150" width="140" height="20" class="box"/><text x="300" y="164">5</text><text x="342" y="164">0</text><text x="392" y="164">—</text>
+          <text x="355" y="186" text-anchor="middle" class="muted">⋮ (16개)</text>
+        </g>
+        <!-- Physical memory -->
+        <text x="590" y="22" text-anchor="middle" style="font-weight:700">물리 메모리</text>
+        <rect x="530" y="32" width="120" height="250" class="box"/>
+        <g style="font-size:11.5px">
+          <rect x="530" y="60" width="120" height="26" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="590" y="78" text-anchor="middle">프레임 0x09 (PT)</text>
+          <rect x="530" y="150" width="120" height="40" class="hb" id="t-frame" style="fill:var(--surface);stroke:var(--border)"/><text x="590" y="168" text-anchor="middle">프레임 0x2D</text><text x="590" y="183" text-anchor="middle" class="mono" style="font-size:10.5px">0x2D000~0x2DFFF</text>
+          <text x="590" y="270" text-anchor="middle" class="muted">20비트 = 1 MB</text>
+        </g>
+        <!-- PA -->
+        <g class="tw hb" id="t-pa">
+          <text x="20" y="226" style="font-weight:700">물리 주소</text>
+          <rect x="20" y="236" width="70" height="36" rx="4" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="55" y="259" text-anchor="middle" class="mono" style="font-size:13px">0x2D</text>
+          <rect x="90" y="236" width="110" height="36" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+          <text x="145" y="259" text-anchor="middle" class="mono" style="font-size:13px">0xA7C</text>
+          <text x="210" y="259" class="mono" style="font-size:13px;font-weight:700">= 0x2DA7C</text>
+        </g>
+        <!-- arrows -->
+        <path class="tw" id="t-a1" d="M49,90 L49,100 L250,100 L250,120 L283,120" style="stroke:var(--accent);fill:none;stroke-width:1.6" marker-end="url(#a3-t)"/>
+        <path class="tw" id="t-a2" d="M170,127 L230,127 L230,120 L283,120" style="stroke:var(--warn);fill:none;stroke-width:1.6" marker-end="url(#a3-t)"/>
+        <path class="tw" id="t-a3" d="M425,120 C470,120 470,210 300,210 L60,210 L55,234" style="stroke:var(--ok);fill:none;stroke-width:1.6" marker-end="url(#a3-t)"/>
+        <path class="tw" id="t-a4" d="M164,90 C200,140 160,200 145,234" style="stroke:var(--accent);fill:none;stroke-width:1.6;stroke-dasharray:4 3" marker-end="url(#a3-t)"/>
+        <path class="tw" id="t-a5" d="M310,254 C420,254 470,178 528,172" style="stroke:var(--accent);fill:none;stroke-width:1.6" marker-end="url(#a3-t)"/>
+      </svg>
+      </div>
+      <div id="tr-player"></div>
+    </div>
+    <div class="callout warn"><span class="title">메모리 접근이 두 배가 된다</span>
+      변환에 PTE를 읽는 메모리 접근(①)이 하나 더 필요하다. 데이터 접근(②)까지 합치면 모든 load/store가 두 번의 메모리 접근이 된다. 명령어 인출도 마찬가지다. 그대로라면 프로그램이 절반 속도로 돈다. 해결책은 최근 변환을 캐싱하는 <b>TLB</b>(04장)다. 다단계 테이블(05장)에서는 접근 ①이 4~5번으로 늘어나므로 TLB 없이는 아예 쓸 수 없다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 직접 변환해 보기: 유효/무효와 페이지 폴트</h2>
+    <p>PTE에는 프레임 번호만이 아니라 "이 매핑이 지금 유효한가(<b>P</b>, present)"와 "어떤 접근을 허용하는가(<b>R/W</b>, <b>U/S</b>, <b>NX</b>)"가 함께 들어 있다. MMU는 변환과 동시에 이 비트들을 검사한다. 조건이 맞지 않으면 <b>페이지 폴트(#PF)</b> 예외를 일으킨다. 이때 x86은 원인을 담은 <b>에러 코드</b>를 스택에 넣고, 폴트를 일으킨 가상 주소를 <b>CR2</b>에 넣는다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>에러 코드 비트</th><th>이름</th><th>1이면</th></tr>
+      <tr><td class="mono">0</td><td>P</td><td>페이지는 있었으나 <b>권한 위반</b> (0이면 not-present)</td></tr>
+      <tr><td class="mono">1</td><td>W/R</td><td>쓰기 접근이었다</td></tr>
+      <tr><td class="mono">2</td><td>U/S</td><td>유저 모드에서 일어났다</td></tr>
+      <tr><td class="mono">3</td><td>RSVD</td><td>PTE의 예약 비트가 1이었다(테이블 손상)</td></tr>
+      <tr><td class="mono">4</td><td>I/D</td><td>명령어 인출이었다(NX 위반 판별)</td></tr>
+      <tr><td class="mono">5</td><td>PK</td><td>protection key 위반</td></tr>
+    </table></div>
+
+    <div class="widget" id="w-tr">
+      <div class="w-title">가상 주소 변환기 (16비트 VA, 4 KB 페이지)</div>
+      <div class="w-desc">주소, 접근 종류, CPU 모드를 고르고 변환하라. 성공하면 하드웨어처럼 A(accessed) 비트를, 쓰기면 D(dirty) 비트도 세운다(노란 깜빡임). 커널 모드 쓰기는 CR0.WP=1(Linux 기본)을 가정해 읽기 전용 페이지에서 폴트가 난다.</div>
+      <div class="controls">
+        <label>VA <input type="text" id="tr-va" value="0x4123" size="8" class="mono" spellcheck="false"></label>
+        <label>접근 <select id="tr-acc"><option value="R">읽기</option><option value="W">쓰기</option><option value="X">실행(명령 인출)</option></select></label>
+        <label>모드 <select id="tr-mode"><option value="user">유저 (ring 3)</option><option value="kernel">커널 (ring 0)</option></select></label>
+        <label><input type="checkbox" id="tr-smap" checked> SMEP/SMAP</label>
+        <button class="btn primary" id="tr-go">변환</button>
+        <button class="btn" id="tr-reset">A/D 초기화</button>
+      </div>
+      <div class="controls">
+        <span style="font-size:13px;color:var(--muted)">시나리오:</span>
+        <button class="btn" data-tr="0x0010,R,user">NULL 역참조</button>
+        <button class="btn" data-tr="0x1F00,W,user">코드에 쓰기</button>
+        <button class="btn" data-tr="0x4123,X,user">데이터 실행</button>
+        <button class="btn" data-tr="0x6800,R,user">스왑된 페이지</button>
+        <button class="btn" data-tr="0xF008,R,user">커널 페이지 읽기</button>
+        <button class="btn" data-tr="0xDFF0,W,kernel">커널이 유저 스택 쓰기</button>
+      </div>
+      <div class="stage"><table class="pt-tbl" id="tr-tbl"></table></div>
+      <ul class="tr-steps" id="tr-steps"></ul>
+      <div class="result info" id="tr-out">변환을 눌러라.</div>
+    </div>
+    <p>"페이지 폴트 = 오류"가 아니라는 점이 중요하다. not-present 폴트의 대부분은 <b>정상적인 사건</b>이다. 아직 할당하지 않은 페이지(요구 페이징), 스왑된 페이지, COW 페이지를 커널이 처리한 뒤 명령을 다시 실행한다. 커널은 VMA 목록(01장의 maps)을 보고 정당한 접근인지 판단한다. 해당 주소에 VMA가 없거나 VMA 권한에 맞지 않을 때만 SIGSEGV를 보낸다. 그래서 위 변환기의 "스왑된 페이지" 폴트는 실제 시스템에서는 디스크에서 읽어 오는 major fault로 처리되고, 프로그램은 눈치채지 못한다(06장).</p>
+    <div class="callout tip"><span class="title">현업 디버깅: 커널 로그 읽기</span>
+      유저 프로세스가 죽으면 커널 로그에 <code>segfault at 10 ip 000055d... sp 00007ffc... error 4 in app[55d...+1000]</code> 같은 줄이 남는다. <code>at 10</code>은 CR2(폴트 주소, NULL+0x10이니 구조체 필드 접근), <code>error 4</code>는 0b100이다. 유저 모드(U=1)의 읽기(W=0)이고 not-present(P=0)다. <code>error 6</code>(유저 쓰기, not-present), <code>error 7</code>(유저 쓰기, 권한 위반: 읽기 전용 페이지에 쓰기), <code>error 15</code>도 외워 둘 만하다. 로그의 값은 <b>16진수</b>라서 0x15 = 0b10101, 곧 유저 명령 인출의 권한 위반(NX 페이지 실행)이다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. PTE의 구조: x86-64 실제 비트</h2>
+    <p>x86-64의 PTE는 8바이트(64비트)다. 4 KB 페이지를 가리키는 마지막 단계 PTE의 배치는 Intel SDM Vol.3 4장 "4-level paging" 표에 정의되어 있다. 비트를 눌러 설명을 보고, 값을 바꿔(클릭하면 토글) 해석을 확인하라.</p>
+
+    <div class="widget" id="w-pte">
+      <div class="w-title">x86-64 PTE 비트 다이어그램 (4 KB 페이지)</div>
+      <div class="w-desc">비트를 누르면 0/1이 바뀌고 해당 필드 설명이 나온다. 16진수 값을 직접 넣거나 예시를 고를 수도 있다. MAXPHYADDR(물리 주소 폭)는 52로 가정했다. 실제 CPU는 39~52비트이고, 그 위 비트 ~51은 예약(0이어야 함)이다.</div>
+      <div class="controls">
+        <label>PTE <input type="text" id="pte-hex" size="22" class="mono" spellcheck="false"></label>
+        <button class="btn" data-pte="0x8000000123456867">유저 데이터</button>
+        <button class="btn" data-pte="0x0000000123456025">유저 코드</button>
+        <button class="btn" data-pte="0x8000000001234163">커널 데이터</button>
+        <button class="btn" data-pte="0x0000000000000000">빈 PTE</button>
+      </div>
+      <div class="legend" style="margin:6px 0">
+        <span><i class="f-flag" style="border:1px solid"></i>제어 플래그</span><span><i class="f-cache" style="border:1px solid"></i>캐시 속성</span><span><i class="f-ign" style="border:1px solid var(--border)"></i>무시(OS용)</span>
+        <span><i class="f-pfn" style="border:1px solid"></i>PFN</span><span><i class="f-pk" style="border:1px solid"></i>보호 키</span><span><i class="f-nx" style="border:1px solid"></i>XD/NX</span>
+      </div>
+      <div class="pte-grid" id="pte-grid"></div>
+      <div class="pte-dec" id="pte-dec"></div>
+      <div class="pte-info" id="pte-info">비트를 눌러 보라.</div>
+    </div>
+
+    <h3>비트별로 누가 쓰고 누가 읽나</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>비트</th><th>이름</th><th>쓰는 쪽</th><th>쓰임</th></tr>
+      <tr><td class="mono">0</td><td>P (Present)</td><td>OS</td><td>0이면 나머지 비트는 하드웨어가 무시한다. 그래서 OS는 P=0인 PTE의 나머지 63비트에 <b>스왑 위치</b>(swap type + offset)를 적어 둔다(06장).</td></tr>
+      <tr><td class="mono">1</td><td>R/W</td><td>OS</td><td>0이면 읽기 전용. COW는 공유 페이지를 R/W=0으로 만들어 두고 쓰기 폴트를 잡는 트릭이다(11장).</td></tr>
+      <tr><td class="mono">2</td><td>U/S</td><td>OS</td><td>1이면 유저 접근 허용. 커널 매핑은 0이다.</td></tr>
+      <tr><td class="mono">3, 4, 7</td><td>PWT, PCD, PAT</td><td>OS</td><td>세 비트가 PAT MSR의 항목을 골라 메모리 타입(WB, WC, UC 등)을 정한다. 장치 메모리(MMIO)는 캐시하면 안 되므로 UC, 프레임버퍼는 WC를 쓴다.</td></tr>
+      <tr><td class="mono">5</td><td>A (Accessed)</td><td><b>하드웨어</b>가 1로, OS가 0으로</td><td>접근이 일어나면 MMU가 세운다. OS는 주기적으로 지우고 다시 섰는지 보며 "최근 사용"을 추정한다. 페이지 교체(Clock, LRU 근사)의 재료다(07장).</td></tr>
+      <tr><td class="mono">6</td><td>D (Dirty)</td><td><b>하드웨어</b>가 1로, OS가 0으로</td><td>쓰기가 일어나면 세운다. 교체할 때 D=0이면 디스크 사본과 같으므로 그냥 버린다. D=1이면 먼저 써야 한다(write-back).</td></tr>
+      <tr><td class="mono">8</td><td>G (Global)</td><td>OS</td><td>CR3를 바꿔도 TLB에서 지우지 않는다. 모든 주소 공간에 공통인 커널 매핑에 쓴다(04장).</td></tr>
+      <tr><td class="mono">9–11, 52–58</td><td>Ignored</td><td>OS</td><td>하드웨어가 무시하므로 OS가 자유롭게 쓴다. Linux는 soft-dirty, userfaultfd 쓰기 보호 표시 등에 쓴다.</td></tr>
+      <tr><td class="mono">12–51</td><td>PFN</td><td>OS</td><td>물리 프레임 번호. 물리 주소 = PFN × 4096 + offset. 최대 52비트 물리 주소(4 PiB)까지 표현한다.</td></tr>
+      <tr><td class="mono">59–62</td><td>PK</td><td>OS</td><td>CR4.PKE=1이면 유저 페이지의 protection key(0~15). 권한은 PKRU 레지스터로 유저가 시스템 콜 없이 바꾼다(<code>pkey_mprotect</code>, 14장).</td></tr>
+      <tr><td class="mono">63</td><td>XD / NX</td><td>OS</td><td>IA32_EFER.NXE=1이면 1일 때 명령어 인출 금지. 스택·힙에 주입한 코드의 실행을 막는다(W^X, 14장).</td></tr>
+    </table></div>
+    <div class="callout deep"><span class="title">A/D 비트를 하드웨어가 세운다는 것의 의미</span>
+      MMU는 TLB에 변환을 채울 때 A를, 처음 쓸 때 D를 메모리의 PTE에 <b>원자적으로</b> 기록한다. 그래서 OS가 A/D를 지울 때는 그 변환이 TLB에 남아 있지 않게 TLB를 무효화해야 한다. TLB에 "이미 A=1"로 캐시되어 있으면 하드웨어가 다시 세우지 않기 때문이다. 이 비용 때문에 Linux는 A 비트를 지울 때 TLB flush를 생략하기도 한다(정확도를 조금 포기). ARM64는 원래 A/D를 소프트웨어로 관리했다(Access Flag 폴트). ARMv8.1의 하드웨어 관리(HAFDBS)가 나온 뒤에야 x86처럼 하드웨어가 갱신한다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. 페이지 테이블은 얼마나 큰가</h2>
+    <p>단일 레벨 테이블은 주소 공간의 <b>모든</b> 가상 페이지에 대해 엔트리를 가져야 한다. 대부분이 쓰이지 않아도 마찬가지다. VPN으로 바로 인덱싱하는 배열이니 중간을 비울 수 없다. 크기 = 2<sup>(주소 비트 − 오프셋 비트)</sup> × PTE 크기다.</p>
+
+    <div class="widget" id="w-size">
+      <div class="w-title">페이지 테이블 크기 계산기</div>
+      <div class="w-desc">단일 레벨 테이블이 프로세스마다 얼마를 차지하는지, 실제로 쓰는 메모리에 필요한 PTE만 따지면 얼마인지 비교한다.</div>
+      <div class="controls">
+        <label>가상 주소 <select id="sz-va"><option value="32">32비트</option><option value="39">39비트 (Sv39, ARM64 3단계)</option><option value="48" selected>48비트 (x86-64 4단계)</option><option value="57">57비트 (LA57 5단계)</option></select></label>
+        <label>페이지 <select id="sz-pg"><option value="12" selected>4 KiB</option><option value="14">16 KiB</option><option value="16">64 KiB</option><option value="21">2 MiB</option></select></label>
+        <label>PTE <select id="sz-pte"><option value="4">4 B</option><option value="8" selected>8 B</option></select></label>
+      </div>
+      <div class="controls">
+        <label>프로세스 수 <input type="number" id="sz-np" value="200" min="1" style="width:80px"></label>
+        <label>프로세스당 실사용 <input type="number" id="sz-use" value="300" min="1" style="width:80px"> MiB</label>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">PTE 개수</div><div class="v mono" id="sz-ent"></div></div>
+        <div class="stat"><div class="k">프로세스당 테이블</div><div class="v mono c-bad" id="sz-one"></div></div>
+        <div class="stat"><div class="k">전체 프로세스</div><div class="v mono c-bad" id="sz-all"></div></div>
+        <div class="stat"><div class="k">실사용분 PTE만</div><div class="v mono c-ok" id="sz-need"></div></div>
+      </div>
+      <div id="sz-msg" style="font-size:14.5px"></div>
+    </div>
+    <p>32비트·4 KB·4 B PTE면 프로세스당 4 MiB다. 1990년대 기준으로도 부담스럽지만 불가능하지는 않다. 48비트·8 B PTE면 <b>프로세스당 512 GiB</b>다. 물리 메모리보다 큰 테이블을 연속으로 둘 수는 없다. 반면 실제로 쓰는 300 MiB를 매핑하는 데 필요한 PTE는 600 KiB 남짓이다. 주소 공간은 <b>희소(sparse)</b>하다. 아래에 코드·데이터·힙, 위에 스택·라이브러리가 있고 가운데 수십 TiB는 비어 있다(01장).</p>
+    <p>해결 방향은 세 가지다.</p>
+    <ol>
+      <li><b>다단계(계층) 페이지 테이블</b>: 테이블 자체를 페이징해서, 빈 구간에 해당하는 하위 테이블은 아예 만들지 않는다. x86-64, ARM64, RISC-V가 모두 이 방식이다(05장).</li>
+      <li><b>해시 페이지 테이블</b>: 쓰는 VPN만 해시 테이블에 넣는다(9절).</li>
+      <li><b>역 페이지 테이블</b>: 가상 페이지가 아니라 물리 프레임마다 엔트리 하나를 둔다. 크기가 물리 메모리에 비례한다(9절).</li>
+    </ol>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 페이지 크기 트레이드오프와 내부 단편화</h2>
+    <p>페이징에는 외부 단편화가 없지만 내부 단편화는 있다. 영역 크기가 페이지 크기의 배수가 아니면 마지막 페이지의 남는 부분이 낭비된다. 영역당 평균 낭비는 <b>페이지 크기의 절반</b>이다. 그럼 페이지는 작을수록 좋을까?</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>작은 페이지 (4 KB)</th><th>큰 페이지 (64 KB, 2 MB, 1 GB)</th></tr>
+      <tr><td>내부 단편화</td><td class="c-ok">작다</td><td class="c-bad">크다</td></tr>
+      <tr><td>페이지 테이블 크기</td><td class="c-bad">크다</td><td class="c-ok">작다</td></tr>
+      <tr><td>TLB 도달 범위 (엔트리 × 페이지)</td><td class="c-bad">좁다 → TLB 미스 많음</td><td class="c-ok">넓다</td></tr>
+      <tr><td>페이지 폴트 횟수</td><td class="c-bad">많다</td><td class="c-ok">적다</td></tr>
+      <tr><td>폴트 1회 비용, I/O 단위</td><td class="c-ok">작다</td><td class="c-bad">크다(2 MB를 0으로 채우거나 읽어야 함)</td></tr>
+      <tr><td>보호·공유·COW 단위</td><td class="c-ok">세밀하다</td><td class="c-bad">거칠다(1바이트를 써도 2 MB를 복사)</td></tr>
+      <tr><td>물리 연속성 요구</td><td class="c-ok">없다</td><td class="c-bad">페이지 크기만큼 연속 프레임이 필요하다(02장 단편화 문제가 돌아옴)</td></tr>
+    </table></div>
+
+    <div class="widget" id="w-frag">
+      <div class="w-title">페이지 크기별 낭비와 TLB 도달 범위</div>
+      <div class="w-desc">프로세스의 영역 크기 목록(바이트, KB/MB 접미사 허용)을 넣으면 페이지 크기별로 필요한 페이지 수, 내부 단편화, 64엔트리 TLB가 덮는 범위를 계산한다.</div>
+      <textarea id="fr-in" class="mono" style="width:100%;min-height:54px;font-size:13px" spellcheck="false">text=1.3MB rodata=410KB data=36KB bss=9KB heap=2.2MB stack=132KB libc=2.1MB mmap1=70KB mmap2=5KB</textarea>
+      <div class="controls"><label>TLB 엔트리 <input type="number" id="fr-tlb" value="64" style="width:70px"></label><button class="btn primary" id="fr-go">계산</button></div>
+      <div class="tbl-wrap" id="fr-out"></div>
+    </div>
+    <p>결과를 보면 4 KB에서 내부 단편화는 1%도 안 된다. 2 MB 페이지를 모든 영역에 쓰면 낭비가 실사용량의 몇 배로 커진다. 반대로 64엔트리 TLB는 4 KB 페이지로 256 KB만 덮지만 2 MB 페이지로는 128 MB를 덮는다. 그래서 현대 시스템은 <b>여러 페이지 크기를 섞는다</b>. 기본은 4 KB로 두고, 크고 촘촘하게 쓰는 영역(DB 버퍼 풀, JVM 힙, VM 게스트 메모리)에만 huge page를 쓴다(Linux THP·hugetlbfs, 13장).</p>
+    <div class="callout"><span class="title">아키텍처별 실제 페이지 크기</span>
+      <ul style="margin:4px 0 0">
+        <li><b>x86-64</b>: 4 KB 기본, 2 MB와 1 GB huge page.</li>
+        <li><b>ARM64</b>: 변환 granule로 4 KB, 16 KB, 64 KB 중 하나를 커널 빌드 시 고른다. Apple Silicon은 16 KB를 쓴다(그래서 Asahi Linux는 16 KB 커널이다). RHEL의 ARM64 커널은 한때 64 KB를 썼다.</li>
+        <li><b>Android</b>: Android 15부터 16 KB 페이지 커널을 지원한다. 4 KB 정렬을 가정한 네이티브 라이브러리(ELF 세그먼트 정렬 4 KB)는 16 KB 커널에서 로드되지 않는다. 그래서 앱 개발자에게 <code>-Wl,-z,max-page-size=16384</code>로 다시 빌드하라는 요구가 생겼다. 페이지 크기는 ABI의 일부다.</li>
+        <li>코드에서 페이지 크기를 4096으로 하드코딩하지 말고 <code>sysconf(_SC_PAGESIZE)</code>(셸에서는 <code>getconf PAGESIZE</code>)로 얻어야 하는 이유다.</li>
+      </ul></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 보호와 공유</h2>
+    <p>페이징은 보호와 공유를 페이지 단위로 제공한다. <b>보호</b>는 PTE의 권한 비트가 매 접근마다 검사되는 것으로 충분하다. <b>공유</b>는 서로 다른 프로세스의 PTE가 같은 PFN을 가리키게 하면 된다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 300" role="img" aria-label="두 프로세스가 libc 코드 프레임을 공유하는 그림">
+        <defs><marker id="a3-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <text x="90" y="20" text-anchor="middle" style="font-weight:700">프로세스 A의 PT</text>
+        <g class="mono" style="font-size:11.5px">
+          <rect x="30" y="30" width="120" height="28" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="90" y="48" text-anchor="middle">libc .text r-x</text>
+          <rect x="30" y="58" width="120" height="28" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="90" y="76" text-anchor="middle">libc .text r-x</text>
+          <rect x="30" y="86" width="120" height="28" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="90" y="104" text-anchor="middle">libc .data rw-</text>
+          <rect x="30" y="114" width="120" height="28" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="90" y="132" text-anchor="middle">heap rw-</text>
+        </g>
+        <text x="590" y="20" text-anchor="middle" style="font-weight:700">프로세스 B의 PT</text>
+        <g class="mono" style="font-size:11.5px">
+          <rect x="530" y="30" width="120" height="28" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="590" y="48" text-anchor="middle">heap rw-</text>
+          <rect x="530" y="58" width="120" height="28" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="590" y="76" text-anchor="middle">libc .text r-x</text>
+          <rect x="530" y="86" width="120" height="28" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="590" y="104" text-anchor="middle">libc .text r-x</text>
+          <rect x="530" y="114" width="120" height="28" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="590" y="132" text-anchor="middle">libc .data rw-</text>
+        </g>
+        <text x="340" y="20" text-anchor="middle" style="font-weight:700">물리 프레임</text>
+        <g style="font-size:11.5px">
+          <rect x="280" y="30" width="120" height="26" class="box"/><text x="340" y="47" text-anchor="middle" class="muted">…</text>
+          <rect x="280" y="56" width="120" height="26" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="340" y="73" text-anchor="middle">libc 코드 #0</text>
+          <rect x="280" y="82" width="120" height="26" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="340" y="99" text-anchor="middle">libc 코드 #1</text>
+          <rect x="280" y="108" width="120" height="26" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="340" y="125" text-anchor="middle">A의 .data 사본</text>
+          <rect x="280" y="134" width="120" height="26" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="340" y="151" text-anchor="middle">B의 .data 사본</text>
+          <rect x="280" y="160" width="120" height="26" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="340" y="177" text-anchor="middle">A의 heap</text>
+          <rect x="280" y="186" width="120" height="26" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="340" y="203" text-anchor="middle">B의 heap</text>
+        </g>
+        <path d="M150,44 C220,44 220,69 278,69" class="line" marker-end="url(#a3-s)"/>
+        <path d="M150,72 C220,72 220,95 278,95" class="line" marker-end="url(#a3-s)"/>
+        <path d="M150,100 C220,100 220,121 278,121" class="line" marker-end="url(#a3-s)"/>
+        <path d="M150,128 C220,128 220,173 278,173" class="line" marker-end="url(#a3-s)"/>
+        <path d="M530,72 C460,72 460,69 402,69" class="line" marker-end="url(#a3-s)"/>
+        <path d="M530,100 C460,100 460,95 402,95" class="line" marker-end="url(#a3-s)"/>
+        <path d="M530,128 C460,128 460,147 402,147" class="line" marker-end="url(#a3-s)"/>
+        <path d="M530,44 C460,44 470,199 402,199" class="line" marker-end="url(#a3-s)"/>
+        <text x="340" y="240" text-anchor="middle" style="font-size:12.5px">libc 코드는 물리적으로 <b>한 벌</b>. 가상 주소는 프로세스마다 다르다(ASLR).</text>
+        <text x="340" y="262" text-anchor="middle" style="font-size:12.5px" class="muted">.data는 처음엔 공유되다가 쓰는 순간 COW로 갈라진다(11장).</text>
+        <text x="340" y="284" text-anchor="middle" style="font-size:12.5px" class="muted">smaps: 코드 페이지는 Shared_Clean, .data 사본은 Private_Dirty</text>
+      </svg>
+      <figcaption>그림 3-2. 공유 라이브러리. 읽기 전용 코드 프레임을 여러 페이지 테이블이 가리킨다.</figcaption>
+    </figure>
+    <ul>
+      <li>공유하려면 코드가 <b>재진입 가능(reentrant)</b>해야 한다. 실행 중에 자기 자신을 수정하지 않아야 하고, 그래서 R/W=0으로 매핑한다. 쓰기가 필요한 상태는 프로세스별 데이터 페이지에 둔다.</li>
+      <li>공유 페이지가 프로세스마다 다른 가상 주소에 있어도 되려면 코드가 위치 독립적(PIC)이어야 한다(02장).</li>
+      <li>메모리 사용량을 셀 때 공유 페이지를 어떻게 나눌지가 문제가 된다. <b>RSS</b>는 공유 페이지를 프로세스마다 통째로 세서 합하면 실제보다 커진다. <b>PSS</b>는 공유자 수로 나눠 세므로 합이 실제 사용량과 맞는다. 컨테이너나 다중 프로세스 서버(PostgreSQL, Chrome)의 메모리를 분석할 때 RSS 합계만 보면 크게 과대평가하게 된다.</li>
+      <li>같은 원리로 <b>공유 메모리</b>(<code>shm_open</code>+<code>mmap(MAP_SHARED)</code>)는 프로세스 간 통신이 되고, 커널의 <b>제로 페이지</b>는 아직 쓰지 않은 모든 익명 페이지의 읽기를 물리 프레임 하나로 처리한다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. 역 페이지 테이블과 해시 페이지 테이블</h2>
+    <h3>해시 페이지 테이블</h3>
+    <p>VPN을 해시해서 버킷을 찾고, 버킷의 체인에서 <code>(VPN, PFN, next)</code> 엔트리를 찾는다. 실제로 쓰는 페이지만 엔트리를 가지므로 희소한 64비트 주소 공간에 맞는다. 단점도 있다. 체인을 따라가는 메모리 접근이 예측 불가능하고, 해시 충돌이 성능을 흔들며, 인접 페이지끼리 캐시 지역성이 없다. 엔트리 하나가 연속된 여러 페이지(예: 16개)를 담당하게 하는 <b>클러스터드 페이지 테이블</b>은 지역성을 일부 되찾는 변형이다.</p>
+    <h3>역 페이지 테이블 (Inverted Page Table)</h3>
+    <p>시스템 전체에 테이블 <b>하나</b>를 두고, <b>물리 프레임마다 엔트리 하나</b>를 둔다. 엔트리에는 "이 프레임을 어떤 프로세스의 어떤 가상 페이지가 쓰는가", 곧 <code>(PID, VPN)</code>를 적는다. 테이블 크기가 가상 주소 공간이 아니라 물리 메모리에 비례하므로 주소 공간이 아무리 커도 문제없다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 250" role="img" aria-label="해시를 이용한 역 페이지 테이블 조회">
+        <defs><marker id="a3-i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" style="fill:var(--muted)"/></marker></defs>
+        <text x="20" y="22" style="font-weight:700">논리 주소</text>
+        <rect x="20" y="32" width="60" height="32" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="50" y="53" text-anchor="middle">PID</text>
+        <rect x="80" y="32" width="70" height="32" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="115" y="53" text-anchor="middle">VPN</text>
+        <rect x="150" y="32" width="70" height="32" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="185" y="53" text-anchor="middle">offset</text>
+        <rect x="60" y="110" width="110" height="36" rx="18" class="box"/><text x="115" y="133" text-anchor="middle">hash(PID,VPN)</text>
+        <path d="M85,64 L95,108" class="line" marker-end="url(#a3-i)"/>
+        <path d="M115,64 L115,108" class="line" marker-end="url(#a3-i)"/>
+        <text x="380" y="22" text-anchor="middle" style="font-weight:700">역 페이지 테이블 (프레임 번호 = 인덱스)</text>
+        <g class="mono" style="font-size:12px">
+          <text x="290" y="46" class="muted" style="font-family:var(--sans)">i</text><text x="350" y="46" class="muted" style="font-family:var(--sans)">PID</text><text x="410" y="46" class="muted" style="font-family:var(--sans)">VPN</text><text x="465" y="46" class="muted" style="font-family:var(--sans)">next</text>
+          <rect x="280" y="52" width="210" height="24" class="box"/><text x="290" y="69">0</text><text x="350" y="69">7</text><text x="410" y="69">0x3a</text><text x="465" y="69">—</text>
+          <rect x="280" y="76" width="210" height="24" class="box"/><text x="290" y="93">1</text><text x="350" y="93">12</text><text x="410" y="93">0x05</text><text x="465" y="93">4</text>
+          <rect x="280" y="100" width="210" height="24" class="box"/><text x="290" y="117">2</text><text x="350" y="117">7</text><text x="410" y="117">0x01</text><text x="465" y="117">—</text>
+          <rect x="280" y="124" width="210" height="24" class="box"/><text x="290" y="141">3</text><text x="350" y="141">3</text><text x="410" y="141">0x99</text><text x="465" y="141">—</text>
+          <rect x="280" y="148" width="210" height="24" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="290" y="165">4</text><text x="350" y="165">7</text><text x="410" y="165">0x12</text><text x="465" y="165">—</text>
+          <text x="385" y="192" text-anchor="middle" class="muted">⋮ (물리 프레임 수만큼)</text>
+        </g>
+        <path d="M170,128 C230,128 230,88 278,88" class="line" marker-end="url(#a3-i)"/>
+        <path d="M492,88 C530,88 530,160 492,160" class="line" style="stroke-dasharray:4 3" marker-end="url(#a3-i)"/>
+        <text x="540" y="128" style="font-size:11.5px" class="muted">충돌 → 체인</text>
+        <rect x="560" y="200" width="56" height="32" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="588" y="221" text-anchor="middle">i = 4</text>
+        <rect x="616" y="200" width="56" height="32" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="644" y="221" text-anchor="middle">offset</text>
+        <text x="616" y="194" text-anchor="middle" style="font-size:12px;font-weight:700">물리 주소</text>
+        <path d="M490,166 C530,180 560,180 580,198" class="line" marker-end="url(#a3-i)"/>
+        <text x="20" y="200" style="font-size:12px">찾는 키: (PID 7, VPN 0x12)</text>
+        <text x="20" y="220" style="font-size:12px" class="muted">일치하는 엔트리의 <b>인덱스</b>가 곧 프레임 번호다</text>
+      </svg>
+      <figcaption>그림 3-3. 해시를 붙인 역 페이지 테이블. 버킷에서 시작해 (PID, VPN)이 일치할 때까지 체인을 따라간다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>장점</th><th>단점</th></tr>
+      <tr><td>역 페이지 테이블</td><td>크기가 물리 메모리에 비례하고 시스템에 하나뿐이다. 64비트 공간에서도 작다.</td><td>VPN으로 바로 인덱싱할 수 없어 검색(해시)이 필요하다. 프레임 하나에 (PID, VPN) 하나뿐이라 <b>공유가 어렵다</b>. 같은 프레임을 두 프로세스가 매핑하는 것을 직접 표현할 수 없다. 스왑된 페이지의 위치 등 "메모리에 없는 페이지" 정보는 별도 구조가 필요하다.</td></tr>
+    </table></div>
+    <div class="callout deep"><span class="title">실제로 쓴 시스템</span>
+      <b>PowerPC</b>(IBM POWER)는 하드웨어 <b>해시 페이지 테이블(HPT)</b>을 쓴다. 이 테이블은 물리 메모리 크기에 비례해 잡히는 전역 테이블이라 역 페이지 테이블의 성격을 함께 갖는다. 공유 문제는 세그먼트로 푼다. 실효 주소를 먼저 세그먼트(SLB)로 전역 가상 주소(VSID 기반)로 바꾸므로, 두 프로세스가 같은 VSID를 쓰면 같은 HPT 엔트리를 공유한다. IA-64(Itanium)의 VHPT, UltraSPARC의 TSB도 해시 구조를 썼다. Linux는 아키텍처 독립 코드에서 항상 <b>다단계 테이블 모델</b>(pgd→p4d→pud→pmd→pte)을 쓰고, POWER에서는 이를 HPT에 반영하는 계층을 둔다. 최신 POWER9 이후는 다단계 형식의 Radix MMU도 지원해 Linux가 기본으로 쓴다. 역사적으로는 계층형이 이겼다. 하드웨어 page walker와 캐시 친화성, 공유의 단순함 덕분이다.</div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>페이징은 가상 페이지를 임의의 물리 프레임에 놓아 외부 단편화를 없앤다. 대가는 변환 비용, 테이블 메모리, 내부 단편화(평균 반 페이지)다.</li>
+    <li>페이지 크기 2<sup>k</sup>이면 VA의 하위 k비트가 오프셋이고 상위가 VPN이다. 오프셋은 변환되지 않고 물리 주소로 그대로 간다.</li>
+    <li>단일 레벨 변환: PTE 주소 = PTBR + VPN × PTE 크기, PA = PFN ≪ k | offset. TLB가 없으면 모든 접근이 두 번의 메모리 접근이 된다.</li>
+    <li>P=0이면 not-present 폴트, 권한(R/W, U/S, NX, SMEP/SMAP) 위반이면 protection 폴트다. x86은 원인을 에러 코드(P/W/U/RSVD/I/PK)로, 주소를 CR2로 알린다. not-present 폴트의 대부분은 정상 처리 대상이다.</li>
+    <li>x86-64 PTE: 0 P, 1 R/W, 2 U/S, 3 PWT, 4 PCD, 5 A, 6 D, 7 PAT, 8 G, 9–11 무시, 12–51 PFN, 52–58 무시, 59–62 PK, 63 XD. A/D는 하드웨어가 세우고 OS가 지운다.</li>
+    <li>48비트·4 KB·8 B PTE의 단일 레벨 테이블은 프로세스당 512 GiB라 불가능하다. 희소한 주소 공간에는 다단계·해시·역 페이지 테이블이 필요하다.</li>
+    <li>작은 페이지는 단편화와 보호 단위에, 큰 페이지는 테이블 크기와 TLB 도달 범위에 유리하다. 실제 시스템은 섞어 쓰고, 페이지 크기는 ABI의 일부다(16 KB Android/Apple).</li>
+    <li>공유는 여러 PTE가 같은 PFN을 가리키는 것이다. 메모리 계산에는 RSS가 아니라 PSS를 써야 한다. 역 페이지 테이블은 작지만 공유와 검색이 어렵다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">32비트 가상 주소, 4 KB 페이지에서 VPN과 오프셋의 비트 수는?</div>
+    <button class="opt">VPN 12비트, 오프셋 20비트</button>
+    <button class="opt">VPN 20비트, 오프셋 12비트</button>
+    <button class="opt">VPN 22비트, 오프셋 10비트</button>
+    <button class="opt">VPN 32비트, 오프셋 12비트</button>
+    <div class="explain">4 KB = 2<sup>12</sup>이므로 오프셋 12비트, 나머지 32−12 = 20비트가 VPN이다. 가상 페이지는 2<sup>20</sup> = 약 100만 개다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">4 KB 페이지, PTE[2]의 PFN이 0x7이다. 가상 주소 0x2ABC의 물리 주소는?</div>
+    <button class="opt">0x2ABC</button>
+    <button class="opt">0x7002</button>
+    <button class="opt">0x9ABC</button>
+    <button class="opt">0x7ABC</button>
+    <div class="explain">VPN = 0x2ABC ≫ 12 = 2, offset = 0xABC. PA = (0x7 ≪ 12) | 0xABC = 0x7ABC. 오프셋(하위 세 자리)은 그대로다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">x86-64 Linux에서 유저 프로그램이 읽기 전용(R/W=0)이지만 메모리에 있는(P=1) 페이지에 쓰다 죽었다. 커널 로그의 <code>error</code> 값은?</div>
+    <button class="opt">4</button>
+    <button class="opt">6</button>
+    <button class="opt">7</button>
+    <button class="opt">15</button>
+    <div class="explain">P=1(권한 위반) + W=1(쓰기) + U=1(유저) = 0b111 = 7. 4는 유저 읽기·not-present, 6은 유저 쓰기·not-present, 커널 로그는 16진수로 찍으므로 <code>error 15</code>(0x15)는 유저 명령 인출·권한 위반(NX)이다. 단, 이 페이지가 COW 대상이면 커널이 사본을 만들어 정상 처리하므로 프로세스는 죽지 않는다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">OS가 교체할 페이지를 고를 때 PTE의 D(dirty) 비트를 보는 이유는?</div>
+    <button class="opt">D=0이면 디스크(파일·스왑)의 사본과 내용이 같으므로 쓰지 않고 바로 버릴 수 있어서</button>
+    <button class="opt">D=1이면 최근에 읽혔으므로 남겨야 해서</button>
+    <button class="opt">D=1이면 다른 프로세스와 공유 중이어서</button>
+    <button class="opt">D 비트는 TLB 무효화 여부만 결정한다</button>
+    <div class="explain">D는 쓰기가 있었음을 뜻한다. 깨끗한(clean) 페이지는 버리기만 하면 되지만, 더러운(dirty) 페이지는 먼저 저장 장치에 써야 하므로 회수 비용이 크다. "최근 사용" 정보는 A(accessed) 비트가 준다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">48비트 가상 주소, 4 KB 페이지, 8 B PTE의 단일 레벨 페이지 테이블 크기는?</div>
+    <button class="opt">4 MiB</button>
+    <button class="opt">2 GiB</button>
+    <button class="opt">512 GiB</button>
+    <button class="opt">256 TiB</button>
+    <div class="explain">VPN = 48−12 = 36비트 → 2<sup>36</sup>개 × 8 B = 2<sup>39</sup> B = 512 GiB. 프로세스마다 이만큼 필요하므로 불가능하다. 그래서 다단계 테이블을 쓴다(05장).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">역 페이지 테이블의 가장 큰 구조적 약점은?</div>
+    <button class="opt">테이블 크기가 가상 주소 공간에 비례해 커진다</button>
+    <button class="opt">프레임당 엔트리가 하나라 여러 프로세스의 공유 매핑을 직접 표현하기 어렵고, VPN으로 바로 인덱싱할 수 없어 검색이 필요하다</button>
+    <button class="opt">PTE에 권한 비트를 둘 수 없다</button>
+    <button class="opt">페이지 크기가 반드시 1 GB여야 한다</button>
+    <div class="explain">역 테이블은 프레임 → (PID, VPN) 방향이라 VPN → 프레임 조회에 해시 검색이 필요하다. 한 프레임에 매핑 하나만 기록되므로 공유 라이브러리 같은 다중 매핑이 어렵다. PowerPC는 세그먼트(VSID)로 이를 우회한다. 크기는 오히려 물리 메모리에 비례해 작다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">ARM64에서 4 KB 대신 16 KB 페이지를 쓸 때 맞는 설명은?</div>
+    <button class="opt">내부 단편화가 줄어든다</button>
+    <button class="opt">TLB 엔트리 하나가 덮는 범위가 1/4로 줄어든다</button>
+    <button class="opt">기존 4 KB 정렬 바이너리가 모두 그대로 동작한다</button>
+    <button class="opt">TLB 도달 범위와 테이블 효율은 좋아지지만 내부 단편화가 늘고, 4 KB 정렬을 가정한 바이너리·코드가 깨질 수 있다</button>
+    <div class="explain">페이지가 4배 크면 TLB 엔트리 하나가 4배 범위를 덮고 테이블 단계도 줄일 수 있다. 대신 영역당 평균 낭비가 8 KB로 늘어난다. ELF 세그먼트가 4 KB로만 정렬된 라이브러리는 16 KB 커널에서 매핑할 수 없어, Android 15의 16 KB 전환에서 재빌드가 필요했다.</div>
+  </div>
+</main>
+
+<script>
+// #LOGIC-START  (DOM 비의존 로직: node로 검증)
+function parseHexBig(s) {
+  s = String(s).trim().toLowerCase().replace(/_/g, "");
+  if (!/^(0x)?[0-9a-f]{1,16}$/.test(s)) return null;
+  return BigInt(s.startsWith("0x") ? s : "0x" + s);
+}
+// VA를 VPN / offset으로 분할. vaBits: 주소 폭, offBits: log2(페이지 크기)
+function splitAddress(va, vaBits, offBits) {
+  if (va >= (1n << BigInt(vaBits))) return { ok: false };
+  const mask = (1n << BigInt(offBits)) - 1n;
+  return { ok: true, vpn: va >> BigInt(offBits), off: va & mask };
+}
+function fmtBytes(n) {
+  // n: Number 또는 BigInt
+  n = Number(n);
+  const U = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB"];
+  let i = 0;
+  while (n >= 1024 && i < U.length - 1) { n /= 1024; i++; }
+  return (Number.isInteger(n) ? n : +n.toFixed(n < 10 ? 2 : 1)) + " " + U[i];
+}
+function fmtCount(n) {
+  n = Number(n);
+  if (n < 1e4) return n.toLocaleString("en-US");
+  const e = Math.log2(n);
+  return Number.isInteger(e) ? "2^" + e : n.toExponential(2);
+}
+// 단일 레벨 페이지 테이블 크기
+function pageTableSize(vaBits, offBits, pteBytes) {
+  const entries = Math.pow(2, vaBits - offBits);
+  return { entries, bytes: entries * pteBytes };
+}
+// 실사용 메모리만 매핑할 때 필요한 PTE 바이트
+function neededPTEBytes(usedBytes, offBits, pteBytes) {
+  return Math.ceil(usedBytes / Math.pow(2, offBits)) * pteBytes;
+}
+
+// 16비트 VA, 4KB 페이지 변환. pt: [{p,rw,us,nx,a,d,pfn}] (16개)
+function translate16(pt, va, acc, mode, smepSmap) {
+  const vpn = (va >> 12) & 0xF, off = va & 0xFFF;
+  const pte = pt[vpn];
+  const ec = present => (present ? 1 : 0) | (acc === "W" ? 2 : 0) | (mode === "user" ? 4 : 0) | (acc === "X" ? 16 : 0);
+  const checks = [];
+  if (!pte.p) { checks.push(["present", false]); return { ok: false, kind: "not-present", vpn, off, err: ec(false), checks }; }
+  checks.push(["present", true]);
+  const fail = (name, why) => { checks.push([name, false]); return { ok: false, kind: "protection", why, vpn, off, err: ec(true), checks }; };
+  if (mode === "user" && !pte.us) return fail("us", "유저 모드에서 supervisor 페이지(U/S=0) 접근");
+  checks.push(["us", true]);
+  if (acc === "W" && !pte.rw) return fail("rw", "읽기 전용 페이지(R/W=0)에 쓰기");
+  checks.push(["rw", true]);
+  if (acc === "X" && pte.nx) return fail("nx", "실행 금지 페이지(XD=1)에서 명령 인출");
+  checks.push(["nx", true]);
+  if (mode === "kernel" && pte.us && smepSmap) {
+    if (acc === "X") return fail("smep", "SMEP: 커널 모드에서 유저 페이지 실행");
+    return fail("smap", "SMAP: 커널 모드에서 유저 페이지 데이터 접근 (stac 없이)");
+  }
+  checks.push(["smx", true]);
+  const setA = !pte.a, setD = acc === "W" && !pte.d;
+  pte.a = 1; if (acc === "W") pte.d = 1;
+  return { ok: true, vpn, off, pfn: pte.pfn, pa: (pte.pfn << 12) | off, setA, setD, checks };
+}
+function decodeErr(e) {
+  return [(e & 1) ? "P=1 권한 위반" : "P=0 not-present", (e & 2) ? "W=1 쓰기" : "W=0 읽기", (e & 4) ? "U=1 유저" : "U=0 커널", (e & 16) ? "I=1 명령 인출" : null].filter(Boolean).join(", ");
+}
+
+// x86-64 4KB PTE 필드
+const PTE_FIELDS = [
+  { lo: 0, hi: 0, key: "P", cls: "f-flag", name: "Present", d: "1이면 이 PTE가 유효하다. 0이면 접근 시 not-present 페이지 폴트가 나고 나머지 63비트는 하드웨어가 무시한다. Linux는 이 자리에 스왑 엔트리(swap type + offset)나 migration 엔트리를 인코딩한다." },
+  { lo: 1, hi: 1, key: "R/W", cls: "f-flag", name: "Read/Write", d: "0이면 쓰기 금지. 커널 모드도 CR0.WP=1이면 이 비트를 따른다. COW, 파일 매핑의 dirty 추적, userfaultfd 쓰기 보호가 이 비트를 0으로 두고 쓰기 폴트를 잡는 방식으로 동작한다." },
+  { lo: 2, hi: 2, key: "U/S", cls: "f-flag", name: "User/Supervisor", d: "1이면 ring 3(유저) 접근 허용. 0이면 커널 전용. 상위 단계 테이블 엔트리에도 같은 비트가 있고, 모든 단계에서 1이어야 유저가 접근할 수 있다(05장)." },
+  { lo: 3, hi: 3, key: "PWT", cls: "f-cache", name: "Page Write-Through", d: "PCD, PAT와 함께 PAT MSR의 8개 항목 중 하나를 고르는 인덱스 비트다. 메모리 타입(WB/WT/UC/WC 등)을 결정한다. 일반 RAM은 WB(write-back)다." },
+  { lo: 4, hi: 4, key: "PCD", cls: "f-cache", name: "Page Cache Disable", d: "PAT 인덱스 비트. MMIO(장치 레지스터)를 캐시 불가로 매핑할 때 쓴다. Linux의 ioremap()이 이 비트들을 설정한다." },
+  { lo: 5, hi: 5, key: "A", cls: "f-flag", name: "Accessed", d: "이 페이지를 변환에 사용하면(읽기·쓰기·실행) <b>하드웨어</b>가 1로 세운다. OS는 지워 두었다가 다시 섰는지 보고 최근 사용 여부를 추정한다. Linux 페이지 회수(LRU, MGLRU)의 핵심 입력이다." },
+  { lo: 6, hi: 6, key: "D", cls: "f-flag", name: "Dirty", d: "이 페이지에 쓰기가 일어나면 <b>하드웨어</b>가 1로 세운다(마지막 단계 엔트리에만 의미가 있다). 회수할 때 D=1이면 먼저 write-back해야 한다." },
+  { lo: 7, hi: 7, key: "PAT", cls: "f-cache", name: "Page Attribute Table", d: "4 KB PTE에서는 PAT 인덱스의 최상위 비트다. 주의: 상위 단계(PDE/PDPTE)의 같은 위치는 PS(Page Size) 비트로, 1이면 그 엔트리가 2 MB/1 GB huge page를 직접 가리킨다." },
+  { lo: 8, hi: 8, key: "G", cls: "f-flag", name: "Global", d: "CR4.PGE=1이면 CR3를 바꿔도 이 변환을 TLB에서 지우지 않는다. 모든 프로세스에 공통인 커널 매핑에 쓴다. KPTI 환경에서는 유저 페이지 테이블에 보이는 커널 매핑을 최소화하므로 G의 쓰임이 줄었다." },
+  { lo: 9, hi: 11, key: "AVL", cls: "f-ign", name: "Ignored (OS 사용 가능)", d: "하드웨어가 무시하는 비트. Linux x86은 여기에 소프트웨어 플래그를 둔다(예: soft-dirty 추적. <code>/proc/PID/clear_refs</code>에 4를 쓰고 <code>/proc/PID/pagemap</code>으로 읽어 CRIU 같은 도구가 변경 페이지를 추적한다)." },
+  { lo: 12, hi: 51, key: "PFN", cls: "f-pfn", name: "Physical Frame Number", d: "물리 프레임 번호. 물리 주소 = PFN × 4096 + offset. 이 다이어그램은 MAXPHYADDR=52를 가정했다. 실제 CPU의 MAXPHYADDR가 M이면 비트 M~51은 예약 비트이고, 1이면 RSVD 페이지 폴트가 난다. <code>/proc/cpuinfo</code>의 \"address sizes: 46 bits physical\" 같은 줄에서 M을 확인할 수 있다." },
+  { lo: 52, hi: 58, key: "AVL", cls: "f-ign", name: "Ignored (OS 사용 가능)", d: "하드웨어가 무시하는 상위 소프트웨어 비트. OS가 페이지별 메타데이터를 넣는 데 쓴다." },
+  { lo: 59, hi: 62, key: "PK", cls: "f-pk", name: "Protection Key", d: "CR4.PKE=1이면 유저 페이지의 보호 키(0~15)다. 스레드별 PKRU 레지스터가 키마다 접근/쓰기 금지를 정한다. <code>wrpkru</code>로 시스템 콜 없이 권한을 바꿀 수 있어 빠른 메모리 격리(MPK)에 쓰인다. PKE=0이면 무시된다." },
+  { lo: 63, hi: 63, key: "XD", cls: "f-nx", name: "Execute Disable (NX)", d: "IA32_EFER.NXE=1이면, 1일 때 이 페이지에서 명령어 인출을 금지한다(위반 시 에러 코드 I/D=1). AMD는 NX, Intel은 XD라 부른다. 스택·힙·데이터 페이지는 1, 코드 페이지만 0이다(W^X). NXE=0이면 이 비트는 예약 비트다." },
+];
+function fieldOfBit(b) { return PTE_FIELDS.find(f => b >= f.lo && b <= f.hi); }
+function decodePTE(v) {
+  const bit = n => Number((v >> BigInt(n)) & 1n);
+  return {
+    p: bit(0), rw: bit(1), us: bit(2), pwt: bit(3), pcd: bit(4), a: bit(5), d: bit(6), pat: bit(7), g: bit(8),
+    avl: Number((v >> 9n) & 7n), pfn: (v >> 12n) & ((1n << 40n) - 1n), pk: Number((v >> 59n) & 15n), xd: bit(63),
+  };
+}
+
+// 크기 문자열 파서: "1.3MB", "410KB", "5000"
+function parseSize(s) {
+  const m = String(s).trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|k|kib|mb|m|mib|gb|g|gib)?$/i);
+  if (!m) return NaN;
+  const u = (m[2] || "b").toLowerCase()[0];
+  return Math.round(parseFloat(m[1]) * ({ b: 1, k: 1024, m: 1048576, g: 1073741824 })[u]);
+}
+function parseRegions(text) {
+  const out = [], bad = [];
+  for (const tok of text.split(/[\s,;]+/).filter(Boolean)) {
+    const [name, val] = tok.includes("=") ? tok.split("=") : ["?", tok];
+    const n = parseSize(val);
+    if (isNaN(n) || n <= 0) bad.push(tok); else out.push({ name, bytes: n });
+  }
+  return { out, bad };
+}
+function fragAnalysis(regions, pageSize, tlbEntries) {
+  let pages = 0, used = 0;
+  for (const r of regions) { pages += Math.ceil(r.bytes / pageSize); used += r.bytes; }
+  const alloc = pages * pageSize;
+  return { pages, used, alloc, waste: alloc - used, wastePct: used ? (alloc - used) / used * 100 : 0, reach: tlbEntries * pageSize };
+}
+// #LOGIC-END
+
+/* ================= 위젯 1: 비트 분할 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  function render() {
+    const vaBits = +$("sp-va").value;
+    let offBits = +$("sp-pg").value;
+    if (offBits >= vaBits) { offBits = vaBits - 1; $("sp-pg").value = offBits; }
+    $("sp-va-v").textContent = vaBits;
+    $("sp-pg-v").textContent = fmtBytes(Math.pow(2, offBits));
+    $("sp-vb").textContent = vaBits - offBits; $("sp-ob").textContent = offBits;
+    $("sp-np").textContent = fmtCount(Math.pow(2, vaBits - offBits));
+    $("sp-as").textContent = fmtBytes(Math.pow(2, vaBits));
+    const va = parseHexBig($("sp-addr").value), bitsEl = $("sp-bits"), msg = $("sp-msg");
+    bitsEl.innerHTML = "";
+    if (va === null) { msg.innerHTML = `<span class="c-bad">16진수(최대 16자리)를 입력하라.</span>`; $("sp-vpn").textContent = $("sp-off").textContent = "-"; return; }
+    const r = splitAddress(va, vaBits, offBits);
+    if (!r.ok) { msg.innerHTML = `<span class="c-bad">이 주소는 ${vaBits}비트 범위를 넘는다.</span>`; $("sp-vpn").textContent = $("sp-off").textContent = "-"; return; }
+    const b = va.toString(2).padStart(vaBits, "0");
+    let html = "";
+    for (let i = 0; i < vaBits; i++) {
+      const bitNo = vaBits - 1 - i;
+      const cls = bitNo >= offBits ? "v" : "o";
+      const gap = (bitNo === offBits) || (bitNo % 4 === 0 && bitNo !== 0);
+      html += `<span class="b ${cls}${gap ? " gap" : ""}" title="비트 ${bitNo}">${b[i]}</span>`;
+    }
+    bitsEl.innerHTML = html;
+    $("sp-vpn").textContent = "0x" + r.vpn.toString(16);
+    $("sp-off").textContent = "0x" + r.off.toString(16);
+    msg.innerHTML = `VA = VPN × ${fmtBytes(Math.pow(2, offBits))} + offset → 0x${r.vpn.toString(16)} ≪ ${offBits} | 0x${r.off.toString(16)}. 이 VPN이 페이지 테이블의 인덱스(다단계에서는 여러 조각, 05장)가 된다.`;
+  }
+  ["sp-va", "sp-pg"].forEach(id => $(id).oninput = render);
+  $("sp-addr").oninput = render;
+  document.querySelectorAll("[data-sp]").forEach(btn => btn.onclick = () => {
+    const [v, p, a] = btn.dataset.sp.split(","); $("sp-va").value = v; $("sp-pg").value = p; $("sp-addr").value = a; render();
+  });
+  render();
+})();
+
+/* ================= 위젯 2: 변환 스텝 ================= */
+(function () {
+  const svg = document.getElementById("tr-svg");
+  const tw = ["t-va", "t-split", "t-ptbr", "t-calc", "t-a1", "t-a2", "t-a3", "t-a4", "t-pa", "t-a5"];
+  const S = [
+    { show: ["t-va"], hl: ["t-va"], cap: "CPU가 <code>load [0x3A7C]</code>를 실행한다. 이 16비트 주소는 <b>가상 주소</b>다." },
+    { show: ["t-va", "t-split"], hl: [], cap: "페이지가 4 KB = 2<sup>12</sup>이므로 하위 12비트가 오프셋(0xA7C), 상위 4비트가 VPN(3)이다. 배선만으로 나뉜다." },
+    { show: ["t-va", "t-split", "t-ptbr", "t-calc", "t-a1", "t-a2"], hl: ["t-ptbr"], cap: "PTE의 물리 주소 = PTBR + VPN × 4 = 0x0900C. 이 주소에서 PTE를 <b>메모리로부터 읽는다</b>(접근 ①)." },
+    { show: ["t-va", "t-split", "t-ptbr", "t-calc", "t-a1", "t-a2"], hl: ["t-row"], cap: "PTE[3]: P=1(유효), PFN=0x2D. 권한 비트도 검사한다. P=0이었다면 여기서 페이지 폴트(#PF)가 나고 CR2=0x3A7C가 된다." },
+    { show: ["t-va", "t-split", "t-ptbr", "t-calc", "t-a1", "t-a2", "t-a3", "t-a4", "t-pa"], hl: ["t-pa"], cap: "물리 주소 = PFN ≪ 12 | offset = 0x2D000 | 0xA7C = <b>0x2DA7C</b>. 오프셋은 그대로 복사된다." },
+    { show: tw, hl: ["t-frame"], cap: "물리 주소 0x2DA7C에서 데이터를 읽는다(접근 ②). 명령 하나에 메모리 접근이 두 번이다. 이것을 줄이는 것이 TLB다(04장)." },
+  ];
+  MM.stepper(document.getElementById("tr-player"), {
+    steps: S.length, interval: 2000,
+    render(i) {
+      tw.forEach(id => svg.querySelector("#" + id).classList.toggle("dim", !S[i].show.includes(id)));
+      svg.querySelectorAll(".hb").forEach(el => el.classList.toggle("on", S[i].hl.includes(el.id)));
+      return S[i].cap;
+    }
+  });
+})();
+
+/* ================= 위젯 3: 변환기 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  const INIT = [
+    { p: 0, use: "NULL 보호 (매핑 없음)" },
+    { p: 1, rw: 0, us: 1, nx: 0, pfn: 0x12, use: ".text 코드" },
+    { p: 1, rw: 0, us: 1, nx: 0, pfn: 0x07, use: ".text 코드" },
+    { p: 1, rw: 0, us: 1, nx: 1, pfn: 0x1F, use: ".rodata" },
+    { p: 1, rw: 1, us: 1, nx: 1, pfn: 0x2D, use: ".data" },
+    { p: 1, rw: 1, us: 1, nx: 1, pfn: 0x03, use: "heap" },
+    { p: 0, use: "heap (스왑아웃됨)" },
+    { p: 0, use: "미사용" }, { p: 0, use: "미사용" }, { p: 0, use: "미사용" }, { p: 0, use: "미사용" }, { p: 0, use: "미사용" },
+    { p: 0, use: "스택 아래 (아직 안 씀)" },
+    { p: 1, rw: 1, us: 1, nx: 1, pfn: 0x08, use: "stack" },
+    { p: 1, rw: 1, us: 1, nx: 1, pfn: 0x15, use: "stack" },
+    { p: 1, rw: 1, us: 0, nx: 1, pfn: 0x01, use: "커널 데이터 (U/S=0)" },
+  ];
+  let pt;
+  function reset() { pt = INIT.map(e => Object.assign({ p: 0, rw: 0, us: 0, nx: 0, a: 0, d: 0, pfn: 0 }, e)); draw(); }
+  function draw(cur, flips) {
+    flips = flips || {};
+    let h = `<tr><th>VPN</th><th>VA 범위</th><th>P</th><th>R/W</th><th>U/S</th><th>XD</th><th>A</th><th>D</th><th>PFN</th><th>용도</th></tr>`;
+    pt.forEach((e, i) => {
+      const f = k => flips[k] ? ' class="flip"' : "";
+      h += `<tr class="${i === cur ? "on" : ""}${e.p ? "" : " np"}"><td>${i.toString(16).toUpperCase()}</td><td>${MM.hex(i << 12, 4)}–${MM.hex((i << 12) | 0xFFF, 4)}</td><td>${e.p}</td>` +
+        (e.p ? `<td>${e.rw}</td><td>${e.us}</td><td>${e.nx}</td><td${i === cur ? f("a") : ""}>${e.a}</td><td${i === cur ? f("d") : ""}>${e.d}</td><td>${MM.hex(e.pfn, 2)}</td>` : `<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>`) +
+        `<td class="u">${e.use}</td></tr>`;
+    });
+    $("tr-tbl").innerHTML = h;
+  }
+  function run() {
+    const s = $("tr-va").value.trim().toLowerCase().replace(/^0x/, "");
+    const out = $("tr-out"), steps = $("tr-steps");
+    if (!/^[0-9a-f]{1,4}$/.test(s)) { out.className = "result bad"; out.textContent = "16비트 16진수(0x0000~0xFFFF)를 입력하라."; steps.innerHTML = ""; return; }
+    const va = parseInt(s, 16), acc = $("tr-acc").value, mode = $("tr-mode").value;
+    const r = translate16(pt, va, acc, mode, $("tr-smap").checked);
+    draw(r.vpn, r.ok ? { a: r.setA, d: r.setD } : {});
+    const L = { present: "P=1 (매핑 존재)", us: "U/S 검사", rw: "R/W 검사", nx: "XD 검사", smep: "SMEP 검사", smap: "SMAP 검사", smx: "SMEP/SMAP 검사" };
+    steps.innerHTML = `<li class="pass">VA ${MM.hex(va, 4)} → VPN ${r.vpn.toString(16).toUpperCase()}, offset ${MM.hex(r.off, 3)}; PTE 주소 = PTBR + ${r.vpn}×8</li>` +
+      r.checks.map(([k, ok]) => `<li class="${ok ? "pass" : "fail"}">${L[k]}</li>`).join("");
+    if (r.ok) {
+      out.className = "result ok";
+      out.innerHTML = `물리 주소 = ${MM.hex(r.pfn, 2)} ≪ 12 | ${MM.hex(r.off, 3)} = <b class="mono">${MM.hex(r.pa, 5)}</b>` +
+        (r.setA || r.setD ? `<br><span style="font-size:14px">하드웨어가 ${[r.setA ? "A" : "", r.setD ? "D" : ""].filter(Boolean).join("와 ")} 비트를 1로 세웠다.</span>` : "");
+    } else {
+      out.className = "result bad";
+      const e = pt[r.vpn];
+      let note = "";
+      if (r.kind === "not-present") {
+        note = /스왑/.test(e.use) ? "커널은 PTE에 적힌 스왑 위치에서 페이지를 읽어 와(major fault) PTE를 고치고 명령을 재실행한다. 프로그램은 모른다."
+          : /스택 아래/.test(e.use) ? "스택 VMA의 확장 범위라면 커널이 새 0페이지를 할당하고 재실행한다(minor fault)."
+          : "이 주소에 VMA가 없으면 커널은 SIGSEGV를 보낸다.";
+      } else note = "VMA 권한도 이 접근을 허용하지 않으면 SIGSEGV다. 단, R/W=0이 COW 표시라면 커널이 사본을 만들고 재실행한다.";
+      out.innerHTML = `<b>페이지 폴트 (#PF)</b>: ${r.kind === "not-present" ? "not-present (P=0)" : r.why}<br>CR2 = <span class="mono">${MM.hex(va, 4)}</span>, 에러 코드 = <span class="mono">${r.err} (0b${r.err.toString(2).padStart(5, "0")})</span>: ${decodeErr(r.err)}<br><span style="font-size:14px">${note}</span>`;
+    }
+  }
+  $("tr-go").onclick = run;
+  $("tr-va").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+  ["tr-acc", "tr-mode", "tr-smap"].forEach(id => $(id).onchange = run);
+  $("tr-reset").onclick = () => { reset(); $("tr-steps").innerHTML = ""; $("tr-out").className = "result info"; $("tr-out").textContent = "A/D 비트를 지웠다(OS가 주기적으로 하는 일)."; };
+  document.querySelectorAll("[data-tr]").forEach(b => b.onclick = () => { const [v, a, m] = b.dataset.tr.split(","); $("tr-va").value = v; $("tr-acc").value = a; $("tr-mode").value = m; run(); });
+  reset();
+})();
+
+/* ================= 위젯 4: PTE 비트 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  let val = 0x8000000123456867n, selField = null;
+  const grid = $("pte-grid");
+  const cells = [];
+  for (let row = 3; row >= 0; row--) for (let c = 15; c >= 0; c--) {
+    const b = row * 16 + c, f = fieldOfBit(b);
+    const d = MM.el("div", { class: "pb " + f.cls, title: `비트 ${b}: ${f.key}`, "data-b": b });
+    d.innerHTML = `<span class="n">${b}</span><span class="val">0</span>`;
+    d.onclick = () => { val ^= (1n << BigInt(b)); selField = f; render(); };
+    grid.append(d); cells[b] = d;
+  }
+  function render() {
+    $("pte-hex").value = "0x" + val.toString(16).padStart(16, "0");
+    for (let b = 0; b < 64; b++) {
+      const one = (val >> BigInt(b)) & 1n;
+      cells[b].classList.toggle("one", !!one); cells[b].classList.toggle("zero", !one);
+      cells[b].querySelector(".val").textContent = one ? "1" : "0";
+      cells[b].classList.toggle("sel", !!selField && b >= selField.lo && b <= selField.hi);
+    }
+    const D = decodePTE(val);
+    const tag = (k, on, txt) => `<span class="${on ? "on" : ""}">${k}=${txt != null ? txt : (on ? 1 : 0)}</span>`;
+    $("pte-dec").innerHTML = tag("P", D.p) + tag("R/W", D.rw) + tag("U/S", D.us) + tag("PWT", D.pwt) + tag("PCD", D.pcd) + tag("A", D.a) + tag("D", D.d) + tag("PAT", D.pat) + tag("G", D.g) +
+      tag("AVL", D.avl, D.avl.toString(2).padStart(3, "0")) + tag("PFN", D.pfn > 0n, "0x" + D.pfn.toString(16)) + tag("PK", D.pk, D.pk) + tag("XD", D.xd);
+    let sum;
+    if (!D.p) sum = "P=0: 하드웨어는 이 PTE를 무효로 본다. 접근하면 not-present 폴트가 난다. 나머지 비트는 OS가 자유롭게 쓴다(스왑 엔트리 등).";
+    else {
+      const perm = (D.us ? "유저" : "커널 전용") + ", " + (D.rw ? "읽기·쓰기" : "읽기 전용") + ", " + (D.xd ? "실행 금지" : "실행 가능");
+      sum = `<b>${perm}</b> 페이지 → 물리 프레임 0x${D.pfn.toString(16)} (물리 주소 0x${(D.pfn << 12n).toString(16)}~0x${((D.pfn << 12n) | 0xFFFn).toString(16)}). ` +
+        `${D.a ? "최근 접근됨(A=1)" : "아직 접근 안 됨(A=0)"}, ${D.d ? "수정됨(D=1, 회수 시 write-back 필요)" : "깨끗함(D=0)"}${D.g ? ", Global(TLB에서 CR3 전환에도 유지)" : ""}.` +
+        (D.rw && !D.xd ? ` <span class="c-bad">쓰기 가능하면서 실행 가능하다. W^X 위반으로, 정상적인 OS는 JIT 같은 특수한 경우가 아니면 만들지 않는다.</span>` : "");
+    }
+    $("pte-info").innerHTML = (selField ? `<b>비트 ${selField.lo === selField.hi ? selField.lo : selField.hi + "–" + selField.lo} · ${selField.key} (${selField.name})</b><br>${selField.d}<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">` : "") + sum;
+  }
+  $("pte-hex").addEventListener("change", () => { const v = parseHexBig($("pte-hex").value); if (v !== null) { val = v; render(); } else render(); });
+  document.querySelectorAll("[data-pte]").forEach(b => b.onclick = () => { val = BigInt(b.dataset.pte); selField = null; render(); });
+  render();
+})();
+
+/* ================= 위젯 5: 테이블 크기 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  function run() {
+    const va = +$("sz-va").value, off = +$("sz-pg").value, pte = +$("sz-pte").value;
+    const np = Math.max(1, +$("sz-np").value || 1), useMiB = Math.max(1, +$("sz-use").value || 1);
+    const { entries, bytes } = pageTableSize(va, off, pte);
+    const need = neededPTEBytes(useMiB * 1048576, off, pte);
+    $("sz-ent").textContent = fmtCount(entries);
+    $("sz-one").textContent = fmtBytes(bytes);
+    $("sz-all").textContent = fmtBytes(bytes * np);
+    $("sz-need").textContent = fmtBytes(need);
+    const ratio = bytes / need;
+    $("sz-msg").innerHTML = `가상 페이지 2<sup>${va - off}</sup>개 × ${pte} B. 실제로 쓰는 ${useMiB} MiB에 필요한 PTE는 ${fmtBytes(need)}뿐인데 단일 레벨 테이블은 그 <b>${ratio >= 1e6 ? ratio.toExponential(1) : Math.round(ratio).toLocaleString()}배</b>를 잡는다. ` +
+      (bytes >= Math.pow(2, 30) ? `<span class="c-bad">프로세스당 ${fmtBytes(bytes)}는 물리 메모리로 감당할 수 없다. 다단계 테이블이 필요하다(05장).</span>` : `<span class="c-warn">감당할 수는 있지만 ${np}개 프로세스면 ${fmtBytes(bytes * np)}다. 그리고 각 테이블은 물리적으로 연속이어야 한다.</span>`);
+  }
+  ["sz-va", "sz-pg", "sz-pte", "sz-np", "sz-use"].forEach(id => $(id).oninput = run);
+  run();
+})();
+
+/* ================= 위젯 6: 페이지 크기 트레이드오프 ================= */
+(function () {
+  const $ = id => document.getElementById(id);
+  const SIZES = [4096, 16384, 65536, 2097152];
+  function run() {
+    const { out, bad } = parseRegions($("fr-in").value);
+    const tlb = Math.max(1, +$("fr-tlb").value || 64);
+    if (!out.length) { $("fr-out").innerHTML = `<span class="c-bad">영역을 하나 이상 입력하라(예: heap=2MB).</span>`; return; }
+    let h = `<table class="calc-out"><tr><th>페이지 크기</th><th>필요 페이지</th><th>할당량</th><th>내부 단편화</th><th>낭비율</th><th>TLB ${tlb}개 도달 범위</th></tr>`;
+    for (const ps of SIZES) {
+      const r = fragAnalysis(out, ps, tlb);
+      h += `<tr><td>${fmtBytes(ps)}</td><td>${r.pages.toLocaleString()}</td><td>${fmtBytes(r.alloc)}</td><td>${fmtBytes(r.waste)}</td><td class="${r.wastePct > 20 ? "c-bad" : "c-ok"}">${r.wastePct.toFixed(1)}%</td><td>${fmtBytes(r.reach)}</td></tr>`;
+    }
+    const used = out.reduce((s, r) => s + r.bytes, 0);
+    $("fr-out").innerHTML = h + `</table><div style="font-size:13px;color:var(--muted)">영역 ${out.length}개, 실사용 ${fmtBytes(used)}${bad.length ? `. 해석 못한 항목: ${bad.join(" ")}` : ""}</div>`;
+  }
+  $("fr-go").onclick = run;
+  $("fr-in").addEventListener("change", run);
+  $("fr-tlb").oninput = run;
+  run();
+})();
+</script>
+</body></html>

@@ -1,0 +1,1048 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consideration과 점수 결합</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 04장 전용 */
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.sliders { display: grid; grid-template-columns: minmax(110px, auto) 1fr minmax(56px, auto); gap: 6px 12px; align-items: center; font-size: 14px; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.mbars { display: grid; grid-template-columns: minmax(130px, auto) 1fr 64px; gap: 8px 12px; align-items: center; font-size: 14px; margin-top: 12px; }
+.mbars .bar { height: 14px; }
+.mbars .val { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.mbars .note { grid-column: 1 / -1; font-size: 12.5px; margin-top: -4px; }
+.pipe-svg { min-width: 660px; width: 100%; height: auto; display: block; }
+.pipe-svg text { font-family: var(--sans); fill: var(--text); }
+.pipe-svg .hdr { font-size: 12px; fill: var(--muted); font-weight: 700; }
+.pipe-svg .cell { fill: var(--surface-2); stroke: var(--border); transition: fill .25s, stroke .25s; }
+.pipe-svg .cell.on { fill: var(--accent-soft); stroke: var(--accent); }
+.pipe-svg .cell.cur { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 2; }
+.pipe-svg .cell.skip { fill: var(--surface); stroke: var(--border); stroke-dasharray: 4 3; }
+.pipe-svg .cell.zero { fill: var(--bad-soft); stroke: var(--bad); }
+.pipe-svg .cell.fin { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 2; }
+.pipe-svg .small { font-size: 11px; fill: var(--muted); }
+.pipe-svg .val { font-size: 14px; font-weight: 700; font-family: var(--mono); }
+.pipe-svg .ln { stroke: var(--muted); fill: none; }
+.plots3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
+.plots3 figure, .plots6 figure { margin: 0; }
+.plots3 figcaption, .plots6 figcaption { margin-top: 2px; font-size: 12.5px; }
+.plots6 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+.plots6 figure.skipped svg { opacity: .35; }
+.plots6 figure.zero figcaption { color: var(--bad); font-weight: 700; }
+.map-svg { width: 100%; max-width: 300px; height: auto; display: block; }
+.step-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.chart-svg { width: 100%; height: auto; display: block; }
+.chart-svg .grid { stroke: var(--border); stroke-width: 1; }
+.chart-svg .axis-t { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.order-list { list-style: none; padding: 0; margin: 10px 0; }
+.order-list li { display: grid; grid-template-columns: 28px minmax(120px, 1fr) auto auto auto; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin: 5px 0; background: var(--bg); font-size: 14px; transition: background .2s, border-color .2s; }
+.order-list li.run { background: var(--warn-soft); border-color: var(--warn); }
+.order-list li.pass { background: var(--ok-soft); border-color: var(--ok); }
+.order-list li.zero { background: var(--bad-soft); border-color: var(--bad); }
+.order-list li.skip { opacity: .45; }
+.order-list .idx { font-family: var(--mono); color: var(--muted); text-align: center; }
+.order-list input[type=number] { width: 64px; }
+.order-list .mv { display: inline-flex; gap: 4px; }
+.order-list .mv .btn { padding: 2px 8px; }
+@media (max-width: 600px) {
+  .order-list li { grid-template-columns: 24px 1fr; }
+  .order-list li > :nth-child(n+3) { grid-column: 2; }
+}
+.ctbl td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.ctbl td.skip { color: var(--muted); font-style: italic; }
+.ctbl td.zero { color: var(--bad); font-weight: 700; }
+.ctbl tr.cur td { background: var(--warn-soft); }
+.pill { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); }
+.pill.must { border-color: var(--bad); color: var(--bad); }
+.pill.dist { border-color: var(--violet); color: var(--violet); }
+.pill.feel { border-color: var(--teal); color: var(--teal); }
+.duel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body data-chapter="04">
+<main>
+  <header class="chapter-head">
+    <span class="label">기초 · Chapter 04</span>
+    <h1>Consideration과 점수 결합</h1>
+    <p class="lead">반응 커브 하나는 질문 하나에 답한다. "배가 얼마나 고픈가?", "빵집이 얼마나 먼가?" 그런데 행동은 이런 질문 여러 개에 한꺼번에 답해야 정해진다. 이 장에서는 원시 입력이 정규화와 커브를 거쳐 consideration 점수가 되고, 그 점수들이 하나의 행동 점수로 합쳐지는 과정을 엔진 코드와 함께 끝까지 따라간다. 결합 방식 하나를 고르는 데에도 설계 판단이 많이 들어간다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>원시 입력 → bookend 정규화 → 반응 커브 → 결합 → × weight로 이어지는 점수 파이프라인을 Hamlet 예제로 직접 계산한다.</li>
+      <li>평균·곱·최솟값·기하평균·보정 곱의 성질(거부권, 개수 편향, 민감도)을 비교하고 상황에 맞게 고른다.</li>
+      <li>IAUS 보정(make-up value) 공식을 유도하고, 보정이 무엇을 고치고 무엇은 못 고치는지 설명한다.</li>
+      <li>점수 0의 거부권과 early-out을 이해하고, 비용과 0 확률을 보고 consideration 순서를 최적화한다.</li>
+      <li>Lewis의 세 범주(필수 스위치 / 행동 구분 / 밸런스·느낌), DSE 템플릿, 프록시 변수로 consideration을 설계한다.</li>
+      <li>행동 weight와 consideration을 구분하고, Graham 결투 데모의 결합식(Heal = HealthDesire × Threat)이 왜 그렇게 생겼는지 설명한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>UAI.normalize()</code> <code>UAI.combine()</code> <code>UAI.compensate()</code> <code>Reasoner.evaluate()</code>의 early-out — consideration 점수를 행동 점수로 합치는 층</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">Consideration: 질문 하나, 점수 하나</a></li>
+    <li><a href="#s2">점수 파이프라인: 빵집에 갈까?</a></li>
+    <li><a href="#s3">결합 방식 비교: 평균, 곱, 최솟값, 기하평균</a></li>
+    <li><a href="#s4">곱의 개수 편향과 보정(make-up value)</a></li>
+    <li><a href="#s5">거부권(0)과 early-out: 싼 것부터</a></li>
+    <li><a href="#s6">Consideration 설계: 세 범주, DSE 템플릿, 프록시 변수</a></li>
+    <li><a href="#s7">행동 weight와 결합식 설계: Graham의 결투</a></li>
+    <li><a href="#s8">함정 모음</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. Consideration: 질문 하나, 점수 하나</h2>
+    <p>Utility AI에서 <b>consideration</b>(Graham은 <i>decision factor</i>라고 부른다)은 행동을 고를 때 따지는 질문 하나다. 각 consideration은 게임 상태에서 숫자 하나를 읽어 0~1 점수 하나를 내놓는다. Graham의 설명으로는 고양이 장난감을 어느 쇼핑몰에서 살지 정할 때도 가격만 보지 않는다. 브랜드 충성도, 배송 기간, 리뷰를 함께 본다. 이 하나하나가 decision factor이고, 이것들을 합쳐야 그 쇼핑몰에서 살지에 대한 최종 효용이 나온다.</p>
+    <p>왜 행동 점수를 한 번에 계산하는 큰 함수 하나로 쓰지 않고 이렇게 쪼갤까? 이유는 세 가지다.</p>
+    <ul>
+      <li><b>독립성</b>: Graham은 이 방식의 힘을 "각 decision factor는 다른 모든 factor와 사실상 격리되어 있다. 우리가 알거나 신경 쓰는 것은 출력이 정규화된 점수라는 것뿐이다"라고 설명한다. 그래서 factor를 새로 추가하거나 다른 행동으로 옮기기 쉽다.</li>
+      <li><b>데이터 주도</b>: Lewis(Guild Wars 2: Heart of Thorns)는 입력 선택과 곡선 설정이 전부 데이터라서 "AI 캐릭터의 선호를 바꾸는 데 엔지니어링 부담이 없다"고 쓴다. consideration은 디자이너가 조립하는 부품이다.</li>
+      <li><b>재사용</b>: "거리", "체력", "쿨다운" 같은 consideration은 거의 모든 행동에 다시 나온다. Heart of Thorns에서는 이런 사전 정의 패턴이 100개 넘게 만들어졌고, 디자이너는 이것들을 섞어 새 생물을 "몇 분 만에" 만들었다고 한다.</li>
+    </ul>
+    <p>Hamlet 마을에서 주민이 오브젝트를 "이용하기"로 할 때 엔진은 세 가지를 묻는다. 이 오브젝트가 내 욕구를 얼마나 채워 주나(<b>광고 가치</b>), 얼마나 먼가(<b>거리</b>), 얼마나 붐비나(<b>혼잡</b>). 실제 <code>uai.js</code> 코드는 다음과 같다.</p>
+<pre class="engine"><code>      considerations: [
+        // 광고된 욕구 충족량 × 그 욕구의 긴급도 합 → 0~1 (07장)
+        { name: "광고 가치", input: ({ agent, target }) =&gt; UAI.adValue(agent, target), lo: 0, hi: 1, curve: "선형 증가" },
+        // 거리: 가까울수록 좋다. 너무 멀면 0 근처 (08장)
+        { name: "거리", input: ({ agent, target }) =&gt; Math.abs(agent.x - target.x) + Math.abs(agent.y - target.y), lo: 0, hi: 30, curve: { type: "poly", m: -1, k: 2, b: 1 } },
+        // 이미 사용 중이면 붐빔 감점
+        { name: "혼잡", input: ({ target }) =&gt; target.users / target.capacity, lo: 0, hi: 1, curve: { type: "linear", m: -0.7, b: 1 } },
+      ],</code></pre>
+    <p>consideration 하나는 <b>네 부분</b>으로 이루어진다. ① 무엇을 읽을지(<code>input</code>), ② 어느 범위를 0과 1로 볼지(<code>lo</code>, <code>hi</code>: bookend), ③ 정규화된 값을 어떤 모양으로 바꿀지(<code>curve</code>, <a class="xref" href="03-response-curves.html#s2">03장 반응 커브</a>), ④ 사람이 읽을 이름(<code>name</code>)이다. 이 이름은 11장의 디버그 표에서 "왜 이 행동을 골랐나"를 설명하는 단위가 된다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 700 250" role="img" aria-label="행동 점수는 consideration 점수들의 결합에 weight를 곱한 것">
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <text x="80" y="20" text-anchor="middle" class="muted" font-weight="700">게임 상태</text>
+        <text x="260" y="20" text-anchor="middle" class="muted" font-weight="700">consideration (질문 하나씩)</text>
+        <text x="520" y="20" text-anchor="middle" class="muted" font-weight="700">행동 (DSE)</text>
+        <rect x="10" y="40" width="140" height="44" rx="8" class="box"/><text x="80" y="67" text-anchor="middle">찬의 배고픔 25</text>
+        <rect x="10" y="102" width="140" height="44" rx="8" class="box"/><text x="80" y="129" text-anchor="middle">찬↔빵집 14칸</text>
+        <rect x="10" y="164" width="140" height="44" rx="8" class="box"/><text x="80" y="191" text-anchor="middle">빵집 1/2명 사용</text>
+        <rect x="190" y="40" width="140" height="44" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="260" y="60" text-anchor="middle" font-weight="700">광고 가치</text><text x="260" y="77" text-anchor="middle" class="muted" font-size="12">정규화 → 커브 → 0~1</text>
+        <rect x="190" y="102" width="140" height="44" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="260" y="122" text-anchor="middle" font-weight="700">거리</text><text x="260" y="139" text-anchor="middle" class="muted" font-size="12">정규화 → 커브 → 0~1</text>
+        <rect x="190" y="164" width="140" height="44" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="260" y="184" text-anchor="middle" font-weight="700">혼잡</text><text x="260" y="201" text-anchor="middle" class="muted" font-size="12">정규화 → 커브 → 0~1</text>
+        <line x1="150" y1="62" x2="186" y2="62" class="line" marker-end="url(#a1)"/>
+        <line x1="150" y1="124" x2="186" y2="124" class="line" marker-end="url(#a1)"/>
+        <line x1="150" y1="186" x2="186" y2="186" class="line" marker-end="url(#a1)"/>
+        <rect x="390" y="92" width="110" height="64" rx="32" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="445" y="120" text-anchor="middle" font-weight="700">결합</text><text x="445" y="140" text-anchor="middle" class="muted" font-size="12">곱 / 평균 / …</text>
+        <path d="M330,62 C360,62 360,110 386,116" class="line" marker-end="url(#a1)"/>
+        <line x1="330" y1="124" x2="386" y2="124" class="line" marker-end="url(#a1)"/>
+        <path d="M330,186 C360,186 360,138 386,132" class="line" marker-end="url(#a1)"/>
+        <rect x="540" y="100" width="70" height="48" rx="8" class="box"/><text x="575" y="122" text-anchor="middle" font-weight="700">× weight</text><text x="575" y="139" text-anchor="middle" class="muted" font-size="12">행동 단위</text>
+        <line x1="500" y1="124" x2="536" y2="124" class="line" marker-end="url(#a1)"/>
+        <rect x="630" y="100" width="62" height="48" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="661" y="122" text-anchor="middle" font-weight="700">점수</text><text x="661" y="139" text-anchor="middle" class="muted" font-size="12">→ 05장</text>
+        <line x1="610" y1="124" x2="626" y2="124" class="line" marker-end="url(#a1)"/>
+        <text x="350" y="238" text-anchor="middle" class="muted">행동 하나 = consideration 묶음 + 결합 규칙 + weight. Lewis는 이 묶음을 DSE(Decision Score Evaluator)라고 부른다.</text>
+      </svg>
+      <figcaption>그림 4-1. consideration은 게임 상태의 숫자 하나를 0~1 점수 하나로 바꾸고, 행동은 그 점수들을 결합해 자기 점수를 만든다.</figcaption>
+    </figure>
+
+    <div class="callout"><span class="title">용어 정리</span>
+      Graham(Game AI Pro 1)은 <i>decision factor</i>, Lewis·Mark(IAUS)는 <i>consideration</i>, 행동 하나를 평가하는 묶음은 <i>DSE</i>라고 부른다. 이 코스와 <code>uai.js</code>는 <code>action.considerations</code>라는 이름을 쓴다. 가리키는 대상은 모두 같다.
+    </div>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. 점수 파이프라인: 빵집에 갈까?</h2>
+    <p>Lewis는 Heart of Thorns의 consideration 처리 과정을 이렇게 설명한다. 원시 숫자 입력을 [0, 1]로 정규화하고, 응답 곡선으로 다시 매핑한 다음, 모든 consideration 점수를 곱해 DSE 점수를 얻는다. 정규화에는 <b>bookend</b>를 쓴다. 예를 들어 거리 0m를 최소, 100m를 최대로 정하면 25m는 0.25가 되고, 100m를 넘는 거리는 모두 1로 고정된다. 이 0.25를 알맞은 곡선에 넣으면 0.95 같은 값이 나올 수 있다. 엔진의 정규화는 한 줄짜리다.</p>
+<pre class="engine"><code>  // bookend 정규화: [lo, hi] 구간을 [0, 1]로. 범위를 벗어나면 끝값에 고정 (GAP3 13장)
+  UAI.normalize = (v, lo, hi) =&gt; (hi === lo ? 0 : clamp01((v - lo) / (hi - lo)));</code></pre>
+    <p>bookend의 "고정(clamp)"은 생각보다 중요하다. 이것이 없으면 31칸 떨어진 오브젝트의 정규화 값이 1.03이 되고, <code>1 − x²</code> 커브는 음수를 내놓는다. 엔진은 커브 출력도 한 번 더 <code>clamp01</code>로 자르지만, 입력 단계에서 범위를 지켜 두면 커브 설계자가 [0, 1] 정사각형만 생각하면 된다. Lewis도 곡선은 정의역·치역 [0, 1]의 정사각형 안에서만 신경 쓰면 된다고 말한다.</p>
+    <p>이제 Hamlet 마을의 주민 <b>찬</b>이 <b>빵집 이용하기</b>를 평가하는 과정을 엔진 그대로 한 단계씩 따라가 보자. 아래 위젯은 <code>UAI.makeHamlet()</code>으로 마을을 만들고 찬의 욕구와 빵집 이용자 수만 바꾼 뒤, 기본 Reasoner의 <code>evaluate()</code>가 내놓은 값을 단계별로 펼쳐 보여 준다. 숫자는 전부 엔진이 계산한 값이다.</p>
+
+    <div class="widget" id="w-pipe">
+      <div class="w-title">스텝 애니메이션: 찬 → 빵집 이용하기의 점수 계산</div>
+      <div class="w-desc">▶ 재생으로 단계를 진행한다. 슬라이더를 바꾸면 엔진이 다시 계산한다. 배고픔을 100으로 올리면 광고 가치가 0이 되어 early-out이 일어나는 것도 볼 수 있다.</div>
+      <div class="sliders">
+        <label for="pp-h">찬의 배고픔 충족도</label><input type="range" id="pp-h" min="0" max="100" value="25"><output id="pp-h-o">25</output>
+        <label for="pp-u">빵집 이용자 수</label><input type="range" id="pp-u" min="0" max="1" value="1"><output id="pp-u-o">1 / 2</output>
+      </div>
+      <div class="step-wrap">
+        <div class="stage"><svg class="pipe-svg" id="pp-svg" viewBox="0 0 720 250" role="img" aria-label="consideration 파이프라인"></svg></div>
+        <div class="plots3" id="pp-plots"></div>
+      </div>
+      <div id="pp-step"></div>
+    </div>
+
+    <p>마지막 단계에서 보듯 엔진이 내놓은 점수와 손으로 계산한 점수는 같다. 중요한 관찰이 두 가지 있다.</p>
+    <ul>
+      <li>세 consideration 모두 0.5~0.8로 "꽤 괜찮은" 값인데, 그냥 곱하면 0.27로 뚝 떨어진다. 이 문제가 4절의 보정을 만든 이유다. Hamlet의 기본 <code>World</code>는 <code>combine: "compensated"</code>를 쓴다.</li>
+      <li>배고픔이 100이면 채울 여지가 0이라 광고 가치가 0이 되고, 엔진은 거리와 혼잡을 <b>아예 계산하지 않는다</b>. 이것이 5절의 early-out이다.</li>
+    </ul>
+    <div class="callout tip"><span class="title">빵집 이용자가 2명이면?</span>
+      슬라이더 최댓값이 1인 이유가 있다. 빵집 정원은 2명이라 2명이 이용 중이면 <code>targets()</code>가 빵집을 아예 후보 목록에서 뺀다(<code>o.users &lt; o.capacity</code>). "꽉 찼다"는 조건은 consideration이 아니라 <b>대상 필터</b>로 처리된다. 대상을 고르는 단계는 08장에서 다룬다.
+    </div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. 결합 방식 비교: 평균, 곱, 최솟값, 기하평균</h2>
+    <p>consideration 점수가 여러 개 나왔다. 이것들을 어떻게 하나로 합칠까? 문헌에 나오는 두 대표 방식부터 보자.</p>
+
+    <h3>3.1 평균: Graham의 개미 군체</h3>
+    <p>Graham은 개미 군체 시뮬레이션으로 결합을 설명한다. 군체를 <b>확장</b>(Expand)할지 <b>번식</b>(Breed)할지 정할 때 세 factor를 본다.</p>
+    <div class="tbl-wrap"><table class="ctbl">
+      <tr><th>decision factor</th><th>원시 값</th><th>정규화</th></tr>
+      <tr><td>Crowdedness (혼잡도)</td><td>개체 수 4500 / 최대 5000</td><td class="num">0.90</td></tr>
+      <tr><td>Health (식량 비축)</td><td>Food 92 / 100</td><td class="num">0.92</td></tr>
+      <tr><td>Nursery (육아방 여유 공간)</td><td>15 / 100</td><td class="num">0.15</td></tr>
+    </table></div>
+    <div class="formula">Expand = Average(Crowdedness, Health) = (0.90 + 0.92) / 2 = 0.91<br>Breed&nbsp; = Average(Health, Nursery)&nbsp;&nbsp;&nbsp;&nbsp;= (0.92 + 0.15) / 2 = 0.535</div>
+    <p>평균은 직관적이고, Graham이 강조하듯 factor를 "끝없이 연결"할 수 있다. 그가 권하는 도구도 화살표마다 평균, 곱, max, min을 고르고 factor에 가중치를 주는 형태다. 하지만 평균에는 구조적 약점이 있다. <b>어떤 factor도 혼자서는 행동을 막을 수 없다.</b> 육아방이 꽉 차서 Nursery가 0이어도 Breed는 (0.92 + 0)/2 = 0.46을 받는다. 알을 놓을 곳이 없는데 번식을 고를 수 있다는 뜻이다.</p>
+
+    <h3>3.2 곱: IAUS와 Heart of Thorns</h3>
+    <p>Lewis가 설명하는 IAUS 기반 구조는 consideration 점수를 모두 <b>곱한다</b>. 그 결과 핵심 성질이 생긴다. 어떤 consideration이든 0점을 내면 그 결정 전체를 선택 대상에서 뺄 수 있다. Lewis의 표현으로는 이 덕분에 "결정을 절대 쓰면 안 되는 상황에 대한 규칙을 쉽게 인코딩"할 수 있다. 0은 <b>거부권(veto)</b>이다.</p>
+    <p>곱의 대가는 <b>개수 편향</b>이다. 1보다 작은 수를 곱할수록 결과는 작아지므로, consideration이 많은 행동은 점점 불리해진다. 이 문제는 4절에서 다룬다.</p>
+
+    <h3>3.3 다른 선택지</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>방식</th><th>식</th><th>0의 거부권</th><th>개수가 늘면 (모두 같은 s)</th><th>주 용도·출처</th></tr>
+      <tr><td><b>평균</b></td><td class="mono">Σsᵢ / n</td><td class="c-bad">없음</td><td>s 유지</td><td>Graham 개미 예. "얼마나 좋은가"의 균형</td></tr>
+      <tr><td><b>곱</b></td><td class="mono">Π sᵢ</td><td class="c-ok">있음</td><td class="c-bad">sⁿ으로 감소</td><td>IAUS, Heart of Thorns (Lewis), Graham 결투의 Heal·Run</td></tr>
+      <tr><td><b>보정 곱</b></td><td class="mono">Π comp(sᵢ, n)</td><td class="c-ok">있음</td><td class="c-warn">감소가 느려짐</td><td>IAUS make-up value. <code>uai.js</code> 기본값</td></tr>
+      <tr><td><b>최솟값</b></td><td class="mono">min sᵢ</td><td class="c-ok">있음</td><td>s 유지</td><td>"가장 약한 고리". UE5 StateTree의 AND(두 입력 중 작은 값)</td></tr>
+      <tr><td><b>최댓값</b></td><td class="mono">max sᵢ</td><td class="c-bad">없음</td><td>s 유지</td><td>"하나라도 충분". UE5 StateTree의 OR(큰 값)</td></tr>
+      <tr><td><b>기하평균</b></td><td class="mono">(Π sᵢ)^(1/n)</td><td class="c-ok">있음</td><td>s 유지</td><td>이 코스 엔진의 비교용 옵션</td></tr>
+    </table></div>
+    <p>최솟값과 기하평균은 개수 편향이 없으면서 거부권도 지킨다. 그런데도 곱이 표준처럼 쓰이는 이유는 아래 위젯으로 직접 확인해 보자. <b>최솟값</b>은 가장 낮은 값 하나만 보기 때문에 나머지 consideration이 아무리 바뀌어도 점수가 움직이지 않는다. 두 행동이 같은 최솟값을 가지면 나머지 차이로 구분할 수 없다. <b>기하평균</b>은 반대로 낮은 값을 너무 너그럽게 봐준다. 0.1 하나와 1 세 개의 기하평균은 0.56이다. 한 축이 "거의 안 된다"고 말하는데 행동 점수는 절반을 넘는다.</p>
+
+    <div class="widget" id="w-comb">
+      <div class="w-title">결합 방식 비교기</div>
+      <div class="w-desc">consideration 개수 n과 각 점수를 정하면 다섯 결합 방식의 결과가 막대로 나온다. 모두 <code>UAI.combine(vals, method)</code>를 그대로 호출한다. 프리셋 버튼으로 전형적인 상황을 불러올 수 있다.</div>
+      <div class="controls">
+        <label>n <input type="range" id="cb-n" min="1" max="6" value="3"> <b id="cb-n-o" class="mono">3</b></label>
+        <button class="btn" data-p="eq">모두 0.8</button>
+        <button class="btn" data-p="zero">하나만 0</button>
+        <button class="btn" data-p="low">0.1 하나 + 나머지 1</button>
+        <button class="btn" data-p="sw">항상 1인 스위치 추가</button>
+        <button class="btn" data-p="rnd">무작위</button>
+      </div>
+      <div class="sliders" id="cb-sl"></div>
+      <div class="mbars" id="cb-bars"></div>
+      <div class="w-desc" id="cb-msg" style="margin-top:10px"></div>
+    </div>
+
+    <div class="callout warn"><span class="title">"항상 1인 스위치 추가" 버튼을 눌러 보자</span>
+      스위치는 보통 1을 내고, 꺼질 때만 0을 낸다. 곱에서는 1을 곱해도 결과가 그대로다. 그런데 <b>보정 곱</b>에서는 n이 하나 늘어난 만큼 다른 consideration의 보정량도 커져서 점수가 <b>오른다</b>. 예를 들어 [0.5]에 항상 1인 스위치 두 개를 붙이면 0.5가 0.667이 된다. 보정 곱을 쓰는 엔진에서 템플릿에 스위치를 많이 미리 넣어 두면, 행동마다 스위치 개수에 따라 점수가 조금씩 달라진다. 큰 문제는 아니지만 튜닝할 때 알아 둘 필요가 있다.
+    </div>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 곱의 개수 편향과 보정(make-up value)</h2>
+    <p>2절의 빵집 예에서 세 값은 0.525, 0.782, 0.65였고 곱은 0.267이었다. 숫자를 더 단순하게 바꿔 보자. 모든 consideration이 0.8, 곧 "꽤 좋다"고 말하는 행동이 있다.</p>
+    <div class="formula">n=1: 0.8 &nbsp;·&nbsp; n=2: 0.64 &nbsp;·&nbsp; n=3: 0.512 &nbsp;·&nbsp; n=5: 0.328 &nbsp;·&nbsp; n=10: 0.107</div>
+    <p>consideration을 꼼꼼히 설계한 행동일수록 점수가 바닥으로 떨어진다. Hamlet에서 "이용하기"는 consideration이 3개이고 "산책"은 1개다. 조건이 같다면 consideration이 적은 행동이 늘 유리하다. 디자이너가 행동을 정교하게 만들수록 그 행동이 덜 선택되는 셈이다.</p>
+
+    <h3>4.1 보정 공식</h3>
+    <p>IAUS(Dave Mark)에서 쓰이는 보정은 consideration마다 "1까지 남은 거리"의 일부를 되돌려 준다. n개 consideration이 있을 때 점수 s 하나에 대해:</p>
+    <div class="formula">modification = 1 − 1/n<br>makeUp = (1 − s) · modification<br>s′ = s + makeUp · s</div>
+    <p>식을 하나씩 읽어 보자. <code>1 − s</code>는 이 consideration이 만점에서 모자란 양이다. 그중 <code>1 − 1/n</code>만큼을 메워 주는데, n이 클수록 많이 메운다. 마지막으로 그 보충분에 다시 s를 곱한다. 원래 점수가 낮으면 보충도 적게 받는다는 뜻이다. 그래서 <b>s = 0이면 s′ = 0</b>이고(거부권 유지), <b>s = 1이면 s′ = 1</b>이다(만점 유지). n = 1이면 modification이 0이라 아무 변화가 없다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 680 210" role="img" aria-label="make-up value 도식 s=0.5, n=4">
+        <text x="20" y="24" font-weight="700">예: s = 0.5, n = 4 → modification = 0.75</text>
+        <!-- scale 0..1 → x 40..640 -->
+        <rect x="40" y="48" width="600" height="34" rx="4" style="fill:var(--surface-2);stroke:var(--border)"/>
+        <rect x="40" y="48" width="300" height="34" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="190" y="70" text-anchor="middle" font-weight="700">s = 0.5</text>
+        <rect x="340" y="48" width="225" height="34" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="452" y="70" text-anchor="middle">makeUp = 0.5 × 0.75 = 0.375</text>
+        <text x="602" y="70" text-anchor="middle" class="muted">남는 0.125</text>
+        <text x="40" y="100" text-anchor="middle" class="muted">0</text><text x="340" y="100" text-anchor="middle" class="muted">0.5</text><text x="640" y="100" text-anchor="middle" class="muted">1</text>
+        <rect x="40" y="128" width="300" height="34" rx="4" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="190" y="150" text-anchor="middle" font-weight="700">s</text>
+        <rect x="340" y="128" width="112.5" height="34" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="396" y="150" text-anchor="middle">+0.1875</text>
+        <text x="470" y="150" class="muted">← makeUp × s (점수가 낮으면 보충도 적다)</text>
+        <text x="40" y="192" font-weight="700">s′ = 0.5 + 0.375 × 0.5 = 0.6875</text>
+        <path d="M452,84 L396,126" class="line" style="stroke-dasharray:4 3"/>
+      </svg>
+      <figcaption>그림 4-2. make-up value. 1까지 모자란 몫(1−s)의 (1−1/n)만큼을 계산하고, 거기에 s를 곱한 만큼만 실제로 더한다.</figcaption>
+    </figure>
+
+    <p>엔진 구현은 식을 그대로 옮긴 것이다. <code>combine("compensated")</code>는 각 값을 보정한 뒤 곱한다.</p>
+<pre class="engine"><code>  // 곱셈 결합은 consideration이 많을수록 점수가 깎이므로 보정한다 (IAUS make-up value)
+  //   modification = 1 − 1/n,  makeUp = (1 − s)·modification,  s' = s + makeUp·s
+  UAI.compensate = function (s, n) {
+    if (n &lt;= 1) return s;
+    const mod = 1 - 1 / n;
+    return s + (1 - s) * mod * s;
+  };
+  UAI.combine = function (vals, method) {
+    const n = vals.length;
+    if (!n) return 0;
+    switch (method || "product") {
+      case "product": return vals.reduce((a, v) =&gt; a * v, 1);
+      case "compensated": return vals.reduce((a, v) =&gt; a * UAI.compensate(v, n), 1);
+      case "mean": return vals.reduce((a, v) =&gt; a + v, 0) / n;
+      case "min": return Math.min(...vals);
+      case "max": return Math.max(...vals);
+      case "geomean": return Math.pow(vals.reduce((a, v) =&gt; a * v, 1), 1 / n);
+    }
+    throw new Error("unknown combine: " + method);
+  };</code></pre>
+
+    <div class="widget" id="w-ncurve">
+      <div class="w-title">n에 따른 행동 점수: 곱 vs 보정 곱</div>
+      <div class="w-desc">모든 consideration이 같은 점수 s일 때, 개수 n(1~10)에 따라 행동 점수가 어떻게 변하는지 그린다. 평균·기하평균·최솟값은 s에서 움직이지 않는다(점선).</div>
+      <div class="sliders">
+        <label for="nc-s">consideration 점수 s</label><input type="range" id="nc-s" min="0.05" max="1" step="0.01" value="0.8"><output id="nc-s-o">0.80</output>
+      </div>
+      <div class="stage"><svg class="chart-svg" id="nc-svg" viewBox="0 0 540 270" role="img" aria-label="n에 따른 점수 그래프" style="min-width:340px"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--bad)"></i>곱 sⁿ</span>
+        <span><i style="background:var(--ok)"></i>보정 곱</span>
+        <span><i style="background:var(--muted)"></i>평균·기하평균·min (= s)</span>
+      </div>
+      <div class="tbl-wrap"><table class="ctbl" id="nc-tbl"></table></div>
+    </div>
+
+    <h3>4.2 보정이 고치는 것과 못 고치는 것</h3>
+    <p>그래프를 s = 0.8로 두고 오른쪽 끝을 보자. n = 10에서 곱은 0.107이고 보정 곱은 약 0.56이다. 꽤 많이 회복했다. 하지만 보정 곱도 n이 늘면 <b>계속 줄어든다</b>. 같은 s가 n개일 때 각 항은 <code>s + (1−s)(1−1/n)s</code>인데, n → ∞이면 <code>s(2 − s)</code>로 수렴한다. s = 0.8이면 0.96이다. 0.96을 무한히 곱하면 결국 0이 된다. 보정은 개수 편향을 <b>완화</b>할 뿐 <b>없애지는</b> 못한다.</p>
+    <p>그런데도 보정을 쓰는 이유는 곱의 다른 장점을 지키기 때문이다. 0은 여전히 거부권이고, 낮은 값 하나는 여전히 행동 점수를 강하게 끌어내린다. 3절 비교기에서 "0.1 하나 + 나머지 1"(n = 4)을 보면 기하평균은 0.56이지만 보정 곱은 0.17이다. "거의 안 된다"는 신호를 기하평균보다 훨씬 정직하게 전달한다. 실전에서 consideration 개수는 보통 행동마다 몇 개 정도다. 그 범위에서는 보정이 행동 간 점수를 비교 가능한 수준으로 맞춰 준다.</p>
+    <details class="deep"><summary>심화: 보정 곱을 쓰면 행동 간 비교가 완전히 공정해지나?</summary><div>
+      <p>아니다. 점수 s인 consideration 하나만 있는 행동 A와, s인 consideration 하나에 1점짜리 consideration 세 개를 더한 행동 B를 비교해 보자. 순수 곱에서는 둘 다 s다. 보정 곱에서는 B가 <code>comp(s, 4)</code>를 받으므로 A보다 높아진다. 개수 편향의 방향이 <b>뒤집힌</b> 것이다. 보정은 "모든 consideration이 비슷하게 중간쯤"인 경우를 기준으로 만든 근사다. 행동 간 균형은 결국 weight(7절)와 곡선 튜닝(11장)으로 맞춰야 한다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 거부권(0)과 early-out: 싼 것부터</h2>
+    <p>곱 결합에서 0은 단순히 낮은 점수가 아니다. 결과가 이미 0으로 정해졌다는 뜻이므로, 나머지 consideration은 계산할 필요가 없다. Lewis는 이렇게 쓴다. consideration 하나가 결정 점수를 0으로 떨어뜨리는 순간 시스템은 나머지 처리를 멈추고 early-out해서 다음 결정으로 넘어간다. 그리고 이 덕분에 <b>"더 싼 consideration을 먼저 배치하고 early-out으로 비싼 것을 피하는"</b> 최적화가 가능하다.</p>
+    <p>Lewis가 든 예가 Side/Rear Attack DSE의 마지막 consideration인 시야(LOS) 검사다. 레이캐스트가 꽤 비싸서 <b>순서가 실제로 중요하다</b>. 실제 검사를 하기 전에 early-out할 수 있다면 그만큼 이득이다. 그는 이런 최적화가 Heart of Thorns AI의 성능을 충분히 확보한 큰 요인이었다고 말한다. Charge Attack에서는 내비메시 경로 검사가 "모든 대상에 대해 매번 계산하기엔 너무 비싸서" 아예 빼고 LOS 스위치만 썼다.</p>
+<pre class="engine"><code>          for (const c of a.considerations) {
+            if (!alive) { parts.push({ name: c.name, raw: null, x: null, y: null, skipped: true }); continue; }
+            const raw = c.input(ctx);
+            const x = UAI.normalize(raw, c.lo, c.hi);
+            const y = c.fn(x);
+            parts.push({ name: c.name, raw, x, y });
+            if (y &lt;= 0) alive = false;
+          }
+          const ys = parts.filter(p =&gt; !p.skipped).map(p =&gt; p.y);
+          let score = alive ? UAI.combine(ys, this.opt.combine) * a.weight : 0;</code></pre>
+    <p><code>Reasoner.evaluate()</code>는 <code>y &lt;= 0</code>이 되는 순간 <code>alive = false</code>로 바꾸고, 이후 consideration은 <code>input()</code>을 <b>호출하지 않은 채</b> <code>skipped</code>로만 기록한다. 생략된 항목도 기록하는 이유는 11장 디버그 표에서 "어디서 거부되었나"를 보여 주기 위해서다. 그런데 여기에는 조건이 하나 있다. early-out이 안전하려면 결합 방식이 <b>0을 흡수해야</b> 한다. 곱, 보정 곱, min, 기하평균은 0이 하나라도 있으면 결과가 0이다. 평균이나 max로 결합하면서 early-out을 쓰면 계산 결과가 달라진다. 이 엔진은 0이 나오면 결합 방식과 상관없이 점수를 0으로 두므로, 평균을 고르더라도 거부권은 유지된다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 700 170" role="img" aria-label="early-out 흐름">
+        <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="10" y="40" width="120" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="70" y="62" text-anchor="middle" font-weight="700">스위치</text><text x="70" y="80" text-anchor="middle" class="muted" font-size="12">비용 1 · 통과</text>
+        <rect x="160" y="40" width="120" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="220" y="62" text-anchor="middle" font-weight="700">체력</text><text x="220" y="80" text-anchor="middle" class="muted" font-size="12">비용 1 · 0.7</text>
+        <rect x="310" y="40" width="120" height="50" rx="8" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="370" y="62" text-anchor="middle" font-weight="700">대상 방향</text><text x="370" y="80" text-anchor="middle" class="muted" font-size="12">비용 2 · <tspan style="fill:var(--bad)" font-weight="700">0</tspan></text>
+        <rect x="460" y="40" width="120" height="50" rx="8" style="fill:var(--surface);stroke:var(--border);stroke-dasharray:4 3"/><text x="520" y="62" text-anchor="middle" class="muted" font-weight="700">LOS 레이캐스트</text><text x="520" y="80" text-anchor="middle" class="muted" font-size="12">비용 50 · 생략</text>
+        <line x1="130" y1="65" x2="156" y2="65" class="line" marker-end="url(#a2)"/>
+        <line x1="280" y1="65" x2="306" y2="65" class="line" marker-end="url(#a2)"/>
+        <line x1="430" y1="65" x2="456" y2="65" class="line" style="stroke-dasharray:4 3"/>
+        <path d="M370,90 C370,130 600,130 640,96" class="line" style="stroke:var(--bad)" marker-end="url(#a2)"/>
+        <rect x="600" y="40" width="90" height="50" rx="8" class="box"/><text x="645" y="62" text-anchor="middle" font-weight="700">점수 0</text><text x="645" y="80" text-anchor="middle" class="muted" font-size="12">다음 행동으로</text>
+        <text x="350" y="156" text-anchor="middle" class="muted">총비용 1+1+2 = 4. LOS를 맨 앞에 두었다면 이 평가에도 50을 먼저 냈을 것이다.</text>
+      </svg>
+      <figcaption>그림 4-3. early-out. 0이 나오면 뒤쪽의 비싼 consideration은 실행조차 되지 않는다. (비용 수치는 설명용)</figcaption>
+    </figure>
+
+    <h3>5.1 어떤 순서가 가장 싼가</h3>
+    <p>"싼 것부터"는 좋은 출발점이지만 전부는 아니다. 자주 0을 내는 consideration을 앞에 두는 것도 이득이다. consideration i의 비용을 cᵢ, 0을 낼 확률을 pᵢ라 하고 서로 독립이라고 하면, 한 번 평가할 때의 기대 비용은 다음과 같다.</p>
+    <div class="formula">E[비용] = c₁ + (1−p₁)·c₂ + (1−p₁)(1−p₂)·c₃ + …</div>
+    <p>이웃한 두 항목 i, j의 순서를 바꿔 보면, i가 앞에 있을 때 비용은 <code>cᵢ + (1−pᵢ)cⱼ</code>, j가 앞에 있으면 <code>cⱼ + (1−pⱼ)cᵢ</code>다. 정리하면 <code>cᵢ/pᵢ &lt; cⱼ/pⱼ</code>일 때 i를 앞에 두는 편이 낫다. 그래서 <b>cᵢ / pᵢ(0 하나를 얻는 데 드는 비용)가 작은 순서로 정렬</b>하면 기대 비용이 최소가 된다. 절대 0을 내지 않는 consideration(pᵢ = 0)은 맨 뒤로 간다. 이 결과는 Lewis 원문이 아니라 이 코스가 덧붙이는 계산이다. 실제 엔진에서 pᵢ는 플레이 로그로 측정해야 한다.</p>
+
+    <div class="widget" id="w-order">
+      <div class="w-title">early-out 순서 최적화기</div>
+      <div class="w-desc">Side/Rear Attack을 본뜬 consideration 5개다(비용·확률은 설명용 가정값). ↑↓로 순서를 바꾸거나 값을 고치면 기대 비용이 다시 계산된다. "한 번 평가"는 시드 고정 난수(<code>UAI.rng</code>)로 실제 평가 한 번을 애니메이션으로 보여 주고, "1,000회 시뮬레이션"은 기대값이 맞는지 확인한다.</div>
+      <ul class="order-list" id="od-list"></ul>
+      <div class="controls">
+        <button class="btn" id="od-best">최적 순서 (c/p 오름차순)</button>
+        <button class="btn" id="od-cheap">싼 것부터 (c 오름차순)</button>
+        <button class="btn" id="od-worst">최악 순서</button>
+        <button class="btn primary" id="od-run">▶ 한 번 평가</button>
+        <button class="btn" id="od-sim">1,000회 시뮬레이션</button>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">기대 비용 (식)</div><div class="v" id="od-e">-</div></div>
+        <div class="stat"><div class="k">최적 순서의 기대 비용</div><div class="v" id="od-opt">-</div></div>
+        <div class="stat"><div class="k">끝까지 통과할 확률</div><div class="v" id="od-pass">-</div></div>
+        <div class="stat"><div class="k">시뮬레이션 평균</div><div class="v" id="od-simv">-</div></div>
+      </div>
+      <div class="log" id="od-log">순서를 바꿔 보자.</div>
+    </div>
+    <div class="callout tip"><span class="title">해 보기</span>
+      "싼 것부터"를 누른 뒤 "최적 순서"를 눌러 보자. 비용이 같은 1인 스위치(0 확률 0.5)와 체력(0 확률 0.1) 중에서는 자주 0을 내는 스위치가 앞에 와야 한다. LOS의 0 확률을 0.95로 올려도 비용 50짜리는 여전히 뒤쪽에 남는다는 것도 확인해 보자.
+    </div>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. Consideration 설계: 세 범주, DSE 템플릿, 프록시 변수</h2>
+    <p>Lewis는 Heart of Thorns 경험을 바탕으로 AI 캐릭터를 만드는 진짜 기술은 <b>consideration을 고르고 알맞은 응답 곡선과 짝짓는 것</b>이라고 말한다. 결합 방식은 엔진이 정해 주지만, 무엇을 물어볼지는 디자이너가 정해야 한다.</p>
+
+    <h3>6.1 세 범주</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>범주</th><th>역할</th><th>예 (Heart of Thorns)</th><th>예 (Hamlet)</th></tr>
+      <tr><td><span class="pill must">필수 (스위치)</span></td><td>이게 없으면 결정이 제대로 동작하지 않는다. 대개 0/1 스위치</td><td>"실행 중인 다른 행동을 끊지 말 것", "이동 불가 상태면 움직이지 말 것"</td><td>도망치기의 "위협 존재", 수다 떨기의 "상대 한가함"</td></tr>
+      <tr><td><span class="pill dist">행동 구분</span></td><td>비슷한 행동 패턴과 이 결정을 구별한다. 게임 규칙·상태 플래그를 읽는다</td><td>Close to Melee when Invisible의 "투명 상태" 스위치(버프·상태 플래그)</td><td>이용하기의 "광고 가치"(오브젝트마다 채워 주는 욕구가 다름)</td></tr>
+      <tr><td><span class="pill feel">밸런스·느낌</span></td><td>얼마나 자주, 언제, 어떤 성격으로 하는가. 가장 맞추기 어렵다</td><td>runtime·cooldown(표준화된 곡선), 체력에 따른 성향</td><td>거리, 혼잡</td></tr>
+    </table></div>
+
+    <h3>6.2 DSE 템플릿: 스위치를 하드코딩하지 않는 이유</h3>
+    <p>Heart of Thorns의 거의 모든 DSE는 "다른 결정 실행 중 아님", "이동 불가 아님" 같은 기본 스위치로 시작한다. 이 검사를 엔진 코드에 박아 넣을 수도 있었다. 실제로 하드코딩된 제어 요소도 몇 개 있었다. 하지만 팀은 새로 만드는 DSE에 자주 쓰는 스위치를 <b>미리 채워 두는 방식</b>을 택했다. Lewis의 이유는 이렇다. 하드코딩 로직이 늘수록 예외가 필요할 때 시스템이 깨지기 쉬워진다. 언젠가는 누군가 스위치를 우회할 좋은 이유를 찾아낸다. 그날이 오면 "첫 번째 하드코딩을 우회하는 하드코딩"을 추가하는 것보다 consideration 하나를 빼는 편이 훨씬 낫다.</p>
+    <p>그날은 실제로 왔다. Side/Rear Attack(측면·후방 공격) DSE는 이동형 DSE와 달리 이동 불가 상태에서도 꺼지면 안 됐다. 제자리에서 휘두르는 공격이기 때문이다. 팀은 이동 불가 스위치를 그 DSE에서 <b>빼기만</b> 했다.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 700 230" role="img" aria-label="DSE 템플릿에서 스위치를 빼는 방식">
+        <rect x="10" y="20" width="200" height="190" rx="10" class="box"/>
+        <text x="110" y="44" text-anchor="middle" font-weight="700">새 DSE 템플릿</text>
+        <rect x="26" y="58" width="168" height="34" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="110" y="80" text-anchor="middle">다른 결정 실행 중 아님</text>
+        <rect x="26" y="100" width="168" height="34" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="110" y="122" text-anchor="middle">이동 불가(rooted) 아님</text>
+        <rect x="26" y="142" width="168" height="54" rx="6" style="fill:var(--surface);stroke:var(--border);stroke-dasharray:4 3"/><text x="110" y="166" text-anchor="middle" class="muted">(디자이너가 채울 자리)</text><text x="110" y="184" text-anchor="middle" class="muted" font-size="12">구분 · 밸런스 consideration</text>
+        <path d="M210,90 C250,90 250,70 280,70" class="line"/>
+        <path d="M210,140 C250,140 250,160 280,160" class="line"/>
+        <rect x="280" y="20" width="200" height="100" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="380" y="42" text-anchor="middle" font-weight="700">Evade Dangerous Areas</text>
+        <text x="380" y="64" text-anchor="middle" font-size="12">스위치 2개 그대로</text>
+        <text x="380" y="82" text-anchor="middle" font-size="12">+ 위험도 · runtime · cooldown · 체력</text>
+        <text x="380" y="104" text-anchor="middle" class="muted" font-size="12">consideration 6개</text>
+        <rect x="280" y="130" width="200" height="90" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="380" y="152" text-anchor="middle" font-weight="700">Side/Rear Attack</text>
+        <text x="380" y="172" text-anchor="middle" font-size="12">실행 중 스위치만 유지</text>
+        <text x="380" y="190" text-anchor="middle" font-size="12" style="fill:var(--bad)">이동 불가 스위치는 생략</text>
+        <text x="380" y="208" text-anchor="middle" class="muted" font-size="12">+ 등 돌림 · 체력 · 우선순위 3 · LOS</text>
+        <text x="500" y="60" font-size="12.5">하드코딩이었다면:</text>
+        <text x="500" y="80" font-size="12.5" class="muted">if (rooted &amp;&amp; !isSideAttack)</text>
+        <text x="500" y="98" font-size="12.5" class="muted">  …예외의 예외가 쌓인다</text>
+        <text x="500" y="160" font-size="12.5">데이터라면:</text>
+        <text x="500" y="180" font-size="12.5" class="muted">consideration 한 줄을 뺀다</text>
+      </svg>
+      <figcaption>그림 4-4. DSE 템플릿. 필수 스위치를 데이터로 미리 채워 두면 예외는 "빼기"로 처리된다. (Lewis, GAP3 13장)</figcaption>
+    </figure>
+
+    <h3>6.3 Evade Dangerous Areas 재현</h3>
+    <p>Lewis가 "비교적 단순하지만 매우 교육적"이라고 소개한 DSE다. 마법 주문, 기계 함정 같은 위험 지역에 너무 가까우면 캐릭터가 빠르게 빠져나가고, 종종 회피 애니메이션을 재생한다. consideration은 여섯 개다.</p>
+    <ol>
+      <li><b>다른 결정 실행 중 아님</b>, <b>이동 불가 아님</b>: 필수 스위치. "얼어붙은 채로 움직이려는" 우스꽝스러운 행동을 막는다.</li>
+      <li><b>위험도</b>(무한 해상도 영향 맵): 이 DSE의 핵심 일꾼이다. 곡선 <code>y = 1 − (x − 1)⁴</code>는 중간 정도 위험을 <b>증폭</b>하고 사소한 위험은 <b>억누른다</b>. 위험의 가장자리에 있는 캐릭터도 비켜서게 하되, 위험 근처이지만 유효 반경 밖에 있는 캐릭터는 그대로 두려는 의도다.</li>
+      <li><b>runtime</b> <code>y = 1 − x⁶</code>: 일정 반복 후에는 이 결정이 반드시 멈추게 한다. 캐릭터가 계속 회피만 하며 "맞힐 수 없게" 되는 경우를 막는다.</li>
+      <li><b>cooldown</b> <code>y = x⁵</code>: 쿨다운이 거의 끝날 때까지는 아주 작은 점수만 내다가 막판에 급등한다. 경쟁하는 두 결정 사이의 깜빡임(strobing)을 막는다.</li>
+      <li><b>자기 체력</b>: 체력이 넉넉하면 점수를 낮춘다. 그래서 캐릭터가 적에게 한 방 먹이려고 아픔을 조금 참기도 하고, 체력이 줄수록 조심스러워진다. 개성이 여기서 나온다.</li>
+    </ol>
+    <p>아래 위젯은 이 DSE를 <code>UAI.Reasoner</code> 행동으로 그대로 옮긴 것이다. 위험도·runtime·cooldown 곡선은 엔진 프리셋(<code>"회피: 1−(x−1)⁴"</code>, <code>"runtime: 1−x⁶"</code>, <code>"cooldown: x⁵"</code>)이다. 원문에는 체력 곡선의 식이 없어서, 이 위젯은 "넉넉하면 낮추되 0으로 만들지는 않는" <code>y = 1 − 0.7x</code>를 골랐다. 입력은 이미 정규화된 값으로 둔다(runtime: 0 = 방금 시작, 1 = 허용 최대 / cooldown: 0 = 방금 끝남, 1 = 쿨다운 완료).</p>
+
+    <div class="widget" id="w-evade">
+      <div class="w-title">Evade Dangerous Areas: consideration 6개</div>
+      <div class="w-desc">스위치를 끄거나 슬라이더를 움직이면 Reasoner가 다시 평가한다. 0이 나오면 뒤쪽 consideration은 생략(흐리게)된다. 결합은 Lewis 원문대로 곱이고, 비교를 위해 보정 곱도 함께 보여 준다.</div>
+      <div class="controls">
+        <label><input type="checkbox" id="ev-busy"> 다른 결정 실행 중</label>
+        <label><input type="checkbox" id="ev-root"> 이동 불가(rooted)</label>
+      </div>
+      <div class="sliders">
+        <label for="ev-d">위험도 (영향 맵)</label><input type="range" id="ev-d" min="0" max="1" step="0.01" value="0.35"><output id="ev-d-o"></output>
+        <label for="ev-r">runtime 경과</label><input type="range" id="ev-r" min="0" max="1" step="0.01" value="0.2"><output id="ev-r-o"></output>
+        <label for="ev-c">cooldown 경과</label><input type="range" id="ev-c" min="0" max="1" step="0.01" value="1"><output id="ev-c-o"></output>
+        <label for="ev-h">자기 체력</label><input type="range" id="ev-h" min="0" max="1" step="0.01" value="0.6"><output id="ev-h-o"></output>
+      </div>
+      <div class="plots6" id="ev-plots"></div>
+      <div class="tbl-wrap"><table class="ctbl" id="ev-tbl"></table></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">DSE 점수 (곱, Lewis)</div><div class="v" id="ev-p">-</div></div>
+        <div class="stat"><div class="k">보정 곱 (uai.js 기본)</div><div class="v" id="ev-cmp">-</div></div>
+      </div>
+      <div class="w-desc" id="ev-msg"></div>
+    </div>
+    <div class="callout"><span class="title">관찰 포인트</span>
+      위험도 0.15는 곡선을 지나면 0.48이고 0.35는 0.82가 된다. 낮은 쪽을 보면 0.05는 0.19에 그친다. runtime은 0.6까지 0.95 이상을 유지하다가 끝에서 급락하고, cooldown은 0.8에서도 0.33밖에 안 된다. 곡선이 "언제 중요해지나"를 정하고, 곱이 "모두 동의할 때만"을 정한다. 엔진의 Reasoner에도 별도의 <code>cooldown</code> 필드가 있지만(06장), Heart of Thorns는 cooldown을 <b>consideration 하나</b>로 표현했다는 점이 흥미롭다. 그래서 곡선 모양으로 "쿨다운 막판에 서서히 다시 고려"하는 효과를 낼 수 있다.
+    </div>
+
+    <h3>6.4 다른 DSE에서 배우기</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>DSE</th><th>consideration (순서대로)</th><th>배울 점</th></tr>
+      <tr><td>Close to Melee when Invisible</td><td>스위치 2 · 투명 상태 스위치 · 대상과 거리 · 체력 · 수 초 runtime</td><td>"투명이 풀리기 전에 닿을 수 있나"를 정밀 모델 대신 <b>상수 시간 프록시</b>로 처리. runtime으로 투명 상태의 장거리 이동을 막음</td></tr>
+      <tr><td>Charge Attack</td><td>스위치 2 · 거리(중거리에서 높음) · 대상 주변 아군 수(영향 맵) · 체력 · 전방 방향 · LOS 스위치</td><td>비단조 곡선(이미 가까우면 돌진 낭비). 플레이어가 셋째 적에게 몰리지 않게 하는 <b>디자인 제약</b>을 consideration으로 표현. 자폭형 적은 체력 곡선만 뒤집음</td></tr>
+      <tr><td>Side/Rear Attack</td><td>실행 중 스위치 · 대상이 등을 돌렸나(내적) · 체력(임계 후 급락) · 가까운 대상 · 약한 대상(만피도 0은 아님) · 시야 콘 · LOS</td><td>이동 불가 스위치 생략. 비싼 레이캐스트는 맨 끝</td></tr>
+    </table></div>
+
+    <h3>6.5 프록시 변수: "왜 하나?"를 먼저 묻기</h3>
+    <p>Close to Melee when Invisible은 "투명 상태가 풀리기 전에 대상에게 닿을 수 있을 때만 접근"해야 한다. 투명 지속 시간, 양쪽 속도 등을 정확히 모델링할 수도 있었지만, 팀은 <b>시간 상수 하나</b>를 프록시 변수로 썼다. 상수 값은 원하는 효과가 나오도록 일부러 골랐다. Lewis에 따르면 정밀 모델과 프록시의 차이는 아주 드물게만 눈에 보인다. 그리고 보이더라도 플레이어가 "아까는 너무 멀어서 포기했나 보다" 같은 서사를 스스로 붙여 준다.</p>
+    <p>그가 권하는 순서는 이렇다. ① "나는 왜 이 행동을 하나(혹은 안 하나)?"라고 묻고 동기 목록을 만든다. 캐릭터 입장이 되어 보는 "응용 롤플레이"다. ② 그 추상적 동기에 가장 잘 맞는, 이미 있거나 쉽게 만들 수 있는 데이터를 찾는다. 여러 consideration을 한꺼번에 담는 프록시(예: 모듈식 영향 맵 조합)가 특히 좋다. ③ 입력마다 상대적 중요도를 정하고 곡선을 설계한다. 프록시는 같은 종류의 지표일 필요도 없다. 거리 문제를 시간 상수로 푼 것처럼.</p>
+    <div class="callout tip"><span class="title">Hamlet에 적용하면</span>
+      "이용하기"의 광고 가치는 이미 프록시다. 빵의 맛, 찬의 입맛, 빵집 주인과의 친분을 모델링하지 않고 "배고픔을 얼마나 채우나 × 지금 얼마나 급한가" 하나로 묶었다(07장). 거리도 실제 경로 길이가 아니라 맨해튼 거리를 쓴다. Charge Attack이 내비메시 경로 대신 LOS로 만족했던 것과 같은 판단이다.
+    </div>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 행동 weight와 결합식 설계: Graham의 결투</h2>
+    <h3>7.1 weight는 consideration이 아니다</h3>
+    <p>엔진의 마지막 단계는 <code>combine(...) * a.weight</code>다. weight는 결합 <b>바깥</b>에서 행동 전체의 점수 크기를 조절한다. consideration과 무엇이 다를까?</p>
+    <ul>
+      <li><b>보정 대상이 아니다</b>: weight 0.5를 consideration으로 넣으면 보정 곱에서 0.5보다 크게 보정되고, n도 하나 늘어 다른 항까지 바뀐다. weight는 정확히 곱해진다.</li>
+      <li><b>1을 넘을 수 있다</b>: consideration은 0~1이지만 weight는 아니다. Lewis는 비슷한 점수의 두 결정이 진동하는 문제의 대처법 중 하나로 "결정마다 가중치를 줘서 총점이 1이 아니라 3이나 4가 될 수 있게 하는 것"을 든다(진동은 06장에서 자세히 다룬다).</li>
+      <li><b>행동의 "격"을 정한다</b>: Hamlet의 <code>wander</code>(산책)은 consideration이 "기본값 1" 하나뿐이고 <code>weight: 0.12</code>를 갖는다. 다른 할 일이 0.12보다 나을 때는 절대 산책하지 않고, 아무것도 내키지 않을 때만 산책한다. 기본 행동(fallback)이다.</li>
+      <li><b>0은 행동을 끈다</b>: Dill의 dual utility에서는 weight ≤ 0인 선택지를 먼저 제거하므로, 디자이너가 weight를 0으로 두어 행동을 무효화할 수 있다(05장).</li>
+    </ul>
+    <p>Graham도 decision factor에 가중치를 줘서 AI가 그 factor를 얼마나 신경 쓸지 정하고, 이것으로 성격을 흉내 낼 수 있다고 쓴다. 정리하면 이렇다. consideration은 "<b>지금 상황이</b> 이 행동에 얼마나 맞나"를 묻고, weight는 "<b>이 캐릭터에게</b> 이 행동이 얼마나 중요한가"를 정한다.</p>
+
+    <h3>7.2 Graham 결투 데모</h3>
+    <p>Game AI Pro 1권 9장의 데모는 80년대 메뉴식 RPG처럼 괴물 한 마리와 싸우는 텍스트 결투다. 양쪽 다 공격, 회복 물약(3개) 사용, 도주(성공 확률 50%)를 할 수 있다. AI는 decision factor 네 개를 계산하고, 그것을 결합해 행동 점수를 만든 뒤 <b>가중 랜덤</b>으로 하나를 고른다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>decision factor</th><th>의미</th><th>식 (원문 9.5~9.8)</th></tr>
+      <tr><td>Attack Desire</td><td>기본값은 공격성 a. 상대를 한 방에 죽일 수 있을수록 선형으로 증가 → 막판에 공격적으로</td><td class="mono">범위 제한 선형: 상대 HP가 minDmg 이하면 1, maxDmg 이상이면 a</td></tr>
+      <tr><td>Threat</td><td>상대가 최대 피해로 때리면 내 현재 HP의 몇 %가 날아가나</td><td class="mono">min(maxDmg / hp, 1)</td></tr>
+      <tr><td>Health Desire</td><td>HP가 줄수록 회복 욕구 상승 (로지스틱 변형)</td><td class="mono">1 − 1/(1 + (e×0.68)^(−(hp/maxHp)×12 + 6))</td></tr>
+      <tr><td>Run Desire</td><td>물약이 많으면 거의 0, 없으면 빠르게 증가</td><td class="mono">1 − (hp/maxHp)^(0.25 / (p+1)⁴)</td></tr>
+    </table></div>
+    <div class="formula">Attack = AttackDesire &nbsp;&nbsp; Heal = HealthDesire × Threat &nbsp;&nbsp; Run = RunDesire × Threat</div>
+    <p>왜 Heal에 Threat를 곱했을까? Graham은 이것이 "너무 일찍 회복하려는 경우를 완화하고, 플레이어의 최대 피해에 따라 행동을 바꾼다"고 설명한다. HP가 60%로 줄면 회복하고 싶어지지만, 상대가 약해서 한 방에 HP의 10%밖에 못 깎는다면 지금 물약을 쓸 이유가 없다. HealthDesire는 "내 상태"를, Threat는 "상대가 만드는 상황"을 본다. 둘을 곱하면 <b>둘 다 해당할 때만</b> 회복한다. 곱 결합을 고른 이유 자체가 설계 판단이다.</p>
+    <p>튜닝 일화도 하나 있다. 처음에는 Threat에 플레이어의 <b>평균</b> 피해를 썼다. 기대 효용의 취지에는 그쪽이 맞지만, 결과가 충분히 엄격하지 않아서 <b>최대</b> 피해로 바꿨다. Graham은 이것을 "효용 곡선과 공식의 튜닝은 과학보다 예술에 가깝다"는 좋은 예로 든다. 아래 위젯에서 두 버전을 바꿔 볼 수 있다.</p>
+
+    <div class="widget" id="w-duel">
+      <div class="w-title">결투 AI: decision factor → 행동 점수 → 가중 랜덤</div>
+      <div class="w-desc">식은 Graham 9장을 따른다. HP 최댓값 100, AI 피해 10~20, 플레이어 최소 피해 = 최대 피해의 절반은 이 위젯의 가정값이다. "물약 0개면 회복 불가" 스위치도 이 위젯이 덧붙인 것이다(필수 스위치 예). 식 9.5는 본문 설명("기본값은 a")에 맞춰 범위를 제한한 형태로 구현했다. 선택 확률은 <code>UAI.select(…, {strategy: "weighted"})</code>가 돌려준 값이다.</div>
+      <div class="duel-grid">
+        <div class="sliders">
+          <label for="du-hp">AI의 HP</label><input type="range" id="du-hp" min="1" max="100" value="45"><output id="du-hp-o"></output>
+          <label for="du-php">플레이어 HP</label><input type="range" id="du-php" min="1" max="100" value="70"><output id="du-php-o"></output>
+          <label for="du-pot">남은 물약 p</label><input type="range" id="du-pot" min="0" max="3" value="2"><output id="du-pot-o"></output>
+          <label for="du-a">공격성 a</label><input type="range" id="du-a" min="0" max="1" step="0.05" value="0.6"><output id="du-a-o"></output>
+          <label for="du-pmax">플레이어 최대 피해</label><input type="range" id="du-pmax" min="5" max="60" value="25"><output id="du-pmax-o"></output>
+        </div>
+        <div class="sliders">
+          <label for="du-wa">weight: Attack</label><input type="range" id="du-wa" min="0" max="2" step="0.05" value="1"><output id="du-wa-o"></output>
+          <label for="du-wh">weight: Heal</label><input type="range" id="du-wh" min="0" max="2" step="0.05" value="1"><output id="du-wh-o"></output>
+          <label for="du-wr">weight: Run</label><input type="range" id="du-wr" min="0" max="2" step="0.05" value="1"><output id="du-wr-o"></output>
+          <label for="du-avg" style="grid-column:1/-1"><input type="checkbox" id="du-avg"> Threat에 평균 피해 사용 (Graham의 초기 버전)</label>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table class="ctbl" id="du-f"></table></div>
+      <div class="mbars" id="du-bars"></div>
+      <div class="w-desc" id="du-msg" style="margin-top:10px"></div>
+    </div>
+    <div class="callout"><span class="title">해 보기</span>
+      ① AI HP를 45로 두고 플레이어 최대 피해를 10 ↔ 45로 바꿔 보자. HealthDesire는 그대로인데 Heal 확률만 크게 움직인다. Threat 곱의 효과다. ② 물약을 0으로 내리면 RunDesire가 확 뛰고 Heal은 스위치로 꺼진다. ③ "평균 피해" 체크를 켜면 Threat가 줄어 Heal·Run이 덜 엄격해진다. Graham이 바꾼 이유가 보인다.
+    </div>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 함정 모음</h2>
+    <h3>8.1 평균이 거부권을 무력화한다</h3>
+    <p>평균으로 결합하면 "절대 안 됨"을 표현할 수 없다. 육아방이 0인데 번식하는 개미, 위협이 없는데 도망치는 주민이 나온다. Hamlet의 수다 떨기는 "상대 한가함" 스위치로 도망 중인 상대를 거른다. 평균 결합이었다면 스위치가 0이어도 "사교 결핍"과 "상대와 거리" 항이 점수를 남겨서, 늑대에게서 도망치는 친구를 쫓아가 말을 거는 주민이 나온다. 평균을 쓰고 싶다면(예: 여러 장점의 균형) <b>스위치는 결합 밖에서</b> 처리해야 한다. 이 엔진은 consideration이 0을 내면 결합 방식과 상관없이 점수를 0으로 둔다. 평균을 직접 구현하는 엔진에서는 이 처리가 자주 빠진다.</p>
+
+    <h3>8.2 곱의 개수 편향</h3>
+    <p>consideration이 많은 행동이 체계적으로 손해를 본다(4절). 증상은 이렇다. "새 consideration을 하나 넣었더니 그 행동을 거의 안 한다." 새 항목이 대부분 0.9를 내더라도 점수는 10% 깎인다. 보정 곱으로 완화하고, 남는 차이는 weight로 맞추자. 거꾸로 보정 곱에서는 항상 1인 스위치를 더하면 점수가 오르는 역효과도 있다(3절 경고).</p>
+
+    <h3>8.3 스케일 불일치</h3>
+    <p>Graham은 일관성을 강조한다. 시스템 전체가 같은 스케일을 써야 하고 0~1 정규화를 권한다. consideration 하나가 0~1 밖의 값(예: 원시 거리 14)을 내면 그 항이 곱을 지배한다. 정규화했더라도 <b>bookend가 다르면</b> 같은 원시 값이 다른 의미가 된다. Hamlet에서 "이용하기"의 거리 bookend는 0~30칸이고 "수다 떨기"는 0~12칸이다. 6칸 떨어진 빵집은 거리 점수 0.96, 6칸 떨어진 친구는 0.5다. 의도한 설계일 수 있다(수다는 가까운 사람과 떠는 것). 하지만 <b>의도한 것인지 확인해야 한다</b>. Lewis의 곡선 체크리스트도 첫 질문이 "무엇을 입력으로 쓰고, bookend를 어디로 잡나"다.</p>
+    <div class="callout deep"><span class="title">정규화 대신 점수 관례를 쓰는 길</span>
+      모든 게임이 0~1 정규화를 쓰는 것은 아니다. Dragon Age: Inquisition은 자동 정규화 대신 디자이너 점수 관례(기본 10, 공격 20~40, 지원 25~45, 반응 50~70)로 행동 범주 간 크기를 맞췄다. 스케일 문제를 "규칙"으로 푼 사례다. 10장에서 비교한다.
+    </div>
+
+    <h3>8.4 순서에 의존하는 early-out</h3>
+    <p>early-out은 결과를 바꾸지 않는 최적화여야 한다. 그런데 consideration의 <code>input()</code>이 부작용을 갖는다면(예: 캐시를 채움, 타깃을 기록함) 순서에 따라 동작이 달라진다. consideration 입력 함수는 <b>순수하게</b> 유지하자. 기록이 필요하다면 엔진처럼 <code>skipped</code>로 남기면 된다.</p>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>consideration = 입력 + bookend + 커브 + 이름. 각자 0~1 점수를 내고 서로 격리되어 있어 조립·재사용이 쉽다.</li>
+    <li>파이프라인: 원시 입력 → <code>UAI.normalize</code>(범위 밖은 고정) → <code>UAI.curve</code> → <code>UAI.combine</code> → × weight → 행동 점수.</li>
+    <li>평균은 거부권이 없고, 곱은 0의 거부권이 있지만 개수가 늘수록 점수가 sⁿ으로 떨어진다. min은 둔하고, 기하평균은 낮은 값에 너그럽다.</li>
+    <li>IAUS 보정: <code>s′ = s + (1−s)(1−1/n)·s</code>. 0과 1은 보존하고 개수 편향을 완화하지만 없애지는 못한다.</li>
+    <li>0이 나오면 즉시 중단(early-out)한다. 기대 비용은 <code>cᵢ/pᵢ</code> 오름차순일 때 최소이고, 비싼 검사(LOS 레이캐스트)는 뒤로 보낸다.</li>
+    <li>Lewis의 세 범주는 필수 스위치 / 행동 구분 / 밸런스·느낌이다. 스위치는 하드코딩하지 말고 DSE 템플릿에 넣고, 복잡한 지표는 프록시 변수로 바꾼다.</li>
+    <li>weight는 결합 밖에서 행동 전체를 조절한다(1 초과 가능, 보정 대상 아님). 결합식 자체도 설계다. Heal = HealthDesire × Threat.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">consideration 세 개(0.9, 0.9, 0)를 평균으로 결합하고 early-out이 없는 엔진이 있다. 어떤 일이 생기나?</div>
+    <button class="opt">점수가 0이 되어 행동이 절대 선택되지 않는다</button>
+    <button class="opt">점수가 0.9가 된다</button>
+    <button class="opt">점수가 0.6이 되어 "절대 안 됨" 조건인데도 행동이 선택될 수 있다</button>
+    <button class="opt">평균은 0이 있으면 NaN을 낸다</button>
+    <div class="explain">(0.9+0.9+0)/3 = 0.6. 평균에는 거부권이 없으므로 스위치가 0이어도 행동이 살아남는다. 곱(또는 엔진의 early-out)을 써야 0이 거부권이 된다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">모든 consideration이 0.8인 행동이 있다. consideration이 5개일 때 순수 곱 점수는 대략 얼마인가?</div>
+    <button class="opt">0.8</button>
+    <button class="opt">0.33</button>
+    <button class="opt">0.64</button>
+    <button class="opt">0.16</button>
+    <div class="explain">0.8⁵ ≈ 0.328. "모두 꽤 좋다"는 행동이 1/3로 떨어진다. 이것이 개수 편향이고, IAUS 보정이 이를 완화한다(보정 곱은 약 0.69).</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">IAUS 보정 <code>s′ = s + (1−s)(1−1/n)s</code>에 대한 설명으로 틀린 것은?</div>
+    <button class="opt">s = 0이면 s′ = 0이라 거부권이 유지된다</button>
+    <button class="opt">n = 1이면 보정이 일어나지 않는다</button>
+    <button class="opt">s = 1이면 s′ = 1이다</button>
+    <button class="opt">보정을 하면 n이 아무리 커져도 같은 s의 행동 점수가 일정하게 유지된다</button>
+    <div class="explain">보정 곱도 n이 커지면 계속 줄어든다. 각 항이 s(2−s)로 수렴하는데, 이 값이 1보다 작으면 무한히 곱할 때 0으로 간다. 보정은 완화일 뿐 제거가 아니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">consideration A(비용 1, 0 확률 0.1)와 B(비용 4, 0 확률 0.8)가 있다. early-out 기대 비용을 줄이려면 어느 것을 먼저 평가해야 하나?</div>
+    <button class="opt">B: c/p가 5로 A의 10보다 작다</button>
+    <button class="opt">A: 비용이 싸니까 무조건 먼저</button>
+    <button class="opt">순서는 결과에 영향이 없다</button>
+    <button class="opt">A: 0 확률이 낮아서 안전하다</button>
+    <div class="explain">A 먼저: 1 + 0.9×4 = 4.6. B 먼저: 4 + 0.2×1 = 4.2. c/p 오름차순(B=5, A=10)이 최적이다. "싼 것부터"는 좋은 경험칙이지만, 자주 0을 내는 항목은 조금 비싸도 앞에 둘 가치가 있다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Heart of Thorns 팀이 "이동 불가 아님" 같은 필수 스위치를 엔진에 하드코딩하지 않고 DSE 템플릿에 미리 채워 둔 이유는?</div>
+    <button class="opt">하드코딩하면 실행 속도가 느려지기 때문에</button>
+    <button class="opt">스위치는 곡선이 필요해서 데이터로만 표현할 수 있으므로</button>
+    <button class="opt">예외가 필요할 때(예: Side/Rear Attack) 하드코딩을 우회하는 코드를 더하는 대신 consideration을 빼기만 하면 되므로</button>
+    <button class="opt">디자이너가 스위치를 실수로 빼는 일을 막으려고</button>
+    <div class="explain">Lewis: 하드코딩 로직이 늘수록 예외 앞에서 시스템이 깨지기 쉽다. 제자리 공격인 Side/Rear Attack은 이동 불가 스위치를 생략하는 것으로 해결했다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Graham 결투 데모에서 Heal = HealthDesire × Threat로 정의한 효과는?</div>
+    <button class="opt">HP가 낮으면 상대와 상관없이 항상 회복한다</button>
+    <button class="opt">HP가 낮더라도 상대의 최대 피해가 위협적이지 않으면 회복을 미룬다(너무 이른 회복 방지)</button>
+    <button class="opt">물약 개수에 따라 회복 확률이 달라진다</button>
+    <button class="opt">HealthDesire와 Threat 중 큰 값을 쓴다</button>
+    <div class="explain">곱은 "둘 다 해당할 때만"이다. Graham은 이것이 이른 회복을 완화하고 플레이어의 최대 피해에 따라 행동을 바꾼다고 설명한다. 평균 피해 대신 최대 피해를 쓴 것도 튜닝 결과다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">Hamlet의 산책(wander) 행동이 <code>weight: 0.12</code>를 consideration이 아닌 weight로 갖는 이유로 가장 적절한 것은?</div>
+    <button class="opt">consideration은 상수를 가질 수 없어서</button>
+    <button class="opt">weight는 early-out을 일으키기 때문에</button>
+    <button class="opt">weight로 두면 보정 곱이 0.12를 더 크게 만들어 주기 때문에</button>
+    <button class="opt">weight는 결합 밖에서 정확히 곱해져 행동의 "격"(다른 할 일이 없을 때만 하는 기본 행동)을 보정 영향 없이 정하기 때문에</button>
+    <div class="explain">consideration으로 0.12를 넣으면 보정 곱에서 값이 바뀌고 n도 늘어난다. weight는 행동 전체의 크기를 그대로 조절한다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b> 이제 모든 (행동, 대상) 쌍에 점수가 붙었다. 그럼 무엇을 고를까? 늘 최고점만 고르면 로봇 같고, 점수 비례로 뽑으면 가끔 바보 같은 선택을 한다. 05장에서는 최고점·가중 랜덤·상위 N·dual utility(rank + weight)를 <code>UAI.select</code>로 구현하고 비교한다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>Graham, D. "Rez". An Introduction to Utility Theory. <i>Game AI Pro</i> (Vol. 1), ch. 9, pp. 113–126. CRC Press. — decision factor, 개미 군체 평균 결합, 결투 데모(식 9.5–9.8)</li>
+    <li>Lewis, M. Choosing Effective Utility-Based Considerations. <i>Game AI Pro 3</i>, ch. 13. CRC Press. — Guild Wars 2: Heart of Thorns, DSE, bookend 정규화, 곱 결합과 early-out, Evade Dangerous Areas 외 DSE, 세 범주, 프록시 변수</li>
+    <li>Mark, D. Architecture Tricks: Managing Behaviors in Time, Space, and Depth. GDC 2013. — IAUS</li>
+    <li>Lewis, M. &amp; Mark, D. Building a Better Centaur: AI at Massive Scale. GDC 2015.</li>
+    <li>Dill, K. Dual-Utility Reasoning. <i>Game AI Pro 2</i>, ch. 3. CRC Press. — weight ≤ 0 제거</li>
+    <li>Hanlon, S. &amp; Watts, C. Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture. <i>Game AI Pro 3</i>, ch. 31. — 점수 관례</li>
+    <li>Epic Games. StateTree Selectors Overview (UE 5.5 utility 선택, consideration AND=min / OR=max). dev.epicgames.com</li>
+  </ul></div>
+</main>
+<script>
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const f2 = v => MM.fmt(v, 2), f3 = v => MM.fmt(v, 3);
+
+  // ═════════════ 위젯 1: 파이프라인 스텝 애니메이션 ═════════════
+  const CURVE_TXT = ["y = x", "y = 1 − x²", "y = 1 − 0.7x"];
+  let pipe = null; // 엔진 계산 결과
+  function evalPipe() {
+    const h = +$("pp-h").value, u = +$("pp-u").value;
+    $("pp-h-o").textContent = h; $("pp-u-o").textContent = u + " / 2";
+    const w = UAI.makeHamlet();
+    const chan = w.agents.find(a => a.name === "찬");
+    chan.needs = { hunger: h, energy: 70, fun: 60, social: 65 };
+    const bak = w.objects.find(o => o.type === "bakery");
+    bak.users = u;
+    const rows = w.reasoner.evaluate(chan, w);
+    const row = rows.find(r => r.action.id === "use" && r.target === bak);
+    const act = w.reasoner.actions.find(a => a.id === "use");
+    const ranked = rows.filter(r => r.score > 0).sort((a, b) => b.score - a.score);
+    const urg = UAI.curve(UAI.NEED_CURVE.hunger)(h / 100);
+    const room = Math.min(bak.ads.hunger, 100 - h);
+    pipe = { w, chan, bak, row, act, ranked, urg, room, h, u };
+  }
+
+  const plotWrap = $("pp-plots");
+  const plots = [];
+  ["광고 가치", "거리", "혼잡"].forEach((nm, k) => {
+    const fig = MM.el("figure");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    fig.append(svg, MM.el("figcaption", null, nm + " · " + CURVE_TXT[k]));
+    plotWrap.append(fig);
+    plots.push(svg);
+  });
+  let plotObjs = [];
+  function drawPlots(i) {
+    const cons = pipe.act.considerations;
+    plotObjs = cons.map((c, k) => {
+      const p = pipe.row.parts[k];
+      const show = i >= k + 1 && !p.skipped;
+      return MM.plotCurve(plots[k], c.fn, { color: show ? "--accent" : "--muted", marker: show ? p.x : null, label: c.name });
+    });
+  }
+
+  function cellCls(i, r, p) {
+    if (i < r + 1) return "cell";
+    if (p.skipped) return "cell skip";
+    if (p.y <= 0) return "cell zero";
+    return i === r + 1 ? "cell cur" : "cell on";
+  }
+  function pipeSVG(i) {
+    const P = pipe, parts = P.row.parts, cons = P.act.considerations;
+    const xs = { name: 6, raw: 124, norm: 236, curve: 348, comb: 478, fin: 610 };
+    const W = 96, H = 50, Y0 = 34, DY = 66;
+    let s = `<defs><marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>`;
+    s += `<text class="hdr" x="${xs.raw + W / 2}" y="20" text-anchor="middle">원시 입력</text>`;
+    s += `<text class="hdr" x="${xs.norm + W / 2}" y="20" text-anchor="middle">bookend 정규화</text>`;
+    s += `<text class="hdr" x="${xs.curve + W / 2}" y="20" text-anchor="middle">반응 커브</text>`;
+    s += `<text class="hdr" x="${xs.comb + 50}" y="20" text-anchor="middle">결합</text>`;
+    s += `<text class="hdr" x="${xs.fin + 50}" y="20" text-anchor="middle">× weight</text>`;
+    const rawTxt = (k, p) => k === 0 ? f3(p.raw) : k === 1 ? p.raw + "칸" : f2(p.raw);
+    const rawSub = k => k === 0 ? "adValue()" : k === 1 ? "맨해튼 거리" : "users/capacity";
+    for (let r = 0; r < 3; r++) {
+      const p = parts[r], c = cons[r], y = Y0 + r * DY, cls = cellCls(i, r, p), vis = i >= r + 1;
+      s += `<text x="${xs.name}" y="${y + 22}" font-weight="700">${c.name}</text><text class="small" x="${xs.name}" y="${y + 40}">consideration ${r + 1}</text>`;
+      const cells = [
+        ["raw", vis ? (p.skipped ? "생략" : rawTxt(r, p)) : "?", rawSub(r)],
+        ["norm", vis ? (p.skipped ? "—" : f3(p.x)) : "?", `[${c.lo}, ${c.hi}] → [0,1]`],
+        ["curve", vis ? (p.skipped ? "—" : f3(p.y)) : "?", CURVE_TXT[r]],
+      ];
+      cells.forEach(([key, v, sub], j) => {
+        const x = xs[key];
+        s += `<rect class="${cls}" x="${x}" y="${y}" width="${W}" height="${H}" rx="7"/>`;
+        s += `<text class="val" x="${x + W / 2}" y="${y + 22}" text-anchor="middle">${v}</text>`;
+        s += `<text class="small" x="${x + W / 2}" y="${y + 40}" text-anchor="middle">${sub}</text>`;
+        if (j < 2) s += `<line class="ln" x1="${x + W}" y1="${y + H / 2}" x2="${x + W + 14}" y2="${y + H / 2}" marker-end="url(#pa)"/>`;
+      });
+      s += `<path class="ln" d="M${xs.curve + W},${y + H / 2} C${xs.comb - 10},${y + H / 2} ${xs.comb - 20},${Y0 + DY + H / 2} ${xs.comb - 2},${Y0 + DY + H / 2}" marker-end="url(#pa)"/>`;
+    }
+    const alive = !parts.some(p => p.skipped || p.y <= 0);
+    const ys = parts.filter(p => !p.skipped).map(p => p.y);
+    const prod = alive ? UAI.combine(ys, "product") : 0;
+    const comp = alive ? UAI.combine(ys, "compensated") : 0;
+    const cy = Y0 + DY - 30;
+    const cCls = i < 4 ? "cell" : i === 4 || i === 5 ? "cell cur" : "cell on";
+    s += `<rect class="${cCls}" x="${xs.comb}" y="${cy}" width="100" height="110" rx="10"/>`;
+    s += `<text class="small" x="${xs.comb + 50}" y="${cy + 22}" text-anchor="middle">곱</text>`;
+    s += `<text class="val" x="${xs.comb + 50}" y="${cy + 42}" text-anchor="middle">${i >= 4 ? f3(prod) : "?"}</text>`;
+    s += `<text class="small" x="${xs.comb + 50}" y="${cy + 70}" text-anchor="middle">보정 곱 (엔진)</text>`;
+    s += `<text class="val" x="${xs.comb + 50}" y="${cy + 90}" text-anchor="middle">${i >= 5 ? f3(comp) : "?"}</text>`;
+    s += `<line class="ln" x1="${xs.comb + 100}" y1="${cy + 55}" x2="${xs.fin - 2}" y2="${cy + 55}" marker-end="url(#pa)"/>`;
+    const fCls = i >= 6 ? "cell fin" : "cell";
+    s += `<rect class="${fCls}" x="${xs.fin}" y="${cy + 15}" width="100" height="80" rx="10"/>`;
+    s += `<text class="small" x="${xs.fin + 50}" y="${cy + 37}" text-anchor="middle">weight ${P.act.weight}</text>`;
+    s += `<text class="val" x="${xs.fin + 50}" y="${cy + 60}" text-anchor="middle">${i >= 6 ? f3(P.row.score) : "?"}</text>`;
+    s += `<text class="small" x="${xs.fin + 50}" y="${cy + 80}" text-anchor="middle">행동 점수</text>`;
+    s += `<text class="small" x="360" y="244" text-anchor="middle">모든 값은 world.reasoner.evaluate(찬, world)의 결과 행(row.parts)에서 읽었다</text>`;
+    return s;
+  }
+
+  function pipeCaption(i) {
+    const P = pipe, parts = P.row.parts;
+    const p = k => parts[k];
+    const skipNote = k => `<b>${P.act.considerations[k].name}</b>: 앞 consideration이 0을 내서 엔진이 <code>input()</code>을 호출하지 않았다(<code>skipped: true</code>). early-out이다.`;
+    switch (i) {
+      case 0: return `찬은 (${P.chan.x}, ${P.chan.y})에 있고 배고픔 충족도는 <b>${P.h}</b>/100이다. 빵집은 (${P.bak.x}, ${P.bak.y}), 정원 2명 중 ${P.u}명이 이용 중이다. Reasoner는 "이용하기"를 마을의 모든 오브젝트에 대해 평가한다(08장). 여기서는 대상이 빵집인 한 쌍만 따라간다.`;
+      case 1: return p(0).y <= 0
+        ? `<b>광고 가치</b>: 빵집은 배고픔 +60을 광고하지만 채울 여지가 min(60, 100−${P.h}) = ${P.room}이다. 광고 가치 = ${P.room}/100 × 긴급도 ${f3(P.urg)} = <b>0</b>. 커브를 거쳐도 0이므로 <span class="c-bad">거부권</span>이 발동한다.`
+        : `<b>광고 가치</b>: 빵집 광고는 배고픔 +60이다. 긴급도 = NEED_CURVE.hunger(${f2(P.h / 100)}) = ${f3(P.urg)}(07장). 채울 여지 = min(60, 100−${P.h}) = ${P.room}. 원시값 = ${P.room}/100 × ${f3(P.urg)} = <b>${f3(p(0).raw)}</b>. bookend가 [0, 1]이고 커브가 y = x라서 그대로 <b>${f3(p(0).y)}</b>.`;
+      case 2: return p(1).skipped ? skipNote(1)
+        : `<b>거리</b>: |${P.chan.x}−${P.bak.x}| + |${P.chan.y}−${P.bak.y}| = <b>${p(1).raw}칸</b>. normalize(${p(1).raw}, 0, 30) = ${f3(p(1).x)}. 가까울수록 좋은 커브 1 − x²를 지나면 <b>${f3(p(1).y)}</b>. 이 커브는 가까운 거리에서는 거의 감점이 없고, 멀어질수록 빠르게 깎는다.`;
+      case 3: return p(2).skipped ? skipNote(2)
+        : `<b>혼잡</b>: 이용자 ${P.u}/2 = ${f2(p(2).raw)}. 커브 1 − 0.7x → <b>${f3(p(2).y)}</b>. 꽉 차도(x = 1) 0.3이 남아 거부권은 없다. 꽉 찬 경우는 대상 필터가 처리한다.`;
+      case 4: {
+        const alive = !parts.some(q => q.skipped || q.y <= 0);
+        return alive
+          ? `<b>곱</b>: ${parts.map(q => f3(q.y)).join(" × ")} = <b>${f3(UAI.combine(parts.map(q => q.y), "product"))}</b>. 셋 다 "괜찮다"고 말하는데 곱은 훨씬 낮다. 개수가 늘수록 심해지는 이 현상이 <a href="#s4">4절</a>의 주제다.`
+          : `<b>결합</b>: 0이 하나라도 있으면 곱은 0이다. 엔진은 결합 함수를 부르지도 않고 점수를 0으로 둔다.`;
+      }
+      case 5: {
+        const n = parts.length, mod = 1 - 1 / n;
+        if (parts.some(q => q.skipped || q.y <= 0)) return `<b>보정</b>: 0은 보정해도 0이다(s′ = 0 + (1−0)·mod·0). 거부권은 보정 후에도 유지된다.`;
+        return `<b>보정 곱</b>(Hamlet 기본 <code>combine: "compensated"</code>): n = ${n}, modification = 1 − 1/${n} = ${f3(mod)}. 각 값 s → s + (1−s)·${f3(mod)}·s: ${parts.map(q => f3(q.y) + "→" + f3(UAI.compensate(q.y, n))).join(", ")}. 곱하면 <b>${f3(UAI.combine(parts.map(q => q.y), "compensated"))}</b>.`;
+      }
+      default: {
+        const top = P.ranked.slice(0, 4).map(r => `${r.action.label}${r.target ? " @" + (r.target.label || r.target.name) : ""} <b>${f3(r.score)}</b>`).join(" · ");
+        return `<b>× weight</b> ${P.act.weight} → 행동 점수 <b>${f3(P.row.score)}</b>. 엔진 <code>row.score</code>와 일치한다. 찬의 상위 후보: ${top || "(없음)"}. 이 중 무엇을 고를지는 05장의 몫이다.`;
+      }
+    }
+  }
+
+  evalPipe();
+  const stepper = MM.stepper($("pp-step"), {
+    steps: 7, interval: 1900,
+    render(i) {
+      $("pp-svg").innerHTML = pipeSVG(i);
+      drawPlots(i);
+      return pipeCaption(i);
+    },
+  });
+  ["pp-h", "pp-u"].forEach(id => $(id).addEventListener("input", () => { evalPipe(); stepper.refresh(); }));
+  document.addEventListener("themechange", () => stepper.refresh());
+
+  // ═════════════ 위젯 2: 결합 방식 비교기 ═════════════
+  const METHODS = [
+    ["mean", "평균 (Graham)", ""],
+    ["product", "곱 (IAUS/Lewis)", "ok"],
+    ["compensated", "보정 곱 (make-up)", "violet"],
+    ["geomean", "기하평균", "warn"],
+    ["min", "최솟값 (AND)", "bad"],
+  ];
+  let cbVals = [0.9, 0.8, 0.7, 0.8, 0.8, 0.8, 1, 1], cbN = 3;
+  const cbRng = UAI.rng(42);
+  function cbRender() {
+    $("cb-n").value = Math.min(cbN, 6);
+    $("cb-n-o").textContent = cbN;
+    const sl = $("cb-sl");
+    sl.innerHTML = "";
+    for (let k = 0; k < cbN; k++) {
+      const lab = MM.el("label", { for: "cb-s" + k }, "consideration " + (k + 1));
+      const inp = MM.el("input", { type: "range", id: "cb-s" + k, min: 0, max: 1, step: 0.01, value: cbVals[k] });
+      const out = MM.el("output", null, f2(cbVals[k]));
+      inp.addEventListener("input", () => { cbVals[k] = +inp.value; out.textContent = f2(cbVals[k]); cbBars(); });
+      sl.append(lab, inp, out);
+    }
+    cbBars();
+  }
+  function cbBars() {
+    const vals = cbVals.slice(0, cbN);
+    const hasZero = vals.some(v => v <= 0);
+    let h = "";
+    for (const [m, label, cls] of METHODS) {
+      const v = UAI.combine(vals, m);
+      h += `<span>${label}</span><div class="bar ${cls}"><i style="width:${(v * 100).toFixed(1)}%"></i></div><span class="val">${f3(v)}</span>`;
+      if (hasZero && v > 0) h += `<span class="note c-bad">⚠ 0이 있는데 ${f3(v)}점: 거부권 무시</span>`;
+    }
+    $("cb-bars").innerHTML = h;
+    const prod = UAI.combine(vals, "product"), comp = UAI.combine(vals, "compensated");
+    $("cb-msg").innerHTML = hasZero
+      ? "0이 하나 있다. 곱·보정 곱·기하평균·최솟값은 0을 지키지만 평균은 그렇지 않다."
+      : (prod < Math.min(...vals) - 1e-9
+        ? `곱(${f3(prod)})은 가장 낮은 consideration(${f2(Math.min(...vals))})보다도 낮다. 보정 곱은 ${f3(comp)}까지 되돌린다.`
+        : `곱(${f3(prod)})이 가장 낮은 consideration과 같다. 나머지가 모두 1이기 때문이다. 보정 곱은 ${f3(comp)}이다.`) +
+        ` 평균은 ${f3(UAI.combine(vals, "mean"))}, 기하평균은 ${f3(UAI.combine(vals, "geomean"))}이다.`;
+  }
+  $("cb-n").addEventListener("input", e => { cbN = +e.target.value; cbRender(); });
+  document.querySelectorAll("#w-comb [data-p]").forEach(b => b.addEventListener("click", () => {
+    const p = b.dataset.p;
+    if (cbN > 6) cbN = 6;
+    if (p === "eq") cbVals = cbVals.map(() => 0.8);
+    if (p === "zero") { cbVals = cbVals.map(() => 0.9); cbVals[Math.min(1, cbN - 1)] = 0; }
+    if (p === "low") { cbN = 4; cbVals = cbVals.map(() => 1); cbVals[0] = 0.1; }
+    if (p === "sw") { if (cbN < 6) { cbVals[cbN] = 1; cbN++; } }
+    if (p === "rnd") cbVals = cbVals.map(() => Math.round(cbRng.range(0.2, 1) * 100) / 100);
+    cbRender();
+  }));
+  cbRender();
+
+  // ═════════════ 위젯 3: n 곡선 ═════════════
+  const NMAX = 10;
+  function ncDraw() {
+    const s = +$("nc-s").value;
+    $("nc-s-o").textContent = f2(s);
+    const L = 44, T = 14, W = 470, H = 210;
+    const X = n => L + ((n - 1) / (NMAX - 1)) * W, Y = y => T + (1 - y) * H;
+    const prod = n => UAI.combine(Array(n).fill(s), "product");
+    const comp = n => UAI.combine(Array(n).fill(s), "compensated");
+    let h = "";
+    for (let k = 0; k <= 4; k++) h += `<line class="grid" x1="${L}" y1="${Y(k / 4)}" x2="${L + W}" y2="${Y(k / 4)}"/><text class="axis-t" x="${L - 6}" y="${Y(k / 4) + 4}" text-anchor="end">${(k / 4).toFixed(2)}</text>`;
+    for (let n = 1; n <= NMAX; n++) h += `<line class="grid" x1="${X(n)}" y1="${T}" x2="${X(n)}" y2="${T + H}"/><text class="axis-t" x="${X(n)}" y="${T + H + 16}" text-anchor="middle">${n}</text>`;
+    h += `<text class="axis-t" x="${L + W / 2}" y="${T + H + 34}" text-anchor="middle">consideration 개수 n</text>`;
+    const line = (fn, col, dash) => {
+      let d = "";
+      for (let n = 1; n <= NMAX; n++) d += (n > 1 ? "L" : "M") + X(n).toFixed(1) + "," + Y(fn(n)).toFixed(1);
+      let dots = "";
+      for (let n = 1; n <= NMAX; n++) dots += `<circle cx="${X(n).toFixed(1)}" cy="${Y(fn(n)).toFixed(1)}" r="3" style="fill:var(${col})"/>`;
+      return `<path d="${d}" style="fill:none;stroke:var(${col});stroke-width:2.4${dash ? ";stroke-dasharray:5 4" : ""}"/>` + (dash ? "" : dots);
+    };
+    h += line(() => s, "--muted", true) + line(prod, "--bad") + line(comp, "--ok");
+    h += `<text x="${X(NMAX) - 4}" y="${Y(comp(NMAX)) - 8}" text-anchor="end" style="fill:var(--ok);font-size:12px;font-weight:700">${f3(comp(NMAX))}</text>`;
+    h += `<text x="${X(NMAX) - 4}" y="${Y(prod(NMAX)) - 8}" text-anchor="end" style="fill:var(--bad);font-size:12px;font-weight:700">${f3(prod(NMAX))}</text>`;
+    $("nc-svg").innerHTML = h;
+    const ns = [1, 2, 3, 4, 6, 8, 10];
+    $("nc-tbl").innerHTML = `<tr><th>n</th>${ns.map(n => `<th>${n}</th>`).join("")}</tr>` +
+      `<tr><td>곱 sⁿ</td>${ns.map(n => `<td class="num">${f3(prod(n))}</td>`).join("")}</tr>` +
+      `<tr><td>보정 곱</td>${ns.map(n => `<td class="num">${f3(comp(n))}</td>`).join("")}</tr>` +
+      `<tr><td>보정된 항 하나</td>${ns.map(n => `<td class="num">${f3(UAI.compensate(s, n))}</td>`).join("")}</tr>`;
+  }
+  $("nc-s").addEventListener("input", ncDraw);
+  ncDraw();
+
+  // ═════════════ 위젯 4: early-out 순서 ═════════════
+  let od = [
+    { name: "시야 LOS (레이캐스트)", c: 50, p: 0.3 },
+    { name: "대상 거리", c: 2, p: 0.2 },
+    { name: "대상이 등을 돌림 (내적)", c: 2, p: 0.6 },
+    { name: "자기 체력", c: 1, p: 0.1 },
+    { name: "다른 행동 실행 중 아님 (스위치)", c: 1, p: 0.5 },
+  ];
+  const expCost = arr => { let e = 0, alive = 1; for (const it of arr) { e += alive * it.c; alive *= 1 - it.p; } return e; };
+  const ratio = it => (it.p > 0 ? it.c / it.p : Infinity);
+  const bestOrder = arr => [...arr].sort((a, b) => ratio(a) - ratio(b));
+  let odBusy = false;
+  function odRender(states) {
+    const ul = $("od-list");
+    ul.innerHTML = "";
+    od.forEach((it, k) => {
+      const li = MM.el("li", states && states[k] ? { class: states[k] } : null);
+      li.innerHTML = `<span class="idx">${k + 1}</span><span>${it.name}</span>
+        <label>비용 <input type="number" min="0.1" step="0.5" value="${it.c}" data-k="${k}" data-f="c"></label>
+        <label>0 확률 <input type="number" min="0" max="1" step="0.05" value="${it.p}" data-k="${k}" data-f="p"></label>
+        <span class="mv"><button class="btn" data-up="${k}" aria-label="위로">↑</button><button class="btn" data-dn="${k}" aria-label="아래로">↓</button></span>`;
+      ul.append(li);
+    });
+    const e = expCost(od), eo = expCost(bestOrder(od));
+    $("od-e").textContent = f2(e);
+    $("od-opt").textContent = f2(eo);
+    $("od-pass").textContent = MM.pct(od.reduce((a, it) => a * (1 - it.p), 1));
+    $("od-e").className = "v " + (e - eo < 1e-9 ? "c-ok" : "c-warn");
+  }
+  $("od-list").addEventListener("click", e => {
+    if (odBusy) return;
+    const up = e.target.dataset.up, dn = e.target.dataset.dn;
+    if (up != null && +up > 0) { const k = +up; [od[k - 1], od[k]] = [od[k], od[k - 1]]; odRender(); }
+    if (dn != null && +dn < od.length - 1) { const k = +dn; [od[k + 1], od[k]] = [od[k], od[k + 1]]; odRender(); }
+  });
+  $("od-list").addEventListener("change", e => {
+    const k = e.target.dataset.k, fld = e.target.dataset.f;
+    if (k == null) return;
+    let v = +e.target.value;
+    if (fld === "p") v = Math.min(1, Math.max(0, v));
+    if (fld === "c") v = Math.max(0.1, v);
+    od[+k][fld] = v;
+    odRender();
+  });
+  $("od-best").onclick = () => { if (!odBusy) { od = bestOrder(od); odRender(); $("od-log").textContent = "c/p 오름차순: " + od.map(it => `${it.name}(${ratio(it) === Infinity ? "∞" : f2(ratio(it))})`).join(" → "); } };
+  $("od-cheap").onclick = () => { if (!odBusy) { od = [...od].sort((a, b) => a.c - b.c); odRender(); $("od-log").textContent = "비용 오름차순. 비용이 같으면 원래 순서를 유지한다."; } };
+  $("od-worst").onclick = () => { if (!odBusy) { od = bestOrder(od).reverse(); odRender(); $("od-log").textContent = "c/p 내림차순: 가장 비효율적인 순서."; } };
+  const odRng = UAI.rng(2016);
+  $("od-run").onclick = () => {
+    if (odBusy) return;
+    odBusy = true;
+    const states = od.map(() => "");
+    let k = 0, cost = 0;
+    const lines = [];
+    const tick = () => {
+      if (k >= od.length) { finish(true); return; }
+      states[k] = "run"; odRender(states);
+      setTimeout(() => {
+        const it = od[k];
+        cost += it.c;
+        const zero = odRng.next() < it.p;
+        states[k] = zero ? "zero" : "pass";
+        lines.push(`${k + 1}. ${it.name}: 비용 ${it.c} → ${zero ? "0! early-out" : "통과"}`);
+        if (zero) { for (let j = k + 1; j < od.length; j++) states[j] = "skip"; odRender(states); finish(false); return; }
+        k++; tick();
+      }, 420);
+    };
+    const finish = full => {
+      lines.push(full ? `끝까지 통과 → 점수 계산. 총비용 ${cost}` : `점수 0, 나머지 생략. 총비용 ${cost}`);
+      $("od-log").textContent = lines.join("\n");
+      odRender(states);
+      setTimeout(() => { odBusy = false; }, 200);
+    };
+    tick();
+  };
+  $("od-sim").onclick = () => {
+    if (odBusy) return;
+    const rng = UAI.rng(7);
+    let total = 0;
+    const N = 1000;
+    for (let t = 0; t < N; t++) {
+      for (const it of od) { total += it.c; if (rng.next() < it.p) break; }
+    }
+    $("od-simv").textContent = f2(total / N);
+    $("od-log").textContent = `시드 7로 ${N}회 평가: 평균 비용 ${f2(total / N)} (식으로 구한 기대 비용 ${f2(expCost(od))})`;
+  };
+  odRender();
+
+  // ═════════════ 위젯 5: Evade Dangerous Areas ═════════════
+  const evadeAction = {
+    id: "evade", label: "위험 지역 회피",
+    considerations: [
+      { name: "다른 결정 실행 중 아님", input: ({ agent }) => (agent.busy ? 0 : 1), curve: "스위치 (≥0.5)" },
+      { name: "이동 불가 아님", input: ({ agent }) => (agent.rooted ? 0 : 1), curve: "스위치 (≥0.5)" },
+      { name: "위험도", input: ({ agent }) => agent.danger, curve: "회피: 1−(x−1)⁴" },
+      { name: "runtime", input: ({ agent }) => agent.runtime, curve: "runtime: 1−x⁶" },
+      { name: "cooldown", input: ({ agent }) => agent.cooldown, curve: "cooldown: x⁵" },
+      { name: "자기 체력", input: ({ agent }) => agent.health, curve: { type: "linear", m: -0.7, b: 1 } },
+    ],
+  };
+  const EV_CURVE = ["스위치", "스위치", "1 − (x−1)⁴", "1 − x⁶", "x⁵", "1 − 0.7x (가정)"];
+  const evProd = new UAI.Reasoner([evadeAction], { combine: "product" });
+  const evComp = new UAI.Reasoner([evadeAction], { combine: "compensated" });
+  const evPlots = [];
+  evadeAction.considerations.forEach((c, k) => {
+    const fig = MM.el("figure");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    fig.append(svg, MM.el("figcaption", null, `${k + 1}. ${c.name}`));
+    $("ev-plots").append(fig);
+    evPlots.push({ fig, svg });
+  });
+  function evUpdate() {
+    const agent = {
+      busy: $("ev-busy").checked, rooted: $("ev-root").checked,
+      danger: +$("ev-d").value, runtime: +$("ev-r").value, cooldown: +$("ev-c").value, health: +$("ev-h").value,
+    };
+    ["d", "r", "c", "h"].forEach(k => { $("ev-" + k + "-o").textContent = f2(+$("ev-" + k).value); });
+    const row = evProd.evaluate(agent, null)[0];
+    const rowC = evComp.evaluate(agent, null)[0];
+    const acts = evProd.actions[0].considerations;
+    let firstZero = -1;
+    let t = `<tr><th>#</th><th>consideration</th><th>범주</th><th>곡선</th><th>입력 x</th><th>점수 y</th></tr>`;
+    row.parts.forEach((p, k) => {
+      if (firstZero < 0 && !p.skipped && p.y <= 0) firstZero = k;
+      const cat = k < 2 ? `<span class="pill must">필수</span>` : k === 2 ? `<span class="pill dist">핵심</span>` : `<span class="pill feel">밸런스</span>`;
+      const yCell = p.skipped ? `<td class="num skip">생략</td>` : `<td class="num ${p.y <= 0 ? "zero" : ""}">${f3(p.y)}</td>`;
+      t += `<tr class="${k === firstZero ? "cur" : ""}"><td>${k + 1}</td><td>${p.name}</td><td>${cat}</td><td class="mono">${EV_CURVE[k]}</td><td class="num">${p.skipped ? "—" : f2(p.x)}</td>${yCell}</tr>`;
+      const pl = evPlots[k];
+      pl.fig.className = p.skipped ? "skipped" : p.y <= 0 ? "zero" : "";
+      MM.plotCurve(pl.svg, acts[k].fn, { color: p.skipped ? "--muted" : "--accent", marker: p.skipped ? null : p.x });
+    });
+    $("ev-tbl").innerHTML = t;
+    $("ev-p").textContent = f3(row.score);
+    $("ev-cmp").textContent = f3(rowC.score);
+    $("ev-p").className = "v " + (row.score > 0 ? "" : "c-bad");
+    const skipped = row.parts.filter(p => p.skipped).length;
+    $("ev-msg").innerHTML = firstZero >= 0
+      ? `<span class="c-bad">${firstZero + 1}번 consideration "${row.parts[firstZero].name}"에서 0이 나와 거부되었다.</span> 뒤의 ${skipped}개는 평가하지 않았다(early-out).`
+      : `모든 consideration을 통과했다. 가장 낮은 항: "${row.parts.reduce((a, p) => (p.y < a.y ? p : a)).name}" (${f3(Math.min(...row.parts.map(p => p.y)))}).`;
+  }
+  ["ev-busy", "ev-root", "ev-d", "ev-r", "ev-c", "ev-h"].forEach(id => $(id).addEventListener("input", evUpdate));
+  document.addEventListener("themechange", evUpdate);
+  evUpdate();
+
+  // ═════════════ 위젯 6: Graham 결투 ═════════════
+  const MAXHP = 100, AI_MIN = 10, AI_MAX = 20;
+  // 식 9.5: 기본값 a, 상대를 한 방에 죽일 수 있을수록 1까지 선형 증가 (범위 제한 선형)
+  const attackDesire = (enemyHp, a) => UAI.clamp01(1 - (enemyHp - AI_MIN) / (AI_MAX - AI_MIN)) * (1 - a) + a;
+  const threatF = (dmg, hp) => Math.min(dmg / hp, 1);                                             // 식 9.6
+  const healthDesire = hp => 1 - 1 / (1 + Math.pow(Math.E * 0.68, -(hp / MAXHP) * 12 + 6));       // 식 9.7
+  const runDesire = (hp, p) => 1 - Math.pow(hp / MAXHP, (1 / Math.pow(p + 1, 4)) * 0.25);           // 식 9.8
+  function duUpdate() {
+    const g = id => +$(id).value;
+    const hp = g("du-hp"), php = g("du-php"), pot = g("du-pot"), a = g("du-a"), pmax = g("du-pmax");
+    const wA = g("du-wa"), wH = g("du-wh"), wR = g("du-wr");
+    [["du-hp", 0], ["du-php", 0], ["du-pot", 0], ["du-a", 2], ["du-pmax", 0], ["du-wa", 2], ["du-wh", 2], ["du-wr", 2]].forEach(([id, d]) => { $(id + "-o").textContent = MM.fmt(g(id), d); });
+    const useAvg = $("du-avg").checked;
+    const dmg = useAvg ? (pmax / 2 + pmax) / 2 : pmax;
+    const F = { att: attackDesire(php, a), thr: threatF(dmg, hp), hd: healthDesire(hp), rd: runDesire(hp, pot), has: pot > 0 ? 1 : 0 };
+    $("du-f").innerHTML = `<tr><th>AttackDesire</th><th>Threat${useAvg ? " (평균 " + f2(dmg) + ")" : ""}</th><th>HealthDesire</th><th>RunDesire</th><th>물약 스위치</th></tr>
+      <tr><td class="num">${f3(F.att)}</td><td class="num">${f3(F.thr)}</td><td class="num">${f3(F.hd)}</td><td class="num">${f3(F.rd)}</td><td class="num ${F.has ? "" : "zero"}">${F.has}</td></tr>`;
+    const cands = [
+      { id: "Attack", label: "Attack = AttackDesire", score: UAI.combine([F.att], "product") * wA },
+      { id: "Heal", label: "Heal = 스위치 × HealthDesire × Threat", score: UAI.combine([F.has, F.hd, F.thr], "product") * wH },
+      { id: "Run", label: "Run = RunDesire × Threat", score: UAI.combine([F.rd, F.thr], "product") * wR },
+    ];
+    const res = UAI.select(cands, { strategy: "weighted" }, UAI.rng(1));
+    const prob = c => { const e = res.pool.find(q => q.cand === c); return e ? e.p : 0; };
+    const maxS = Math.max(1, ...cands.map(c => c.score));
+    let h = "";
+    for (const c of cands) {
+      h += `<span>${c.label}</span><div class="bar ${c.id === "Attack" ? "bad" : c.id === "Heal" ? "ok" : "warn"}"><i style="width:${(c.score / maxS * 100).toFixed(1)}%"></i></div><span class="val">${f3(c.score)}</span>`;
+      h += `<span class="note">선택 확률 <b>${MM.pct(prob(c))}</b> (점수 / 점수 합)</span>`;
+    }
+    $("du-bars").innerHTML = h;
+    const best = cands.reduce((x, y) => (y.score > x.score ? y : x));
+    $("du-msg").innerHTML = `가장 높은 점수는 <b>${best.id}</b>. Graham의 데모는 최고점이 아니라 가중 랜덤으로 고르므로 다른 행동도 위 확률로 나온다(05장). weight가 1을 넘으면 막대 축이 늘어난다.`;
+  }
+  document.querySelectorAll("#w-duel input").forEach(inp => inp.addEventListener("input", duUpdate));
+  duUpdate();
+})();
+</script>
+</body>
+</html>

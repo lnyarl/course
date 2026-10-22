@@ -1,0 +1,953 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COW, mmap, 페이지 캐시</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 11장 전용 */
+.cow-legend { display:flex; flex-wrap:wrap; gap:14px; font-size:13px; color:var(--muted); margin:6px 0 0; }
+.cow-legend i { display:inline-block; width:18px; height:3px; vertical-align:middle; margin-right:5px; border-radius:2px; }
+.cow-ctl select { min-width: 110px; }
+main :not(pre) > code { overflow-wrap:anywhere; }
+main p, main li, main td { overflow-wrap:anywhere; }
+.mx-grid { display:grid; grid-template-columns: minmax(56px,auto) minmax(0,1fr) minmax(0,1fr); gap:6px; margin:8px 0 12px; }
+.mx-grid .hd, .mx-cell { min-width:0; overflow-wrap:anywhere; }
+.mx-grid .hd { font-size:13px; font-weight:700; color:var(--muted); display:flex; align-items:center; justify-content:center; text-align:center; padding:4px; }
+.mx-cell { font:inherit; font-size:14px; text-align:left; border:1px solid var(--border); border-radius:10px; background:var(--bg); color:var(--text); padding:10px 12px; cursor:pointer; min-height:74px; transition: border-color .15s, background .15s; }
+.mx-cell b { display:block; font-size:14.5px; }
+.mx-cell small { color:var(--muted); font-size:12.5px; }
+.mx-cell:hover { border-color:var(--accent); }
+.mx-cell.sel { border-color:var(--accent); background:var(--accent-soft); }
+.mx-detail { border:1px solid var(--border); border-radius:10px; padding:12px 16px; background:var(--surface-2); }
+.mx-detail h4 { margin:0 0 6px; }
+.mx-detail dl { margin:0; display:grid; grid-template-columns: 92px 1fr; gap:4px 10px; font-size:14.5px; }
+.mx-detail dt { color:var(--muted); font-weight:700; }
+.mx-detail dd { margin:0; }
+.mx-detail pre { margin:8px 0 0; font-size:12.5px; }
+.rvm .step { opacity:.1; transition: opacity .35s; }
+.rvm .step.on { opacity:1; }
+.rvm .flash { animation: rvmflash 1.2s ease-in-out infinite; }
+@keyframes rvmflash { 50% { opacity:.45; } }
+.dw-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(210px,1fr)); gap:4px 16px; font-size:14px; }
+.dw-grid label { display:flex; flex-direction:column; gap:2px; }
+.dw-grid label span { display:flex; justify-content:space-between; }
+.dw-grid input[type=range] { width:100%; }
+.pill { display:inline-block; font-size:12px; font-weight:700; padding:1px 8px; border-radius:999px; }
+</style>
+</head>
+<body data-chapter="11">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">심화 · Chapter 11</span>
+    <h1>Copy-on-Write, mmap, 페이지 캐시</h1>
+    <p class="lead">fork()가 수 GB짜리 프로세스를 순식간에 복제하는 방법, 파일이 메모리처럼 보이는 방법, 쓴 데이터가 실제로 디스크에 가는 시점을 다룹니다. 세 주제는 모두 "물리 페이지 하나를 여러 곳이 공유하고, 필요할 때만 갈라놓는다"는 같은 원리 위에 있습니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>fork 후 COW 폴트가 어떻게 감지되고 처리되는지(PTE 쓰기 금지, VMA 권한, 참조 카운트, 재사용 조건)를 단계별로 설명할 수 있다.</li>
+      <li>vfork·posix_spawn이 fork+exec보다 유리한 이유와 제약을 안다.</li>
+      <li>mmap의 file/anonymous × private/shared 네 조합이 각각 어떤 커널 객체에 기대는지, 쓰기가 어디로 가는지 구분한다.</li>
+      <li>페이지 캐시(address_space, XArray, folio)를 중심으로 read()와 mmap의 데이터 경로를 비교한다.</li>
+      <li>dirty 페이지 writeback 정책(dirty_background_ratio, dirty_ratio, 만료 시간)과 쓰기 스로틀링, fsync·O_DIRECT·readahead의 역할을 설명한다.</li>
+      <li>공유 메모리(shm_open, SysV shm, memfd, tmpfs)와 역매핑(rmap)의 개념을 이해한다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">fork()와 Copy-on-Write</a></li>
+    <li><a href="#s2">vfork, posix_spawn, clone</a></li>
+    <li><a href="#s3">mmap의 네 가지 조합</a></li>
+    <li><a href="#s4">페이지 캐시: address_space와 XArray</a></li>
+    <li><a href="#s5">read() vs mmap: 데이터 경로</a></li>
+    <li><a href="#s6">Dirty 페이지 writeback과 쓰기 스로틀링</a></li>
+    <li><a href="#s7">fsync/msync, O_DIRECT, readahead</a></li>
+    <li><a href="#s8">공유 메모리와 tmpfs</a></li>
+    <li><a href="#s9">역매핑(rmap)</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. fork()와 Copy-on-Write</h2>
+    <p>Unix의 프로세스 생성은 <code>fork()</code>로 자신을 복제한 뒤, 자식이 대개 곧바로 <code>execve()</code>로 다른 프로그램을 올리는 패턴입니다. 부모의 메모리를 fork 시점에 전부 복사하면 어떻게 될까요? 8 GiB짜리 JVM이 셸 명령 하나를 실행하려고 8 GiB를 복사하고, 자식은 몇 마이크로초 뒤 exec로 그 복사본을 통째로 버립니다. 시간과 메모리를 모두 낭비하는 셈입니다.</p>
+    <p><b>Copy-on-Write(COW)</b>는 복사를 "정말 필요해질 때까지" 미룹니다. fork는 데이터 페이지를 복사하지 않고 <em>페이지 테이블 항목(PTE)</em>만 복사합니다. 부모와 자식은 같은 물리 프레임을 가리키게 되고, 커널은 양쪽 PTE를 <b>읽기 전용</b>으로 바꿉니다. 둘 중 하나가 쓰려고 하면 MMU가 보호 폴트를 일으키고, 그때 커널이 그 페이지 하나만 복사합니다.</p>
+
+    <h3>커널은 "진짜 보호 위반"과 "COW 폴트"를 어떻게 구분하나</h3>
+    <p>핵심은 <b>VMA 권한과 PTE 권한의 불일치</b>입니다. fork 후 VMA(<code>vm_area_struct</code>)에는 여전히 <code>VM_WRITE</code>가 있습니다. 쓰기를 막는 쪽은 PTE의 R/W 비트뿐입니다. 쓰기 폴트가 나면 커널은 이렇게 판단합니다.</p>
+    <ul>
+      <li>VMA에도 쓰기 권한이 없다 → 진짜 위반 → <code>SIGSEGV</code>.</li>
+      <li>VMA는 쓰기 가능한 private 매핑인데 PTE만 읽기 전용이다 → COW 폴트 → <code>do_wp_page()</code> 처리.</li>
+    </ul>
+    <p><code>do_wp_page()</code>는 바로 복사하지 않고 먼저 <b>이 페이지를 나 혼자 쓰고 있는지</b> 확인합니다. 다른 프로세스가 이미 자기 사본을 만들어 떠났거나 자식이 exit해서 내가 마지막 사용자라면, 복사 없이 PTE에 쓰기 권한만 다시 줍니다(재사용, <i>reuse</i>). 공유자가 남아 있을 때만 <code>wp_page_copy()</code>가 새 프레임을 할당하고 4 KiB를 복사한 뒤 내 PTE를 새 프레임으로 돌립니다. 이 판정은 페이지의 참조 카운트와 "익명 페이지 독점" 플래그(<code>PageAnonExclusive</code>)로 이루어집니다. 세부 조건은 커널 버전마다 여러 번 바뀌었지만, "마지막 사용자는 복사하지 않는다"는 원칙은 같습니다.</p>
+
+    <div class="widget" id="cowStepW">
+      <div class="w-title">스텝 애니메이션: fork → 쓰기 → COW 폴트 → 분리</div>
+      <div class="w-desc">파란 선은 부모 PTE, 보라 선은 자식 PTE입니다. 프레임 안의 <code>ref</code>는 그 프레임을 매핑한 PTE 수입니다.</div>
+      <div class="stage" id="cowStepSvg"></div>
+      <div class="cow-legend"><span><i style="background:var(--accent)"></i>부모 매핑</span><span><i style="background:var(--violet)"></i>자식 매핑</span><span class="c-ok">RW = 쓰기 가능</span><span class="c-warn">RO = 쓰기 금지(COW 대기)</span></div>
+    </div>
+
+    <div class="widget" id="cowPlay">
+      <div class="w-title">직접 해보기: 누가 언제 복사를 일으키나</div>
+      <div class="w-desc">먼저 <b>fork()</b>를 누른 뒤 부모나 자식으로 페이지에 써 보세요. 같은 페이지에 부모가 먼저 쓰고 자식이 나중에 쓰면 두 번째 쓰기는 복사가 아니라 재사용으로 끝납니다. 자식 exit 뒤 부모가 쓰면 어떻게 되는지도 확인해 보세요.</div>
+      <div class="controls cow-ctl">
+        <label>페이지 <select id="cowPage"><option value="0">VPN 0</option><option value="1" selected>VPN 1</option><option value="2">VPN 2</option><option value="3">VPN 3</option></select></label>
+        <button class="btn primary" id="cowFork">fork()</button>
+        <button class="btn" id="cowPW">부모가 쓰기</button>
+        <button class="btn" id="cowCW">자식이 쓰기</button>
+        <button class="btn" id="cowPR">부모가 읽기</button>
+        <button class="btn" id="cowExit">자식 exit()</button>
+        <button class="btn" id="cowReset">초기화</button>
+      </div>
+      <div class="stage" id="cowSvg"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">페이지 폴트(쓰기 보호)</div><div class="v" id="cowSF">0</div></div>
+        <div class="stat"><div class="k">실제 복사</div><div class="v" id="cowSC">0</div></div>
+        <div class="stat"><div class="k">재사용(복사 없음)</div><div class="v" id="cowSR">0</div></div>
+        <div class="stat"><div class="k">사용 중 물리 프레임</div><div class="v" id="cowSU">4</div></div>
+      </div>
+      <div class="log" id="cowLog"></div>
+    </div>
+
+    <h3>fork 자체의 비용: 페이지 테이블 복사</h3>
+    <p>COW가 데이터 복사를 없앴어도 fork는 공짜가 아닙니다. 커널(<code>copy_page_range()</code>)은 부모의 PTE를 자식 쪽으로 복사하고, 부모 PTE를 쓰기 금지로 바꾸고, 각 페이지의 참조 카운트를 올립니다. RSS가 100 GiB인 프로세스라면 4 KiB 페이지 약 2,600만 개, PTE만 약 200 MiB입니다. 그래서 fork 한 번에 수십~수백 밀리초가 걸리고, 그동안 부모 스레드가 멈춥니다. 이미 쓰기 금지된 PTE를 부모가 다시 쓰면 그때마다 COW 폴트도 납니다. 커널은 파일 기반 공유 매핑처럼 나중에 폴트로 다시 채울 수 있는 VMA의 PTE는 복사를 생략해 이 비용을 줄입니다.</p>
+
+    <div class="callout warn"><span class="title">현업 사례: Redis BGSAVE와 메모리 2배 문제</span>
+      Redis는 스냅샷(RDB)이나 AOF rewrite를 위해 fork하고, 자식이 메모리를 직렬화하는 동안 부모는 요청을 계속 처리합니다. 부모가 쓰는 페이지마다 COW 복사가 일어나므로 쓰기가 많은 워크로드에서는 스냅샷 중 메모리 사용량이 최대 2배까지 늘 수 있습니다. 운영 시 확인할 점:
+      <ul>
+        <li><b>fork 지연</b>: Redis <code>INFO</code>의 <code>latest_fork_usec</code>. 페이지 테이블 크기에 비례합니다.</li>
+        <li><b>Transparent Huge Page</b>: COW가 큰 페이지 단위로 일어나면 지연과 복사량이 커질 수 있어 Redis는 THP 비활성화를 권장합니다(13장).</li>
+        <li><b>overcommit</b>: <code>vm.overcommit_memory=2</code>(엄격)이면 대형 프로세스의 fork가 커밋 한도에 걸려 <code>ENOMEM</code>으로 실패할 수 있습니다. 실제 복사가 거의 없더라도 COW로 쓸 수 있는 메모리 전체가 커밋으로 계산되기 때문입니다. Redis가 <code>vm.overcommit_memory=1</code>을 권하는 이유입니다(12장).</li>
+      </ul>
+    </div>
+
+    <details class="deep"><summary>더 깊이: fork와 관련된 madvise 플래그와 멀티스레드 함정</summary><div>
+      <ul>
+        <li><code>MADV_DONTFORK</code>: 해당 범위를 자식에 아예 매핑하지 않습니다. RDMA·DMA 버퍼처럼 물리 주소가 고정돼야 하는 영역에 씁니다. COW로 부모 쪽 페이지가 다른 프레임으로 바뀌면 장치는 옛 프레임에 계속 DMA하게 되기 때문입니다.</li>
+        <li><code>MADV_WIPEONFORK</code>(Linux 4.14+): 자식 쪽에서는 해당 범위가 0으로 채워진 상태로 보입니다. 난수 생성기 상태나 비밀 키가 자식에게 복제되는 것을 막습니다.</li>
+        <li><b>멀티스레드 프로세스의 fork</b>: 자식에는 fork를 호출한 스레드 하나만 복제됩니다. 다른 스레드가 잡고 있던 malloc 잠금 같은 락은 자식에서 영원히 풀리지 않을 수 있습니다. 그래서 POSIX는 멀티스레드 프로그램에서 fork 후 exec 전까지 async-signal-safe 함수만 호출하라고 요구합니다.</li>
+      </ul>
+    </div></details>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. vfork, posix_spawn, clone</h2>
+    <p>COW 덕분에 fork+exec는 싸졌지만, 앞에서 본 것처럼 <b>페이지 테이블 복사 비용</b>은 남습니다. 거대한 프로세스가 짧은 자식을 자주 띄우는 경우(빌드 도구, JVM이 외부 명령 실행 등)에는 이 비용이 눈에 띕니다. 결국 exec로 버릴 주소 공간이라면 처음부터 복제하지 않는 편이 낫습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>방식</th><th>주소 공간</th><th>부모의 상태</th><th>주의점</th></tr>
+      <tr><td><code>fork()</code></td><td>COW로 복제(PTE 복사)</td><td>계속 실행</td><td>대형 프로세스에서 fork 지연, overcommit 계산</td></tr>
+      <tr><td><code>vfork()</code></td><td><b>부모 것을 그대로 빌려 씀</b>(복제 없음)</td><td>자식이 <code>execve</code> 또는 <code>_exit</code>할 때까지 정지</td><td>자식이 변수를 바꾸거나 함수에서 return하면 부모 스택·데이터가 깨짐. exec/_exit 외에는 하지 말 것</td></tr>
+      <tr><td><code>posix_spawn()</code></td><td>구현에 따라 다름. glibc(2.24+)는 Linux에서 <code>clone(CLONE_VM|CLONE_VFORK)</code>과 별도 스택 사용</td><td>exec 성공/실패가 정해질 때까지 대기</td><td>vfork의 속도를 안전한 API로 제공. 파일 디스크립터·시그널 설정은 attr/file_actions로 지정</td></tr>
+      <tr><td><code>clone()</code>/<code>clone3()</code></td><td>플래그로 공유 범위를 직접 선택 (<code>CLONE_VM</code>이면 공유 = 스레드)</td><td>플래그에 따름</td><td>pthread_create도 내부적으로 clone. fork·vfork·스레드는 모두 이 위의 특수한 경우</td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">설계 관점</span>
+      fork가 "복제 후 수정" 모델이라면 posix_spawn은 "무엇을 실행할지 한 번에 기술" 모델입니다. fork 모델은 유연하지만 주소 공간 복제 비용과 멀티스레드 함정을 안고 있어서, 프로세스를 많이 띄우는 런타임은 대부분 posix_spawn이나 <code>CLONE_VM|CLONE_VFORK</code> 경로로 옮겨 갔습니다. 대용량 서비스에서 <code>system()</code>이나 <code>popen()</code>을 자주 부른다면 어느 경로로 자식을 만드는지 확인해 볼 가치가 있습니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. mmap의 네 가지 조합</h2>
+    <p><code>mmap(addr, len, prot, flags, fd, off)</code>은 두 질문에 대한 답으로 성격이 정해집니다.</p>
+    <ol>
+      <li><b>무엇으로 채우나?</b> 파일(<code>fd</code>)인가, 0으로 채운 익명 메모리(<code>MAP_ANONYMOUS</code>)인가.</li>
+      <li><b>쓰기를 누구와 공유하나?</b> 나만 보는가(<code>MAP_PRIVATE</code>, COW), 같은 대상을 매핑한 모두가 보는가(<code>MAP_SHARED</code>).</li>
+    </ol>
+    <p>mmap은 호출 시점에 아무것도 읽거나 할당하지 않습니다. VMA 하나만 만들고, 실제 페이지는 첫 접근 때 폴트로 채웁니다(6장의 demand paging). 미리 채우려면 <code>MAP_POPULATE</code>나 <code>madvise(MADV_WILLNEED)</code>를 씁니다.</p>
+
+    <div class="widget" id="mxW">
+      <div class="w-title">인터랙티브 매트릭스: file/anonymous × private/shared</div>
+      <div class="w-desc">셀을 눌러 동작, 쓰기 시 일어나는 일, fork 후 동작, 예시 코드, 실제 용도, <code>/proc/meminfo</code>에 잡히는 항목을 확인하세요.</div>
+      <div class="mx-grid" id="mxGrid"></div>
+      <div class="mx-detail" id="mxDetail"></div>
+    </div>
+
+    <div class="callout danger"><span class="title">파일 매핑의 함정: SIGBUS</span>
+      파일 매핑에서 파일 크기를 넘어선 페이지를 건드리거나, 다른 프로세스가 파일을 <code>truncate</code>해서 매핑 범위 뒤쪽이 사라지면 <code>SIGBUS</code>가 납니다. 디스크 I/O 오류도 read()처럼 에러 코드로 돌아오지 않고 시그널로 옵니다. mmap 기반 저장소(LMDB 등)나 로그 파일을 매핑하는 코드에서 자주 만나는 크래시 원인입니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 페이지 캐시: address_space와 XArray</h2>
+    <p>Linux에서 일반 파일 I/O는 거의 모두 <b>페이지 캐시</b>를 거칩니다. 페이지 캐시는 "파일의 어느 오프셋이 어느 물리 페이지에 들어 있는지"를 기록한 커널 자료구조이고, 다음과 같이 구성됩니다.</p>
+    <ul>
+      <li>각 inode는 <code>struct address_space</code>(<code>inode-&gt;i_mapping</code>)를 하나 가집니다. 이름과 달리 주소 공간이 아니라 "이 파일의 캐시된 페이지 집합"입니다.</li>
+      <li><code>address_space-&gt;i_pages</code>가 실제 인덱스입니다. 키는 파일 내 페이지 번호(오프셋 / 페이지 크기), 값은 페이지(최근 커널에서는 <b>folio</b>)입니다. 오래전에는 radix tree였고 Linux 4.17부터 같은 개념을 더 다루기 쉬운 API로 감싼 <b>XArray</b>로 바뀌었습니다. 각 항목에는 dirty·writeback 같은 태그가 붙어 있어, writeback할 때 "dirty 태그가 붙은 항목만" 빠르게 순회할 수 있습니다.</li>
+      <li><code>address_space-&gt;i_mmap</code>은 이 파일을 매핑한 모든 VMA를 담은 구간 트리(interval tree)입니다. 페이지 하나가 어느 프로세스의 어느 가상 주소에 매핑돼 있는지 역으로 찾을 때 씁니다(9절 rmap).</li>
+      <li><b>folio</b>(5.16 무렵 도입)는 "하나 이상의 연속 페이지 묶음"을 나타내는 타입입니다. 큰 folio를 쓰면 페이지 캐시 항목 수와 LRU 관리 비용이 줄어듭니다. 이 장에서는 편의상 "페이지"라고 부릅니다.</li>
+    </ul>
+
+    <figure>
+      <div class="stage"><svg class="diagram" viewBox="0 0 680 360" style="min-width:540px" role="img" aria-label="inode, address_space, XArray, VMA의 관계">
+        <!-- inode / address_space -->
+        <rect class="box" x="16" y="20" width="170" height="56" rx="8"/>
+        <text x="101" y="44" text-anchor="middle" font-weight="700">inode (data.db)</text>
+        <text x="101" y="63" text-anchor="middle" class="muted">i_mapping →</text>
+        <rect x="16" y="100" width="170" height="130" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="101" y="122" text-anchor="middle" font-weight="700">address_space</text>
+        <rect class="box" x="30" y="134" width="142" height="34" rx="6"/>
+        <text x="101" y="156" text-anchor="middle">i_pages (XArray)</text>
+        <rect class="box" x="30" y="178" width="142" height="34" rx="6"/>
+        <text x="101" y="200" text-anchor="middle">i_mmap (구간 트리)</text>
+        <path class="line" d="M101 76 V100" marker-end="url(#ar11a)"/>
+        <!-- XArray nodes -->
+        <text x="320" y="24" text-anchor="middle" class="muted">파일 오프셋 인덱스 (4 KiB 단위)</text>
+        <rect class="box" x="250" y="36" width="140" height="30" rx="6"/>
+        <text x="320" y="56" text-anchor="middle">XArray 노드 (64-way)</text>
+        <path class="line" d="M172 151 C210 151 220 51 250 51"/>
+        <g font-size="12">
+          <rect x="214" y="96" width="50" height="40" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="239" y="113" text-anchor="middle">idx 0</text><text x="239" y="128" text-anchor="middle" class="muted">clean</text>
+          <rect x="272" y="96" width="50" height="40" rx="5" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+          <text x="297" y="113" text-anchor="middle">idx 1</text><text x="297" y="128" text-anchor="middle" class="muted">dirty</text>
+          <rect x="330" y="96" width="50" height="40" rx="5" style="fill:var(--surface);stroke:var(--border);stroke-dasharray:4 3"/>
+          <text x="355" y="113" text-anchor="middle">idx 2</text><text x="355" y="128" text-anchor="middle" class="muted">없음</text>
+          <rect x="388" y="96" width="50" height="40" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="413" y="113" text-anchor="middle">idx 3</text><text x="413" y="128" text-anchor="middle" class="muted">clean</text>
+        </g>
+        <path class="line" d="M300 66 L239 96 M310 66 L297 96 M330 66 L355 96 M340 66 L413 96"/>
+        <text x="326" y="156" text-anchor="middle" class="muted" font-size="12">태그: DIRTY / WRITEBACK 등으로 빠른 순회</text>
+        <!-- process VMAs -->
+        <rect x="480" y="20" width="184" height="96" rx="8" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="572" y="42" text-anchor="middle" font-weight="700">프로세스 A</text>
+        <rect class="box" x="494" y="54" width="156" height="26" rx="5"/><text x="572" y="72" text-anchor="middle" font-size="12">VMA: data.db MAP_SHARED</text>
+        <text x="572" y="104" text-anchor="middle" class="muted" font-size="12">PTE → idx 1 페이지</text>
+        <rect x="480" y="136" width="184" height="96" rx="8" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <text x="572" y="158" text-anchor="middle" font-weight="700">프로세스 B</text>
+        <rect class="box" x="494" y="170" width="156" height="26" rx="5"/><text x="572" y="188" text-anchor="middle" font-size="12">VMA: data.db MAP_PRIVATE</text>
+        <text x="572" y="220" text-anchor="middle" class="muted" font-size="12">PTE → idx 0, 3 페이지 (읽기)</text>
+        <path d="M494 98 C440 98 330 84 300 98" style="stroke:var(--violet);fill:none;stroke-width:1.6" marker-end="url(#ar11v)"/>
+        <path d="M494 214 C450 214 430 160 413 136" style="stroke:var(--teal);fill:none;stroke-width:1.6" marker-end="url(#ar11t)"/>
+        <path d="M172 195 C330 260 460 250 494 67" style="stroke:var(--muted);fill:none;stroke-dasharray:5 4"/>
+        <path d="M172 200 C330 270 470 260 494 183" style="stroke:var(--muted);fill:none;stroke-dasharray:5 4"/>
+        <text x="330" y="270" text-anchor="middle" class="muted" font-size="12">i_mmap: 이 파일을 매핑한 VMA 목록 (역매핑에 사용)</text>
+        <!-- read path -->
+        <rect class="box" x="16" y="262" width="170" height="40" rx="8"/>
+        <text x="101" y="287" text-anchor="middle">read()/write() 경로</text>
+        <path class="line" d="M101 262 V232" marker-end="url(#ar11a)"/>
+        <rect class="box" x="230" y="300" width="200" height="42" rx="8"/>
+        <text x="330" y="326" text-anchor="middle">블록 장치 (디스크)</text>
+        <path class="line" d="M297 300 V140" style="stroke-dasharray:3 3"/>
+        <text x="372" y="292" class="muted" font-size="12">writeback ↓ / readahead ↑</text>
+        <defs>
+          <marker id="ar11a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+          <marker id="ar11v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker>
+          <marker id="ar11t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--teal)"/></marker>
+        </defs>
+      </svg></div>
+      <figcaption>그림 11-1. 파일 하나의 페이지 캐시. read()와 mmap은 같은 페이지를 공유하고, i_mmap은 역방향(페이지 → 매핑한 VMA) 탐색에 쓰인다.</figcaption>
+    </figure>
+
+    <h3>파일 매핑과 페이지 캐시의 관계</h3>
+    <p>파일을 <code>MAP_SHARED</code>로 매핑하면 PTE가 <b>페이지 캐시 페이지 자체</b>를 가리킵니다. 그래서 다음이 모두 같은 물리 페이지를 봅니다.</p>
+    <ul>
+      <li>같은 파일을 mmap한 다른 프로세스들</li>
+      <li>그 파일을 <code>read()</code>하는 프로세스 (read는 페이지 캐시에서 복사해 감)</li>
+      <li><code>MAP_PRIVATE</code>로 매핑한 프로세스 중 <b>아직 그 페이지에 쓰지 않은</b> 프로세스</li>
+    </ul>
+    <p><code>MAP_PRIVATE</code> 매핑에 쓰면 그 순간 COW가 일어나, 그 프로세스만의 익명 페이지가 생깁니다. 이후 파일이 바뀌어도 그 페이지에는 반영되지 않습니다. 반대로 아직 쓰지 않은 페이지에서 파일 변경이 보일지는 POSIX상 정의되지 않았고, Linux에서는 보통 보입니다(같은 캐시 페이지를 보고 있으므로). 이식성 있는 코드는 이 동작에 기대면 안 됩니다.</p>
+    <div class="callout tip"><span class="title">실전: 페이지 캐시에 무엇이 올라와 있나</span>
+      <code>fincore</code>(util-linux)나 <code>vmtouch</code>는 파일별로 페이지 캐시에 상주하는 페이지 수를 보여 줍니다. 내부적으로 <code>mmap</code> 후 <code>mincore(2)</code>로 상주 여부를 묻는 방식입니다. "DB 재시작 직후 느린 이유"(캐시 콜드)를 확인할 때 유용합니다. 시스템 전체 합계는 <code>/proc/meminfo</code>의 <code>Cached</code>, 그중 누군가 매핑하고 있는 양은 <code>Mapped</code>입니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. read() vs mmap: 데이터 경로</h2>
+    <p>같은 파일을 읽어도 데이터가 사용자 코드에 닿는 경로는 다릅니다. <code>read()</code>는 페이지 캐시에서 사용자 버퍼로 <b>CPU 복사</b>를 한 번 하고, mmap은 PTE가 페이지 캐시를 <b>직접 가리키게</b> 만듭니다.</p>
+
+    <div class="widget" id="rvmW">
+      <div class="w-title">데이터 경로 비교 (스텝 애니메이션)</div>
+      <div class="w-desc">경로를 고르고 단계를 넘겨 보세요. 밝게 표시된 요소가 그 단계에서 일어나는 일입니다.</div>
+      <div class="controls">
+        <button class="btn primary" data-mode="read">read() 경로</button>
+        <button class="btn" data-mode="mmap">mmap 경로</button>
+      </div>
+      <div id="rvmHost"></div>
+    </div>
+
+    <p>"mmap은 복사가 없으니 항상 빠르다"는 흔한 오해입니다. 트레이드오프는 다음과 같습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>read()/pread()</th><th>mmap</th></tr>
+      <tr><td>복사</td><td>캐시 → 버퍼 복사가 매번 일어남</td><td>없음 (캐시 페이지를 직접 접근)</td></tr>
+      <tr><td>커널 진입</td><td>호출마다 시스템 콜</td><td>페이지마다 첫 접근 때 폴트. 이후에는 진입 없음</td></tr>
+      <tr><td>메모리 사용</td><td>캐시 + 사용자 버퍼, 두 벌</td><td>한 벌 (공유)</td></tr>
+      <tr><td>TLB·페이지 테이블</td><td>영향 적음</td><td>대용량 매핑은 PTE·TLB 미스 증가. <code>munmap</code> 시 멀티스레드면 TLB shootdown IPI 발생</td></tr>
+      <tr><td>오류 처리</td><td>반환값(<code>-EIO</code> 등)</td><td>SIGBUS 시그널</td></tr>
+      <tr><td>I/O 제어</td><td>읽을 크기·시점을 명시적으로 결정, 비동기화(io_uring 등) 쉬움</td><td>폴트가 언제 날지 코드에서 보이지 않음. 폴트 중 스레드가 블록됨</td></tr>
+      <tr><td>잘 맞는 경우</td><td>순차 스트리밍, 한 번 읽고 버리는 데이터</td><td>랜덤 접근이 많고 재사용되는 읽기 위주 데이터(인덱스, 공유 라이브러리)</td></tr>
+    </table></div>
+    <div class="callout deep"><span class="title">왜 데이터베이스는 mmap을 피하기도 하나</span>
+      mmap에 기대면 어느 페이지를 언제 내보낼지를 커널 LRU가 정합니다. DB는 트랜잭션 의미에 맞춰 "이 페이지는 WAL이 기록된 뒤에만 디스크로 가야 한다" 같은 순서를 지켜야 하는데, MAP_SHARED 페이지는 커널이 아무 때나 writeback할 수 있어 이 순서를 직접 통제하기 어렵습니다. 그래서 많은 DB가 자체 버퍼 풀 + <code>pread/pwrite</code>(또는 O_DIRECT) 구조를 택합니다. 반대로 LMDB처럼 읽기 전용 매핑과 copy-on-write B-tree로 이 문제를 비켜 가는 설계도 있습니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. Dirty 페이지 writeback과 쓰기 스로틀링</h2>
+    <p><code>write()</code>는 보통 디스크에 쓰지 않습니다. 페이지 캐시의 해당 페이지를 수정하고 <b>dirty</b> 표시만 한 뒤 바로 반환합니다. 실제 디스크 기록(<b>writeback</b>)은 나중에 커널의 flusher 작업자(<code>ps</code>에서 <code>kworker/…+flush-8:0</code>처럼 보이는 per-device writeback 워커)가 합니다. 쓰기 지연 덕분에 같은 블록에 대한 여러 번의 쓰기가 합쳐지고 I/O가 정렬·병합됩니다. 대신 두 가지 위험이 생깁니다.</p>
+    <ul>
+      <li>전원이 나가면 dirty 데이터가 사라진다 → 앱이 필요하면 fsync (7절).</li>
+      <li>앱이 디스크보다 빨리 쓰면 dirty 페이지가 끝없이 쌓여 메모리를 잡아먹고, 결국 한꺼번에 플러시하느라 긴 지연이 생긴다 → <b>임계값과 스로틀링</b>.</li>
+    </ul>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>sysctl (<code>/proc/sys/vm/</code>)</th><th>기본값</th><th>의미</th></tr>
+      <tr><td><code>dirty_background_ratio</code></td><td>10</td><td>dirty가 이 비율을 넘으면 백그라운드 writeback 시작. 앱은 막지 않음</td></tr>
+      <tr><td><code>dirty_ratio</code></td><td>20</td><td>dirty 한도. 이 근처에서 <b>쓰는 프로세스 자신</b>이 <code>balance_dirty_pages()</code>에서 잠들며 속도를 제한당함</td></tr>
+      <tr><td><code>dirty_background_bytes</code> / <code>dirty_bytes</code></td><td>0</td><td>비율 대신 바이트로 지정. 하나를 쓰면 대응하는 ratio는 0으로 표시되고 무시됨</td></tr>
+      <tr><td><code>dirty_expire_centisecs</code></td><td>3000 (30초)</td><td>이보다 오래된 dirty 데이터는 임계값과 상관없이 다음 flusher 실행 때 기록 대상</td></tr>
+      <tr><td><code>dirty_writeback_centisecs</code></td><td>500 (5초)</td><td>flusher가 주기적으로 깨어나는 간격</td></tr>
+    </table></div>
+    <p>주의할 점은 ratio의 기준이 전체 RAM이 아니라 <b>dirty가 될 수 있는 메모리</b>(대략 free + 회수 가능한 파일 페이지)라는 것입니다. 또 백그라운드 임계가 한도 이상으로 설정되면 커널은 백그라운드 임계를 한도의 절반으로 낮춥니다.</p>
+
+    <h3>스로틀링의 실제 모양</h3>
+    <p>Linux 3.2 이후의 "IO-less dirty throttling"은 쓰는 프로세스가 직접 writeback I/O를 하지 않습니다. 대신 dirty 양에 따라 <b>잠깐씩 잠들게(pause)</b> 해서 쓰기 속도를 디스크 쓰기 대역폭 쪽으로 맞춥니다. 대략 이렇게 동작합니다.</p>
+    <ul>
+      <li>dirty ≤ (background 임계 + 한도) / 2 (<i>freerun</i> 구간): 제한 없음.</li>
+      <li>그 위: dirty가 <i>setpoint</i>(freerun과 한도의 중간쯤) 근처에 머물도록 쓰기 속도를 점점 줄임. setpoint에서 쓰기 속도 ≈ 디스크 대역폭.</li>
+      <li>한도에 닿으면 강하게 차단.</li>
+    </ul>
+
+    <div class="widget" id="dwW">
+      <div class="w-title">시뮬레이션: dirty 페이지가 쌓이고, 플러시되고, 스로틀링 걸리는 모습</div>
+      <div class="w-desc">앱 쓰기 속도를 디스크 속도보다 높여 보세요. 시뮬레이션 시간은 실제보다 5배 빠르게 흐릅니다. 위 설명을 단순화한 모델이며, 실제 커널은 장치별 대역폭 추정과 더 매끄러운 제어 곡선을 씁니다.</div>
+      <div class="dw-grid">
+        <label><span>앱 쓰기 속도 <b id="dwWv"></b></span><input type="range" id="dwWr" min="0" max="1500" step="10" value="300"></label>
+        <label><span>디스크 쓰기 대역폭 <b id="dwBv"></b></span><input type="range" id="dwBr" min="20" max="1500" step="10" value="150"></label>
+        <label><span>dirty 가능 메모리 <b id="dwMv"></b></span><input type="range" id="dwMr" min="1" max="64" step="1" value="8"></label>
+        <label><span>dirty_background_ratio <b id="dwGv"></b></span><input type="range" id="dwGr" min="1" max="50" step="1" value="10"></label>
+        <label><span>dirty_ratio <b id="dwRv"></b></span><input type="range" id="dwRr" min="2" max="60" step="1" value="20"></label>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="dwRun">⏸ 정지</button>
+        <button class="btn" id="dwFsync">fsync() 호출</button>
+        <button class="btn" id="dwReset">초기화</button>
+      </div>
+      <div class="stage"><svg class="diagram" id="dwSvg" viewBox="0 0 640 250" style="min-width:480px"></svg></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">dirty</div><div class="v" id="dwSd">0</div></div>
+        <div class="stat"><div class="k">앱 실효 쓰기 속도</div><div class="v" id="dwSe">0</div></div>
+        <div class="stat"><div class="k">스로틀(잠든 비율)</div><div class="v" id="dwSt">0%</div></div>
+        <div class="stat"><div class="k">flusher</div><div class="v" id="dwSf" style="font-size:16px">대기</div></div>
+        <div class="stat"><div class="k">시뮬 시간</div><div class="v" id="dwSc">0 s</div></div>
+      </div>
+      <div class="log" id="dwLog"></div>
+    </div>
+
+    <div class="callout warn"><span class="title">현업: 대용량 메모리 서버의 "주기적 멈춤"</span>
+      RAM 256 GiB 서버에서 <code>dirty_ratio=20</code>이면 한도가 수십 GiB입니다. 디스크가 500 MB/s라면 한도까지 쌓인 dirty를 비우는 데 1분이 넘게 걸립니다. 그동안 그 디스크에 쓰려는 모든 프로세스가 스로틀링되고, 그 시점에 fsync를 부른 DB는 수십 초씩 멈춥니다. 이런 서버에서는 비율 대신 <code>vm.dirty_background_bytes</code>/<code>vm.dirty_bytes</code>를 디스크 대역폭 몇 초 분량(예: 수백 MB~수 GB)으로 지정해 dirty가 쌓이는 양 자체를 줄이는 튜닝이 흔합니다. <code>/proc/meminfo</code>의 <code>Dirty</code>와 <code>Writeback</code>을 같이 보면 현재 상태를 알 수 있습니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. fsync/msync, O_DIRECT, readahead</h2>
+    <h3>내구성: fsync 계열</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>호출</th><th>보장</th></tr>
+      <tr><td><code>fsync(fd)</code></td><td>해당 파일의 dirty 데이터와 메타데이터(크기, 블록 할당 등)를 저장장치까지 기록하고, 장치 쓰기 캐시 flush까지 요청한 뒤 반환</td></tr>
+      <tr><td><code>fdatasync(fd)</code></td><td>데이터와, 데이터를 다시 읽는 데 필요한 메타데이터(파일 크기 등)만. mtime 같은 부수 메타데이터는 생략 → 더 빠름</td></tr>
+      <tr><td><code>msync(addr, len, MS_SYNC)</code></td><td>MAP_SHARED 매핑 범위의 dirty 페이지를 기록하고 완료까지 대기. Linux에서 <code>MS_ASYNC</code>는 사실상 아무 일도 하지 않음(dirty는 이미 추적되어 결국 writeback됨)</td></tr>
+      <tr><td><code>sync_file_range()</code></td><td>범위 지정 writeback 시작/대기. 메타데이터와 장치 캐시 flush를 보장하지 <b>않으므로</b> 내구성 용도로는 부족. 대량 쓰기 중 dirty를 미리 흘려보내 스파이크를 줄이는 데 씀</td></tr>
+      <tr><td><code>sync()</code>/<code>syncfs()</code></td><td>시스템 전체 / 파일시스템 단위</td></tr>
+    </table></div>
+    <div class="callout danger"><span class="title">fsyncgate (2018): fsync 실패 후 다시 fsync하면 성공한다?</span>
+      writeback 중 I/O 오류가 나면 해당 페이지는 dirty 표시가 지워질 수 있고, 오류는 한 번만 보고됩니다. PostgreSQL은 fsync가 실패하면 재시도하던 구조였는데, 재시도한 fsync가 "성공"을 돌려줘도 데이터는 이미 유실된 상태일 수 있다는 사실이 2018년에 드러났습니다. 이후 커널은 <code>errseq_t</code>(4.13+)로 오류를 파일 디스크립터별로 더 신뢰성 있게 전달하게 됐고, PostgreSQL은 fsync 실패 시 PANIC 후 WAL 복구로 정책을 바꿨습니다. 교훈은 이렇습니다. <b>fsync 실패는 재시도할 오류가 아니라 "그 데이터는 잃었을 수 있다"는 신호다.</b>
+    </div>
+    <p>새 파일을 만들었다면 파일 fsync에 더해 <b>디렉토리 fsync</b>도 해야 디렉토리 엔트리가 영속화됩니다. "임시 파일에 쓰기 → fsync → rename → 디렉토리 fsync"는 원자적 교체의 표준 패턴입니다.</p>
+
+    <h3>O_DIRECT: 페이지 캐시 우회</h3>
+    <p><code>open(..., O_DIRECT)</code>는 페이지 캐시를 거치지 않고 사용자 버퍼와 장치 사이에서 바로 DMA합니다.</p>
+    <ul>
+      <li><b>쓰는 이유</b>: 자체 버퍼 풀을 가진 DB(예: InnoDB의 <code>innodb_flush_method=O_DIRECT</code>)는 캐시가 두 겹(DB 버퍼 풀 + 페이지 캐시)이 되는 낭비를 피하고, 캐싱 정책을 직접 통제합니다.</li>
+      <li><b>제약</b>: 버퍼 주소·파일 오프셋·길이를 장치 논리 블록 크기(보통 512 B 또는 4 KiB) 단위로 정렬해야 합니다. 맞지 않으면 <code>EINVAL</code>. 최근 커널은 <code>statx()</code>의 <code>STATX_DIOALIGN</code>으로 요구 정렬을 알려 줍니다.</li>
+      <li><b>O_DIRECT ≠ 내구성</b>: 페이지 캐시는 건너뛰지만 장치의 휘발성 쓰기 캐시나 파일시스템 메타데이터는 남아 있으므로, 내구성이 필요하면 여전히 fsync/fdatasync(또는 <code>O_DSYNC</code>)가 필요합니다.</li>
+      <li>같은 파일에 버퍼드 I/O와 O_DIRECT를 섞으면 캐시 일관성 비용과 미묘한 경쟁이 생깁니다.</li>
+    </ul>
+
+    <h3>readahead: 순차 읽기 예측</h3>
+    <p>커널은 파일별로 접근 패턴을 추적하다가 순차 읽기가 감지되면 요청보다 앞쪽 페이지를 미리 비동기로 읽습니다. 윈도우는 순차성이 이어질수록 커지며, 기본 최대치는 장치의 <code>/sys/block/&lt;dev&gt;/queue/read_ahead_kb</code>(흔히 128 KiB, <code>blockdev --getra</code>는 512 B 섹터 단위로 표시)로 정해집니다. 프로그램이 힌트를 줄 수도 있습니다.</p>
+    <ul>
+      <li><code>posix_fadvise(fd, off, len, POSIX_FADV_SEQUENTIAL / RANDOM / WILLNEED / DONTNEED)</code>: <code>DONTNEED</code>는 clean 캐시 페이지를 버리도록 요청합니다. 백업 도구가 캐시를 오염시키지 않으려고 씁니다.</li>
+      <li><code>madvise(addr, len, MADV_SEQUENTIAL / MADV_RANDOM / MADV_WILLNEED)</code>: mmap 영역용입니다.</li>
+      <li><code>readahead(2)</code>: 지정 범위를 페이지 캐시로 미리 읽습니다.</li>
+    </ul>
+    <div class="callout tip"><span class="title">랜덤 접근 워크로드의 함정</span>
+      랜덤 읽기 위주의 큰 mmap(예: 키-값 저장소 인덱스)에서 readahead가 켜져 있으면, 4 KiB를 원했는데 주변 수십 KiB를 같이 읽어 I/O 대역폭과 캐시를 낭비합니다. <code>MADV_RANDOM</code>으로 끄면 처리량이 크게 오르는 경우가 많습니다.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 공유 메모리와 tmpfs</h2>
+    <p>프로세스 간에 같은 물리 페이지를 공유하는 방법은 여러 가지지만, Linux에서는 대부분 같은 기반을 씁니다. <b>shmem</b>(tmpfs의 내부 구현)입니다. shmem 페이지는 "파일처럼 address_space에 들어 있지만 뒤에 디스크가 없는" 페이지라서 회수하려면 <b>swap으로 내보내야</b> 합니다(12장).</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>방식</th><th>이름/핸들</th><th>수명</th><th>특징·용도</th></tr>
+      <tr><td>POSIX <code>shm_open()</code> + <code>mmap(MAP_SHARED)</code></td><td><code>/dev/shm/이름</code> (tmpfs 파일)</td><td><code>shm_unlink()</code>나 재부팅 전까지 남음</td><td>관련 없는 프로세스 간 공유. <code>ftruncate</code>로 크기 지정</td></tr>
+      <tr><td>System V <code>shmget()</code>/<code>shmat()</code></td><td>정수 키/ID</td><td><code>IPC_RMID</code> 전까지 남음 (아무도 붙어 있지 않아도)</td><td>오래된 API. <code>ipcs -m</code>으로 확인, <code>kernel.shmmax</code>/<code>shmall</code>/<code>shmmni</code>로 제한. <code>SHM_HUGETLB</code> 지원</td></tr>
+      <tr><td><code>memfd_create()</code> (3.17+)</td><td>이름 없는 fd</td><td>마지막 참조(fd, 매핑)가 사라지면 해제</td><td>fd를 Unix 소켓(<code>SCM_RIGHTS</code>)으로 넘겨 공유. <b>봉인(sealing)</b>(<code>MFD_ALLOW_SEALING</code> + <code>F_ADD_SEALS</code>: 크기 변경·쓰기 금지)으로 받는 쪽이 내용 변조를 걱정하지 않게 함. Wayland 버퍼 공유 등</td></tr>
+      <tr><td><code>mmap(MAP_SHARED|MAP_ANONYMOUS)</code></td><td>없음</td><td>매핑이 모두 사라질 때까지</td><td>fork로 이어진 부모-자식 사이 공유. 프리포크 서버의 공유 영역 등</td></tr>
+    </table></div>
+    <h3>tmpfs</h3>
+    <p>tmpfs는 shmem 위의 메모리 파일시스템입니다. <code>/dev/shm</code>, <code>/run</code>, 많은 배포판의 <code>/tmp</code>가 tmpfs입니다. 기본 크기 한도는 RAM의 절반이고(<code>mount -o size=</code>로 변경), 한도는 상한일 뿐 실제로 쓴 만큼만 메모리를 씁니다. 파일을 지우기 전까지 그 메모리는 회수되지 않습니다(swap이 있으면 swap으로만 나감).</p>
+    <div class="callout warn"><span class="title">현업에서 자주 보는 증상</span>
+      <ul>
+        <li><b>"buff/cache가 큰데 메모리가 안 풀린다"</b>: tmpfs와 공유 메모리는 <code>/proc/meminfo</code>의 <code>Shmem</code>으로 집계되면서 <code>Cached</code>에도 포함됩니다. 겉보기엔 캐시지만 drop_caches로도 비워지지 않습니다(12장).</li>
+        <li><b>컨테이너의 "Bus error"</b>: Docker는 기본 <code>/dev/shm</code>을 64 MB로 잡습니다. 공유 메모리로 데이터를 주고받는 프로그램(예: PyTorch DataLoader의 멀티 워커)이 이 한도를 넘으면 매핑된 페이지를 채우지 못해 SIGBUS로 죽습니다. <code>--shm-size</code>나 쿠버네티스의 <code>emptyDir: {medium: Memory}</code>로 키웁니다. 이 메모리는 컨테이너 cgroup에 과금된다는 점도 기억해 두세요.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. 역매핑(rmap)</h2>
+    <p>페이지 테이블은 "가상 주소 → 물리 페이지" 방향만 알려 줍니다. 그런데 커널은 반대 방향 질문을 자주 해야 합니다. <b>"이 물리 페이지를 매핑하고 있는 PTE는 어디 어디인가?"</b></p>
+    <ul>
+      <li><b>회수</b>(12장): 페이지를 내보내려면 그 페이지를 가리키는 모든 PTE를 지워야 합니다(<code>try_to_unmap</code>). 최근 접근 여부도 모든 PTE의 Accessed 비트를 모아 봐야 압니다(<code>folio_referenced</code>).</li>
+      <li><b>페이지 이동</b>: NUMA 밸런싱, 메모리 compaction, 메모리 핫플러그는 페이지를 옮긴 뒤 모든 PTE를 새 위치로 고쳐야 합니다.</li>
+      <li><b>KSM</b>: 같은 내용의 페이지를 합칠 때도 매핑을 바꿔야 합니다(15장에서 다룸).</li>
+    </ul>
+    <p>모든 PTE마다 역방향 포인터를 두면 메모리가 너무 많이 듭니다(2.6 초기의 <i>pte_chain</i> 방식이 그랬습니다). 현재 Linux는 <b>객체 기반 rmap</b>을 씁니다. 페이지에는 "어느 객체에 속하는지"와 그 객체 안의 오프셋만 기록하고, 객체에서 매핑 후보 VMA들을 찾아 가상 주소를 계산한 뒤 페이지 테이블을 걸어 PTE에 도달합니다.</p>
+
+    <figure>
+      <div class="stage"><svg class="diagram" viewBox="0 0 660 300" style="min-width:520px" role="img" aria-label="익명 페이지와 파일 페이지의 역매핑 경로">
+        <defs>
+          <marker id="ar11r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker>
+          <marker id="ar11m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+        </defs>
+        <text x="20" y="26" font-weight="700">익명 페이지</text>
+        <rect x="20" y="40" width="130" height="50" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="85" y="62" text-anchor="middle">folio (anon)</text>
+        <text x="85" y="80" text-anchor="middle" class="muted" font-size="12">mapping → anon_vma</text>
+        <rect x="200" y="40" width="130" height="50" rx="8" class="box"/>
+        <text x="265" y="62" text-anchor="middle">anon_vma</text>
+        <text x="265" y="80" text-anchor="middle" class="muted" font-size="12">(fork 계보로 공유)</text>
+        <path d="M150 65 H198" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <rect x="390" y="20" width="120" height="34" rx="6" class="box"/><text x="450" y="42" text-anchor="middle">VMA (부모)</text>
+        <rect x="390" y="76" width="120" height="34" rx="6" class="box"/><text x="450" y="98" text-anchor="middle">VMA (자식)</text>
+        <path d="M330 60 C360 60 360 37 388 37" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <path d="M330 70 C360 70 360 93 388 93" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <text x="360" y="128" text-anchor="middle" class="muted" font-size="12">anon_vma_chain</text>
+        <rect x="560" y="20" width="84" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="602" y="42" text-anchor="middle">PTE</text>
+        <rect x="560" y="76" width="84" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="602" y="98" text-anchor="middle">PTE</text>
+        <path d="M510 37 H558" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <path d="M510 93 H558" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <text x="534" y="136" text-anchor="middle" class="muted" font-size="12">주소 계산 후 페이지 테이블 워크</text>
+
+        <text x="20" y="176" font-weight="700">파일 페이지</text>
+        <rect x="20" y="190" width="130" height="50" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="85" y="212" text-anchor="middle">folio (file)</text>
+        <text x="85" y="230" text-anchor="middle" class="muted" font-size="12">mapping, index</text>
+        <rect x="200" y="190" width="130" height="50" rx="8" class="box"/>
+        <text x="265" y="212" text-anchor="middle">address_space</text>
+        <text x="265" y="230" text-anchor="middle" class="muted" font-size="12">i_mmap 구간 트리</text>
+        <path d="M150 215 H198" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <rect x="390" y="172" width="120" height="34" rx="6" class="box"/><text x="450" y="194" text-anchor="middle">VMA (프로세스 A)</text>
+        <rect x="390" y="226" width="120" height="34" rx="6" class="box"/><text x="450" y="248" text-anchor="middle">VMA (프로세스 B)</text>
+        <path d="M330 210 C360 210 360 189 388 189" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <path d="M330 220 C360 220 360 243 388 243" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <text x="360" y="284" text-anchor="middle" class="muted" font-size="12">index가 VMA 범위에 들어가는 것만 선택</text>
+        <rect x="560" y="172" width="84" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="602" y="194" text-anchor="middle">PTE</text>
+        <rect x="560" y="226" width="84" height="34" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="602" y="248" text-anchor="middle">PTE</text>
+        <path d="M510 189 H558" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+        <path d="M510 243 H558" style="stroke:var(--accent);stroke-width:1.6;fill:none" marker-end="url(#ar11r)"/>
+      </svg></div>
+      <figcaption>그림 11-2. 객체 기반 역매핑. 페이지 → 객체(anon_vma 또는 address_space) → 후보 VMA → 가상 주소 계산 → PTE.</figcaption>
+    </figure>
+    <p>여기서 트레이드오프가 보입니다. 역매핑 탐색은 "후보 VMA를 모두 훑는" 작업이라, 같은 파일을 수천 프로세스가 매핑하거나(예: 공유 라이브러리) fork 계보가 깊어 anon_vma 체인이 길어지면 회수 한 번에 드는 비용이 커집니다. 예전에 fork를 반복하는 서버에서 anon_vma 체인이 비정상적으로 길어져 회수가 느려지는 문제가 보고되었고, 커널은 anon_vma 재사용 같은 최적화로 이를 완화해 왔습니다. 페이지당 메모리 오버헤드를 줄인 대가로 탐색 비용을 받아들인 설계입니다.</p>
+    <div class="callout"><span class="title">다음 장과의 연결</span>
+      이 장에서 본 페이지 캐시·익명 페이지·shmem·dirty 상태는 12장의 회수에서 "무엇을 얼마나 싸게 내보낼 수 있나"를 결정합니다. 같은 내용의 익명 페이지를 합쳐 메모리를 아끼는 KSM(Kernel Samepage Merging)은 COW를 역으로 쓰는 기법으로, 가상화 맥락에서 15장에서 다룹니다.
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>fork는 데이터가 아니라 PTE를 복사하고 양쪽을 읽기 전용으로 만든다. VMA는 쓰기 가능한데 PTE만 읽기 전용이라는 불일치가 COW 폴트의 표식이다.</li>
+    <li>COW 폴트에서 공유자가 남아 있으면 새 프레임에 복사하고, 마지막 사용자면 복사 없이 쓰기 권한만 되돌린다(재사용).</li>
+    <li>COW가 있어도 fork는 페이지 테이블 복사 비용과 overcommit 계산을 안고 간다. 대형 프로세스의 자식 생성은 posix_spawn(CLONE_VM | CLONE_VFORK 경로)이 유리하다.</li>
+    <li>mmap: file+private = 읽기는 캐시 공유, 쓰기는 COW 사본 / file+shared = 페이지 캐시에 직접 쓰고 writeback / anon+private = 0으로 채운 사유 메모리 / anon+shared = shmem 기반 공유.</li>
+    <li>페이지 캐시는 inode별 address_space의 XArray(i_pages)로 관리되고, read()는 거기서 복사해 가며 mmap은 그 페이지를 직접 매핑한다.</li>
+    <li>dirty 데이터는 dirty_background_ratio(기본 10)에서 백그라운드 writeback, dirty_ratio(기본 20) 근처에서 쓰는 프로세스를 스로틀링한다. 30초가 지난 dirty는 임계와 무관하게 기록 대상이다.</li>
+    <li>내구성은 fsync/fdatasync(파일) + 디렉토리 fsync로만 보장된다. fsync 실패는 재시도로 해결되지 않는다. O_DIRECT는 캐시를 우회할 뿐 내구성을 보장하지 않는다.</li>
+    <li>tmpfs·POSIX/SysV shm·memfd·공유 익명 매핑은 모두 shmem 기반이며 swap 없이는 회수되지 않는다(Shmem은 Cached에 포함됨).</li>
+    <li>rmap은 "페이지 → 매핑한 PTE들"을 찾는 역방향 경로로, 회수·이동·KSM에 필수다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">fork 직후 부모가 페이지 P에 쓰기를 해서 COW 복사가 일어났다. 이어서 자식이 같은 페이지 P에 쓰면 어떻게 되나?</div>
+    <button class="opt">자식도 새 프레임을 할당해 복사한다. 결과적으로 프레임 3개가 된다.</button>
+    <button class="opt">자식 PTE는 원래부터 쓰기 가능이었으므로 폴트 없이 쓴다.</button>
+    <button class="opt">폴트는 나지만, 원래 프레임을 이제 자식 혼자 쓰므로 복사 없이 쓰기 권한만 되돌린다.</button>
+    <button class="opt">SIGSEGV가 발생한다.</button>
+    <div class="explain">자식 PTE는 fork 때 읽기 전용이 되었으므로 쓰기 폴트는 납니다. 하지만 부모가 사본으로 떠난 뒤 원래 프레임의 사용자는 자식 하나뿐이라 <code>do_wp_page()</code>는 복사 없이 재사용합니다. 복사는 "공유자가 남아 있을 때만" 일어납니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">커널이 쓰기 보호 폴트를 COW로 처리할지, SIGSEGV를 보낼지 결정하는 근거는?</div>
+    <button class="opt">PTE의 Dirty 비트</button>
+    <button class="opt">VMA에는 쓰기 권한(VM_WRITE)이 있는데 PTE만 읽기 전용인지 여부</button>
+    <button class="opt">페이지가 파일 기반인지 여부</button>
+    <button class="opt">폴트를 낸 프로세스가 부모인지 자식인지</button>
+    <div class="explain">VMA는 "원래 허용된 권한", PTE는 "현재 하드웨어에 걸린 권한"입니다. VMA가 쓰기를 허용하는 private 매핑인데 PTE만 막혀 있다면 COW로 의도된 상태이고, VMA부터 쓰기를 허용하지 않으면 진짜 위반입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">다음 중 <code>MAP_SHARED|MAP_ANONYMOUS</code> 매핑에 대한 설명으로 옳은 것은?</div>
+    <button class="opt">fork하면 자식에게 COW로 복사되어 서로의 쓰기가 보이지 않는다.</button>
+    <button class="opt">디스크의 익명 파일에 writeback된다.</button>
+    <button class="opt">/proc/meminfo의 AnonPages로 집계되고 drop_caches로 비울 수 있다.</button>
+    <button class="opt">내부적으로 shmem으로 구현되어 fork된 부모·자식이 쓰기를 서로 보며, 회수하려면 swap이 필요하다.</button>
+    <div class="explain">공유 익명 매핑은 커널 내부의 shmem 객체가 뒷받침합니다. fork 후에도 같은 페이지를 공유하므로 쓰기가 서로 보입니다. 백킹 파일이 디스크에 없어서 회수하려면 swap으로 내보내야 하고, 집계는 Shmem(Cached에 포함)으로 잡힙니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">dirty_background_ratio=10, dirty_ratio=20인 시스템에서 앱이 디스크 대역폭보다 훨씬 빠르게 버퍼드 write를 계속한다. 가장 정확한 설명은?</div>
+    <button class="opt">10%를 넘으면 flusher가 writeback을 시작하고, 더 쌓이면 write()를 호출한 프로세스가 balance_dirty_pages()에서 잠들어 쓰기 속도가 디스크 대역폭 수준으로 제한된다.</button>
+    <button class="opt">10%에서 write()가 EAGAIN을 반환한다.</button>
+    <button class="opt">20%를 넘으면 OOM killer가 쓰는 프로세스를 죽인다.</button>
+    <button class="opt">비율은 전체 RAM 기준이며 dirty가 20%가 될 때까지 아무 일도 일어나지 않는다.</button>
+    <div class="explain">백그라운드 임계는 flusher를 깨우기만 하고 앱을 막지 않습니다. dirty가 더 늘면(대략 두 임계의 중간 이후) 쓰는 프로세스가 짧게 잠드는 방식으로 스로틀링됩니다. 비율의 기준은 전체 RAM이 아니라 dirty가 될 수 있는 메모리입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">O_DIRECT에 대한 설명으로 틀린 것은?</div>
+    <button class="opt">페이지 캐시를 거치지 않고 사용자 버퍼와 장치 사이에서 데이터를 옮긴다.</button>
+    <button class="opt">버퍼 주소·오프셋·길이가 장치 논리 블록 크기에 맞게 정렬되어야 한다.</button>
+    <button class="opt">O_DIRECT로 쓴 write()가 반환되면 전원이 꺼져도 데이터가 보존되므로 fsync가 필요 없다.</button>
+    <button class="opt">자체 버퍼 풀을 가진 DB가 이중 캐싱을 피하려고 쓴다.</button>
+    <div class="explain">O_DIRECT는 페이지 캐시만 우회합니다. 장치 내부의 휘발성 쓰기 캐시, 파일시스템 메타데이터(블록 할당, 파일 크기)는 여전히 영속화가 필요하므로 fsync/fdatasync나 O_DSYNC를 함께 써야 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">메모리 120 GiB를 쓰는 Redis가 BGSAVE를 할 때마다 수백 ms 동안 응답이 멈춘다. 가장 직접적인 원인은?</div>
+    <button class="opt">자식이 120 GiB 데이터를 fork 순간 모두 복사하기 때문</button>
+    <button class="opt">fork가 부모의 페이지 테이블 전체를 복사하고 PTE를 쓰기 금지로 바꾸는 동안 부모가 멈추기 때문</button>
+    <button class="opt">자식이 exec를 호출해 부모 주소 공간을 해제하기 때문</button>
+    <button class="opt">페이지 캐시가 dirty_ratio에 도달했기 때문</button>
+    <div class="explain">COW 덕분에 데이터 복사는 fork 시점에 일어나지 않지만, 페이지 테이블(4 KiB 페이지 기준 수천만 개 PTE)의 복사·쓰기 보호는 fork 안에서 동기적으로 일어납니다. 그 뒤로는 부모의 쓰기마다 COW 폴트가 추가 비용으로 따라옵니다.</div>
+  </div>
+</main>
+
+<script>
+// ==LOGIC== (node 검증용으로 분리된 순수 로직)
+function cowNew() {
+  const s = { next: 20, frames: {}, parent: [], child: null, faults: 0, copies: 0, reuses: 0 };
+  for (let i = 0; i < 4; i++) {
+    const f = 10 + i;
+    s.frames[f] = { ref: 1, ch: String.fromCharCode(65 + i), ver: 0 };
+    s.parent.push({ f, w: true });
+  }
+  return s;
+}
+function cowClone(s) { return JSON.parse(JSON.stringify(s)); }
+function cowFork(s) {
+  if (s.child) return { ok: false, msg: "이미 자식이 있습니다. 자식 exit() 또는 초기화 후 다시 fork하세요." };
+  s.child = s.parent.map(p => ({ f: p.f, w: false }));
+  s.parent.forEach(p => { p.w = false; s.frames[p.f].ref++; });
+  return { ok: true, msg: "fork(): PTE 4개를 자식에 복사하고 부모·자식 PTE를 모두 읽기 전용(RO)으로 변경. 각 프레임 ref +1. 데이터 복사 0바이트." };
+}
+function cowWrite(s, who, i) {
+  const pt = s[who];
+  const name = who === "parent" ? "부모" : "자식";
+  if (!pt) return { kind: "none", msg: "자식 프로세스가 없습니다. 먼저 fork()하세요." };
+  const e = pt[i];
+  const fr = s.frames[e.f];
+  if (e.w) {
+    fr.ver++;
+    return { kind: "direct", msg: `${name}: VPN ${i} PTE가 RW → 폴트 없이 F${e.f}에 바로 씀 (내용 ${fr.ch}${fr.ver}).` };
+  }
+  s.faults++;
+  if (fr.ref === 1) {
+    e.w = true; s.reuses++; fr.ver++;
+    return { kind: "reuse", f: e.f, msg: `${name}: VPN ${i} 쓰기 → 보호 폴트. F${e.f}의 ref=1(나 혼자 사용) → 복사 없이 PTE를 RW로 되돌림 (재사용).` };
+  }
+  const nf = s.next++;
+  s.frames[nf] = { ref: 1, ch: fr.ch, ver: fr.ver + 1 };
+  fr.ref--;
+  const old = e.f;
+  e.f = nf; e.w = true; s.copies++;
+  return { kind: "copy", from: old, to: nf, msg: `${name}: VPN ${i} 쓰기 → 보호 폴트. F${old}의 ref=${fr.ref + 1} → 새 프레임 F${nf} 할당, 4 KiB 복사, PTE를 F${nf}(RW)로 교체. F${old} ref=${fr.ref}.` };
+}
+function cowRead(s, who, i) {
+  const pt = s[who];
+  if (!pt) return { msg: "해당 프로세스가 없습니다." };
+  const e = pt[i], fr = s.frames[e.f];
+  return { msg: `${who === "parent" ? "부모" : "자식"}: VPN ${i} 읽기 → PTE가 ${e.w ? "RW" : "RO"}여도 읽기는 허용, 폴트 없음. 값 ${fr.ch}${fr.ver} (F${e.f}).` };
+}
+function cowExit(s) {
+  if (!s.child) return { msg: "자식이 없습니다." };
+  const freed = [];
+  s.child.forEach(c => { const fr = s.frames[c.f]; fr.ref--; if (fr.ref === 0) { delete s.frames[c.f]; freed.push("F" + c.f); } });
+  s.child = null;
+  return { msg: `자식 exit(): 자식의 매핑 해제, ref -1.${freed.length ? " 해제된 프레임: " + freed.join(", ") + "." : ""} 부모 PTE는 여전히 RO일 수 있지만 ref=1이므로 다음 쓰기는 재사용으로 끝남.` };
+}
+
+// dirty writeback 모델 (단위: MiB, 초)
+function dirtyLimits(p) {
+  const mem = p.memGiB * 1024;
+  let bg = mem * p.bgRatio / 100;
+  const lim = mem * p.ratio / 100;
+  if (bg >= lim) bg = lim / 2;          // 커널과 동일: bg >= 한도면 한도의 절반
+  const freerun = (bg + lim) / 2;
+  const setpoint = (freerun + lim) / 2;
+  return { bg, lim, freerun, setpoint };
+}
+function writerRate(dirty, W, B, L) {
+  if (dirty >= L.lim) return 0;                     // 한도: 강하게 차단
+  if (dirty <= L.freerun || W <= B) return W;       // freerun 구간 또는 디스크가 더 빠름
+  const k = 2 * (W / B - 1);                        // freerun에서 W, setpoint에서 B가 되도록
+  const r = B * (1 + k * (L.setpoint - dirty) / (L.lim - L.freerun));
+  return Math.max(0, Math.min(W, r));
+}
+function dirtyNew() { return { t: 0, dirty: 0, q: [], bgActive: false, expActive: false, fsyncLeft: 0, fsyncStart: 0, eff: 0, wb: 0, events: [] }; }
+function dirtyStep(st, p, dt) {
+  const L = dirtyLimits(p), W = p.write, B = p.disk;
+  const prevT = st.t; st.t += dt;
+  st.events = [];
+  // 주기적 flusher 깨움 (dirty_writeback_centisecs = 5초): 30초 넘은 dirty가 있으면 기록
+  if (Math.floor(st.t / 5) !== Math.floor(prevT / 5) && st.q.length && st.t - st.q[0].t >= 30 && !st.expActive) {
+    st.expActive = true; st.events.push("expire");
+  }
+  if (!st.bgActive && st.dirty > L.bg) { st.bgActive = true; st.events.push("bg-start"); }
+  // 앱 쓰기
+  const eff = writerRate(st.dirty, W, B, L);
+  const add = eff * dt;
+  if (add > 0) {
+    const last = st.q[st.q.length - 1];
+    if (last && st.t - last.t < 1) last.a += add; else st.q.push({ t: st.t, a: add });
+    st.dirty += add;
+  }
+  // writeback (오래된 것부터)
+  let wb = 0;
+  if (st.bgActive || st.expActive || st.fsyncLeft > 0) {
+    wb = Math.min(B * dt, st.dirty);
+    let left = wb;
+    while (left > 1e-9 && st.q.length) {
+      const c = st.q[0];
+      if (c.a <= left) { left -= c.a; st.q.shift(); } else { c.a -= left; left = 0; }
+    }
+    st.dirty -= wb;
+    if (st.dirty < 1e-9) { st.dirty = 0; st.q = []; }
+    if (st.fsyncLeft > 0) {
+      st.fsyncLeft -= wb;
+      if (st.fsyncLeft <= 1e-9) { st.fsyncLeft = 0; st.events.push("fsync-done:" + (st.t - st.fsyncStart).toFixed(1)); }
+    }
+  }
+  if (st.bgActive && st.dirty <= L.bg) { st.bgActive = false; st.events.push("bg-stop"); }
+  if (st.expActive && (!st.q.length || st.t - st.q[0].t < 30)) st.expActive = false;
+  st.eff = eff; st.wb = wb / dt;
+  return st;
+}
+function dirtyFsync(st) {
+  if (st.dirty <= 0) return false;
+  st.fsyncLeft = st.dirty; st.fsyncStart = st.t; return true;
+}
+// ==END LOGIC==
+
+(function () {
+  if (typeof document === "undefined") return;
+  const $ = id => document.getElementById(id);
+
+  // ---------- COW SVG 렌더러 ----------
+  function cowSVG(s, hl) {
+    hl = hl || {};
+    const fids = Object.keys(s.frames).map(Number).sort((a, b) => a - b);
+    const rowH = 62, top = 52, fTop = 44, fH = 36;
+    const H = Math.max(top + 4 * rowH, fTop + Math.max(4, fids.length) * fH) + 16;
+    const fy = {};
+    fids.forEach((f, j) => fy[f] = fTop + j * fH);
+    let o = `<svg class="diagram" viewBox="0 0 640 ${H}" style="min-width:520px">`;
+    o += `<text x="95" y="26" text-anchor="middle" font-weight="700">부모 페이지 테이블</text>`;
+    o += `<text x="320" y="26" text-anchor="middle" font-weight="700">물리 프레임</text>`;
+    o += `<text x="545" y="26" text-anchor="middle" font-weight="700">${s.child ? "자식 페이지 테이블" : "자식 (없음)"}</text>`;
+    // 선
+    const line = (x1, y1, x2, y2, color, dash) =>
+      `<path d="M${x1} ${y1} C${(x1 + x2) / 2} ${y1} ${(x1 + x2) / 2} ${y2} ${x2} ${y2}" style="stroke:var(${color});stroke-width:2;fill:none${dash ? ";stroke-dasharray:5 4" : ""}"/>`;
+    s.parent.forEach((e, i) => { if (fy[e.f] != null) o += line(170, top + i * rowH + 18, 250, fy[e.f] + 15, "--accent"); });
+    if (s.child) s.child.forEach((e, i) => { if (fy[e.f] != null) o += line(470, top + i * rowH + 18, 390, fy[e.f] + 15, "--violet"); });
+    // 프레임
+    fids.forEach(f => {
+      const fr = s.frames[f], y = fy[f];
+      let st = "fill:var(--surface-2);stroke:var(--border)";
+      if (hl.newFrame === f) st = "fill:var(--ok-soft);stroke:var(--ok);stroke-width:2.5";
+      else if (hl.frame === f) st = "fill:var(--accent-soft);stroke:var(--accent);stroke-width:2.5";
+      else if (fr.ref > 1) st = "fill:var(--warn-soft);stroke:var(--warn)";
+      o += `<rect x="250" y="${y}" width="140" height="30" rx="6" style="${st}"/>`;
+      o += `<text x="260" y="${y + 20}" font-family="var(--mono)" font-size="12.5">F${f} '${fr.ch}${fr.ver}'</text>`;
+      o += `<text x="382" y="${y + 20}" text-anchor="end" font-size="12" style="fill:var(${fr.ref > 1 ? "--warn" : "--muted"});font-weight:700">ref ${fr.ref}</text>`;
+    });
+    // PTE 행
+    const row = (pt, x, who) => {
+      pt.forEach((e, i) => {
+        const y = top + i * rowH;
+        const isHl = hl.who === who && hl.row === i;
+        const st = isHl ? (hl.fault ? "fill:var(--bad-soft);stroke:var(--bad);stroke-width:2.5" : "fill:var(--accent-soft);stroke:var(--accent);stroke-width:2.5")
+                        : "fill:var(--surface);stroke:var(--border)";
+        o += `<rect x="${x}" y="${y}" width="150" height="36" rx="6" style="${st}"/>`;
+        o += `<text x="${x + 10}" y="${y + 23}" font-size="13">VPN ${i} → F${e.f}</text>`;
+        o += `<text x="${x + 140}" y="${y + 23}" text-anchor="end" font-size="12.5" style="font-weight:700;fill:var(${e.w ? "--ok" : "--warn"})">${e.w ? "RW" : "RO"}</text>`;
+        if (isHl && hl.fault) o += `<text x="${x + 75}" y="${y + 52}" text-anchor="middle" font-size="12" style="fill:var(--bad);font-weight:700">⚡ 쓰기 보호 폴트</text>`;
+      });
+    };
+    row(s.parent, 20, "parent");
+    if (s.child) row(s.child, 470, "child");
+    o += `</svg>`;
+    return o;
+  }
+
+  // ---------- COW 스텝 애니메이션 ----------
+  (function () {
+    const s0 = cowNew();
+    const s1 = cowClone(s0); cowFork(s1);
+    const s2 = cowClone(s1);
+    const s4 = cowClone(s1); const r4 = cowWrite(s4, "parent", 1);
+    const s3 = cowClone(s1); s3.frames[r4.to] = { ref: 0, ch: "B", ver: 0 };
+    const s5 = cowClone(s4); cowWrite(s5, "child", 1);
+    const steps = [
+      [s0, {}, "<b>fork 전.</b> 부모의 VPN 0~3이 프레임 F10~F13을 RW로 매핑. 각 프레임 ref=1."],
+      [s1, {}, "<b>fork().</b> 커널은 부모 PTE를 자식 페이지 테이블로 복사하고, <b>양쪽 PTE를 모두 RO로</b> 바꾼다. VMA에는 여전히 VM_WRITE가 남아 있다. 프레임 ref=2. 데이터는 한 바이트도 복사하지 않았다."],
+      [s2, { who: "parent", row: 1, fault: true }, "<b>부모가 VPN 1에 쓰기 시도.</b> PTE가 RO라 MMU가 페이지 폴트(쓰기, present)를 낸다. 커널은 VMA가 쓰기 가능한 private 매핑임을 확인하고 COW 폴트로 판단, <code>do_wp_page()</code>로 간다."],
+      [s3, { who: "parent", row: 1, fault: true, newFrame: r4.to }, `<b>복사.</b> F11의 ref가 2(공유 중)이므로 재사용할 수 없다. 새 프레임 F${r4.to}를 할당하고 F11의 4 KiB를 복사한다(<code>wp_page_copy()</code>).`],
+      [s4, { who: "parent", row: 1, newFrame: r4.to }, `<b>매핑 분리.</b> 부모 PTE를 F${r4.to}(RW)로 교체하고 TLB에서 옛 항목을 무효화한다. F11은 ref=1, 이제 자식만 쓴다. 폴트에서 돌아와 쓰기 명령을 다시 실행한다.`],
+      [s5, { who: "child", row: 1, frame: 11 }, "<b>자식이 VPN 1에 쓰기.</b> 자식 PTE도 RO라 폴트가 나지만, F11의 ref가 1이므로 <b>복사 없이</b> PTE를 RW로 되돌린다(재사용)."],
+      [s5, {}, "<b>결과.</b> 실제로 쓴 페이지 하나만 복사됐다(프레임 5개). 나머지 3페이지는 계속 공유하며 RO 상태로 남는다. 자식이 곧 exec하면 그 공유도 사라진다."],
+    ];
+    const host = $("cowStepSvg");
+    MM.stepper($("cowStepW"), { steps: steps.length, interval: 2200, render(i) { host.innerHTML = cowSVG(steps[i][0], steps[i][1]); return steps[i][2]; } });
+  })();
+
+  // ---------- COW 직접 해보기 ----------
+  (function () {
+    let s = cowNew();
+    const svg = $("cowSvg"), log = $("cowLog");
+    const pageSel = $("cowPage");
+    function addLog(m, cls) { log.innerHTML = `<div class="${cls || ""}">${m}</div>` + log.innerHTML; }
+    function draw(hl) {
+      svg.innerHTML = cowSVG(s, hl);
+      $("cowSF").textContent = s.faults; $("cowSC").textContent = s.copies; $("cowSR").textContent = s.reuses;
+      $("cowSU").textContent = Object.keys(s.frames).length;
+      $("cowCW").disabled = !s.child; $("cowExit").disabled = !s.child; $("cowFork").disabled = !!s.child;
+    }
+    function write(who) {
+      const i = +pageSel.value;
+      const r = cowWrite(s, who, i);
+      const cls = r.kind === "copy" ? "c-bad" : r.kind === "reuse" ? "c-ok" : "";
+      addLog(r.msg, cls);
+      draw({ who, row: i, fault: r.kind === "copy" || r.kind === "reuse", newFrame: r.kind === "copy" ? r.to : undefined, frame: r.kind === "reuse" ? r.f : undefined });
+    }
+    $("cowFork").onclick = () => { const r = cowFork(s); addLog(r.msg, "c-accent"); draw(); };
+    $("cowPW").onclick = () => write("parent");
+    $("cowCW").onclick = () => write("child");
+    $("cowPR").onclick = () => { addLog(cowRead(s, "parent", +pageSel.value).msg); draw({ who: "parent", row: +pageSel.value }); };
+    $("cowExit").onclick = () => { addLog(cowExit(s).msg, "c-violet"); draw(); };
+    $("cowReset").onclick = () => { s = cowNew(); log.innerHTML = ""; addLog("초기화: 부모만 존재, 프레임 F10~F13 (RW)."); draw(); };
+    addLog("부모만 존재. fork()를 눌러 시작하세요.");
+    draw();
+  })();
+
+  // ---------- mmap 매트릭스 ----------
+  (function () {
+    const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const D = {
+      fp: { t: "파일 + MAP_PRIVATE", sub: "읽기는 공유, 쓰기는 COW",
+        how: "읽기 폴트 시 페이지 캐시 페이지를 <b>읽기 전용으로</b> 매핑한다(다른 프로세스·read()와 같은 물리 페이지).",
+        write: "첫 쓰기 때 COW 폴트 → 프로세스 전용 익명 페이지로 복사. 변경은 파일에 절대 기록되지 않고, 다른 프로세스에도 보이지 않는다.",
+        fork: "자식에 그대로 상속. 이미 COW된 익명 페이지는 fork COW 규칙을 다시 따른다.",
+        code: "int fd = open(\"app.conf\", O_RDONLY);\nchar *p = mmap(NULL, len, PROT_READ|PROT_WRITE,\n               MAP_PRIVATE, fd, 0);\np[0] = '#';   // 내 사본만 바뀜, 파일은 그대로",
+        use: "실행 파일·공유 라이브러리의 코드(.text, 읽기 전용이라 끝까지 공유)와 초기화된 데이터(.data, 쓰면 COW). 파일을 읽어서 제자리 파싱하며 수정하는 경우.",
+        mem: "쓰지 않은 페이지: <code>Cached</code>/<code>Mapped</code> (파일 LRU). COW된 페이지: <code>AnonPages</code> (익명 LRU, 회수하려면 swap)." },
+      fs: { t: "파일 + MAP_SHARED", sub: "페이지 캐시에 직접 쓰기",
+        how: "PTE가 페이지 캐시 페이지를 직접 가리킨다. 같은 파일을 매핑한 모든 프로세스와 read()/write()가 같은 페이지를 본다.",
+        write: "페이지 캐시 페이지를 직접 수정 → dirty 표시 → 나중에 writeback으로 파일에 기록. 내구성이 필요하면 <code>msync(MS_SYNC)</code>나 <code>fsync</code>.",
+        fork: "자식과 계속 공유 (COW 없음).",
+        code: "int fd = open(\"data.db\", O_RDWR);\nuint64_t *p = mmap(NULL, len, PROT_READ|PROT_WRITE,\n                   MAP_SHARED, fd, 0);\np[42]++;                 // 파일 내용이 바뀜\nmsync(p, len, MS_SYNC);  // 디스크까지 보장",
+        use: "LMDB 같은 mmap 기반 저장소, 파일을 통한 프로세스 간 통신, 대용량 파일 랜덤 업데이트.",
+        mem: "<code>Cached</code>, <code>Mapped</code>, 쓰기 후 <code>Dirty</code>/<code>Writeback</code>. 파일 LRU에 있으며 clean이면 쉽게 회수된다." },
+      ap: { t: "익명 + MAP_PRIVATE", sub: "0으로 채운 사유 메모리",
+        how: "백킹 파일 없음. 첫 <b>읽기</b>는 시스템 공용 zero page를 RO로 매핑할 수 있고, 첫 <b>쓰기</b>에서 0으로 채운 새 프레임을 할당한다.",
+        write: "프로세스 전용. 회수하려면 swap으로 내보내야 한다(swap이 없으면 회수 불가).",
+        fork: "COW로 자식에 복제 (1절의 위젯이 바로 이 경우).",
+        code: "void *p = mmap(NULL, 1 << 20, PROT_READ|PROT_WRITE,\n               MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);\n// glibc malloc도 큰 요청(기본 128 KiB 이상)은\n// 이렇게 mmap으로 받는다 (10장)",
+        use: "힙(큰 malloc), 스레드 스택, JIT 코드 버퍼, 대부분의 \"프로세스 메모리\".",
+        mem: "<code>AnonPages</code>. 익명 LRU(active/inactive anon). 프로세스 RSS의 RssAnon." },
+      as: { t: "익명 + MAP_SHARED", sub: "shmem 기반 공유",
+        how: "커널이 내부적으로 이름 없는 shmem(tmpfs) 파일을 만들어 매핑한다. <code>/proc/PID/maps</code>에 <code>/dev/zero (deleted)</code>로 보이기도 한다.",
+        write: "모든 공유자에게 즉시 보인다. 디스크 백킹이 없으므로 회수하려면 swap으로 내보내야 한다.",
+        fork: "자식과 계속 공유 (COW 없음). fork 전에 만들어 두면 부모·자식 간 공유 메모리가 된다.",
+        code: "long *counter = mmap(NULL, 4096, PROT_READ|PROT_WRITE,\n                     MAP_SHARED|MAP_ANONYMOUS, -1, 0);\nif (fork() == 0) { __atomic_add_fetch(counter, 1, __ATOMIC_SEQ_CST); _exit(0); }\nwait(NULL);  // 부모도 *counter == 1을 본다",
+        use: "프리포크 서버의 워커 간 공유 영역(예: nginx 공유 메모리 존), PostgreSQL 9.3+의 공유 버퍼 주 영역.",
+        mem: "<code>Shmem</code> (<code>Cached</code>에도 포함!). 익명 LRU에 있으며 drop_caches로 비워지지 않는다." },
+    };
+    const grid = $("mxGrid"), det = $("mxDetail");
+    grid.innerHTML = `<div></div><div class="hd">MAP_PRIVATE<br>(쓰기 = 내 사본)</div><div class="hd">MAP_SHARED<br>(쓰기 = 모두에게 보임)</div>
+      <div class="hd">파일<br>(fd)</div>
+      <button class="mx-cell" data-k="fp"><b>${D.fp.t}</b><small>${D.fp.sub}</small></button>
+      <button class="mx-cell" data-k="fs"><b>${D.fs.t}</b><small>${D.fs.sub}</small></button>
+      <div class="hd">익명<br>(MAP_ANONYMOUS)</div>
+      <button class="mx-cell" data-k="ap"><b>${D.ap.t}</b><small>${D.ap.sub}</small></button>
+      <button class="mx-cell" data-k="as"><b>${D.as.t}</b><small>${D.as.sub}</small></button>`;
+    function show(k) {
+      const d = D[k];
+      grid.querySelectorAll(".mx-cell").forEach(c => c.classList.toggle("sel", c.dataset.k === k));
+      det.innerHTML = `<h4>${d.t}</h4><dl>
+        <dt>동작</dt><dd>${d.how}</dd><dt>쓰기 시</dt><dd>${d.write}</dd><dt>fork 후</dt><dd>${d.fork}</dd>
+        <dt>용도</dt><dd>${d.use}</dd><dt>집계</dt><dd>${d.mem}</dd></dl><pre><code>${esc(d.code)}</code></pre>`;
+    }
+    grid.addEventListener("click", e => { const c = e.target.closest(".mx-cell"); if (c) show(c.dataset.k); });
+    show("fp");
+  })();
+
+  // ---------- read vs mmap 데이터 경로 ----------
+  (function () {
+    const svgSrc = `<svg class="diagram rvm" viewBox="0 0 640 330" style="min-width:500px">
+      <defs><marker id="ar11p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker>
+      <marker id="ar11b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--bad)"/></marker>
+      <marker id="ar11o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--ok)"/></marker></defs>
+      <rect x="10" y="10" width="620" height="112" rx="10" style="fill:var(--surface-2);stroke:var(--border)"/>
+      <text x="22" y="30" class="muted" font-size="12">사용자 공간 (프로세스)</text>
+      <line x1="10" y1="140" x2="630" y2="140" style="stroke:var(--muted);stroke-dasharray:6 4"/>
+      <text x="22" y="160" class="muted" font-size="12">커널</text>
+      <g id="rv-buf"><rect x="40" y="44" width="200" height="60" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+        <text x="140" y="68" text-anchor="middle">사용자 버퍼 buf[]</text>
+        <rect id="rv-bufdata" x="100" y="78" width="80" height="18" rx="3" style="fill:var(--warn-soft);stroke:var(--warn)"/></g>
+      <g id="rv-vma"><rect x="400" y="44" width="200" height="60" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+        <text x="500" y="68" text-anchor="middle">mmap 영역 (VMA)</text>
+        <text x="500" y="90" text-anchor="middle" class="muted" font-size="12">p = mmap(..., fd, 0)</text></g>
+      <rect x="220" y="170" width="200" height="66" rx="8" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+      <text x="320" y="192" text-anchor="middle" font-weight="700">페이지 캐시</text>
+      <rect id="rv-cpage" x="280" y="204" width="80" height="20" rx="3" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+      <text x="320" y="219" text-anchor="middle" font-size="12" id="rv-cpt">파일 페이지</text>
+      <rect x="230" y="276" width="180" height="44" rx="8" class="box"/>
+      <text x="320" y="303" text-anchor="middle">디스크 (파일 블록)</text>
+      <g class="step" id="rv-sys"><path d="M140 104 L140 160" style="stroke:var(--accent);stroke-width:2;fill:none" marker-end="url(#ar11p)"/>
+        <text x="148" y="134" font-size="12" style="fill:var(--accent)">read() 시스템 콜</text></g>
+      <g class="step" id="rv-fault"><path d="M500 104 L500 160" style="stroke:var(--bad);stroke-width:2;fill:none" marker-end="url(#ar11b)"/>
+        <text x="508" y="134" font-size="12" style="fill:var(--bad)">첫 접근 → 페이지 폴트</text></g>
+      <g class="step" id="rv-dma"><path d="M320 276 L320 238" style="stroke:var(--ok);stroke-width:3;fill:none" marker-end="url(#ar11o)"/>
+        <text x="330" y="262" font-size="12" style="fill:var(--ok)">DMA (블록 I/O)</text></g>
+      <g class="step" id="rv-copy"><path d="M280 214 C200 214 160 150 150 98" style="stroke:var(--warn);stroke-width:3;fill:none;stroke-dasharray:7 4"/>
+        <text x="160" y="232" font-size="12" style="fill:var(--warn);font-weight:700">copy_to_user (CPU 복사)</text></g>
+      <g class="step" id="rv-map"><path d="M360 214 C440 214 480 150 490 106" style="stroke:var(--violet);stroke-width:3;fill:none"/>
+        <text x="430" y="232" font-size="12" style="fill:var(--violet);font-weight:700">PTE가 이 페이지를 직접 가리킴</text></g>
+    </svg>`;
+    const flows = {
+      read: [
+        { on: [], cap: "<b>초기 상태.</b> 파일 데이터는 디스크에만 있다. 프로세스는 사용자 버퍼를 준비했다.", cache: false, buf: false },
+        { on: ["rv-sys"], cap: "<b>1. read(fd, buf, 4096)</b> — 시스템 콜로 커널에 진입. 커널은 파일 오프셋으로 address_space의 XArray를 조회한다.", cache: false, buf: false },
+        { on: ["rv-sys", "rv-dma"], cap: "<b>2. 캐시 miss</b> → 블록 I/O 요청. 장치가 DMA로 페이지 캐시에 채운다(순차 패턴이면 readahead로 다음 페이지들도 함께). 그동안 스레드는 잠든다.", cache: true, buf: false, flash: "rv-dma" },
+        { on: ["rv-sys", "rv-copy"], cap: "<b>3. copy_to_user</b> — CPU가 페이지 캐시 페이지를 사용자 버퍼로 복사한다. read()의 피할 수 없는 비용.", cache: true, buf: true, flash: "rv-copy" },
+        { on: ["rv-copy"], cap: "<b>4. 반환.</b> 같은 데이터가 메모리에 <b>두 벌</b>(캐시 + 버퍼) 있다. 다시 읽으면 2단계(I/O)는 캐시 hit로 생략되지만 시스템 콜과 3단계 복사는 매번 일어난다.", cache: true, buf: true },
+      ],
+      mmap: [
+        { on: [], cap: "<b>1. mmap(fd)</b> — VMA만 만들고 즉시 반환. 아직 아무것도 읽지 않았고 PTE도 비어 있다.", cache: false, buf: false },
+        { on: ["rv-fault"], cap: "<b>2. 첫 접근</b> (<code>x = p[0]</code>) — PTE가 비어 있어 페이지 폴트. 커널은 VMA의 <code>vm_ops-&gt;fault</code>(일반 파일은 <code>filemap_fault</code>)를 호출한다.", cache: false, buf: false, flash: "rv-fault" },
+        { on: ["rv-fault", "rv-dma"], cap: "<b>3. 캐시 miss면 I/O</b> — read()와 같은 페이지 캐시, 같은 readahead 경로를 탄다(major fault). 이미 캐시에 있으면 I/O 없는 minor fault.", cache: true, buf: false, flash: "rv-dma" },
+        { on: ["rv-map"], cap: "<b>4. PTE 설치</b> — PTE가 페이지 캐시 페이지를 직접 가리키게 한다. 복사 없음. 폴트에서 돌아와 load 명령을 다시 실행한다.", cache: true, buf: false, flash: "rv-map" },
+        { on: ["rv-map"], cap: "<b>5. 이후 접근</b>은 커널 개입 없이 일반 load/store로 처리된다. 데이터는 <b>한 벌</b>. 대신 매핑 해제 시 TLB 무효화, 회수 시 rmap으로 PTE를 찾아 지우는 비용이 생긴다.", cache: true, buf: false },
+      ],
+    };
+    const host = $("rvmHost");
+    const btns = document.querySelectorAll("#rvmW [data-mode]");
+    function build(mode) {
+      btns.forEach(b => b.classList.toggle("primary", b.dataset.mode === mode));
+      host.innerHTML = `<div class="stage rvm-svg">${svgSrc}</div>`;
+      const box = MM.el("div");
+      host.append(box);
+      const svg = host.querySelector("svg");
+      svg.querySelector("#rv-buf").style.opacity = mode === "read" ? 1 : .25;
+      svg.querySelector("#rv-vma").style.opacity = mode === "mmap" ? 1 : .25;
+      const F = flows[mode];
+      MM.stepper(box, { steps: F.length, interval: 2000, render(i) {
+        const f = F[i];
+        svg.querySelectorAll(".step").forEach(g => { g.classList.toggle("on", f.on.includes(g.id)); g.classList.toggle("flash", f.flash === g.id); });
+        svg.querySelector("#rv-cpage").style.opacity = f.cache ? 1 : .15;
+        svg.querySelector("#rv-cpt").style.opacity = f.cache ? 1 : .3;
+        svg.querySelector("#rv-bufdata").style.opacity = f.buf ? 1 : 0;
+        return f.cap;
+      } });
+    }
+    btns.forEach(b => b.onclick = () => build(b.dataset.mode));
+    build("read");
+  })();
+
+  // ---------- dirty writeback 시뮬레이션 ----------
+  (function () {
+    const ids = { write: "dwWr", disk: "dwBr", memGiB: "dwMr", bgRatio: "dwGr", ratio: "dwRr" };
+    const p = {};
+    let st = dirtyNew(), hist = [], running = true, timer = null;
+    const DT = 0.5, WIN = 120; // 틱당 0.5초, 120초 창
+    const svg = $("dwSvg"), log = $("dwLog");
+    function fmt(m) { return m >= 1024 ? (m / 1024).toFixed(2) + " GiB" : Math.round(m) + " MiB"; }
+    function addLog(m, cls) { log.innerHTML = `<div class="${cls || ""}">[${st.t.toFixed(1)}s] ${m}</div>` + log.innerHTML; }
+    function readP() {
+      for (const k in ids) p[k] = +$(ids[k]).value;
+      $("dwWv").textContent = p.write + " MiB/s"; $("dwBv").textContent = p.disk + " MiB/s";
+      $("dwMv").textContent = p.memGiB + " GiB"; $("dwGv").textContent = p.bgRatio + "%"; $("dwRv").textContent = p.ratio + "%";
+    }
+    function draw() {
+      const L = dirtyLimits(p);
+      const W = 640, H = 250, x0 = 56, x1 = 628, y0 = 14, y1 = 220;
+      const ymax = Math.max(L.lim * 1.12, 1);
+      const X = t => x0 + (x1 - x0) * (t - Math.max(0, st.t - WIN)) / WIN;
+      const Y = v => y1 - (y1 - y0) * Math.min(v, ymax) / ymax;
+      let o = `<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" style="fill:var(--surface-2)"/>`;
+      // 구간 음영
+      o += `<rect x="${x0}" y="${Y(L.lim)}" width="${x1 - x0}" height="${Y(L.freerun) - Y(L.lim)}" style="fill:var(--warn-soft);opacity:.7"/>`;
+      const hline = (v, color, label, dash) => `<line x1="${x0}" x2="${x1}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(${color});stroke-width:1.5${dash ? ";stroke-dasharray:6 4" : ""}"/><text x="${x0 + 6}" y="${Y(v) - 4}" font-size="11.5" style="fill:var(${color})">${label} ${fmt(v)}</text>`;
+      o += hline(L.lim, "--bad", "dirty_ratio 한도", false);
+      o += hline(L.setpoint, "--muted", "setpoint", true);
+      o += hline(L.freerun, "--warn", "freerun 상한(스로틀 시작)", true);
+      o += hline(L.bg, "--accent", "background 임계", true);
+      // 축
+      for (let k = 0; k <= 4; k++) { const v = ymax * k / 4; o += `<text x="${x0 - 6}" y="${Y(v) + 4}" text-anchor="end" font-size="10.5" class="muted">${v >= 1024 ? (v / 1024).toFixed(1) + "G" : Math.round(v) + "M"}</text>`; }
+      o += `<text x="${x1}" y="${H - 8}" text-anchor="end" font-size="11" class="muted">최근 ${WIN}초 (시뮬레이션 시간)</text>`;
+      // flusher 상태 띠
+      hist.forEach((h, i) => { if (i && h.fl) { const xa = X(hist[i - 1].t), xb = X(h.t); o += `<rect x="${xa}" y="${y1 + 3}" width="${Math.max(0.5, xb - xa)}" height="6" style="fill:var(--accent)"/>`; } });
+      o += `<text x="${x0}" y="${H - 8}" font-size="11" style="fill:var(--accent)">■ flusher writeback 중</text>`;
+      // dirty 곡선
+      const pts = hist.map(h => `${X(h.t).toFixed(1)},${Y(h.d).toFixed(1)}`).join(" ");
+      o += `<polyline points="${pts}" style="fill:none;stroke:var(--violet);stroke-width:2.5"/>`;
+      svg.innerHTML = o;
+      $("dwSd").textContent = fmt(st.dirty);
+      $("dwSe").textContent = Math.round(st.eff) + " MiB/s";
+      const thr = p.write > 0 ? Math.max(0, 1 - st.eff / p.write) : 0;
+      $("dwSt").textContent = Math.round(thr * 100) + "%";
+      $("dwSt").className = "v " + (thr > 0.05 ? "c-bad" : "c-ok");
+      $("dwSf").textContent = st.fsyncLeft > 0 ? "fsync 기록" : st.bgActive ? "백그라운드" : st.expActive ? "만료분 기록" : "대기";
+      $("dwSc").textContent = st.t.toFixed(0) + " s";
+    }
+    let lastThrottle = false;
+    function tick() {
+      dirtyStep(st, p, DT);
+      const L = dirtyLimits(p);
+      st.events.forEach(ev => {
+        if (ev === "bg-start") addLog(`dirty ${fmt(st.dirty)} > background 임계 ${fmt(L.bg)} → flusher가 백그라운드 writeback 시작`, "c-accent");
+        else if (ev === "bg-stop") addLog("dirty가 background 임계 아래로 → 백그라운드 writeback 중지");
+        else if (ev === "expire") addLog("주기적 flusher(5초): 30초 넘은 dirty 발견 → 만료분 writeback", "c-teal");
+        else if (ev.startsWith("fsync-done")) addLog(`fsync() 반환: ${ev.split(":")[1]}초 걸림 (그 시점 dirty ÷ 디스크 대역폭)`, "c-ok");
+      });
+      const thr = st.eff < p.write * 0.95;
+      if (thr && !lastThrottle) addLog(`dirty ${fmt(st.dirty)} > freerun ${fmt(L.freerun)} → write() 호출자가 balance_dirty_pages()에서 잠들기 시작 (스로틀링)`, "c-bad");
+      if (!thr && lastThrottle) addLog("스로틀링 해제");
+      lastThrottle = thr;
+      hist.push({ t: st.t, d: st.dirty, fl: st.wb > 0 });
+      while (hist.length && hist[0].t < st.t - WIN) hist.shift();
+      draw();
+    }
+    function start() { if (!timer) timer = setInterval(tick, 100); $("dwRun").textContent = "⏸ 정지"; running = true; }
+    function stop() { clearInterval(timer); timer = null; $("dwRun").textContent = "▶ 재생"; running = false; }
+    Object.values(ids).forEach(id => $(id).addEventListener("input", () => { readP(); draw(); }));
+    $("dwRun").onclick = () => running ? stop() : start();
+    $("dwFsync").onclick = () => { if (dirtyFsync(st)) addLog(`fsync() 호출: 현재 dirty ${fmt(st.dirty)}를 기록할 때까지 호출자 대기`, "c-warn"); else addLog("dirty가 없어 fsync()가 즉시 반환"); };
+    $("dwReset").onclick = () => { st = dirtyNew(); hist = []; log.innerHTML = ""; lastThrottle = false; draw(); };
+    readP();
+    hist.push({ t: 0, d: 0, fl: false });
+    draw();
+    // 화면에 보일 때만 실행
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { if (running) { timer || (timer = setInterval(tick, 100)); } } else { clearInterval(timer); timer = null; } }))
+        .observe($("dwW"));
+    } else start();
+  })();
+})();
+</script>
+</body>
+</html>

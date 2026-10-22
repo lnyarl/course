@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>가상화와 메모리</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+/* 15장 전용 */
+main p code, main li code, main td code, main dd code { overflow-wrap: anywhere; }
+.walk-grid { display: grid; gap: 4px; min-width: 520px; font-size: 12.5px; }
+.walk-grid .hd { font-weight: 700; color: var(--muted); text-align: center; align-self: end; font-size: 12px; line-height: 1.3; }
+.walk-grid .rh { font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; align-items: center; line-height: 1.25; }
+.walk-grid .wc { height: 40px; border-radius: 6px; border: 1px dashed var(--border); background: var(--bg); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 700; color: var(--muted); transition: background .25s, border-color .25s, transform .25s; }
+.walk-grid .wc.nest.on { background: var(--violet-soft); border: 1px solid var(--violet); color: var(--violet); }
+.walk-grid .wc.gst.on { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent); }
+.walk-grid .wc.data.on { background: var(--ok-soft); border: 1px solid var(--ok); color: var(--ok); }
+.walk-grid .wc.cur { transform: scale(1.08); box-shadow: 0 0 0 2px var(--warn); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); margin: 8px 0; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; border: 1px solid var(--border); }
+.sw-nest { background: var(--violet-soft); border-color: var(--violet) !important; }
+.sw-gst { background: var(--accent-soft); border-color: var(--accent) !important; }
+.sw-data { background: var(--ok-soft); border-color: var(--ok) !important; }
+.sw-cache { background: var(--teal-soft); border-color: var(--teal) !important; }
+.sw-bal { background: var(--warn-soft); border-color: var(--warn) !important; }
+.sw-free { background: var(--surface-2); }
+.sw-b { background: var(--bad-soft); border-color: var(--bad) !important; }
+
+.mem-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.mem-row .nm { width: 92px; flex: none; font-size: 13px; font-weight: 700; }
+.mem-row .cells { flex: 1; }
+.cell.k-used { background: var(--accent-soft); border-color: var(--accent); }
+.cell.k-cache { background: var(--teal-soft); border-color: var(--teal); }
+.cell.k-free { background: var(--surface-2); }
+.cell.k-bal { background: var(--warn-soft); border-color: var(--warn); }
+.cell.k-ret { border-style: dashed; color: var(--warn); }
+.cell.k-B { background: var(--violet-soft); border-color: var(--violet); }
+.cell.k-none { background: transparent; border-style: dashed; color: var(--muted); }
+.cell.k-A { background: var(--accent-soft); border-color: var(--accent); }
+.cell.flash { box-shadow: 0 0 0 2px var(--warn); transform: scale(1.08); }
+
+.tlb-tbl td, .tlb-tbl th { font-family: var(--mono); font-size: 13px; padding: 4px 8px; text-align: center; }
+.tlb-tbl tr.vm1 td { background: var(--accent-soft); }
+.tlb-tbl tr.vm2 td { background: var(--violet-soft); }
+.tlb-tbl tr.fresh td { box-shadow: inset 3px 0 0 var(--warn); }
+
+.ksm-vm { margin: 8px 0; }
+.ksm-vm .nm { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+.ksm-page { min-width: 92px; height: 54px; flex-direction: column; line-height: 1.2; cursor: pointer; padding: 2px 4px; }
+.ksm-page small { font-size: 10.5px; color: var(--muted); }
+.ksm-page.merged { background: var(--ok-soft); border-color: var(--ok); }
+.ksm-page.unstable { background: var(--warn-soft); border-color: var(--warn); }
+.ksm-page.split { background: var(--bad-soft); border-color: var(--bad); }
+.ksm-page.scan { box-shadow: 0 0 0 2px var(--accent); }
+
+.calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 16px; font-size: 14px; }
+.calc-grid label { display: flex; flex-direction: column; gap: 2px; }
+.calc-grid input[type=range] { width: 100%; }
+.bar2 { height: 18px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin: 2px 0 8px; }
+.bar2 > div { height: 100%; transition: width .3s; }
+.bar2 .b-sh { background: var(--warn); }
+.bar2 .b-ept { background: var(--violet); }
+svg.diagram .vio { fill: var(--violet-soft); stroke: var(--violet); }
+svg.diagram .acc { fill: var(--accent-soft); stroke: var(--accent); }
+svg.diagram .okb { fill: var(--ok-soft); stroke: var(--ok); }
+svg.diagram .wrn { fill: var(--warn-soft); stroke: var(--warn); }
+svg.diagram .badb { fill: var(--bad-soft); stroke: var(--bad); }
+svg.diagram .tl { fill: var(--teal-soft); stroke: var(--teal); }
+svg.diagram .arr { stroke: var(--muted); fill: none; stroke-width: 1.6; marker-end: url(#ah15); }
+svg.diagram .arr-b { stroke: var(--bad); fill: none; stroke-width: 1.6; stroke-dasharray: 5 4; marker-end: url(#ah15b); }
+svg.diagram .t-b { font-weight: 700; }
+svg.diagram .sm { font-size: 11.5px; }
+</style>
+</head>
+<body data-chapter="15">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">심화 · Chapter 15</span>
+    <h1>가상화와 메모리: EPT, Ballooning, KSM</h1>
+    <p class="lead">가상 머신 안의 "물리 메모리"는 사실 호스트 프로세스의 가상 메모리다. 주소 변환이 한 단계 더 늘어나면서 생기는 비용, 그 비용을 하드웨어로 줄이는 방법, 그리고 VM 수십 대가 실제 RAM보다 많은 메모리를 "약속"받는 오버커밋 기법을 차례로 해부한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>GVA → GPA → HPA 세 주소 공간과 각 변환을 누가 관리하는지 설명할 수 있다.</li>
+      <li>섀도 페이지 테이블과 EPT/NPT의 동작과 비용 구조를 비교하고, 2D page walk가 최대 24회 메모리 참조가 되는 이유를 직접 셀 수 있다.</li>
+      <li>VPID/ASID 태깅, EPT violation 처리 경로(KVM)를 이해한다.</li>
+      <li>Ballooning, KSM, 호스트 스왑, free page reporting, 메모리 핫플러그의 원리와 함정을 안다.</li>
+      <li>컨테이너와 VM의 메모리 격리 차이, 기밀 컴퓨팅(SEV-SNP, TDX)이 메모리 관리에 주는 제약을 설명할 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">주소가 세 단계가 된다: GVA → GPA → HPA</a></li>
+    <li><a href="#s2">소프트웨어 해법: 섀도 페이지 테이블</a></li>
+    <li><a href="#s3">하드웨어 해법: Intel EPT / AMD NPT</a></li>
+    <li><a href="#s4">2D page walk: 왜 최대 24회인가</a></li>
+    <li><a href="#s5">섀도 vs EPT: 어떤 워크로드에서 누가 이기나</a></li>
+    <li><a href="#s6">TLB 태깅: VPID와 ASID</a></li>
+    <li><a href="#s7">EPT violation과 KVM의 지연 할당</a></li>
+    <li><a href="#s8">오버커밋 ①: Ballooning</a></li>
+    <li><a href="#s9">오버커밋 ②: KSM (동일 페이지 병합)</a></li>
+    <li><a href="#s10">오버커밋 ③: 호스트 스왑, free page reporting, 핫플러그</a></li>
+    <li><a href="#s11">컨테이너 vs VM: 메모리 격리 비교</a></li>
+    <li><a href="#s12">기밀 컴퓨팅: SEV-SNP와 TDX</a></li>
+  </ol></nav>
+
+  <!-- ============ s1 ============ -->
+  <section id="s1">
+    <h2>1. 주소가 세 단계가 된다: GVA → GPA → HPA</h2>
+    <p>게스트 OS는 자기가 물리 메모리 전체를 소유한다고 믿고 페이지 테이블을 만든다. 하지만 하이퍼바이저 입장에서 그 "물리 메모리"는 여러 VM이 나눠 쓰는 진짜 DRAM의 일부일 뿐이다. 그래서 주소 공간이 셋으로 나뉜다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>주소</th><th>의미</th><th>변환 주체</th><th>KVM에서의 실체</th></tr>
+      <tr><td><b>GVA</b> (Guest Virtual)</td><td>게스트 프로세스가 보는 가상 주소</td><td>게스트 OS의 페이지 테이블 (게스트 CR3)</td><td>게스트 리눅스의 <code>mm_struct</code></td></tr>
+      <tr><td><b>GPA</b> (Guest Physical)</td><td>게스트가 "물리"라고 믿는 주소</td><td>하이퍼바이저 (섀도 PT 또는 EPT/NPT)</td><td>memslot: GPA 범위 → QEMU 프로세스의 <b>HVA</b></td></tr>
+      <tr><td><b>HPA</b> (Host Physical)</td><td>실제 DRAM 주소</td><td>—</td><td>호스트 커널이 QEMU의 HVA에 붙여 준 물리 프레임</td></tr>
+    </table></div>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="GVA에서 GPA를 거쳐 HPA로 가는 3단계 주소 변환">
+        <defs>
+          <marker id="ah15" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+          <marker id="ah15b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--bad)"/></marker>
+        </defs>
+        <rect x="10" y="20" width="200" height="120" rx="10" class="acc"/>
+        <text x="110" y="45" text-anchor="middle" class="t-b">게스트 프로세스</text>
+        <text x="110" y="70" text-anchor="middle">GVA</text>
+        <text x="110" y="92" text-anchor="middle" class="muted sm">0x7f12_3456_7000</text>
+        <text x="110" y="118" text-anchor="middle" class="muted sm">게스트 커널이 관리</text>
+
+        <rect x="280" y="20" width="200" height="120" rx="10" class="vio"/>
+        <text x="380" y="45" text-anchor="middle" class="t-b">게스트 "물리" 메모리</text>
+        <text x="380" y="70" text-anchor="middle">GPA</text>
+        <text x="380" y="92" text-anchor="middle" class="muted sm">0x0000_1234_5000</text>
+        <text x="380" y="118" text-anchor="middle" class="muted sm">= QEMU의 HVA 영역</text>
+
+        <rect x="550" y="20" width="200" height="120" rx="10" class="okb"/>
+        <text x="650" y="45" text-anchor="middle" class="t-b">실제 DRAM</text>
+        <text x="650" y="70" text-anchor="middle">HPA</text>
+        <text x="650" y="92" text-anchor="middle" class="muted sm">0x0000_9abc_d000</text>
+        <text x="650" y="118" text-anchor="middle" class="muted sm">호스트 커널이 관리</text>
+
+        <path d="M210 80 L278 80" class="arr"/>
+        <path d="M480 80 L548 80" class="arr"/>
+        <text x="245" y="70" text-anchor="middle" class="sm">게스트 PT</text>
+        <text x="515" y="70" text-anchor="middle" class="sm">EPT/NPT</text>
+
+        <path d="M110 140 C 110 225, 650 225, 650 142" class="arr-b"/>
+        <text x="380" y="205" text-anchor="middle" class="sm">TLB가 캐시하는 것은 최종 결과 GVA → HPA (중간 GPA는 캐시되지 않음)</text>
+        <text x="380" y="240" text-anchor="middle" class="muted sm">섀도 PT 방식은 이 빨간 경로를 하이퍼바이저가 소프트웨어로 미리 합성해 둔다</text>
+      </svg>
+      <figcaption>그림 15-1. 3단계 주소 공간. 게스트 PT는 게스트가, GPA→HPA는 하이퍼바이저가 관리한다.</figcaption>
+    </figure>
+    <p>KVM에서 핵심은 <b>GPA → HPA가 두 단계로 다시 쪼개진다</b>는 점이다. QEMU(VMM)는 <code>mmap()</code>으로 게스트 RAM 크기만큼 익명(또는 hugetlbfs·memfd) 메모리를 잡고, <code>KVM_SET_USER_MEMORY_REGION</code> ioctl로 "GPA 0x0~ 는 내 HVA 0x7f.. 이다"라는 memslot을 등록한다. 그러면 GPA→HVA는 memslot의 단순 오프셋 계산, HVA→HPA는 <b>평범한 호스트 프로세스의 페이지 테이블</b>이다.</p>
+    <div class="callout deep"><span class="title">왜 이 설계가 강력한가</span>
+      게스트 RAM이 "QEMU 프로세스의 평범한 가상 메모리"이므로, 호스트 커널이 프로세스에 적용하는 모든 메커니즘 — 요구 페이징, THP, 스왑, KSM, NUMA 밸런싱, cgroup 메모리 제한, 페이지 마이그레이션 — 이 VM 메모리에 <b>그대로</b> 적용된다. 하이퍼바이저가 메모리 관리자를 따로 만들 필요가 없다. 반대로 말하면, 앞 장에서 배운 호스트 쪽 함정(스왑 스톰, THP 컴팩션 지연, NUMA 원격 접근)도 그대로 VM 성능 문제로 나타난다.
+    </div>
+  </section>
+
+  <!-- ============ s2 ============ -->
+  <section id="s2">
+    <h2>2. 소프트웨어 해법: 섀도 페이지 테이블</h2>
+    <p>2008년 이전의 x86 CPU에는 두 번째 변환 단계를 하드웨어로 해 주는 기능이 없었다. MMU는 CR3가 가리키는 페이지 테이블 하나만 걸을 수 있다. 그래서 하이퍼바이저는 게스트 PT(GVA→GPA)와 자신의 매핑(GPA→HPA)을 <b>합성한 GVA→HPA 테이블</b>을 따로 만들어 실제 CR3에 넣었다. 이것이 <b>섀도 페이지 테이블(sPT)</b>이다.</p>
+    <p>문제는 동기화다. 게스트가 자기 PT를 고치면 섀도도 고쳐야 하는데, 하이퍼바이저는 그 사실을 모른다. 그래서:</p>
+    <ul>
+      <li><b>게스트 PT 페이지를 쓰기 금지(write-protect)</b>한다. 게스트가 PTE를 쓰면 폴트 → VM exit → 하이퍼바이저가 쓰기를 에뮬레이트하고 섀도 PTE를 갱신한다.</li>
+      <li>게스트의 <b>CR3 쓰기(컨텍스트 스위치)</b>, <code>INVLPG</code>도 가로챈다(trap). 프로세스마다 섀도 테이블 집합을 캐시해야 한다.</li>
+      <li>게스트가 본 적 없는 섀도 엔트리는 비워 두고, 실제 접근 시 #PF를 가로채 게스트 PT를 소프트웨어로 걸어 채운다(“hidden page fault”).</li>
+      <li>Accessed/Dirty 비트도 게스트 PT에 역으로 반영해야 한다.</li>
+    </ul>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 330" role="img" aria-label="섀도 페이지 테이블과 EPT 구조 비교">
+        <text x="185" y="22" text-anchor="middle" class="t-b">섀도 페이지 테이블</text>
+        <text x="575" y="22" text-anchor="middle" class="t-b">EPT / NPT (하드웨어 2D 변환)</text>
+        <line x1="380" y1="10" x2="380" y2="320" class="line" style="stroke-dasharray:4 4"/>
+
+        <rect x="20" y="40" width="150" height="56" rx="8" class="acc"/>
+        <text x="95" y="63" text-anchor="middle">게스트 PT</text>
+        <text x="95" y="83" text-anchor="middle" class="muted sm">GVA→GPA (쓰기 금지)</text>
+        <rect x="210" y="40" width="150" height="56" rx="8" class="vio"/>
+        <text x="285" y="63" text-anchor="middle">P2M 맵</text>
+        <text x="285" y="83" text-anchor="middle" class="muted sm">GPA→HPA (VMM)</text>
+        <rect x="100" y="160" width="180" height="60" rx="8" class="wrn"/>
+        <text x="190" y="185" text-anchor="middle" class="t-b">섀도 PT</text>
+        <text x="190" y="205" text-anchor="middle" class="muted sm">GVA→HPA (합성본)</text>
+        <path d="M95 96 L160 158" class="arr"/>
+        <path d="M285 96 L220 158" class="arr"/>
+        <text x="190" y="135" text-anchor="middle" class="sm">VMM이 소프트웨어로 합성</text>
+        <rect x="110" y="260" width="160" height="44" rx="8" class="box"/>
+        <text x="190" y="287" text-anchor="middle">실제 CR3 → MMU</text>
+        <path d="M190 220 L190 258" class="arr"/>
+        <path d="M20 68 C -0 130, 30 200, 95 230" class="arr-b"/>
+        <text x="16" y="250" class="sm" style="fill:var(--bad)">PTE 쓰기마다</text>
+        <text x="16" y="266" class="sm" style="fill:var(--bad)">VM exit</text>
+
+        <rect x="410" y="40" width="150" height="56" rx="8" class="acc"/>
+        <text x="485" y="63" text-anchor="middle">게스트 PT</text>
+        <text x="485" y="83" text-anchor="middle" class="muted sm">게스트가 자유롭게 수정</text>
+        <rect x="600" y="40" width="150" height="56" rx="8" class="vio"/>
+        <text x="675" y="63" text-anchor="middle">EPT</text>
+        <text x="675" y="83" text-anchor="middle" class="muted sm">GPA→HPA (VMM)</text>
+        <rect x="410" y="150" width="150" height="44" rx="8" class="box"/>
+        <text x="485" y="177" text-anchor="middle">게스트 CR3</text>
+        <rect x="600" y="150" width="150" height="44" rx="8" class="box"/>
+        <text x="675" y="177" text-anchor="middle">VMCS의 EPTP</text>
+        <path d="M485 150 L485 98" class="arr"/>
+        <path d="M675 150 L675 98" class="arr"/>
+        <rect x="450" y="250" width="260" height="54" rx="8" class="okb"/>
+        <text x="580" y="273" text-anchor="middle" class="t-b">하드웨어 page walker</text>
+        <text x="580" y="292" text-anchor="middle" class="muted sm">두 테이블을 중첩해서 걷는다 (2D walk)</text>
+        <path d="M485 194 L540 248" class="arr"/>
+        <path d="M675 194 L620 248" class="arr"/>
+      </svg>
+      <figcaption>그림 15-2. 섀도 PT는 GVA→HPA를 VMM이 합성해 MMU에 보여 주고, EPT는 두 테이블을 하드웨어가 직접 걷는다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>섀도 페이지 테이블</th><th>EPT / NPT</th></tr>
+      <tr><td>TLB 미스 비용</td><td>네이티브와 동일 (1D walk, 최대 4회)</td><td>2D walk, 최대 24회 참조</td></tr>
+      <tr><td>게스트 PT 수정</td><td>매번 VM exit (fork·mmap·munmap 많은 워크로드에 치명적)</td><td>VM exit 없음</td></tr>
+      <tr><td>게스트 CR3 전환</td><td>trap 필요</td><td>trap 불필요</td></tr>
+      <tr><td>메모리 오버헤드</td><td>게스트 프로세스 수 × 섀도 테이블</td><td>VM당 EPT 하나</td></tr>
+      <tr><td>구현 복잡도</td><td>매우 높음 (KVM의 shadow MMU 코드)</td><td>상대적으로 단순 (KVM TDP MMU)</td></tr>
+    </table></div>
+    <p>KVM은 지금도 섀도 MMU 코드를 유지한다. EPT를 끈 경우(<code>kvm_intel.ept=0</code>)뿐 아니라, <b>중첩 가상화</b>(L1 하이퍼바이저가 만든 EPT를 L0가 다시 섀도링: "shadow EPT")에서도 쓰이기 때문이다.</p>
+  </section>
+
+  <!-- ============ s3 ============ -->
+  <section id="s3">
+    <h2>3. 하드웨어 해법: Intel EPT / AMD NPT</h2>
+    <p>Intel은 Nehalem(2008)에서 <b>EPT(Extended Page Tables)</b>를, AMD는 Barcelona(2007)에서 <b>NPT(Nested Page Tables, RVI)</b>를 도입했다. 하이퍼바이저는 GPA→HPA 테이블을 만들어 VMCS의 <b>EPTP</b> 필드(AMD는 VMCB의 <code>nCR3</code>)에 넣고, 게스트는 자기 CR3를 마음대로 바꾼다. 하드웨어 page walker가 둘을 엮어 걷는다.</p>
+    <h3>EPT 엔트리 형식 (Intel SDM Vol.3C, 4KiB 페이지 리프 기준)</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>비트</th><th>이름</th><th>의미</th></tr>
+      <tr><td>0 / 1 / 2</td><td>R / W / X</td><td>읽기·쓰기·실행 허용. x86 PTE와 달리 <b>Present 비트가 없다</b>: R=W=X=0이면 not-present</td></tr>
+      <tr><td>5:3</td><td>Memory type</td><td>리프에서 메모리 타입(0=UC, 6=WB 등)</td></tr>
+      <tr><td>6</td><td>Ignore PAT</td><td>게스트 PAT를 무시할지</td></tr>
+      <tr><td>7</td><td>Large page</td><td>상위 레벨에서 2MiB/1GiB 리프 표시</td></tr>
+      <tr><td>8 / 9</td><td>Accessed / Dirty</td><td>EPTP 비트 6으로 활성화 시 하드웨어가 기록</td></tr>
+      <tr><td>10</td><td>User-mode execute</td><td>MBEC(Mode-Based Execute Control) 활성 시 사용자 모드 실행 권한</td></tr>
+      <tr><td>N−1:12</td><td>물리 주소</td><td>다음 테이블 또는 프레임의 HPA</td></tr>
+    </table></div>
+    <p>EPTP 자체에는 <b>비트 2:0 = 페이징 구조 메모리 타입</b>, <b>비트 5:3 = page-walk length − 1</b> (4단계면 3, 5단계면 4), <b>비트 6 = A/D 활성화</b>가 들어간다. 게스트 PTE에는 없던 "실행 전용(X만 1)" 권한이 가능하다는 점도 특징이다(하이퍼바이저 기반 보안 도구들이 이를 활용).</p>
+    <div class="callout tip"><span class="title">X 권한이 분리된 이유</span>
+      게스트 커널이 손상돼도 하이퍼바이저가 "이 GPA는 실행 불가"를 강제할 수 있다. Windows의 HVCI(VBS) 같은 하이퍼바이저 기반 코드 무결성은 EPT의 X·MBEC를 이용한다. 게스트 페이지 테이블은 게스트 커널이 조작할 수 있지만 EPT는 게스트 커널 손이 닿지 않는 곳에 있기 때문이다.
+    </div>
+  </section>
+
+  <!-- ============ s4 ============ -->
+  <section id="s4">
+    <h2>4. 2D page walk: 왜 최대 24회인가</h2>
+    <p>TLB 미스가 나면 하드웨어는 게스트 페이지 테이블을 걸어야 한다. 그런데 <b>게스트 CR3와 게스트 PTE 안의 주소는 모두 GPA</b>다. 게스트 테이블 한 칸을 읽으려면 먼저 그 테이블의 GPA를 EPT로 HPA로 바꿔야 한다. 즉 게스트 walk의 <b>매 단계마다 EPT walk가 하나씩 끼어든다</b>.</p>
+    <ul>
+      <li>게스트 레벨 수 n, EPT 레벨 수 m일 때, 게스트 테이블 n개 + 최종 데이터 GPA 1개 = <b>n+1개의 GPA</b>를 변환해야 한다. 각각 m회 참조 → m(n+1).</li>
+      <li>여기에 게스트 엔트리 자체를 읽는 n회가 더해진다.</li>
+      <li>총합 <b>m(n+1) + n = nm + n + m = (n+1)(m+1) − 1</b>. n=m=4이면 <b>24</b>, 5단계 페이징끼리면 <b>35</b>.</li>
+    </ul>
+    <div class="widget" id="w-walk">
+      <div class="w-title">2D page walk 격자 애니메이션</div>
+      <div class="w-desc">행 = 게스트 walk 단계(변환할 GPA), 열 = EPT walk 단계. 셀이 하나씩 채워지며 메모리 참조 횟수를 센다. 게스트/호스트 페이지 크기를 바꾸면 레벨 수가 줄어드는 효과를 확인할 수 있다.</div>
+      <div class="controls">
+        <label>게스트 <select id="walk-g">
+          <option value="4">4단계 · 4KiB 페이지</option>
+          <option value="3">4단계 · 2MiB 페이지 (3회)</option>
+          <option value="5">5단계 · 4KiB 페이지 (LA57)</option>
+        </select></label>
+        <label>호스트(EPT) <select id="walk-h">
+          <option value="4">4단계 · 4KiB</option>
+          <option value="3">4단계 · 2MiB</option>
+          <option value="2">4단계 · 1GiB</option>
+          <option value="5">5단계 · 4KiB</option>
+        </select></label>
+      </div>
+      <div class="legend"><span><i class="sw-nest"></i>EPT 테이블 참조</span><span><i class="sw-gst"></i>게스트 테이블 엔트리 읽기</span><span><i class="sw-data"></i>최종 데이터 접근(카운트 제외)</span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">현재 참조 수</div><div class="v" id="walk-cnt">0</div></div>
+        <div class="stat"><div class="k">최대 참조 수 (nm+n+m)</div><div class="v" id="walk-max">24</div></div>
+        <div class="stat"><div class="k">네이티브 대비</div><div class="v" id="walk-ratio">6.0×</div></div>
+      </div>
+      <div class="stage"><div class="walk-grid" id="walk-grid"></div></div>
+      <div id="walk-step"></div>
+    </div>
+    <h3>현실에서는 왜 24배 느리지 않은가</h3>
+    <ul>
+      <li><b>TLB가 최종 GVA→HPA를 캐시</b>한다. 24회 walk는 TLB 미스 때만 일어난다.</li>
+      <li><b>Paging-structure cache</b>(PML4/PDPT/PDE 캐시)와 <b>nested TLB</b>(GPA→HPA 변환 캐시)가 대부분의 중간 참조를 건너뛰게 한다. 상위 레벨 엔트리는 재사용률이 매우 높다.</li>
+      <li>walk의 참조는 대부분 L1/L2 캐시에서 해결된다. 하지만 working set이 큰 워크로드(DB, 인메모리 캐시, JVM 대형 힙)는 TLB 미스율이 높아 2D walk 비용이 수~수십 % 오버헤드로 드러난다.</li>
+    </ul>
+    <div class="callout warn"><span class="title">현업 처방: 양쪽 다 huge page</span>
+      게스트만 2MiB를 쓰면 게스트 레벨이 3으로, 호스트만 쓰면 EPT 레벨이 3으로 준다(위 위젯에서 24→19). 둘 다 2MiB면 15, 호스트 1GiB면 더 줄어든다. 그래서 대형 VM은 호스트에서 <code>hugetlbfs</code>(QEMU <code>-mem-path</code> 또는 <code>memory-backend-memfd,hugetlb=on</code>)로 게스트 RAM을 잡는다. 단, EPT가 2MiB 리프를 쓰려면 <b>호스트 쪽에서 해당 GPA 범위가 물리적으로 연속된 2MiB 프레임에 매핑돼 있어야</b> 한다. 호스트 THP가 쪼개지면(split) EPT 리프도 4KiB로 쪼개진다.
+    </div>
+  </section>
+
+  <!-- ============ s5 ============ -->
+  <section id="s5">
+    <h2>5. 섀도 vs EPT: 어떤 워크로드에서 누가 이기나</h2>
+    <p>EPT가 항상 이기는 것은 아니다. 섀도 PT는 TLB 미스 비용이 네이티브와 같지만 PT 수정·CR3 전환마다 VM exit 비용을 낸다. EPT는 반대다. 아래 계산기는 이 트레이드오프를 <b>교육용 단순 모델</b>로 보여 준다(실제 비용은 CPU 세대·캐시 상태에 따라 크게 달라진다).</p>
+    <div class="widget" id="w-cost">
+      <div class="w-title">섀도 PT vs EPT 오버헤드 계산기 (단순 모델)</div>
+      <div class="w-desc">초당 이벤트 수와 이벤트당 비용(사이클)으로 vCPU 하나(3GHz 가정)의 변환 관련 오버헤드를 추정한다.</div>
+      <div class="controls">
+        <button class="btn" data-preset="db">프리셋: 대형 DB (큰 working set, PT 변경 적음)</button>
+        <button class="btn" data-preset="build">프리셋: 빌드 서버 (fork/exec 폭주)</button>
+      </div>
+      <div class="calc-grid">
+        <label>TLB 미스 / 초: <b id="cv-miss"></b><input type="range" id="c-miss" min="3" max="7.5" step="0.1" value="6"></label>
+        <label>게스트 PTE 수정 / 초: <b id="cv-upd"></b><input type="range" id="c-upd" min="2" max="6" step="0.1" value="3.5"></label>
+        <label>게스트 CR3 전환 / 초: <b id="cv-cr3"></b><input type="range" id="c-cr3" min="2" max="5" step="0.1" value="3"></label>
+        <label>메모리 참조당 평균 비용 (사이클): <b id="cv-lat"></b><input type="range" id="c-lat" min="4" max="200" step="1" value="30"></label>
+        <label>페이지 워크 캐시 적중률 (EPT 중간 참조 생략): <b id="cv-pwc"></b><input type="range" id="c-pwc" min="0" max="0.98" step="0.01" value="0.8"></label>
+        <label>섀도 동기화 1회 비용 (VM exit+에뮬레이션, 사이클): <b id="cv-exit"></b><input type="range" id="c-exit" min="1000" max="10000" step="100" value="4000"></label>
+      </div>
+      <div style="margin-top:12px;font-size:14px">섀도 PT: <b id="r-sh"></b></div>
+      <div class="bar2"><div class="b-sh" id="b-sh"></div></div>
+      <div style="font-size:14px">EPT: <b id="r-ept"></b></div>
+      <div class="bar2"><div class="b-ept" id="b-ept"></div></div>
+      <div class="log" id="cost-note"></div>
+    </div>
+    <p>모델의 식: 섀도 = 미스×4×L + (PTE 수정 + CR3 전환)×E, EPT = 미스×(4 + 20×(1−h))×L. 4는 네이티브 walk 참조 수, 20은 2D walk에서 추가되는 참조 수(24−4), h는 그 추가 참조를 캐시가 생략해 주는 비율이다. 이 단순화에서 드러나는 교훈은 실제 연구 결과와 같다: <b>TLB 미스가 많고 PT 변경이 적으면 섀도가, 프로세스 생성·메모리 매핑 변경이 잦으면 EPT가 유리</b>하다. 현대 하이퍼바이저는 PT 변경 빈도를 감안할 때 거의 항상 EPT를 쓰고, 대신 huge page로 TLB 미스 쪽을 공략한다.</p>
+  </section>
+
+  <!-- ============ s6 ============ -->
+  <section id="s6">
+    <h2>6. TLB 태깅: VPID와 ASID</h2>
+    <p>VM 두 개가 같은 GVA 0x400000을 쓰더라도 HPA는 다르다. TLB 엔트리가 "어느 VM 것인지" 모르면 VM 전환(그리고 VM exit/entry) 때마다 TLB를 통째로 비워야 한다. VM exit는 I/O, 인터럽트, 타이머마다 초당 수천~수만 번 일어나므로 이것은 치명적이다.</p>
+    <ul>
+      <li><b>Intel VPID</b>(Virtual Processor ID): 16비트 태그. VMCS에 VPID를 넣으면 TLB 엔트리가 VPID로 구분된다. VPID 0은 호스트(VMX root)용. 무효화는 <code>INVVPID</code>, EPT 기반 캐시 무효화는 <code>INVEPT</code>.</li>
+      <li><b>AMD ASID</b>: VMCB의 ASID 필드. ASID 0은 호스트. 무효화는 VMCB의 TLB_CONTROL 또는 <code>INVLPGA</code>.</li>
+      <li>게스트 내부에서는 다시 <b>PCID</b>(게스트 프로세스 구분)가 함께 쓰인다. 즉 TLB 엔트리는 사실상 (VPID, PCID, GVA) 조합으로 식별된다.</li>
+    </ul>
+    <div class="widget" id="w-vpid">
+      <div class="w-title">VPID 태깅 TLB 시뮬레이터</div>
+      <div class="w-desc">8엔트리 LRU TLB. VM1과 VM2는 같은 GVA 페이지 번호(1~4)를 쓰지만 HPA는 다르다. 모드를 바꿔 가며 VM 전환·VM exit 시 히트율과 정확성을 비교하자.</div>
+      <div class="controls">
+        <label>모드 <select id="vp-mode">
+          <option value="vpid">VPID 태깅</option>
+          <option value="flush">태그 없음 + 전환 시 전체 flush</option>
+          <option value="bug">태그 없음 + flush 안 함 (버그)</option>
+        </select></label>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="vp-r1">VM1 실행 (4페이지 접근)</button>
+        <button class="btn primary" id="vp-r2">VM2 실행 (4페이지 접근)</button>
+        <button class="btn" id="vp-exit">현재 VM에서 VM exit → 재진입</button>
+        <button class="btn" id="vp-auto">VM1↔VM2 10회 왕복</button>
+        <button class="btn" id="vp-reset">초기화</button>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">접근</div><div class="v" id="vp-acc">0</div></div>
+        <div class="stat"><div class="k">TLB 히트</div><div class="v c-ok" id="vp-hit">0</div></div>
+        <div class="stat"><div class="k">미스 (2D walk)</div><div class="v c-warn" id="vp-miss">0</div></div>
+        <div class="stat"><div class="k">잘못된 변환</div><div class="v c-bad" id="vp-wrong">0</div></div>
+      </div>
+      <div class="stage"><div class="tbl-wrap"><table class="tlb-tbl" id="vp-tlb"></table></div></div>
+      <div class="log" id="vp-log"></div>
+    </div>
+    <div class="callout deep"><span class="title">VPID가 있어도 flush가 필요한 순간</span>
+      하이퍼바이저가 EPT 엔트리를 바꾸면(페이지 회수, 마이그레이션, KSM 병합, dirty logging 위해 쓰기 금지) 그 GPA를 캐시한 TLB/nested TLB 엔트리를 <code>INVEPT</code>로 지워야 한다. 다른 물리 CPU에서 같은 VM의 vCPU가 돌고 있으면 IPI로 원격 flush를 요청해야 한다. KVM의 <code>kvm_flush_remote_tlbs()</code>가 그 역할이며, 대형 VM에서 호스트 메모리 회수가 비싼 이유 중 하나다.
+    </div>
+  </section>
+
+  <!-- ============ s7 ============ -->
+  <section id="s7">
+    <h2>7. EPT violation과 KVM의 지연 할당</h2>
+    <p>게스트가 접근한 GPA에 대해 EPT 엔트리가 없거나 권한이 부족하면 <b>EPT violation</b> VM exit(Intel exit reason 48)가 난다. AMD에서는 <b>#NPF</b>(VMEXIT_NPF, exit code 0x400). VMCS에는 문제의 GPA(<code>GUEST_PHYSICAL_ADDRESS</code>)와 exit qualification(읽기/쓰기/실행 중 무엇이었는지, GVA가 유효한지 등)이 담긴다. 엔트리 형식 자체가 잘못된 경우는 별도의 <b>EPT misconfiguration</b>(exit reason 49)이며, KVM은 이를 일부러 이용해 MMIO 접근을 빠르게 식별한다(MMIO GPA에 예약 비트 패턴을 넣어 둠).</p>
+    <h3>KVM 처리 경로 (x86, TDP MMU)</h3>
+    <ol>
+      <li><code>handle_ept_violation()</code> → <code>kvm_mmu_page_fault()</code></li>
+      <li>GPA로 memslot을 찾아 HVA 계산</li>
+      <li>HVA → 호스트 PFN: <code>hva_to_pfn()</code> 계열 함수(커널 버전마다 이름이 조금씩 바뀌어 왔다). 이 단계가 사실상 <b>QEMU 프로세스에서의 평범한 페이지 폴트</b>다. 처음 접근이면 호스트가 0으로 채운 페이지를 할당하고, 스왑아웃된 페이지면 스왑인(느림 → async page fault로 게스트에게 다른 일을 시킬 수 있음)</li>
+      <li>EPT 엔트리(SPTE)를 설치. 호스트 매핑이 THP/hugetlb면 2MiB/1GiB 리프로 설치 가능</li>
+      <li>VM entry로 게스트 명령 재실행</li>
+    </ol>
+    <p>즉 게스트가 "16GiB RAM 부팅"해도 실제로 건드린 페이지만 호스트 RAM을 소비한다. 이것이 메모리 오버커밋의 출발점이다. 반대로, 호스트가 페이지를 회수하면 <b>MMU notifier</b>가 KVM에 알려 해당 EPT 엔트리를 지우고 TLB를 flush한다. 호스트 MM과 "2차 MMU(EPT)"를 일관되게 유지하는 장치다.</p>
+    <div class="callout tip"><span class="title">라이브 마이그레이션과 dirty 추적</span>
+      라이브 마이그레이션은 메모리를 복사하는 동안 게스트가 다시 더럽힌 페이지를 계속 재전송한다. 더럽혀진 페이지를 알아내는 방법은 (1) EPT를 쓰기 금지로 바꿔 쓰기마다 violation을 받거나, (2) EPT D 비트 + Intel <b>PML</b>(Page Modification Logging: 하드웨어가 더럽혀진 GPA를 512엔트리 버퍼에 기록하고, 가득 차면 VM exit)을 쓰는 것이다. KVM은 이 정보를 dirty bitmap 또는 dirty ring(5.11+)으로 QEMU에 넘긴다. 쓰기가 아주 많은 VM은 dirty rate가 전송 대역폭을 넘어 마이그레이션이 끝나지 않는데, 이때 auto-converge(vCPU 스로틀링)나 post-copy를 쓴다.
+    </div>
+  </section>
+
+  <!-- ============ s8 ============ -->
+  <section id="s8">
+    <h2>8. 오버커밋 ①: Ballooning</h2>
+    <p>호스트 RAM 256GiB에 32GiB VM을 12대 올리면(합 384GiB) 오버커밋이다. 평소엔 게스트들이 메모리를 다 쓰지 않아 괜찮지만, 게스트가 한번 만진 페이지는 게스트가 해제해도 <b>호스트는 알 수 없다</b>. 게스트 OS의 free list에 있는 페이지는 호스트 관점에서는 여전히 "사용 중"이다. 이 <b>의미적 간극(semantic gap)</b>을 메우는 첫 번째 방법이 ballooning이다.</p>
+    <p>게스트 안에 <b>balloon 드라이버</b>(리눅스 <code>drivers/virtio/virtio_balloon.c</code>)가 있다. 호스트가 목표치(<code>num_pages</code>, 4KiB 단위)를 설정하면, 드라이버는 게스트 커널에게서 <b>평범하게 페이지를 할당</b>받아 움켜쥐고 그 PFN(GPA) 목록을 inflate virtqueue로 호스트에 알린다. 호스트(QEMU)는 해당 범위를 <code>madvise(MADV_DONTNEED)</code>로 버려 실제 프레임을 회수한다. 게스트 커널이 메모리를 내주는 과정은 일반 할당과 똑같으므로, 게스트 내부 free가 부족하면 <b>게스트 자신의 회수 로직</b>(페이지 캐시 축출, 스왑)이 돈다. 하이퍼바이저가 게스트 내부 사정을 몰라도, 무엇을 버릴지는 게스트가 가장 잘 고른다는 것이 핵심 아이디어다.</p>
+    <div class="widget" id="w-balloon">
+      <div class="w-title">Ballooning 애니메이션</div>
+      <div class="w-desc">호스트 프레임 16개, VM A와 VM B가 각각 GPA 페이지 10개를 받았다(합 20 → 오버커밋). VM B가 메모리를 더 필요로 하는 상황에서 VM A의 풍선을 4페이지만큼 부풀린다.</div>
+      <div class="legend"><span><i class="sw-gst"></i>게스트 사용(anon)</span><span><i class="sw-cache"></i>게스트 페이지 캐시</span><span><i class="sw-free"></i>게스트 free</span><span><i class="sw-bal"></i>풍선(balloon, 점선=호스트 반납 완료)</span><span><i class="sw-nest"></i>VM B 소유 프레임</span></div>
+      <div class="stage">
+        <div class="mem-row"><span class="nm">VM A (GPA)</span><div class="cells" id="bl-a"></div></div>
+        <div class="mem-row"><span class="nm">VM B (GPA)</span><div class="cells" id="bl-b"></div></div>
+        <div class="mem-row"><span class="nm">호스트 프레임</span><div class="cells" id="bl-h"></div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">VM A 풍선 / 목표</div><div class="v" id="bl-tg">0 / 0</div></div>
+        <div class="stat"><div class="k">호스트 free 프레임</div><div class="v" id="bl-free">0</div></div>
+        <div class="stat"><div class="k">VM A MemTotal</div><div class="v" id="bl-mt">10</div></div>
+      </div>
+      <div id="bl-step"></div>
+    </div>
+    <h3>Ballooning의 함정</h3>
+    <ul>
+      <li><b>게스트 협조가 필수</b>: 드라이버가 없거나 게스트가 멈춰 있으면 회수 불가. 악의적 게스트는 무시할 수 있다(그래서 호스트 스왑이 최후 수단으로 남는다).</li>
+      <li><b>느리다</b>: 페이지 단위 할당 → virtqueue 통지 → 호스트 madvise. 수 GiB 회수에 수 초 이상 걸릴 수 있어 갑작스런 압박엔 부적합.</li>
+      <li><b>과하게 부풀리면 게스트 OOM</b>: 기본적으로 풍선 페이지는 게스트 <code>MemTotal</code>에서 빠진다. <code>VIRTIO_BALLOON_F_DEFLATE_ON_OOM</code> 기능이 협상되면 게스트가 OOM 직전 스스로 풍선을 줄인다(대신 MemTotal을 줄이지 않음).</li>
+      <li><b>huge page 단편화</b>: 풍선이 4KiB 페이지를 흩어서 가져가면 호스트 쪽 2MiB 매핑이 쪼개져 EPT도 4KiB가 된다(→ 2D walk 비용 증가). 리눅스는 balloon 페이지를 compaction 시 옮길 수 있게 만들어(balloon compaction) 게스트 쪽 단편화를 완화한다.</li>
+      <li>장치 패스스루(VFIO)로 게스트 메모리가 <b>pin</b>된 VM은 ballooning·KSM·호스트 스왑이 사실상 불가능하다. DMA가 언제든 그 HPA를 쓸 수 있기 때문이다.</li>
+    </ul>
+  </section>
+
+  <!-- ============ s9 ============ -->
+  <section id="s9">
+    <h2>9. 오버커밋 ②: KSM (Kernel Samepage Merging)</h2>
+    <p>같은 OS 이미지로 부팅한 VM 50대는 커널 코드, 공유 라이브러리, 0으로 채운 페이지 등 <b>내용이 바이트 단위로 같은 페이지</b>를 엄청나게 많이 갖는다. KSM은 커널 스레드 <code>ksmd</code>가 주기적으로 페이지를 훑어 같은 내용을 찾아 <b>하나의 쓰기 금지 프레임으로 병합</b>하고, 누군가 쓰면 CoW로 다시 분리한다.</p>
+    <ul>
+      <li>대상: <code>madvise(MADV_MERGEABLE)</code>로 표시된 익명 영역(QEMU는 게스트 RAM에 이를 건다). 리눅스 6.4+는 <code>prctl(PR_SET_MEMORY_MERGE)</code>로 프로세스 전체를 대상으로 할 수 있다.</li>
+      <li>제어: <code>/sys/kernel/mm/ksm/run</code>(1=동작), <code>pages_to_scan</code>, <code>sleep_millisecs</code>. 통계: <code>pages_shared</code>(병합된 KSM 페이지 수), <code>pages_sharing</code>(그것을 추가로 공유하는 매핑 수 = 절약량), <code>pages_unshared</code>, <code>pages_volatile</code>, <code>full_scans</code>.</li>
+      <li>자료구조: 병합 완료 페이지의 <b>stable tree</b>와 후보 페이지의 <b>unstable tree</b>. 둘 다 <b>페이지 내용 자체를 키로 하는 red-black tree</b>(비교는 memcmp)다. 체크섬은 "직전 스캔 이후 내용이 바뀌었나(volatile)"를 거르는 용도로만 쓴다. 바뀌는 페이지를 트리에 넣으면 트리 순서가 깨지기 때문에, unstable tree는 매 전체 스캔마다 비우고 다시 짓는다.</li>
+    </ul>
+    <div class="widget" id="w-ksm">
+      <div class="w-title">KSM 병합 · CoW 분리 시뮬레이터</div>
+      <div class="w-desc">VM 3대 × 6페이지. "1페이지 스캔"으로 ksmd 동작을 따라가 보자. 첫 전체 스캔에서는 체크섬만 기록하고(내용 안정성 확인), 두 번째 스캔부터 병합된다. 병합된 페이지(초록)를 클릭하면 게스트가 그 페이지에 쓰는 상황 → CoW 분리를 볼 수 있다.</div>
+      <div class="controls">
+        <button class="btn primary" id="ksm-one">1페이지 스캔</button>
+        <button class="btn primary" id="ksm-full">전체 1회 스캔</button>
+        <button class="btn" id="ksm-reset">초기화</button>
+      </div>
+      <div class="legend"><span><i class="sw-free"></i>비공유(전용 프레임)</span><span><i class="sw-bal"></i>unstable tree 후보</span><span><i class="sw-data"></i>병합됨(KSM 페이지)</span><span><i class="sw-b"></i>CoW로 분리됨</span></div>
+      <div class="stage" id="ksm-vms"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">사용 물리 프레임</div><div class="v" id="ksm-frames">18</div></div>
+        <div class="stat"><div class="k">pages_shared</div><div class="v c-ok" id="ksm-shared">0</div></div>
+        <div class="stat"><div class="k">pages_sharing</div><div class="v c-ok" id="ksm-sharing">0</div></div>
+        <div class="stat"><div class="k">full_scans</div><div class="v" id="ksm-scans">0</div></div>
+      </div>
+      <div class="log" id="ksm-log"></div>
+    </div>
+    <h3>KSM의 비용과 보안 문제</h3>
+    <ul>
+      <li><b>CPU 비용</b>: ksmd가 페이지를 비교하는 데 CPU를 쓴다. <code>pages_to_scan</code>을 키우면 병합은 빨라지지만 코어 하나를 상당 부분 태울 수 있다.</li>
+      <li><b>쓰기 지연</b>: 병합된 페이지에 쓰면 CoW 폴트 + 복사 + EPT 갱신이 일어나 평소 쓰기보다 훨씬 느리다. 메모리를 아끼던 호스트가 "역병합 폭풍"으로 갑자기 메모리 부족에 빠질 수도 있다.</li>
+      <li><b>사이드채널</b>: 바로 그 쓰기 지연이 정보 누출 통로다. 공격자 VM이 "피해자에게 있을 법한 내용"의 페이지를 만들어 두고 병합 주기를 기다린 뒤 써 본다. 쓰기가 느리면 병합됐다는 뜻 → <b>다른 VM에 같은 내용이 존재함</b>을 알게 된다(설치된 소프트웨어·버전 탐지, 일부 ASLR 우회 연구 사례). 더 나아가 병합된 페이지를 Rowhammer로 뒤집어 다른 VM의 페이지를 오염시키는 공격(Flip Feng Shui, 2016)도 시연됐다.</li>
+    </ul>
+    <div class="callout danger"><span class="title">그래서 퍼블릭 클라우드는 VM 간 KSM을 끈다</span>
+      서로 신뢰하지 않는 테넌트 사이의 메모리 중복 제거는 사이드채널 위험이 너무 크다. KSM은 같은 조직의 VDI·테스트 환경처럼 신뢰 경계 안에서 밀도를 높일 때 주로 쓴다. 기밀 VM(12절)은 메모리가 VM별 키로 암호화돼 내용이 같아도 암호문이 달라지므로 KSM이 원천적으로 효과가 없다.
+    </div>
+  </section>
+
+  <!-- ============ s10 ============ -->
+  <section id="s10">
+    <h2>10. 오버커밋 ③: 호스트 스왑, free page reporting, 메모리 핫플러그</h2>
+    <h3>호스트 스왑: 최후의 수단</h3>
+    <p>게스트 RAM은 QEMU의 익명 메모리이므로 호스트가 그냥 스왑아웃할 수 있다. 게스트 협조가 필요 없다는 장점이 있지만 <b>무엇을 내보낼지 호스트는 잘 모른다</b>. 대표적 문제가 <b>이중 페이징(double paging)</b>이다: 호스트가 이미 스왑아웃한 페이지를 게스트도 "오래 안 쓴 페이지"로 골라 자기 스왑에 쓰려 한다 → 그 페이지를 읽는 순간 호스트 스왑인 → 게스트는 디스크에 쓰고 해제 → 디스크 I/O 두 번, 이득 없음. 또한 게스트 커널 코드나 스핀락이 들어 있는 페이지가 스왑아웃되면 vCPU 전체가 멈춰 게스트 쪽에서 soft lockup 경고가 뜨기도 한다. 그래서 호스트 스왑은 ballooning이 따라가지 못하는 갑작스러운 압박을 흡수하는 안전망으로 쓰고, zswap 같은 압축 계층과 함께 쓰는 경우가 많다.</p>
+    <h3>Free page reporting (리눅스 5.7+)</h3>
+    <p>ballooning은 "목표치만큼 빼앗는" 방식이라 게스트가 손해를 본다. <b>free page reporting</b>(<code>VIRTIO_BALLOON_F_REPORTING</code>, <code>mm/page_reporting.c</code>)은 게스트 버디 할당자의 free list 중 큰 덩어리(기본 <code>pageblock_order</code>, x86-64에서 2MiB 이상)를 주기적으로 호스트에 알려 호스트가 백킹 프레임을 버리게 한다. 페이지는 <b>여전히 게스트 free list에 남아</b> 있고, 게스트가 다시 할당해 접근하면 EPT violation → 호스트가 새로 0 페이지를 붙여 준다. 목표치 관리가 필요 없고 게스트 MemTotal도 줄지 않는다.</p>
+    <div class="callout warn"><span class="title">reporting이 회수하지 못하는 것: 게스트 페이지 캐시</span>
+      리눅스 게스트는 남는 메모리를 페이지 캐시로 다 채운다. free가 아니므로 reporting 대상이 아니다. 그래서 오래 돈 VM은 실제로 쓰지 않는 캐시로 호스트 메모리를 점유한다. 대책으로 게스트에서 주기적 proactive reclaim(cgroup v2 <code>memory.reclaim</code>, DAMON 기반 회수)을 돌리거나, 호스트 측에서 free page reporting과 결합한다.
+    </div>
+    <p>비슷한 이름의 <b>free page hinting</b>(<code>VIRTIO_BALLOON_F_FREE_PAGE_HINT</code>)은 라이브 마이그레이션 시 "이 페이지는 free니 전송하지 않아도 된다"고 알려 주는 별도 기능이다.</p>
+    <h3>메모리 핫플러그</h3>
+    <ul>
+      <li><b>ACPI DIMM 핫플러그</b>(QEMU <code>pc-dimm</code>): 가상 DIMM을 꽂으면 게스트가 메모리 블록을 인식한다. 리눅스는 메모리를 <b>memory block</b> 단위(x86-64에서 보통 128MiB 이상, <code>/sys/devices/system/memory/block_size_bytes</code>)로 관리하고, <code>/sys/devices/system/memory/memoryN/state</code>에 <code>online</code>/<code>offline</code>을 쓰거나 <code>memhp_default_state</code>/<code>auto_online_blocks</code> 정책으로 자동 온라인한다.</li>
+      <li><b>핫언플러그는 어렵다</b>: 블록 안의 모든 페이지를 다른 곳으로 옮겨야 하는데, 커널 객체(slab, 페이지 테이블)는 옮길 수 없다. 그래서 언플러그할 메모리는 <code>ZONE_MOVABLE</code>로 온라인해야 한다(<code>online_movable</code>). 대신 ZONE_MOVABLE 비중이 너무 크면 커널 할당이 가능한 영역이 부족해지는 트레이드오프가 있다.</li>
+      <li><b>virtio-mem</b>(리눅스 5.8+): 게스트 협조형으로 서브블록(예: 2MiB) 단위 plug/unplug. DIMM 단위보다 세밀하고, 언플러그 실패 시 다른 서브블록을 시도할 수 있다. ballooning의 "부풀린 페이지"와 달리 진짜로 게스트 메모리 크기를 바꾸는 방식이라 NUMA 노드 단위 관리에도 적합하다.</li>
+    </ul>
+    <div class="tbl-wrap"><table>
+      <tr><th>기법</th><th>게스트 협조</th><th>입도</th><th>속도</th><th>주된 위험</th></tr>
+      <tr><td>Ballooning</td><td>필요</td><td>4KiB 페이지</td><td>느림(초 단위)</td><td>게스트 OOM, huge page 단편화</td></tr>
+      <tr><td>Free page reporting</td><td>필요(자동)</td><td>≥ pageblock</td><td>백그라운드</td><td>페이지 캐시는 회수 못함, 재접근 시 폴트</td></tr>
+      <tr><td>KSM</td><td>불필요</td><td>4KiB 페이지</td><td>느림(스캔 주기)</td><td>CPU 비용, 사이드채널, 역병합 폭풍</td></tr>
+      <tr><td>호스트 스왑</td><td>불필요</td><td>4KiB 페이지</td><td>즉시(하지만 I/O)</td><td>이중 페이징, vCPU 정지</td></tr>
+      <tr><td>virtio-mem / DIMM</td><td>필요</td><td>서브블록 / 블록</td><td>중간</td><td>언플러그 실패(옮길 수 없는 페이지)</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============ s11 ============ -->
+  <section id="s11">
+    <h2>11. 컨테이너 vs VM: 메모리 격리 비교</h2>
+    <p>컨테이너는 <b>커널 하나</b>를 공유하고, 메모리는 cgroup이 "회계와 한도"로만 나눈다. VM은 커널을 따로 갖고 하드웨어(EPT)가 주소 공간 자체를 나눈다. 이 차이가 운영에서 다음처럼 드러난다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>관점</th><th>컨테이너 (cgroup v2 + namespace)</th><th>VM (KVM 등)</th></tr>
+      <tr><td>격리 경계</td><td>같은 커널, 같은 페이지 테이블 관리자. 커널 버그 하나로 경계 붕괴 가능</td><td>EPT/NPT 하드웨어 경계. 하이퍼바이저 공격면이 훨씬 작음</td></tr>
+      <tr><td>메모리 한도</td><td><code>memory.max</code>, <code>memory.high</code>로 사용량 상한</td><td>게스트 RAM 크기 자체가 상한 (+ 호스트 쪽 QEMU cgroup)</td></tr>
+      <tr><td>페이지 캐시</td><td>호스트 페이지 캐시를 공유하지만 cgroup에 회계됨. 같은 파일을 읽으면 처음 읽은 cgroup에 과금</td><td>게스트마다 자기 페이지 캐시 → 같은 파일도 VM 수만큼 중복 캐시</td></tr>
+      <tr><td>내부에서 본 <code>/proc/meminfo</code></td><td>호스트 전체 값이 보임(lxcfs 등으로 가리지 않는 한). 앱이 잘못된 힙 크기를 고를 수 있음</td><td>게스트 RAM 기준 값</td></tr>
+      <tr><td>OOM</td><td>cgroup OOM killer가 컨테이너 내 프로세스를 죽임 (K8s: <code>OOMKilled</code>, exit 137)</td><td>게스트 커널 OOM killer가 게스트 내부에서 처리. 호스트 OOM이면 QEMU 프로세스 통째로 죽을 수 있음</td></tr>
+      <tr><td>회수/오버커밋</td><td>커널이 전역 LRU로 직접 회수 — 쓰지 않는 메모리는 자연스럽게 공유됨</td><td>ballooning·KSM·reporting 등 "의미적 간극"을 메우는 별도 장치 필요</td></tr>
+      <tr><td>주소 변환 비용</td><td>네이티브 (1D walk)</td><td>2D walk, VM exit 비용</td></tr>
+      <tr><td>고정 오버헤드</td><td>거의 없음 (프로세스 수준)</td><td>게스트 커널·페이지 테이블·EPT·QEMU 자체 (VM당 수십~수백 MiB)</td></tr>
+      <tr><td>사이드채널</td><td>공유 페이지 캐시(Flush+Reload류), 공유 라이브러리 페이지</td><td>KSM 병합 시 동일. 하드웨어 캐시 공유는 둘 다</td></tr>
+    </table></div>
+    <div class="callout"><span class="title">중간 지대: 마이크로VM과 샌드박스</span>
+      Firecracker, Kata Containers는 컨테이너 UX에 VM 경계를 씌운다. 메모리 관점에서는 VM이므로 ballooning(Firecracker는 virtio-balloon 지원)과 오버커밋 관리가 필요하다. gVisor는 유저 공간 커널로 시스템 콜을 가로채는 방식으로, 주소 공간 관리를 자체 구현한다.
+    </div>
+  </section>
+
+  <!-- ============ s12 ============ -->
+  <section id="s12">
+    <h2>12. 기밀 컴퓨팅: SEV-SNP와 TDX</h2>
+    <p>지금까지의 모든 기법은 <b>하이퍼바이저가 게스트 메모리를 읽고 바꿀 수 있다</b>는 전제 위에 있었다. 기밀 컴퓨팅은 그 전제를 뒤집는다. 클라우드 운영자(하이퍼바이저·호스트 커널·관리자)도 게스트 메모리를 볼 수 없게 하는 것이 목표다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 300" role="img" aria-label="메모리 컨트롤러의 VM별 키 암호화와 소유권 검사">
+        <rect x="20" y="30" width="170" height="70" rx="8" class="acc"/>
+        <text x="105" y="58" text-anchor="middle" class="t-b">기밀 VM 1</text>
+        <text x="105" y="80" text-anchor="middle" class="muted sm">키 K1 · 평문으로 보임</text>
+        <rect x="20" y="120" width="170" height="70" rx="8" class="vio"/>
+        <text x="105" y="148" text-anchor="middle" class="t-b">기밀 VM 2</text>
+        <text x="105" y="170" text-anchor="middle" class="muted sm">키 K2 · 평문으로 보임</text>
+        <rect x="20" y="210" width="170" height="70" rx="8" class="badb"/>
+        <text x="105" y="238" text-anchor="middle" class="t-b">하이퍼바이저</text>
+        <text x="105" y="260" text-anchor="middle" class="muted sm">게스트 메모리 = 암호문</text>
+
+        <rect x="270" y="60" width="200" height="190" rx="10" class="okb"/>
+        <text x="370" y="88" text-anchor="middle" class="t-b">SoC 메모리 컨트롤러</text>
+        <rect x="290" y="105" width="160" height="50" rx="6" class="box"/>
+        <text x="370" y="127" text-anchor="middle">AES 엔진</text>
+        <text x="370" y="145" text-anchor="middle" class="muted sm">키 ID별 암복호화</text>
+        <rect x="290" y="170" width="160" height="60" rx="6" class="wrn"/>
+        <text x="370" y="192" text-anchor="middle">소유권 검사</text>
+        <text x="370" y="210" text-anchor="middle" class="muted sm">SNP: RMP · TDX: PAMT/</text>
+        <text x="370" y="224" text-anchor="middle" class="muted sm">Secure EPT</text>
+
+        <rect x="560" y="60" width="180" height="190" rx="10" class="box"/>
+        <text x="650" y="88" text-anchor="middle" class="t-b">DRAM</text>
+        <rect x="580" y="105" width="140" height="30" rx="4" class="acc"/>
+        <text x="650" y="125" text-anchor="middle" class="sm">K1 암호문</text>
+        <rect x="580" y="145" width="140" height="30" rx="4" class="vio"/>
+        <text x="650" y="165" text-anchor="middle" class="sm">K2 암호문</text>
+        <rect x="580" y="185" width="140" height="30" rx="4" class="box"/>
+        <text x="650" y="205" text-anchor="middle" class="sm">shared(평문, I/O용)</text>
+
+        <path d="M190 65 L268 110" class="arr"/>
+        <path d="M190 155 L268 140" class="arr"/>
+        <path d="M190 245 L268 200" class="arr-b"/>
+        <path d="M470 155 L558 155" class="arr"/>
+        <text x="514" y="145" text-anchor="middle" class="sm">암호문</text>
+        <text x="230" y="290" text-anchor="middle" class="sm" style="fill:var(--bad)">남의 페이지 매핑·쓰기 시도 → 차단/폴트</text>
+      </svg>
+      <figcaption>그림 15-3. 메모리 암호화는 메모리 컨트롤러에서 VM별 키로 이루어진다. 무결성(remap·replay 차단)은 별도의 소유권 테이블이 담당한다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>AMD SEV → SEV-ES → SEV-SNP</th><th>Intel TDX</th></tr>
+      <tr><td>암호화</td><td>메모리 컨트롤러의 AES 엔진, VM별 키(ASID로 선택). 게스트 PTE의 <b>C-bit</b>로 페이지별 암호화 여부 지정 (위치는 CPUID 0x8000001F EBX[5:0])</td><td>MKTME 기반, 물리 주소 상위 비트의 <b>HKID</b>(키 ID)로 키 선택. GPA의 <b>shared 비트</b>로 private/shared 구분</td></tr>
+      <tr><td>레지스터 보호</td><td>SEV-ES부터 VM exit 시 레지스터 상태 암호화(VMSA)</td><td>TDX 모듈이 TD 상태 관리</td></tr>
+      <tr><td>무결성</td><td>SNP의 <b>RMP</b>(Reverse Map Table): 시스템 메모리 4KiB마다 소유자·할당·검증 상태 기록. 하이퍼바이저는 <code>RMPUPDATE</code>, 게스트는 <code>PVALIDATE</code></td><td>CPU의 SEAM 모드에서 도는 <b>TDX 모듈</b>이 <b>Secure EPT</b>를 직접 관리. 하이퍼바이저는 TDX 모듈 호출(SEAMCALL)로만 변경 요청. 게스트는 <code>TDG.MEM.PAGE.ACCEPT</code>로 페이지 수락</td></tr>
+      <tr><td>막는 공격</td><td>하이퍼바이저의 메모리 읽기, 리매핑(같은 GPA를 다른 프레임으로), 재생(replay), 별칭(aliasing)</td><td>동일</td></tr>
+    </table></div>
+    <h3>메모리 관리에 주는 제약</h3>
+    <ul>
+      <li><b>I/O는 shared 페이지로</b>: 장치(가상 NIC 등)는 암호문을 해석할 수 없으므로 게스트는 bounce buffer(SWIOTLB)를 shared로 표시해 거기서 데이터를 주고받는다. I/O 처리량이 떨어지는 이유다.</li>
+      <li><b>페이지 수락(acceptance)</b>: 게스트는 쓰기 전에 페이지를 검증·수락해야 한다. 부팅 시 전체를 수락하면 대형 VM 부팅이 매우 느려지므로 리눅스는 6.5부터 <b>unaccepted memory</b>를 지원해 처음 할당될 때 지연 수락한다.</li>
+      <li><b>오버커밋 기법 대부분이 무력화</b>: KSM은 효과 없음(키가 달라 암호문이 다름), 호스트 스왑·마이그레이션은 별도 펌웨어 지원이 필요, 많은 구현에서 게스트 private 메모리를 pin한다. 리눅스 6.8의 <b>guest_memfd</b>(<code>KVM_CREATE_GUEST_MEMFD</code>)는 private 메모리를 호스트 유저 공간 매핑 없이 관리하는 기반이다. ballooning은 게스트 협조 방식이라 개념적으로 가능하다.</li>
+      <li><b>RMP/Secure EPT 검사 비용</b>: 하이퍼바이저 쪽 메모리 접근과 페이지 상태 변경에 추가 검사가 붙는다. 상태 변경(private↔shared 전환)이 잦은 워크로드는 성능 영향이 크다.</li>
+    </ul>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>가상화된 메모리는 GVA → GPA → HPA 3단계다. KVM에서 GPA는 QEMU 프로세스의 HVA이므로 호스트 MM 기능이 VM 메모리에 그대로 적용된다.</li>
+    <li>섀도 PT는 TLB 미스가 싸지만 게스트 PT 수정마다 VM exit. EPT/NPT는 그 반대이며, 2D walk는 최대 nm+n+m회(4×4 → 24회) 참조한다.</li>
+    <li>2D walk 비용은 TLB·paging-structure cache·nested TLB와 <b>양쪽 huge page</b>로 줄인다. EPT 2MiB 리프는 호스트 백킹이 연속 2MiB일 때만 가능하다.</li>
+    <li>VPID/ASID는 TLB 엔트리에 VM 태그를 붙여 VM exit/전환 시 flush를 없앤다. EPT 변경 시에는 여전히 INVEPT와 원격 flush가 필요하다.</li>
+    <li>EPT violation은 KVM에서 사실상 "QEMU 프로세스의 페이지 폴트"로 이어진다. 지연 할당이 오버커밋을 가능하게 하고, MMU notifier가 호스트 회수와 EPT를 동기화한다.</li>
+    <li>오버커밋: ballooning(게스트가 페이지를 골라 반납), free page reporting(free 덩어리 자동 보고), KSM(동일 페이지 병합, 사이드채널 주의), 호스트 스왑(최후 수단, 이중 페이징), virtio-mem/DIMM 핫플러그.</li>
+    <li>컨테이너는 같은 커널 위의 회계·한도, VM은 하드웨어 주소 공간 분리. 기밀 VM(SEV-SNP/TDX)은 VM별 키 암호화와 소유권 테이블로 하이퍼바이저조차 메모리를 못 보게 하며, 그 대가로 대부분의 오버커밋 기법을 잃는다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">게스트 4단계 페이징 + 호스트 EPT 4단계(모두 4KiB)에서 TLB와 모든 페이지 워크 캐시가 비어 있을 때, 데이터 접근 직전까지 필요한 최대 메모리 참조 횟수는?</div>
+    <button class="opt">8</button><button class="opt">16</button><button class="opt">24</button><button class="opt">25</button>
+    <div class="explain">n·m + n + m = 16 + 4 + 4 = 24. 5개의 GPA(게스트 테이블 4개 + 데이터)를 각각 EPT 4회로 변환(20회)하고 게스트 엔트리 4개를 읽는다(4회). 데이터 접근 자체를 포함하면 25회다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">VPID(또는 AMD ASID)가 주로 해결하는 문제는?</div>
+    <button class="opt">게스트 페이지 테이블 수정 시 VM exit</button>
+    <button class="opt">VM entry/exit 및 VM 전환 때마다 TLB 전체를 flush해야 하는 문제</button>
+    <button class="opt">2D page walk의 메모리 참조 횟수</button>
+    <button class="opt">게스트 메모리 암호화</button>
+    <div class="explain">TLB 엔트리에 VM 태그를 붙여 서로 다른 VM(그리고 호스트)의 변환이 공존할 수 있게 한다. 따라서 전환 때 flush가 필요 없다. 2D walk 비용 자체는 줄이지 않는다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">KSM이 서로 신뢰하지 않는 VM 사이에서 보안 위험이 되는 핵심 이유는?</div>
+    <button class="opt">병합된 페이지를 다른 VM이 읽을 수 있어서</button>
+    <button class="opt">ksmd가 게스트 커널 권한으로 실행되어서</button>
+    <button class="opt">병합 시 페이지가 암호화되지 않아서</button>
+    <button class="opt">병합된 페이지에 쓰면 CoW 폴트로 눈에 띄게 느려져, 다른 VM에 같은 내용이 있는지 추론할 수 있어서</button>
+    <div class="explain">병합 페이지는 쓰기 금지 상태라 쓰기 시 CoW 분리가 일어나고 지연이 크다. 이 타이밍 차이가 "같은 내용의 페이지가 다른 VM에 있다"는 정보를 누출한다. 직접 읽는 것은 불가능하다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Free page reporting과 ballooning의 차이로 옳은 것은?</div>
+    <button class="opt">reporting은 게스트 free list에 남아 있는 큰 free 덩어리를 호스트에 알릴 뿐, 게스트 MemTotal을 줄이거나 페이지를 빼앗지 않는다</button>
+    <button class="opt">reporting은 게스트 페이지 캐시도 자동으로 회수한다</button>
+    <button class="opt">reporting은 게스트 드라이버 없이 호스트가 단독으로 수행한다</button>
+    <button class="opt">reporting은 4KiB 단위로 보고하므로 ballooning보다 세밀하다</button>
+    <div class="explain">reporting은 virtio-balloon 드라이버를 통해 동작하며(게스트 협조), pageblock_order 이상 덩어리만 보고한다. 페이지 캐시는 free가 아니므로 대상이 아니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">fork/exec가 초당 수만 번 일어나는 빌드 서버 VM에서 섀도 페이지 테이블이 특히 불리한 이유는?</div>
+    <button class="opt">TLB 미스 시 2D walk가 필요해서</button>
+    <button class="opt">VPID를 사용할 수 없어서</button>
+    <button class="opt">게스트 PT 수정과 CR3 전환이 매번 VM exit를 일으켜서</button>
+    <button class="opt">섀도 PT는 huge page를 지원하지 않아서</button>
+    <div class="explain">섀도 방식은 게스트 PT 페이지를 쓰기 금지해 동기화하므로, 주소 공간을 자주 만들고 바꾸는 워크로드에서 VM exit가 폭증한다. 2D walk는 EPT 쪽 비용이다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">AMD SEV-SNP의 RMP(Reverse Map Table)가 하는 일은?</div>
+    <button class="opt">게스트 페이지를 압축해 메모리를 절약한다</button>
+    <button class="opt">각 물리 페이지의 소유자·상태를 기록해 하이퍼바이저의 리매핑·재생 공격을 막는다(무결성)</button>
+    <button class="opt">GVA→GPA 변환을 캐시한다</button>
+    <button class="opt">게스트 간 동일 페이지를 병합한다</button>
+    <div class="explain">암호화만으로는 하이퍼바이저가 암호문 페이지를 다른 GPA에 매핑하거나 옛 내용을 되돌려 놓는 공격을 막을 수 없다. RMP가 페이지 소유권과 검증 상태를 강제해 이를 막는다.</div>
+  </div>
+</main>
+<script>
+(function () {
+  /* ================= 1) 2D page walk 격자 ================= */
+  var GN = { 5: ["PML5", "PML4", "PDPT", "PD", "PT"], 4: ["PML4", "PDPT", "PD", "PT"], 3: ["PML4", "PDPT", "PD"], 2: ["PML4", "PDPT"] };
+  var gridEl = document.getElementById("walk-grid");
+  var stepHost = document.getElementById("walk-step");
+  function walkCells(n, m) {
+    // 접근 순서대로 셀 목록: {r, c, kind}
+    var list = [];
+    for (var r = 0; r <= n; r++) {
+      for (var c = 0; c < m; c++) list.push({ r: r, c: c, kind: "nest" });
+      if (r < n) list.push({ r: r, c: m, kind: "gst" });
+    }
+    return list; // 길이 = n*m + n + m
+  }
+  function buildWalk() {
+    var n = +document.getElementById("walk-g").value, m = +document.getElementById("walk-h").value;
+    var gL = GN[n], hL = GN[m];
+    var cells = walkCells(n, m);
+    var total = cells.length;
+    document.getElementById("walk-max").textContent = total;
+    document.getElementById("walk-ratio").textContent = (total / n).toFixed(1) + "×";
+    gridEl.style.gridTemplateColumns = "150px repeat(" + (m + 1) + ", minmax(54px,1fr))";
+    var html = '<div class="hd"></div>';
+    for (var c = 0; c < m; c++) html += '<div class="hd">EPT n' + hL[c] + "</div>";
+    html += '<div class="hd">게스트 엔트리 읽기</div>';
+    var rowLabel = function (r) {
+      if (r === 0) return "gCR3 → g" + gL[0] + " 테이블의 GPA";
+      if (r < n) return "g" + gL[r - 1] + "E → g" + gL[r] + " 테이블 GPA";
+      return "g" + gL[n - 1] + "E → 데이터 GPA";
+    };
+    for (var r = 0; r <= n; r++) {
+      html += '<div class="rh">' + rowLabel(r) + "</div>";
+      for (var c2 = 0; c2 <= m; c2++) {
+        var kind = c2 < m ? "nest" : (r < n ? "gst" : "data");
+        html += '<div class="wc ' + kind + '" data-r="' + r + '" data-c="' + c2 + '">' + (kind === "data" ? "데이터" : "") + "</div>";
+      }
+    }
+    gridEl.innerHTML = html;
+    stepHost.innerHTML = "";
+    MM.stepper(stepHost, {
+      steps: total + 2, interval: 600,
+      render: function (i) {
+        gridEl.querySelectorAll(".wc").forEach(function (e) { e.classList.remove("on", "cur"); if (!e.classList.contains("data")) e.textContent = ""; });
+        var k = Math.min(i, total);
+        for (var j = 0; j < k; j++) {
+          var cc = cells[j];
+          var e2 = gridEl.querySelector('.wc[data-r="' + cc.r + '"][data-c="' + cc.c + '"]');
+          e2.classList.add("on"); e2.textContent = j + 1;
+          if (j === k - 1 && i <= total) e2.classList.add("cur");
+        }
+        document.getElementById("walk-cnt").textContent = k;
+        if (i === 0) return "TLB 미스. 게스트 CR3에는 최상위 게스트 테이블의 <b>GPA</b>가 들어 있다. 이 GPA부터 EPT로 변환해야 한다.";
+        if (i === total + 1) {
+          var d = gridEl.querySelector(".wc.data"); d.classList.add("on", "cur");
+          return "데이터 GPA까지 HPA로 변환 완료. 총 <b>" + total + "회</b> 참조 후 비로소 데이터 접근(+1). 네이티브 " + n + "단계 walk(" + n + "회)의 " + (total / n).toFixed(1) + "배. 결과 GVA→HPA는 TLB에 캐시된다.";
+        }
+        var cur = cells[i - 1];
+        if (cur.kind === "nest") {
+          var what = cur.r < n ? "게스트 " + gL[cur.r] + " 테이블" : "데이터 페이지";
+          return "참조 #" + i + ": " + what + "의 GPA를 HPA로 바꾸기 위해 EPT <b>n" + hL[cur.c] + "</b> 엔트리를 읽는다." + (cur.c === m - 1 ? " → HPA 획득." : "");
+        }
+        return "참조 #" + i + ": 방금 얻은 HPA에서 <b>게스트 " + gL[cur.r] + " 엔트리</b>를 읽는다. 그 안에 든 것은 또 GPA이므로 다음 행에서 다시 EPT walk가 필요하다.";
+      }
+    });
+  }
+  document.getElementById("walk-g").onchange = buildWalk;
+  document.getElementById("walk-h").onchange = buildWalk;
+  buildWalk();
+
+  /* ================= 2) 섀도 vs EPT 비용 계산기 ================= */
+  var HZ = 3e9;
+  function fmtRate(x) { return x >= 1e6 ? (x / 1e6).toFixed(2) + "M" : x >= 1e3 ? (x / 1e3).toFixed(1) + "K" : Math.round(x) + ""; }
+  function costCalc() {
+    var miss = Math.pow(10, +document.getElementById("c-miss").value);
+    var upd = Math.pow(10, +document.getElementById("c-upd").value);
+    var cr3 = Math.pow(10, +document.getElementById("c-cr3").value);
+    var L = +document.getElementById("c-lat").value;
+    var h = +document.getElementById("c-pwc").value;
+    var E = +document.getElementById("c-exit").value;
+    document.getElementById("cv-miss").textContent = fmtRate(miss);
+    document.getElementById("cv-upd").textContent = fmtRate(upd);
+    document.getElementById("cv-cr3").textContent = fmtRate(cr3);
+    document.getElementById("cv-lat").textContent = L;
+    document.getElementById("cv-pwc").textContent = Math.round(h * 100) + "%";
+    document.getElementById("cv-exit").textContent = E;
+    var sh = miss * 4 * L + (upd + cr3) * E;
+    var ept = miss * (4 + 20 * (1 - h)) * L;
+    var shP = sh / HZ * 100, eP = ept / HZ * 100;
+    document.getElementById("r-sh").textContent = shP.toFixed(1) + "% (" + fmtRate(sh) + " cycles/s)";
+    document.getElementById("r-ept").textContent = eP.toFixed(1) + "% (" + fmtRate(ept) + " cycles/s)";
+    document.getElementById("b-sh").style.width = Math.min(100, shP) + "%";
+    document.getElementById("b-ept").style.width = Math.min(100, eP) + "%";
+    var win = sh < ept ? "섀도 PT가 유리" : "EPT가 유리";
+    document.getElementById("cost-note").textContent =
+      "→ " + win + " (차이 " + Math.abs(shP - eP).toFixed(1) + "%p)\n" +
+      "섀도: walk " + (miss * 4 * L / HZ * 100).toFixed(1) + "% + 동기화 VM exit " + ((upd + cr3) * E / HZ * 100).toFixed(1) + "%\n" +
+      "EPT : 미스당 평균 참조 " + (4 + 20 * (1 - h)).toFixed(1) + "회 (네이티브 4회)" +
+      (shP > 100 || eP > 100 ? "\n※ 100%를 넘는 값은 이 vCPU가 사실상 변환 비용만 처리하는 비현실적 상태를 뜻한다." : "");
+  }
+  var PRESETS = {
+    db: { "c-miss": 6.2, "c-upd": 2.5, "c-cr3": 3, "c-lat": 30, "c-pwc": 0.8, "c-exit": 4000 },
+    build: { "c-miss": 5.5, "c-upd": 5.2, "c-cr3": 4.3, "c-lat": 25, "c-pwc": 0.85, "c-exit": 4000 }
+  };
+  document.querySelectorAll("#w-cost [data-preset]").forEach(function (b) {
+    b.onclick = function () { var p = PRESETS[b.dataset.preset]; for (var k in p) document.getElementById(k).value = p[k]; costCalc(); };
+  });
+  document.querySelectorAll("#w-cost input").forEach(function (i) { i.oninput = costCalc; });
+  costCalc();
+
+  /* ================= 3) VPID TLB 시뮬레이터 ================= */
+  var TLB_N = 8, WS = [1, 2, 3, 4];
+  var vp = { tlb: [], cur: 0, acc: 0, hit: 0, miss: 0, wrong: 0, tick: 0 };
+  function hpaOf(vm, vpn) { return vm * 0x100 + vpn * 0x11; }
+  function vpLog(s) { var l = document.getElementById("vp-log"); l.textContent = s + "\n" + l.textContent; }
+  function vpRender(fresh) {
+    var t = document.getElementById("vp-tlb");
+    var mode = document.getElementById("vp-mode").value;
+    var h = "<tr><th>#</th><th>태그(VPID)</th><th>GVA 페이지</th><th>HPA 프레임</th></tr>";
+    for (var i = 0; i < TLB_N; i++) {
+      var e = vp.tlb[i];
+      if (!e) { h += "<tr><td>" + i + "</td><td>—</td><td>—</td><td>—</td></tr>"; continue; }
+      h += '<tr class="vm' + e.vm + (fresh && fresh.indexOf(e) >= 0 ? " fresh" : "") + '"><td>' + i + "</td><td>" + (mode === "vpid" ? e.vm : "(없음)") + "</td><td>" + e.vpn + "</td><td>" + MM.hex(hpaOf(e.vm, e.vpn), 3) + "</td></tr>";
+    }
+    t.innerHTML = h;
+    document.getElementById("vp-acc").textContent = vp.acc;
+    document.getElementById("vp-hit").textContent = vp.hit;
+    document.getElementById("vp-miss").textContent = vp.miss;
+    document.getElementById("vp-wrong").textContent = vp.wrong;
+  }
+  function vpSwitch(to, why) {
+    var mode = document.getElementById("vp-mode").value;
+    if (mode === "flush" && vp.tlb.length) { vp.tlb = []; vpLog("  [" + why + "] 태그가 없으므로 TLB 전체 flush"); }
+    vp.cur = to;
+  }
+  function vpRun(vm, quiet) {
+    if (vp.cur !== vm) vpSwitch(vm, vp.cur ? "VM" + vp.cur + "→VM" + vm + " 전환" : "VM" + vm + " 진입");
+    var mode = document.getElementById("vp-mode").value;
+    var fresh = [], line = "VM" + vm + ": ";
+    WS.forEach(function (vpn) {
+      vp.acc++; vp.tick++;
+      var e = null;
+      for (var i = 0; i < vp.tlb.length; i++) {
+        var x = vp.tlb[i];
+        if (x.vpn === vpn && (mode !== "vpid" || x.vm === vm)) { e = x; break; }
+      }
+      if (e) {
+        e.t = vp.tick;
+        if (e.vm !== vm) { vp.wrong++; line += "p" + vpn + "=잘못됨(VM" + e.vm + "의 " + MM.hex(hpaOf(e.vm, vpn), 3) + "!) "; }
+        else { vp.hit++; line += "p" + vpn + "=히트 "; }
+      } else {
+        vp.miss++; line += "p" + vpn + "=미스 ";
+        var ne = { vm: vm, vpn: vpn, t: vp.tick };
+        if (vp.tlb.length < TLB_N) vp.tlb.push(ne);
+        else { var lru = 0; for (var j = 1; j < vp.tlb.length; j++) if (vp.tlb[j].t < vp.tlb[lru].t) lru = j; vp.tlb[lru] = ne; }
+        fresh.push(ne);
+      }
+    });
+    if (!quiet) vpLog(line);
+    vpRender(fresh);
+  }
+  document.getElementById("vp-r1").onclick = function () { vpRun(1); };
+  document.getElementById("vp-r2").onclick = function () { vpRun(2); };
+  document.getElementById("vp-exit").onclick = function () {
+    if (!vp.cur) { vpLog("아직 실행 중인 VM이 없다."); return; }
+    var c = vp.cur; vpSwitch(0, "VM exit"); vpSwitch(c, "VM entry");
+    vpLog("VM" + c + " exit → 하이퍼바이저 처리 → 재진입" + (document.getElementById("vp-mode").value === "vpid" ? " (VPID: TLB 유지)" : ""));
+    vpRun(c);
+  };
+  document.getElementById("vp-auto").onclick = function () {
+    for (var k = 0; k < 10; k++) { vpRun(1, true); vpRun(2, true); }
+    vpLog("VM1↔VM2 10회 왕복 완료 (누적 히트율 " + (vp.acc ? Math.round(vp.hit / vp.acc * 100) : 0) + "%)");
+  };
+  function vpReset() { vp = { tlb: [], cur: 0, acc: 0, hit: 0, miss: 0, wrong: 0, tick: 0 }; document.getElementById("vp-log").textContent = ""; vpRender(); }
+  document.getElementById("vp-reset").onclick = vpReset;
+  document.getElementById("vp-mode").onchange = function () {
+    vpReset();
+    var m = this.value;
+    vpLog(m === "vpid" ? "VPID 모드: 엔트리가 (VPID, GVA)로 식별된다." : m === "flush" ? "flush 모드: VPID 이전 시절. 정확하지만 전환마다 TLB가 비워진다." : "버그 모드: 태그도 flush도 없으면 다른 VM의 변환을 그대로 쓴다 → 격리 붕괴.");
+  };
+  vpRender();
+
+  /* ================= 4) Ballooning 애니메이션 ================= */
+  // 페이지 종류: u=사용, c=캐시, f=free, b=balloon(아직 호스트 백킹 있음), B=balloon(호스트 반납 완료)
+  function blStates() {
+    var S = [];
+    var A0 = ["u", "u", "u", "u", "c", "c", "c", "f", "f", "f"];
+    var B0 = ["u", "u", "u", "u", "u", "u", "f", "f", "f", "f"];
+    // 호스트 프레임 owner: "A0".."A9", "B0".., "" = free. B는 앞 6개 페이지만 백킹(나머지는 아직 접근 안 함)
+    var H0 = []; for (var i = 0; i < 10; i++) H0.push("A" + i); for (var j = 0; j < 6; j++) H0.push("B" + j);
+    function snap(A, B, H, tgt, mt, flash, cap) { S.push({ A: A.slice(), B: B.slice(), H: H.slice(), tgt: tgt, mt: mt, flash: flash || [], cap: cap }); }
+    var A = A0.slice(), B = B0.slice(), H = H0.slice(), cnt;
+    snap(A, B, H, 0, 10, [], "초기 상태. 호스트 프레임 16개가 모두 사용 중(VM A 10, VM B 6). VM A는 한때 10페이지를 모두 건드렸기 때문에 게스트 안에서 free(회색)인 3페이지도 호스트 프레임을 붙잡고 있다. 호스트는 이것이 free인지 모른다.");
+    snap(A, B, H, 4, 10, [], "VM B가 메모리를 더 원한다. 호스트(libvirt <code>virsh setmem</code> → QEMU)가 VM A의 virtio-balloon 설정 <code>num_pages</code>를 <b>4</b>로 올린다. 게스트에 config 변경 인터럽트가 간다.");
+    var order = [7, 8, 9];
+    cnt = 0;
+    order.forEach(function (p) {
+      A[p] = "b"; cnt++;
+      snap(A, B, H, 4, 10, ["a" + p], "balloon 드라이버가 게스트 커널에 <code>alloc_page()</code>를 요청 → free 페이지 GPA " + p + "를 받아 풍선에 넣는다 (" + cnt + "/4).");
+    });
+    A[4] = "f";
+    snap(A, B, H, 4, 10, ["a4"], "게스트 free 페이지가 바닥났다. 그래도 할당 요청은 계속되므로 <b>게스트 자신의 회수 로직</b>이 돌아 가장 덜 쓰인 페이지 캐시(GPA 4)를 축출한다. 무엇을 버릴지는 게스트가 고른다.");
+    A[4] = "b"; cnt++;
+    snap(A, B, H, 4, 10, ["a4"], "회수된 GPA 4도 풍선으로 (4/4). 풍선 페이지는 게스트 커널 입장에서 \"드라이버가 할당해 쥐고 있는 메모리\"일 뿐이다.");
+    var balloon = [7, 8, 9, 4];
+    balloon.forEach(function (p) { A[p] = "B"; H[p] = ""; });
+    snap(A, B, H, 4, 6, balloon.map(function (p) { return "h" + p; }), "드라이버가 PFN 목록 [7, 8, 9, 4]를 <b>inflate virtqueue</b>로 보낸다. QEMU는 해당 GPA의 HVA 범위에 <code>madvise(MADV_DONTNEED)</code> → 호스트 프레임 4개가 free로. EPT 엔트리도 MMU notifier로 제거된다. 게스트 MemTotal은 10→6 (DEFLATE_ON_OOM 미협상 시).");
+    var newB = [6, 7, 8];
+    var freeFr = [7, 8, 9];
+    newB.forEach(function (p, k) { B[p] = "u"; H[freeFr[k]] = "B" + p; });
+    snap(A, B, H, 4, 6, freeFr.map(function (f) { return "h" + f; }).concat(newB.map(function (p) { return "b" + p; })), "VM B가 GPA 6~8을 처음 건드린다 → EPT violation → 호스트가 비어 있던 프레임을 할당해 매핑. 호스트 free 1개가 여유로 남는다.");
+    balloon.forEach(function (p) { A[p] = "f"; });
+    snap(A, B, H, 0, 10, balloon.map(function (p) { return "a" + p; }), "<b>Deflate</b>: 나중에 VM A가 다시 메모리를 원하면 호스트가 목표치를 낮추고, 드라이버는 deflate virtqueue로 알린 뒤 풍선 페이지를 게스트 free list에 돌려준다(MemTotal 6→10). 점선 칸은 게스트에겐 free지만 호스트 프레임은 없는 상태다. 게스트가 그 GPA를 다시 쓰면 EPT violation → 호스트가 새 0 페이지를 할당한다. 그 시점에 호스트에 여유가 없다면? 결국 호스트 스왑이 개입한다.");
+    return S;
+  }
+  var BL = blStates();
+  function blCell(kind, label, id, flash) {
+    var cls = { u: "k-used", c: "k-cache", f: "k-free", b: "k-bal", B: "k-bal" }[kind];
+    var lab = label;
+    return '<div class="cell ' + cls + (kind === "B" ? " k-ret" : "") + (flash.indexOf(id) >= 0 ? " flash" : "") + '" title="GPA ' + label + '">' + lab + "</div>";
+  }
+  MM.stepper(document.getElementById("bl-step"), {
+    steps: BL.length, interval: 1800,
+    render: function (i) {
+      var s = BL[i];
+      document.getElementById("bl-a").innerHTML = s.A.map(function (k, p) {
+        if (k !== "B" && s.H.indexOf("A" + p) < 0) return '<div class="cell k-none' + (s.flash.indexOf("a" + p) >= 0 ? " flash" : "") + '" title="게스트 free, 호스트 백킹 없음">' + p + "</div>";
+        return blCell(k, p, "a" + p, s.flash);
+      }).join("");
+      document.getElementById("bl-b").innerHTML = s.B.map(function (k, p) {
+        var backed = s.H.indexOf("B" + p) >= 0;
+        return backed ? blCell(k, p, "b" + p, s.flash) : '<div class="cell k-none" title="아직 호스트 백킹 없음">' + p + "</div>";
+      }).join("");
+      document.getElementById("bl-h").innerHTML = s.H.map(function (o, f) {
+        var cls = o === "" ? "k-free" : o[0] === "A" ? "k-A" : "k-B";
+        return '<div class="cell ' + cls + (s.flash.indexOf("h" + f) >= 0 ? " flash" : "") + '" title="호스트 프레임 ' + f + '">' + (o || "·") + "</div>";
+      }).join("");
+      var inB = s.A.filter(function (k) { return k === "b" || k === "B"; }).length;
+      document.getElementById("bl-tg").textContent = inB + " / " + s.tgt;
+      document.getElementById("bl-free").textContent = s.H.filter(function (o) { return o === ""; }).length;
+      document.getElementById("bl-mt").textContent = s.mt;
+      return s.cap;
+    }
+  });
+
+  /* ================= 5) KSM 시뮬레이터 ================= */
+  var KSM_INIT = [
+    ["zero", "kernel .text", "libc.so", "app data A", "zero", "nginx bin"],
+    ["zero", "kernel .text", "libc.so", "app data B", "sshd bin", "zero"],
+    ["kernel .text", "zero", "libc.so", "nginx bin", "db buffer", "app data C"]
+  ];
+  function fnv1a(s) { var h = 0x811c9dc5; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h >>> 0; }
+  var K;
+  function ksmReset() {
+    K = { pages: [], cursor: 0, stable: [], unstable: [], scans: 0, nextId: 1, writeSeq: 0 };
+    KSM_INIT.forEach(function (row, v) { row.forEach(function (c, p) { K.pages.push({ vm: v, idx: p, content: c, cs: null, stable: null, unstable: false, split: false }); }); });
+    document.getElementById("ksm-log").textContent = "";
+    ksmRender();
+  }
+  function kLog(s) { var l = document.getElementById("ksm-log"); l.textContent = s + "\n" + l.textContent; }
+  function ksmStats() {
+    var priv = K.pages.filter(function (p) { return p.stable === null; }).length;
+    var live = K.stable.filter(function (s) { return s.refs > 0; });
+    var mappers = live.reduce(function (a, s) { return a + s.refs; }, 0);
+    return { frames: priv + live.length, shared: live.length, sharing: mappers - live.length };
+  }
+  function ksmRender(scanIdx) {
+    var box = document.getElementById("ksm-vms"), h = "";
+    for (var v = 0; v < 3; v++) {
+      h += '<div class="ksm-vm"><div class="nm">VM ' + (v + 1) + '</div><div class="cells">';
+      K.pages.forEach(function (p, gi) {
+        if (p.vm !== v) return;
+        var cls = p.stable !== null ? "merged" : p.unstable ? "unstable" : p.split ? "split" : "";
+        var sub = p.stable !== null ? "KSM#" + p.stable : p.cs !== null ? "cs " + p.cs.toString(16).slice(0, 6) : "미스캔";
+        h += '<div class="cell ksm-page ' + cls + (gi === scanIdx ? " scan" : "") + '" data-i="' + gi + '"><span>' + p.content + "</span><small>" + sub + "</small></div>";
+      });
+      h += "</div></div>";
+    }
+    box.innerHTML = h;
+    var st = ksmStats();
+    document.getElementById("ksm-frames").textContent = st.frames + " / 18";
+    document.getElementById("ksm-shared").textContent = st.shared;
+    document.getElementById("ksm-sharing").textContent = st.sharing;
+    document.getElementById("ksm-scans").textContent = K.scans;
+  }
+  function ksmScanOne(quiet) {
+    var gi = K.cursor, p = K.pages[gi], name = "VM" + (p.vm + 1) + "/p" + p.idx + " [" + p.content + "]";
+    var cs = fnv1a(p.content), msg;
+    if (p.stable !== null) msg = name + ": 이미 KSM 페이지(KSM#" + p.stable + ") → 건너뜀";
+    else {
+      var st = null;
+      for (var i = 0; i < K.stable.length; i++) if (K.stable[i].refs > 0 && K.stable[i].content === p.content) { st = K.stable[i]; break; }
+      if (st) {
+        // stable tree 히트: 체크섬 검사 없이 바로 병합 (실제 KSM도 stable 비교를 먼저 한다)
+        p.stable = st.id; st.refs++; p.unstable = false; p.cs = cs;
+        msg = name + ": stable tree에서 같은 내용 발견(memcmp 일치) → KSM#" + st.id + "에 병합, 프레임 1개 해제";
+      } else if (p.cs !== cs) {
+        p.cs = cs;
+        msg = name + ": 체크섬 " + MM.hex(cs, 8) + " 기록. 직전 스캔과 달라(또는 첫 스캔) 휘발성 가능 → 이번엔 트리에 넣지 않음";
+      } else {
+        var u = null;
+        for (var j = 0; j < K.unstable.length; j++) if (K.pages[K.unstable[j]].content === p.content && K.unstable[j] !== gi) { u = K.unstable[j]; break; }
+        if (u !== null) {
+          var q = K.pages[u];
+          var node = { id: K.nextId++, content: p.content, refs: 2 };
+          K.stable.push(node);
+          p.stable = q.stable = node.id; p.unstable = q.unstable = false;
+          K.unstable.splice(K.unstable.indexOf(u), 1);
+          msg = name + ": unstable tree의 VM" + (q.vm + 1) + "/p" + q.idx + "와 내용 일치 → 둘을 쓰기 금지 KSM#" + node.id + "로 병합, stable tree로 승격";
+        } else {
+          K.unstable.push(gi); p.unstable = true;
+          msg = name + ": 체크섬 안정적. 짝이 없어 unstable tree에 후보로 삽입";
+        }
+      }
+    }
+    if (!quiet) kLog(msg);
+    K.cursor++;
+    if (K.cursor >= K.pages.length) {
+      K.cursor = 0; K.scans++;
+      K.unstable.forEach(function (x) { K.pages[x].unstable = false; });
+      K.unstable = [];
+      kLog("── 전체 스캔 " + K.scans + "회 완료: unstable tree를 비운다 ──");
+    }
+    ksmRender(quiet ? undefined : gi);
+  }
+  document.getElementById("ksm-one").onclick = function () { ksmScanOne(false); };
+  document.getElementById("ksm-full").onclick = function () {
+    var target = K.scans + 1, n = 0;
+    while (K.scans < target && n < 100) { ksmScanOne(true); n++; }
+    var st = ksmStats();
+    kLog("전체 스캔: 물리 프레임 " + st.frames + "개 사용 (절약 " + (18 - st.frames) + "개)");
+  };
+  document.getElementById("ksm-reset").onclick = ksmReset;
+  document.getElementById("ksm-vms").addEventListener("click", function (e) {
+    var c = e.target.closest(".ksm-page"); if (!c) return;
+    var p = K.pages[+c.dataset.i], name = "VM" + (p.vm + 1) + "/p" + p.idx;
+    K.writeSeq++;
+    if (p.stable !== null) {
+      var node = K.stable.filter(function (s) { return s.id === p.stable; })[0];
+      node.refs--;
+      p.stable = null; p.split = true; p.cs = null;
+      p.content = p.content + "'";
+      kLog(name + " 쓰기: KSM 페이지는 쓰기 금지 → 쓰기 폴트 → 새 프레임 할당 + 4KiB 복사 + 매핑 교체 (CoW 분리). 지연 수 µs: 평범한 쓰기(ns) 대비 크게 느림 → 사이드채널" + (node.refs === 1 ? ". KSM#" + node.id + "는 이제 매핑 1개뿐" : ""));
+    } else {
+      if (p.unstable) { K.unstable.splice(K.unstable.indexOf(+c.dataset.i), 1); p.unstable = false; }
+      p.content = p.content.replace(/'+$/, "") + "'";
+      kLog(name + " 쓰기: 전용 페이지라 폴트 없이 즉시 완료 (내용이 바뀌어 다음 스캔에서 체크섬 불일치 → 휘발성 처리)");
+    }
+    ksmRender();
+  });
+  ksmReset();
+})();
+</script>
+</body>
+</html>

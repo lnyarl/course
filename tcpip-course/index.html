@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+  <nav id="sidebar"></nav>
+  <main class="content" style="max-width:1000px">
+    <section class="hero">
+      <svg class="hero-bg" viewBox="0 0 300 300" fill="none" stroke="#fff" stroke-width="2"><circle cx="150" cy="150" r="120"/><circle cx="150" cy="150" r="80"/><circle cx="150" cy="150" r="40"/><path d="M30 150h240M150 30v240M65 65l170 170M235 65L65 235"/></svg>
+      <div class="eyebrow" style="opacity:.85;font-weight:700;letter-spacing:.08em;font-size:.8rem">INTERACTIVE COURSE</div>
+      <h1>TCP/IP 전문가 과정</h1>
+      <p>패킷이 비트로 바뀌어 전선을 지나고, 라우터를 거쳐, 다시 애플리케이션 데이터로 되돌아오기까지. 도식과 애니메이션, 직접 조작하는 시뮬레이터로 TCP/IP를 <b>설명할 수 있는 수준</b>까지 끌어올립니다.</p>
+      <div class="badge-row">
+        <span class="chip" style="background:rgba(255,255,255,.18);color:#fff;border:0">14개 장</span>
+        <span class="chip" style="background:rgba(255,255,255,.18);color:#fff;border:0">40+ 인터랙티브 도식</span>
+        <span class="chip" style="background:rgba(255,255,255,.18);color:#fff;border:0">장별 퀴즈</span>
+        <span class="chip" style="background:rgba(255,255,255,.18);color:#fff;border:0">오프라인 동작</span>
+      </div>
+    </section>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div><b>전체 진행률</b> <span class="small" id="idx-count"></span></div>
+        <span id="idx-pct" class="tag blue">0%</span>
+      </div>
+      <div class="bar" style="margin-top:8px"><i id="idx-bar" style="width:0"></i></div>
+    </div>
+
+    <h2 id="map">학습 지도</h2>
+    <p>왼쪽은 네트워크 계층 모델, 오른쪽은 각 계층을 다루는 장입니다. 개론(Part 1)은 아래에서 위로 한 번 올라가고, 심화(Part 2)는 전송 계층(TCP)을 깊게 판 뒤 다시 네트워크·보안·도구로 넓힙니다.</p>
+    <div class="figure card">
+      <svg viewBox="0 0 860 300" id="roadmap">
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+        <g id="rm-layers"></g>
+      </svg>
+    </div>
+
+    <h2 id="part1">Part 1 · 개론</h2>
+    <p>네트워크를 처음 체계적으로 배우거나, 아는 것을 정리하려는 분을 위한 과정. 각 계층의 역할과 핵심 프로토콜을 애니메이션으로 봅니다.</p>
+    <div class="course-grid" id="grid-1"></div>
+
+    <h2 id="part2">Part 2 · 심화</h2>
+    <p>"왜 그렇게 설계되었는가"에 답하는 과정. TCP 내부 알고리즘, 라우팅 프로토콜, 보안, 실제 패킷 분석까지 다룹니다. 전문가라면 이 내용을 백지에 그릴 수 있어야 합니다.</p>
+    <div class="course-grid" id="grid-2"></div>
+
+    <h2 id="howto">활용 방법</h2>
+    <div class="grid-2">
+      <div class="card"><h3 style="margin-top:0">📐 도식 · 애니메이션</h3><p>각 애니메이션은 <b>다음 ▶</b> 버튼으로 단계별 진행이 가능하고, <b>자동 재생</b>도 지원합니다. 헤더 도식은 필드를 클릭하면 설명이 나타납니다.</p></div>
+      <div class="card"><h3 style="margin-top:0">🧪 시뮬레이터</h3><p>서브넷 계산기, 슬라이딩 윈도우, 혼잡 제어(cwnd) 그래프, Dijkstra, NAT 테이블, 패킷 디코더 등은 값을 직접 바꿔가며 실험할 수 있습니다.</p></div>
+      <div class="card"><h3 style="margin-top:0">✅ 퀴즈와 진행률</h3><p>장 끝의 퀴즈로 이해도를 점검하고, <b>완료로 표시</b>를 눌러 진행률을 기록하세요. 진행률은 브라우저(localStorage)에 저장됩니다.</p></div>
+      <div class="card"><h3 style="margin-top:0">💻 실습</h3><p>각 장의 터미널 예시는 macOS/Linux에서 바로 실행할 수 있습니다. <code>tcpdump</code>, <code>ss</code>, <code>ip</code>, <code>dig</code> 등 실제 도구로 눈으로 본 것을 손으로 확인하세요.</p></div>
+    </div>
+
+    <h2 id="refs">권장 참고 자료</h2>
+    <table>
+      <tr><th>자료</th><th>용도</th></tr>
+      <tr><td>RFC 791 (IP), RFC 9293 (TCP), RFC 768 (UDP), RFC 8200 (IPv6)</td><td>원전. 특히 RFC 9293은 TCP 규격을 현대적으로 통합한 문서</td></tr>
+      <tr><td>W. Richard Stevens, <i>TCP/IP Illustrated Vol.1</i> (2nd ed., Fall &amp; Stevens)</td><td>패킷 캡처 기반 해설의 고전</td></tr>
+      <tr><td>Kurose &amp; Ross, <i>Computer Networking: A Top-Down Approach</i></td><td>개론 보강</td></tr>
+      <tr><td>RFC 5681 (혼잡 제어), RFC 6298 (RTO), RFC 8312 (CUBIC), RFC 9000 (QUIC)</td><td>심화 과정 원전</td></tr>
+      <tr><td>Wireshark 샘플 캡처(wiki.wireshark.org/SampleCaptures)</td><td>실제 패킷 분석 연습</td></tr>
+    </table>
+  </main>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {COURSE, ALL, Progress, svg} = TCPIP;
+  function render(){
+    const p = Progress.all();
+    ['grid-1','grid-2'].forEach((gid,pi)=>{
+      const g = document.getElementById(gid); g.innerHTML='';
+      COURSE[pi].chapters.forEach(c=>{
+        const a = document.createElement('a'); a.className='course-card'; a.href=c.file;
+        a.innerHTML = `<div class="n">CHAPTER ${c.id}</div><h3>${c.title}</h3><p>${c.desc}</p>` + (p[c.id] ? '<div class="st">✓ 완료</div>' : '');
+        g.appendChild(a);
+      });
+    });
+    const n = Progress.count(), pct = Math.round(n/ALL.length*100);
+    document.getElementById('idx-bar').style.width = pct+'%';
+    document.getElementById('idx-pct').textContent = pct+'%';
+    document.getElementById('idx-count').textContent = `${n} / ${ALL.length} 장 완료`;
+  }
+  render(); document.addEventListener('progress-change', render);
+
+  // 로드맵 도식
+  const g = document.getElementById('rm-layers');
+  const layers = [
+    {name:'응용 계층', ex:'HTTP · DNS · DHCP · TLS', cls:'f-app', ch:['04','06','12','13']},
+    {name:'전송 계층', ex:'TCP · UDP', cls:'f-tr', ch:['05','07','08','09']},
+    {name:'인터넷 계층', ex:'IP · ICMP · 라우팅', cls:'f-net', ch:['03','04','10','11']},
+    {name:'링크 계층', ex:'Ethernet · ARP · 스위치', cls:'f-link', ch:['02']},
+  ];
+  layers.forEach((L,i)=>{
+    const y = 20 + i*66;
+    g.appendChild(svg('rect',{x:20,y,width:250,height:54,rx:10,class:L.cls,opacity:.9}));
+    g.appendChild(svg('text',{x:145,y:y+23,'text-anchor':'middle',fill:'#fff','font-weight':'700','font-size':14},L.name));
+    g.appendChild(svg('text',{x:145,y:y+42,'text-anchor':'middle',fill:'rgba(255,255,255,.9)','font-size':11},L.ex));
+    g.appendChild(svg('line',{x1:270,y1:y+27,x2:320,y2:y+27,class:'line','marker-end':'url(#ar)'}));
+    L.ch.forEach((id,j)=>{
+      const c = ALL.find(x=>x.id===id); const x = 330 + j*130;
+      const a = svg('a',{href:c.file});
+      a.appendChild(svg('rect',{x,y:y+8,width:120,height:38,rx:8,class:'node'}));
+      a.appendChild(svg('text',{x:x+60,y:y+24,'text-anchor':'middle','font-size':11,'font-weight':'700'},'Ch.'+id));
+      a.appendChild(svg('text',{x:x+60,y:y+38,'text-anchor':'middle','font-size':9.5,class:'muted'},c.title.split(':')[0].slice(0,16)));
+      g.appendChild(a);
+    });
+  });
+  g.appendChild(svg('text',{x:20,y:292,'font-size':11,class:'muted'},'Ch.01 = 전체 모델 · Ch.14 = 종합 실습 (모든 계층)'));
+})();
+</script>
+</body>
+</html>

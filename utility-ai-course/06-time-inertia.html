@@ -1,0 +1,1132 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시간, 관성, 반응성</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 06장 전용 */
+.osc-canvas { width: 100%; height: auto; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.fix-grid { display: grid; grid-template-columns: minmax(150px, auto) 1fr minmax(52px, auto); gap: 6px 12px; align-items: center; font-size: 14px; margin: 10px 0; }
+.fix-grid input[type=range] { width: 100%; }
+.fix-grid output { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.fix-grid label { display: inline-flex; gap: 6px; align-items: center; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin: 6px 0; }
+.legend i { display: inline-block; width: 16px; height: 10px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.cmp td.num, .cmp th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cmp tr.cur td { background: var(--accent-soft); }
+.hm-svg { width: 100%; min-width: 320px; height: auto; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; cursor: crosshair; }
+.hm-svg .obj { fill: var(--surface-2); stroke: var(--border); }
+.hm-svg .olabel { font-size: 10px; fill: var(--muted); }
+.hm-svg .aname { font-size: 10.5px; fill: var(--text); font-weight: 700; }
+.hm-svg .gridl { stroke: var(--border); stroke-width: .5; opacity: .6; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip { font-size: 13px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); font-variant-numeric: tabular-nums; }
+.chip.flee { border-color: var(--bad); background: var(--bad-soft); }
+.chip.wait { border-color: var(--warn); background: var(--warn-soft); }
+.chip.s0 { border-color: var(--warn); background: var(--warn-soft); }
+.chip.s1 { border-color: var(--bad); background: var(--bad-soft); }
+.chip.s2 { border-color: var(--violet); background: var(--violet-soft); }
+.chip.s3 { border-color: var(--border); background: var(--surface-2); color: var(--muted); }
+.arch .box { transition: fill .25s, stroke .25s; }
+.arch .hl { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.arch .hlr { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 2; }
+.arch .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+.arch .arrow.on { stroke: var(--accent); stroke-width: 2.5; }
+.arch .arrow.sig { stroke-dasharray: 5 4; }
+.arch .layer { fill: none; stroke: var(--border); stroke-dasharray: 3 4; }
+.arch .lname { font-size: 11px; fill: var(--muted); }
+.arch .bub { font-size: 12px; font-weight: 700; }
+.timing .tk { stroke: var(--accent); stroke-width: 1.5; }
+.timing .tk.int { stroke: var(--bad); stroke-width: 2; }
+.hy-svg { width: 100%; height: auto; display: block; }
+.hy-svg .grid { stroke: var(--border); }
+.hy-svg .axis { stroke: var(--muted); }
+.hy-svg text { font-size: 11px; fill: var(--muted); }
+.zone-svg { width: 100%; max-width: 560px; height: auto; display: block; margin: 0 auto; }
+.zone-svg text { font-size: 11px; fill: var(--muted); }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 640px) { .two-col { grid-template-columns: 1fr; } .fix-grid { grid-template-columns: 1fr 1fr; } .fix-grid output { text-align: left; } }
+</style>
+</head>
+<body data-chapter="06">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">선택 · Chapter 06</span>
+    <h1>시간, 관성, 반응성</h1>
+    <p class="lead">05장까지의 효용 AI는 "지금 이 순간 가장 좋은 행동"만 물었다. 그런데 이 질문을 매 프레임 던지면 캐릭터는 두 행동 사이를 미친 듯이 오가고, 너무 드물게 던지면 늑대가 코앞에 와도 빵을 마저 먹는다. 이 장은 결정에 <b>시간</b>이라는 축을 더한다. 언제 다시 생각하고, 얼마나 버티고, 무엇에 즉시 반응할지를 정하는 일이다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>점수가 비슷한 두 행동 사이에서 진동(ping-pong, strobing)이 왜 생기는지 설명하고, 관성·히스테리시스·최소 지속·쿨다운·런타임을 비교할 수 있다.</li>
+      <li>Lewis가 왜 "이런 장치는 진동 위치를 옮길 뿐"이라고 말했는지 이해하고, consideration 추가와 곡선 조정이라는 대안을 쓸 수 있다.</li>
+      <li>결정 시점(매 프레임, 행동 종료 시, 주기적)의 트레이드오프를 반응 지연과 계산 비용으로 따질 수 있다.</li>
+      <li>Côté의 반응성/숙고 분리와 3계층 구조를 설명하고, <code>World.think(a, interruptOnly)</code>가 이를 dual rank로 구현한 방식을 코드로 짚을 수 있다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>Reasoner opt.inertia</code> <code>action.cooldown</code> <code>agent.lastUsed</code> <code>World.tick()</code> <code>World.think(a, interruptOnly)</code> <code>world.thinkEvery</code> — 숙고는 할 일이 끝났을 때, 반응은 주기적 인터럽트 검사로 나누는 시간 제어 부품</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">진동: 0.5와 0.5 사이에서 길을 잃다</a></li>
+    <li><a href="#s2">다섯 가지 처방: 관성부터 런타임까지</a></li>
+    <li><a href="#s3">Lewis의 경고: 진동은 옮겨질 뿐이다</a></li>
+    <li><a href="#s4">히스테리시스: 올라갈 때와 내려갈 때 다른 문턱</a></li>
+    <li><a href="#s5">언제 다시 생각할 것인가: 결정 시점</a></li>
+    <li><a href="#s6">반응성과 숙고 (Côté)</a></li>
+    <li><a href="#s7">엔진 연결: think(a, interruptOnly)</a></li>
+    <li><a href="#s8">Hamlet 실험: thinkEvery와 늑대</a></li>
+    <li><a href="#s9">함정과 설계 체크리스트</a></li>
+  </ol></nav>
+
+  <!-- ───────────────────────── s1 ───────────────────────── -->
+  <section id="s1">
+    <h2>1. 진동: 0.5와 0.5 사이에서 길을 잃다</h2>
+    <p>Graham은 Game AI Pro 9장의 "Inertia" 절에서 이런 장면을 든다. FPS의 적 병사가 불리한 위치에 몰렸다는 걸 깨닫고 <b>"플레이어 공격"</b>과 <b>"도망"</b>을 둘 다 0.5 근처로 점수 매긴다. 이 AI가 매 프레임 새로 결정하면 몇 발 쏘다가 도망치기 시작하고, 다시 쏘고, 또 도망친다. Graham은 이렇게 오가는 행동이 "정말 나빠 보인다"고 적었다.</p>
+    <p>Hamlet 마을로 옮기면 이렇다. 늑대가 밭 근처에 나타났고, 찬은 <b>"몽둥이로 쫓아내기"</b>와 <b>"도망치기"</b>를 둘 다 0.5쯤으로 평가한다. 두 점수는 늑대와의 거리, 찬의 기력, 주변에 사람이 있는지에 따라 프레임마다 조금씩 출렁인다. argmax는 출렁임을 구분하지 못한다. 0.501이 0.499보다 크면 이긴다. 그래서 점수 곡선이 교차하는 구간에서 선택은 동전 던지기처럼 뒤집힌다.</p>
+
+    <div class="callout warn"><span class="title">진동이 왜 그렇게 나빠 보이나</span>
+      <p>첫째, 플레이어에게는 이유 없는 변덕으로 보인다. 둘째, Côté가 지적했듯 애니메이션 시스템이 그 빠른 자세 전환을 따라가지 못해 <b>popping</b>(애니메이션이 툭 튀는 현상)이 생긴다. 셋째, 두 행동 모두 완료되지 않는다. 쫓아내기는 한 대도 못 때리고 도망은 한 칸도 못 간다. 결과만 놓고 보면 둘 중 어느 쪽보다도 나쁜 제3의 행동, 곧 "제자리에서 허둥대기"를 고른 셈이다.</p>
+    </div>
+
+    <p>문헌에서는 같은 현상을 여러 이름으로 부른다. Lewis(Game AI Pro 3, 13장)는 <i>oscillate</i>·<i>ping-pong</i>, 쿨다운 설명에서는 <i>strobing</i>이라고 썼다. Côté(Game AI Pro 1, 11장)는 FSM 예에서 같은 문제를 보여 준다. 시야 시스템에 "위협 목격" 조건을 바로 연결해 두면, 추격 중 장애물 때문에 시야가 잠깐 끊길 때마다 Chase와 Patrol 사이를 몇 초 안에 여러 번 오간다. 효용 시스템의 점수 진동이든 FSM의 전이 진동이든 뿌리는 같다. <b>결정의 입력에 섞인 짧은 출렁임이 결정의 출력으로 그대로 새어 나온다.</b></p>
+
+    <div class="widget" id="w-osc">
+      <div class="w-title">시간축 진동 시뮬레이터: 찬은 쫓아낼까, 도망칠까</div>
+      <div class="w-desc">두 행동의 점수(노이즈 ±0.07 포함)를 매 틱 argmax로 고른다. 시나리오는 600틱: ① 0~79틱 쫓아내기가 확실히 우세 → ② 80~179틱 형세가 서서히 뒤집힘(노이즈 없는 기준선은 <b>130틱</b>에서 교차) → ③ 180~259틱 도망이 확실히 우세 → ④ 260틱부터 둘 다 0.5 근처인 <b>애매 구간</b>. 아래 띠가 매 틱 선택된 행동이다. 처방을 켜고 끄며 전환 횟수와 반응 지연이 어떻게 바뀌는지 보라. 점수 계산은 <code>UAI.Reasoner</code>가 한다.</div>
+      <div class="stage"><canvas id="osc-cv" class="osc-canvas" width="680" height="250"></canvas></div>
+      <div class="legend">
+        <span><i style="background:var(--warn)"></i>쫓아내기 점수(굵은 선 = Reasoner가 본 최종 점수)</span>
+        <span><i style="background:var(--teal)"></i>도망치기 점수</span>
+        <span><i style="background:var(--surface-2);border:1px solid var(--border)"></i>뒤집힘·애매 구간</span>
+        <span><i style="background:var(--bad)"></i>130틱 기준선 교차</span>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="osc-play">▶ 재생</button>
+        <button class="btn" id="osc-reset">↺ 처음부터</button>
+        <button class="btn" id="osc-seed">🎲 노이즈 바꾸기</button>
+        <label>속도 <select id="osc-speed"><option value="1">1×</option><option value="3" selected>3×</option><option value="8">8×</option><option value="600">즉시</option></select></label>
+        <span id="osc-seedv" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+      <div class="fix-grid">
+        <label><input type="checkbox" data-fix="inertia"> 관성 보너스 δ</label><input type="range" id="p-inertia" min="0" max="0.3" step="0.01" value="0.1"><output id="o-inertia"></output>
+        <label><input type="checkbox" data-fix="hyst"> 히스테리시스 폭 h</label><input type="range" id="p-hyst" min="0" max="0.2" step="0.01" value="0.08"><output id="o-hyst"></output>
+        <label><input type="checkbox" data-fix="commit"> 최소 지속 D (틱)</label><input type="range" id="p-commit" min="0" max="80" step="1" value="30"><output id="o-commit"></output>
+        <label><input type="checkbox" data-fix="cooldown"> 쿨다운 C, 곡선 x⁵ (틱)</label><input type="range" id="p-cooldown" min="0" max="120" step="1" value="40"><output id="o-cooldown"></output>
+        <label><input type="checkbox" data-fix="runtime"> 런타임 R, 곡선 1−x⁶ (틱)</label><input type="range" id="p-runtime" min="10" max="200" step="1" value="40"><output id="o-runtime"></output>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">틱</div><div class="v" id="osc-t">0</div></div>
+        <div class="stat"><div class="k">전환 횟수 (전체)</div><div class="v" id="osc-sw">0</div></div>
+        <div class="stat"><div class="k">애매 구간 전환</div><div class="v" id="osc-amb">0</div></div>
+        <div class="stat"><div class="k">반응 지연 (130틱 이후)</div><div class="v" id="osc-react">–</div></div>
+        <div class="stat"><div class="k">현재 행동</div><div class="v" id="osc-cur" style="font-size:16px">–</div></div>
+      </div>
+      <div class="tbl-wrap"><table class="cmp" id="osc-cmp"></table></div>
+      <div class="w-desc" style="margin-top:6px">표는 같은 노이즈로 600틱 전체를 미리 돌린 결과다. 각 처방을 <b>슬라이더의 현재 값으로 하나씩만</b> 켰을 때와, 체크한 조합(파란 줄)을 비교한다. 이상적인 전환 횟수는 형세가 뒤집힐 때의 1번뿐이다. 반응 지연은 130틱부터 처음 "도망"을 고르기까지 걸린 틱 수다.</div>
+    </div>
+
+    <p>처방 없이 돌리면 ② 구간의 교차점 근처와 ④ 구간 전체에서 띠가 잘게 부서진다. 노이즈 폭이 ±0.07이므로, 두 점수의 기준선 차이가 0.14보다 작은 동안은 어느 쪽이든 이길 수 있다. 이 "어느 쪽이든 이길 수 있는 구간"을 이 장에서는 <b>진동 구간</b>이라고 부르겠다. 진동을 없애는 방법은 결국 두 가지뿐이다. 진동 구간에 머무는 동안 <b>결정을 붙잡아 두거나</b>(관성·지속·쿨다운), 진동 구간을 <b>좁히거나 입력에서 노이즈를 걸러 내는 것</b>(곡선 조정·히스테리시스·consideration 추가)이다.</p>
+  </section>
+
+  <!-- ───────────────────────── s2 ───────────────────────── -->
+  <section id="s2">
+    <h2>2. 다섯 가지 처방: 관성부터 런타임까지</h2>
+    <p>Graham은 세 가지 해법을 든다. 현재 행동에 가중치를 더하기, 쿨다운(결정 직후 그 행동을 유지할 가중치를 아주 높였다가 끝나면 되돌리거나 서서히 낮춤), 그리고 일정 시간 동안 또는 현재 행동이 끝날 때까지 결정 자체를 미루기다. Lewis는 commitment bonus, 결정별 가중치, runtime·cooldown consideration을 든다. 위젯의 다섯 토글은 이것들을 정리한 것이다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>처방</th><th>어디에 거나</th><th>위젯에서의 구현</th><th>출처</th></tr>
+      <tr><td><b>관성 보너스</b> (inertia, commitment bonus)</td><td>점수</td><td>현재 행동 점수에 +δ. 엔진의 <code>Reasoner opt.inertia</code> 그대로</td><td>Graham, Lewis</td></tr>
+      <tr><td><b>히스테리시스</b></td><td>입력(인지)</td><td>각 점수 신호에 폭 h의 유격(backlash) 필터. 신호가 필터 값에서 h 이상 벗어나야 따라 움직인다</td><td>Côté</td></tr>
+      <tr><td><b>최소 지속</b> (commitment, 결정 보류)</td><td>결정 시점</td><td>현재 행동을 시작한 지 D틱이 지나기 전에는 바꾸지 않는다</td><td>Graham</td></tr>
+      <tr><td><b>쿨다운</b> y = x⁵</td><td>떠난 행동의 점수</td><td>consideration 입력 = (지금 − 마지막으로 그 행동을 끝낸 시각) / C, 프리셋 <code>"cooldown: x⁵"</code></td><td>Lewis</td></tr>
+      <tr><td><b>런타임</b> y = 1 − x⁶</td><td>현재 행동의 점수</td><td>consideration 입력 = (지금 − 시작 시각) / R, 프리셋 <code>"runtime: 1−x⁶"</code></td><td>Lewis</td></tr>
+    </table></div>
+
+    <h3>관성 보너스: 현재 행동에 δ</h3>
+    <p>가장 흔하고 가장 싸다. 현재 행동에 δ를 더하면 도전자는 <code>도전자 &gt; 현재 + δ</code>일 때만 이긴다. 노이즈 폭이 ±ε라면 δ ≥ 2ε일 때 노이즈만으로는 뒤집히지 않는다. 위젯에서 δ를 0.14 이상으로 올리면 ④ 구간의 진동이 거의 사라지는 것을 확인할 수 있다. 대가는 <b>반응 지연</b>이다. 형세가 실제로 뒤집혀도 차이가 δ만큼 벌어질 때까지 기다린다. ② 구간에서 두 기준선의 차이는 틱당 0.009씩 벌어지므로, 노이즈가 없다면 δ = 0.1일 때 교차 후 약 11틱 늦게 반응한다. 노이즈가 섞이면 운 좋은 출렁임 덕에 그보다 조금 일찍 넘어가기도 한다. δ = 0.3이면 지연은 20틱을 넘는다.</p>
+    <div class="formula">전환 조건: S(도전자) &gt; S(현재) + δ &nbsp;⇒&nbsp; 지연 ≈ δ / (기울기 차)</div>
+    <p>엔진에서는 다음 세 줄이 전부다. 현재 행동과 <b>같은 대상</b>일 때만 보너스를 준다는 점에 주의하라. 08장에서 대상을 평가하기 시작하면 "같은 행동, 다른 대상"(빵집 A → 빵집 B)도 전환이고, 이 조건이 그런 전환도 막는다.</p>
+<pre class="engine"><code>          const cur = agent.current;
+          const isCurrent = cur &amp;&amp; cur.action === a.id &amp;&amp; cur.target === target;
+          if (isCurrent &amp;&amp; score &gt; 0) score += this.opt.inertia;</code></pre>
+    <p><code>score &gt; 0</code> 조건도 의도된 것이다. 이미 0이 된 행동(예: 늑대가 사라져 "위협 존재" 스위치가 0이 된 도망)에 보너스를 주면 무효가 된 행동이 되살아난다. 관성은 유효한 행동을 붙잡는 장치이지, 무효한 행동을 살리는 장치가 아니다.</p>
+
+    <h3>히스테리시스: 입력에 유격을 둔다</h3>
+    <p>관성이 출력(점수 비교)에 손을 댄다면 히스테리시스는 입력을 거른다. Côté의 해법이 이것이다. "위협 목격"을 시야 시스템에 직접 연결하지 말고, 히스테리시스 같은 필터를 거친 <b>논리적 위협 인지</b>에 연결하라는 것이다. 위젯의 h는 각 점수 신호에 폭 h의 유격을 둔다. 필터 값 y는 원신호 x가 [y − h, y + h] 밖으로 나갈 때만 따라간다.</p>
+    <div class="formula">y ← min(max(y, x − h), x + h)</div>
+    <p>h가 노이즈 폭(0.07)보다 크면 노이즈는 대부분 흡수되고, 기준선이 실제로 움직일 때만 y가 계단처럼 따라 움직인다. 위젯에서 히스테리시스를 켜면 점선(원신호)과 굵은 선(필터 값)이 갈라지는 것이 보인다. 대가는 역시 지연이다. 올라가는 신호는 h만큼 늦게, 내려가는 신호도 h만큼 늦게 따라가므로 교차가 2h / (기울기 차)만큼 늦어진다.</p>
+    <details class="deep"><summary>심화: 두 행동이면 관성과 "전환 margin"은 같은 것이다</summary><div>
+      <p>"전환하려면 도전자가 margin m 이상 앞서야 한다"는 규칙은 흔히 히스테리시스라고 불린다. 그런데 후보가 둘이고 최고점 선택이라면 이 규칙은 관성 보너스 δ = m과 수학적으로 똑같다. 둘 다 <code>S(도전자) − S(현재) &gt; m</code>이라는 같은 부등식이 된다. 차이는 다른 곳에서 난다.</p>
+      <ul>
+        <li><b>후보가 셋 이상이거나 가중 랜덤일 때</b>: 관성 보너스는 현재 행동의 점수를 실제로 바꾸므로 05장의 <code>topPct</code>·<code>dual</code> 필터와 선택 확률에 모두 영향을 준다. margin은 비교 규칙일 뿐이라 확률에는 손대지 않는다.</li>
+        <li><b>어디에 거느냐</b>: Côté의 히스테리시스는 점수가 아니라 <b>인지</b>에 건다. 걸러진 "위협 목격" 신호는 그 신호를 쓰는 모든 행동이 공유하므로, 한 곳만 고쳐도 추격·전투·순찰이 일관되게 안정된다. 관성은 결정마다 따로 걸어야 한다.</li>
+      </ul>
+      <p>그래서 이 위젯은 히스테리시스를 입력 필터로 구현했다. margin 방식이 보고 싶다면 관성 토글이 그 역할을 한다.</p>
+    </div></details>
+
+    <h3>최소 지속: 결정을 미룬다</h3>
+    <p>Graham의 세 번째 해법은 "일정 시간 동안 결정을 미루기"다. 행동을 시작한 지 D틱이 지나기 전에는 점수와 상관없이 바꾸지 않는다. 진동의 <b>최대 빈도</b>를 D틱당 1회로 묶는 것이지, 진동을 없애는 것은 아니다. 위젯에서 D = 30으로 두면 ④ 구간에서 띠가 잘게 부서지는 대신 30틱 남짓한 덩어리로 바뀐다. 겉보기에는 훨씬 낫다. 행동이 최소한 완료될 만큼은 지속되기 때문이다. 하지만 "이유 없이 마음을 바꾸는" 문제는 그대로 남는다.</p>
+    <p>반응 지연은 경우에 따라 다르다. 마지막 전환 후 D틱이 이미 지났다면 지연이 없고, 막 전환한 참이라면 최대 D틱을 기다린다. 이 "운에 따라 다른 지연"이 실제 게임에서는 더 곤란하다. 같은 상황에서 어떤 때는 즉시, 어떤 때는 늦게 반응하면 디버깅하기 어렵다.</p>
+
+    <h3>쿨다운 x⁵: 떠난 행동을 잠시 잠근다</h3>
+    <p>Lewis는 Guild Wars 2: Heart of Thorns의 "Evade Dangerous Areas" 결정을 예로 들며 쿨다운을 이렇게 설명한다. 정해진 시간이 지날 때까지 결정의 점수를 0(또는 거의 0)으로 누르는 표준 타이머이고, 경쟁하는 두 결정 사이의 strobing을 막으며 한 결정이 너무 자주 선택되지 않게 해 준다. 응답 곡선은 쿨다운 기간 대부분 아주 작은 값을 내다가 끝 무렵 급등해 원래 점수로 돌아간다. 그 곡선이 y = x⁵다.</p>
+    <p>위젯에서는 행동을 <b>떠나는 순간</b> 그 행동에 쿨다운이 걸린다. 쫓아내기 → 도망으로 바꾸면 쫓아내기가 C틱 동안 눌리므로 도망이 그 사이 유지된다. 쿨다운은 "방금 떠난 행동으로 바로 돌아오는 것"을 막는다. 따라서 진동 주기는 대략 C틱으로 늘어난다.</p>
+    <div class="callout"><span class="title">엔진의 쿨다운은 곡선이 아니라 스위치다</span>
+      <p><code>Reasoner.evaluate</code>의 내장 쿨다운은 남은 시간이 0보다 크면 행동을 통째로 무효화한다(<code>alive = false</code>). x⁵처럼 끝 무렵 서서히 살아나는 쿨다운이 필요하면 위젯처럼 consideration으로 직접 넣는다. 프리셋 <code>"cooldown: x⁵"</code>가 그 용도다.</p>
+<pre class="engine"><code>          const cdLeft = a.cooldown &amp;&amp; agent.lastUsed &amp;&amp; agent.lastUsed[a.id] != null
+            ? a.cooldown - (now - agent.lastUsed[a.id]) : 0;
+          if (cdLeft &gt; 0) alive = false;</code></pre>
+      <p>여기서 시각은 <code>agent.lastUsed[행동 id]</code>로 읽는다. 엔진의 <code>World.think</code>는 이 값을 기록하지 않는다. 쿨다운을 쓰는 쪽이 행동을 쓴 시각을 직접 남겨야 한다(아래 시퀀스 위젯이 그렇게 한다).</p>
+    </div>
+
+    <h3>런타임 1 − x⁶: 현재 행동을 스스로 지치게 한다</h3>
+    <p>런타임은 반대 방향의 장치다. 현재 행동이 R틱에 가까워지면 점수를 0으로 떨어뜨려 <b>강제로 다른 행동을 고르게</b> 한다. Lewis는 이를 "같은 결정이 연달아 너무 많이 선택되지 않게" 하는 장치로 소개하며, 캐릭터가 계속 회피만 해서 맞출 수 없게 되는 경우를 막는 데 아주 유용하다고 했다. 곡선 1 − x⁶은 대부분의 기간 1 근처를 유지하다가 끝 무렵 급락한다.</p>
+    <p>위젯에서 런타임(R = 40)만 켜 보라. 전환이 <b>늘어난다</b>. ① 구간처럼 쫓아내기가 확실히 우세할 때도 R틱이 지나면 쫓아내기가 지쳐 도망으로 넘어가고, 도망이 새로 시작되면 런타임이 초기화되니 다시 쫓아내기로 돌아오기도 한다. 런타임은 진동을 막는 장치가 아니라 <b>반복을 끊는</b> 장치다. 진동 처방으로 오해하면 문제를 키운다. 런타임을 쿨다운과 함께 켜면 지친 행동이 곧바로 돌아오지 못하므로 비로소 "한동안 다른 일을 하는" 패턴이 생긴다. Evade Dangerous Areas가 이 둘을 4번째·5번째 consideration으로 함께 쓴 이유다.</p>
+    <figure>
+      <svg class="diagram" id="rt-cd-svg" viewBox="0 0 520 210" style="max-width:520px"></svg>
+      <figcaption>그림 6-1. Lewis의 표준 런타임·쿨다운 곡선(GAP3 그림 13.2). 엔진 프리셋 <code>"runtime: 1−x⁶"</code>, <code>"cooldown: x⁵"</code>를 <code>MM.plotCurve</code>로 그렸다.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ───────────────────────── s3 ───────────────────────── -->
+  <section id="s3">
+    <h2>3. Lewis의 경고: 진동은 옮겨질 뿐이다</h2>
+    <p>Lewis는 위의 방법들(commitment bonus, 결정별 가중치로 총점을 1이 아닌 3이나 4까지 키우기, runtime·cooldown)을 소개한 뒤 곧바로 한계를 짚는다. 이 방법들은 쓸모가 있지만 공통된 약점이 하나 있다. <b>두 결정이 진동할 가능성을 없애지 못하고, 진동이 일어날 때 점수가 떨어지는 위치를 옮길 뿐이다.</b> 그 위치가 문제 구간에서 충분히 멀어져 진동이 무의미해지거나 다른 점수에 묻힐 수도 있다. 하지만 점수가 점점 알아보기 어려운 방식으로 계속 경쟁할 수도 있다.</p>
+    <p>위젯에서 확인할 수 있다. 관성 δ = 0.1을 켜면 ④ 구간의 진동이 줄지만 0이 되지는 않는다. 두 기준선의 사인 파형이 δ 이상 벌어지는 순간마다 여전히 넘어간다. δ를 0.3까지 올리면 진동은 사라지지만, 이번에는 ② 구간에서 형세가 뒤집혀도 한참을 버틴다. 진동 구간이 "현재 행동 ± δ"로 옮겨 갔을 뿐이다.</p>
+
+    <h3>가장 단순한 해법: consideration을 하나 더</h3>
+    <p>Lewis가 제시하는 가장 단순한 해결책은 <b>두 결정 중 하나에 consideration을 하나 더 넣는 것</b>이다. 직관에 반할 수 있지만, 이렇게 하면 전체 점수 계산에 변화가 더해져 경쟁하는 한쪽이 일관되게 이기거나(또는 지거나) 할 가능성이 커지고, 그 결과 진동이 사라진다.</p>
+    <p>왜 그런지 생각해 보자. 쫓아내기와 도망이 0.5로 비기는 이유는 두 결정이 거의 같은 정보(늑대와의 거리, 자기 체력)만 보기 때문이다. 같은 입력의 거울상 함수끼리는 교차점 근처에서 계속 엇비슷하다. 도망에 "가장 가까운 집까지의 거리"를 넣으면 두 점수는 서로 다른 축을 따라 움직이게 된다. 집이 가까운 찬은 확실히 도망치고, 집이 먼 찬은 확실히 맞선다. 비기는 상황 자체가 드물어진다.</p>
+
+    <h3>안 되면 곡선을 조정해 진동 구간을 좁힌다</h3>
+    <p>세트피스처럼 고도로 특수한 캐릭터는 설계상 말이 되는 consideration이 더 없을 수 있다. 그때 Lewis가 권하는 차선책은 관련 응답 곡선을 조정해 <b>진동 구간을 최소화</b>하는 것이다. 해석적 해가 대개 있지만 종이로 풀 가치는 별로 없고, 입력을 슬라이더로 조작하는 도구를 만드는 편이 훨씬 효과적이라고 했다. 아래가 그런 도구다.</p>
+
+    <div class="widget" id="w-zone">
+      <div class="w-title">진동 구간 탐색기 (슬라이더 튜닝 도구)</div>
+      <div class="w-desc">입력은 "늑대 위협도" t. 쫓아내기는 감소 로지스틱, 도망은 증가 로지스틱이다(<code>UAI.curve({type:"logistic"})</code>). 점수마다 ±ε의 출렁임이 있다면 |S₁ − S₂| &lt; 2ε인 t 구간에서는 어느 쪽이든 이길 수 있다. 빗금 친 부분이 그 진동 구간이다. 곡선을 가파르게 하면 구간이 어떻게 변하는가?</div>
+      <svg class="zone-svg" id="zone-svg" viewBox="0 0 520 250"></svg>
+      <div class="fix-grid">
+        <span>쫓아내기 가파름 m₁</span><input type="range" id="z-ma" min="2" max="30" step="1" value="6"><output id="zo-ma"></output>
+        <span>쫓아내기 중심 c₁</span><input type="range" id="z-ca" min="0.2" max="0.8" step="0.01" value="0.5"><output id="zo-ca"></output>
+        <span>도망 가파름 m₂</span><input type="range" id="z-mf" min="2" max="30" step="1" value="6"><output id="zo-mf"></output>
+        <span>도망 중심 c₂</span><input type="range" id="z-cf" min="0.2" max="0.8" step="0.01" value="0.5"><output id="zo-cf"></output>
+        <span>점수 출렁임 ε</span><input type="range" id="z-eps" min="0.01" max="0.15" step="0.01" value="0.07"><output id="zo-eps"></output>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">진동 구간 폭 (t 범위 대비)</div><div class="v" id="z-width">–</div></div>
+        <div class="stat"><div class="k">교차점 t*</div><div class="v" id="z-cross">–</div></div>
+        <div class="stat"><div class="k">교차점 기울기 차 |S₁′ − S₂′|</div><div class="v" id="z-slope">–</div></div>
+      </div>
+    </div>
+    <p>교차점 근처에서 진동 구간의 폭은 대략 <b>4ε / |S₁′ − S₂′|</b>이다. 두 곡선이 서로 반대 방향으로 가파를수록 구간은 좁아진다. m₁ = m₂ = 6이면 구간이 넓고, 20을 넘기면 눈에 띄게 줄어든다. 반대로 두 중심을 엇갈리게 하면(c₁ = 0.35, c₂ = 0.65) 두 곡선이 낮은 점수에서 완만하게 겹쳐 넓은 진동 구간이 생긴다. 이것이 "곡선을 조정해 진동 구간을 최소화한다"의 실제 모습이다. 단, 지나치게 가파르면 03장에서 본 스위치처럼 행동하게 되어 효용의 장점인 부드러운 판단이 사라진다는 점도 같이 저울질해야 한다.</p>
+
+    <h3>진동을 거꾸로 쓰기: 쿨다운 차등으로 시퀀스 만들기</h3>
+    <p>Lewis는 점수가 엇갈리는 성질을 일부러 쓰는 방법도 소개한다. 결정들에 쿨다운을 걸고, 뒤에 올 결정일수록 앞 결정보다 가중치를 조금씩 낮게 준다. AI가 한 행동을 고르면 그 행동은 쿨다운에 들어가고, 남은 것 중 가장 좋은 것은 설계상 시퀀스의 다음 행동이 된다. 아래 위젯은 엔진의 <code>action.cooldown</code>과 <code>agent.lastUsed</code>를 그대로 쓴다.</p>
+    <div class="widget" id="w-seq">
+      <div class="w-title">쿨다운 차등 시퀀스: 찬의 늑대 쫓기 콤보</div>
+      <div class="w-desc">소리치기(가중치 1.00) → 횃불 휘두르기(0.95) → 돌 던지기(0.90), 그리고 쿨다운이 없는 지켜보기(0.30). 세 공격 행동에 같은 쿨다운을 건다. 매 틱 <code>Reasoner.decide</code>(최고점)로 고르고, 고른 행동의 시각을 <code>agent.lastUsed[id]</code>에 기록한다.</div>
+      <div class="controls"><label>쿨다운 (틱) <input type="range" id="seq-cd" min="0" max="8" step="1" value="3"> <output id="seq-cdv"></output></label></div>
+      <div class="chips" id="seq-out"></div>
+      <div class="w-desc" id="seq-note"></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── s4 ───────────────────────── -->
+  <section id="s4">
+    <h2>4. 히스테리시스: 올라갈 때와 내려갈 때 다른 문턱</h2>
+    <p>Côté의 Chase/Patrol 예를 효용 바깥에서 잠시 보자. 시야 시스템은 위협이 얼마나 보이는지를 0~1의 "가시도"로 낸다. 문턱 하나(예: 0.45)로 "보인다/안 보인다"를 가르면, 추격 중 나무나 벽에 위협이 반쯤 가릴 때마다 가시도가 문턱을 오르내리며 Chase ↔ Patrol 진동이 생긴다. Côté는 이 상태를 플레이어가 보기에 "아무 이유 없는 이상한 행동 부작용"이라고 표현했다.</p>
+    <p>해법은 문턱을 둘로 나누는 것이다. 꺼진 상태에서 켜지려면 <b>높은 문턱 H</b>를 넘어야 하고, 켜진 상태에서 꺼지려면 <b>낮은 문턱 L</b> 아래로 내려가야 한다. 그 사이 [L, H]에서는 <b>직전 상태를 유지</b>한다. 같은 입력에 대해 출력이 이력(history)에 따라 달라지므로 히스테리시스라고 부른다. 전자공학의 슈미트 트리거가 이것이다.</p>
+    <div class="formula">상태 ← 상태 ? (x ≥ L) : (x ≥ H) &nbsp;&nbsp;(L ≤ H)</div>
+
+    <div class="widget" id="w-hys">
+      <div class="w-title">히스테리시스 그래프: 논리적 위협 인지</div>
+      <div class="w-desc">왼쪽은 시간에 따른 시야 가시도(장애물에 반쯤 가리는 구간이 다섯 번, 250틱부터 서서히 진짜로 놓침). 아래 두 띠는 문턱 하나((L+H)/2)를 쓴 상태와 히스테리시스 상태다. 오른쪽은 입력 → 상태 그래프로, ▶를 누르면 점이 입력을 따라가며 <b>올라갈 때는 H, 내려갈 때는 L</b>에서 꺾이는 고리를 그린다.</div>
+      <div class="two-col">
+        <svg class="hy-svg" id="hy-time" viewBox="0 0 360 230"></svg>
+        <svg class="hy-svg" id="hy-loop" viewBox="0 0 260 230"></svg>
+      </div>
+      <div class="controls">
+        <button class="btn primary" id="hy-play">▶ 재생</button>
+        <label>낮은 문턱 L <input type="range" id="hy-lo" min="0.05" max="0.7" step="0.01" value="0.3"> <output id="hy-lov"></output></label>
+        <label>높은 문턱 H <input type="range" id="hy-hi" min="0.1" max="0.9" step="0.01" value="0.6"> <output id="hy-hiv"></output></label>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">문턱 하나: 상태 전환</div><div class="v c-bad" id="hy-f1">–</div></div>
+        <div class="stat"><div class="k">히스테리시스: 상태 전환</div><div class="v c-ok" id="hy-f2">–</div></div>
+        <div class="stat"><div class="k">놓친 뒤 Patrol까지 (틱)</div><div class="v" id="hy-lag">–</div></div>
+      </div>
+    </div>
+    <p>L을 0.3, H를 0.6으로 두면 부분 가림(가시도 0.4 안팎)은 상태를 끄지 못하고, 진짜로 놓쳤을 때(0.1 안팎)만 꺼진다. 전환은 "발견" 한 번, "놓침" 한 번으로 줄어든다. Côté의 그림 11.6이 보여 주는 이상적인 타임라인이 이것이다. L을 0.45 위로 올리면 부분 가림이 다시 상태를 끈다. 폭(H − L)이 입력 노이즈보다 넓어야 한다는 것이 히스테리시스 설계의 전부다.</p>
+    <div class="callout tip"><span class="title">효용 시스템에서 히스테리시스를 거는 자리</span>
+      <p>점수 비교에 margin을 거는 방법(§2 심화)과, 이렇게 <b>consideration의 입력</b>을 걸러 내는 방법이 있다. 후자는 "위협 목격", "배고픔이 위급함" 같은 이산적 판단에 특히 잘 맞는다. 스위치 커브(<code>"스위치 (≥0.5)"</code>)에 들어가는 입력을 히스테리시스를 거친 불리언으로 바꾸면 그 스위치를 쓰는 모든 결정이 함께 안정된다. 대가는 지연이다. 위 위젯의 "놓친 뒤 Patrol까지" 값이 그 비용이다.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── s5 ───────────────────────── -->
+  <section id="s5">
+    <h2>5. 언제 다시 생각할 것인가: 결정 시점</h2>
+    <p>지금까지는 "매 틱 결정한다"를 전제로 진동을 다뤘다. 그런데 Graham이 가장 먼저 짚은 원인은 바로 그 전제다. 진동 문제는 AI가 <b>매 프레임 무언가를 결정하려 할 때</b> 생긴다. 결정 빈도 자체를 바꾸면 문제의 모양이 달라진다.</p>
+    <figure>
+      <svg class="diagram timing" viewBox="0 0 640 250" style="max-width:640px">
+        <text x="10" y="18" class="muted" style="font-size:11px">시간 →</text>
+        <!-- row 1: every frame -->
+        <text x="10" y="52" style="font-weight:700">매 프레임</text>
+        <g id="tm-r1"></g>
+        <!-- row 2: on action end -->
+        <text x="10" y="112" style="font-weight:700">행동 종료 시</text>
+        <g id="tm-r2"></g>
+        <!-- row 3: periodic -->
+        <text x="10" y="172" style="font-weight:700">주기적</text>
+        <g id="tm-r3"></g>
+        <!-- row 4: hybrid -->
+        <text x="10" y="226" style="font-weight:700">엔진 (혼합)</text>
+        <g id="tm-r4"></g>
+      </svg>
+      <figcaption>그림 6-2. 결정 시점 네 가지. 색 띠는 실행 중인 행동, 세로 눈금은 결정을 내리는 순간, 빨간 눈금은 인터럽트 검사, ⚡는 위협 발생 시점이다. 행동 종료 시 결정은 위협이 와도 행동이 끝날 때까지 모른다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th>정책</th><th>진동</th><th>반응 지연</th><th>계산 비용</th><th>사례·근거</th></tr>
+      <tr><td><b>매 프레임</b></td><td>심함 (관성 등 별도 처방 필요)</td><td>1프레임</td><td>최대: 매 프레임 모든 후보 평가</td><td>Graham의 FPS 병사 예</td></tr>
+      <tr><td><b>행동 종료 시</b></td><td>구조적으로 없음 (행동 단위로 커밋)</td><td>현재 행동이 끝날 때까지 (무한일 수 있음)</td><td>최소</td><td>The Sims Medieval: interaction queue가 비었을 때만 결정, 고른 행동은 끝까지(또는 실패할 때까지) 수행 (Graham)</td></tr>
+      <tr><td><b>주기적</b> (N틱마다)</td><td>N틱당 최대 1회</td><td>최대 N틱</td><td>1/N로 감소, 에이전트별 오프셋으로 분산 가능</td><td>Graham의 "일정 시간 동안 결정 보류"</td></tr>
+      <tr><td><b>혼합</b> (종료 시 숙고 + 주기적 인터럽트)</td><td>같은 우선순위끼리는 없음</td><td>상위 우선순위만 최대 N틱</td><td>낮음</td><td>Côté의 반응성/숙고 분리, 이 코스의 <code>World.tick</code></td></tr>
+    </table></div>
+    <p>The Sims Medieval의 방식은 단순하면서 강력하다. 심은 행동을 고르면 그 행동에 커밋한다. 진동이라는 개념이 끼어들 틈이 없다. 하지만 그 대가로 "빵을 먹는 중에 늑대가 오는" 상황을 다룰 수단이 사라진다. 정말 긴급한 일이 행동 도중에 생기면 어떻게 할까? 이 질문에 대한 체계적인 답이 다음 절의 Côté다.</p>
+  </section>
+
+  <!-- ───────────────────────── s6 ───────────────────────── -->
+  <section id="s6">
+    <h2>6. 반응성과 숙고 (Côté)</h2>
+    <p>Carle Côté(Game AI Pro 1, 11장)는 의사결정 시스템에 두 가지 메커니즘이 필요하다고 본다.</p>
+    <ul>
+      <li><b>반응성(Reactivity)</b>: 환경에서 지각한 자극에 즉시 응답하는 능력. 아주 짧은 시간 안에 행동을 걸어야 하며, 그렇지 않으면 플레이어가 믿기 어렵거나 시시하다고 느낀다. 이런 행동을 "반응(reaction)"이라 부른다.</li>
+      <li><b>숙고(Deliberation)</b>: 여러 지식을 고려해 다음에 무엇을 할지 정하는 능력. 정보 분석, 직관, 경험, 감정, 무작위 평가, 논리 등 모든 내적 성찰 메커니즘을 포함한다.</li>
+    </ul>
+    <p>반응은 다시 둘로 나뉜다. <b>비자발적 반응</b>은 통증·질식·재채기처럼 몸이 통제 없이 보이는 반응이다. <b>인지적 반응</b>은 맥락 해석이 조금이라도 필요한 반응이다. 큰 소리는 도서관에서는 주의를 끌지만 공사장에서는 예상된 일이다. 반응은 순간일 수도(플레이어 쪽으로 몸을 돌리는 찰나) 오래갈 수도(10초 동안 고통) 있으므로, <b>반응 도중에 또 다른 반응</b>이 생길 수 있다.</p>
+
+    <h3>함정 #1: 하나의 결정 모델로 다 하려 하기</h3>
+    <p>숙고 모델이 충분히 빠르면 반응도 같이 처리할 수 있을 것 같다. Côté는 이것이 반응 속도만 본 결론이라고 지적하며, 두 메커니즘이 본질적으로 다른 두 지점을 짚는다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>반응성</th><th>숙고</th></tr>
+      <tr><td><b>트리거</b></td><td>현재 진행 중인 것보다 <b>우선순위가 높은 인터럽트</b></td><td>(1) 현재 행동(또는 반응)이 끝나 새 행동이 필요할 때, (2) 맥락이 바뀌어 현재 행동·계획이 무효가 되거나 취소될 때</td></tr>
+      <tr><td><b>목표</b></td><td>몸·환경 인식을 반영하는 <b>즉각적인 행동 변화</b></td><td>맥락에 맞으면서 <b>가능한 한 오래 유지할 수 있는 최선의 행동</b></td></tr>
+      <tr><td><b>본질</b></td><td>위험 인지 (danger awareness)</td><td>절차적 지식 (procedural knowledge)</td></tr>
+    </table></div>
+    <p>이 표의 두 번째 줄이 이 장 전체의 요지다. 숙고의 목표가 "오래 유지할 최선"이라면, 진동은 숙고의 목표를 정면으로 어기는 결함이다. 반면 반응은 원래 빨라야 한다. 두 요구를 한 모델에 넣으면 관성을 키우면 반응이 둔해지고, 관성을 줄이면 숙고가 흔들리는 줄다리기가 된다. 위젯 1에서 δ를 올리면 진동은 줄지만 지연이 늘어난 것이 바로 이 줄다리기다.</p>
+    <p>FSM으로 하면 다른 형태의 문제가 생긴다. Côté의 예에서 Chase·Patrol·Combat·Flee 네 숙고 상태에 반응 상태 Hurt·Suffocate를 넣으면, 숙고 상태는 언제든 끊길 수 있으므로 <b>모든 숙고 상태에서 모든 반응 상태로</b> 전이가 필요하다(4 × 2 = 8개). 반응 상태를 하나 더하면 숙고 상태 수만큼 전이가 늘고, 숙고 상태를 하나 더해도 마찬가지다. 성격이 전혀 다른 두 전이 역학을 한 모델에 섞었기 때문이다.</p>
+
+    <h3>해법: Action Selector와 3계층</h3>
+    <p>Côté의 해법은 Deliberation 모듈과 Reactivity 모듈을 따로 두고, 그 사이에서 스위치 역할을 하는 <b>Action Selector</b>를 두는 것이다. 두 모듈은 같은 자극을 받아 각자 행동을 내고, 각자 자기 결정 모델(숙고는 FSM, 반응은 간단한 규칙이나 결정 트리)을 쓴다. Action Selector는 숙고 모듈에 새 결정을 요청하거나, 반응을 실행하려고 현재 숙고 행동을 취소하는 신호를 보낼 수 있으면 된다. Action Selector가 알아야 할 개념은 "이 행동이 반응인가 숙고 행동인가" 하나뿐이다.</p>
+    <p>이를 확장한 것이 Murphy(2001)의 하이브리드 구조를 따른 <b>3계층 아키텍처</b>다. Deliberating Layer는 행동 자체가 아니라 행동을 관리하는 결정(Action Description)을 내고, Sequencing Layer의 Action Selector는 순서를 정하는 동시에 Controlling Layer의 행동 풀에서 실행할 행동을 고른다. Controlling Layer의 각 행동은 자기 실행 모델을 갖고, 필요하면 스스로 반응적이어야 한다. 결정과 실행을 분리했기 때문에 한 행동의 알고리즘을 바꿔도 다른 계층에 영향이 없다.</p>
+
+    <div class="widget" id="w-arch">
+      <div class="w-title">스텝 애니메이션: Action Selector가 반응과 숙고를 엮는 과정</div>
+      <div class="w-desc">Côté 그림 11.9의 타임라인(순찰 → "거기 서!" → 전투 → "아야!!!" → 도망)을 3계층 구조 위에서 한 단계씩 따라간다.</div>
+      <div class="stage">
+      <svg class="diagram arch" id="arch-svg" viewBox="0 0 640 360" style="min-width:520px">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect class="layer" x="130" y="8" width="500" height="112" rx="8"/><text class="lname" x="138" y="24">숙고 계층 Deliberating Layer</text>
+        <rect class="layer" x="130" y="134" width="500" height="80" rx="8"/><text class="lname" x="138" y="150">순서 계층 Sequencing Layer</text>
+        <rect class="layer" x="130" y="228" width="500" height="92" rx="8"/><text class="lname" x="138" y="244">제어 계층 Controlling Layer</text>
+        <rect class="box" id="ab-stim" x="10" y="44" width="100" height="50" rx="8"/><text x="60" y="66" text-anchor="middle" style="font-weight:700">자극</text><text x="60" y="84" text-anchor="middle" class="muted" id="at-stim" style="font-size:11px">–</text>
+        <rect class="box" id="ab-del" x="160" y="34" width="200" height="72" rx="8"/><text x="260" y="56" text-anchor="middle" style="font-weight:700">Deliberation</text><text x="260" y="74" text-anchor="middle" class="muted" style="font-size:11px">FSM / 효용 (절차적 지식)</text><text x="260" y="96" text-anchor="middle" class="bub" id="at-del">순찰</text>
+        <rect class="box" id="ab-rea" x="400" y="34" width="200" height="72" rx="8"/><text x="500" y="56" text-anchor="middle" style="font-weight:700">Reactivity</text><text x="500" y="74" text-anchor="middle" class="muted" style="font-size:11px">규칙 / 결정 트리 (위험 인지)</text><text x="500" y="96" text-anchor="middle" class="bub" id="at-rea">–</text>
+        <rect class="box" id="ab-sel" x="260" y="158" width="240" height="46" rx="8"/><text x="380" y="178" text-anchor="middle" style="font-weight:700">Action Selector</text><text x="380" y="196" text-anchor="middle" class="muted" id="at-sel" style="font-size:11px">숙고 행동 통과</text>
+        <rect class="box" id="ab-b0" x="150" y="256" width="100" height="44" rx="8"/><text x="200" y="283" text-anchor="middle">순찰</text>
+        <rect class="box" id="ab-b1" x="265" y="256" width="100" height="44" rx="8"/><text x="315" y="283" text-anchor="middle">전투</text>
+        <rect class="box" id="ab-b2" x="380" y="256" width="100" height="44" rx="8"/><text x="430" y="283" text-anchor="middle">도망</text>
+        <rect class="box" id="ab-b3" x="495" y="256" width="120" height="44" rx="8"/><text x="555" y="276" text-anchor="middle">반응 애니</text><text x="555" y="292" text-anchor="middle" class="muted" style="font-size:11px">어이! / 아야!</text>
+        <path class="arrow" id="aa-s-d" d="M110,62 L158,66"/>
+        <path class="arrow" id="aa-s-r" d="M110,52 C200,10 330,10 398,46"/>
+        <path class="arrow" id="aa-d-sel" d="M290,106 L330,156"/>
+        <path class="arrow" id="aa-r-sel" d="M470,106 L430,156"/>
+        <path class="arrow sig" id="aa-sel-d" d="M262,170 C200,160 190,130 210,108"/>
+        <path class="arrow" id="aa-sel-b" d="M380,204 L380,254"/>
+        <text x="190" y="142" class="muted" style="font-size:10.5px">제어 신호(취소·새 결정 요청)</text>
+        <text x="20" y="345" class="muted" style="font-size:11px">실행 타임라인</text>
+        <g id="arch-tl"></g>
+      </svg>
+      </div>
+      <div id="arch-step"></div>
+    </div>
+
+    <h3>함정 #2: 하나의 개념 모델로 다 하려 하기</h3>
+    <p>Côté는 결정 모델뿐 아니라 <b>개념 모델</b>(필요한 개념의 정의와 그 관계)도 나눠야 한다고 말한다. 반응은 위험 인지를 다루고 숙고는 절차적 지식을 다루기 때문이다. 생리 현상에서 뽑은 반응 쪽 요구사항은 다음과 같다.</p>
+    <ul>
+      <li>비자발적 반응은 인지적 반응보다 우선순위가 높다. 통증·질식·화상 같은 물리적 피해에 의한 반응은 어떤 선제적 반응보다 앞선다.</li>
+      <li>동시에 일어난 비자발적 반응은 결합될 수 있다. 질식 중인 개체가 동시에 원거리 무기에 맞을 수 있다.</li>
+      <li>비자발적 반응 사이에도 우선순위가 있다. 폭발에 날아가거나 극심한 통증은 덜 심각한 것보다 앞선다.</li>
+      <li>인지적 반응은 위험 인지 수준에 좌우된다. 난투 중의 깨지는 소리는 아무도 놀라게 하지 않지만 조용한 교실에서는 크게 놀라게 한다.</li>
+    </ul>
+    <p>효용 시스템의 언어로 바꾸면, 첫째·셋째 항목은 <b>rank의 계층</b>(05장의 dual utility)이고, 넷째 항목은 반응의 consideration에 "현재 위험 인지 수준"을 넣는 것이다. 둘째 항목(동시 결합)은 "한 번에 하나의 행동"이라는 효용 선택의 기본 가정 밖에 있다. 엔진의 Hamlet은 이것을 다루지 않는다. 필요하다면 반응을 행동이 아니라 실행 중인 행동 위에 겹치는 레이어(애니메이션 가산 등)로 처리해야 한다.</p>
+  </section>
+
+  <!-- ───────────────────────── s7 ───────────────────────── -->
+  <section id="s7">
+    <h2>7. 엔진 연결: think(a, interruptOnly)</h2>
+    <p>이 코스의 엔진은 Côté의 분리를 별도 모듈 두 개가 아니라 <b>하나의 Reasoner + 두 가지 호출 방식 + rank</b>로 구현한다. 핵심은 <code>World.tick</code>의 세 줄이다.</p>
+<pre class="engine"><code>    tick() {
+      this.time += this.dt; this.tickCount++;
+      if (this.threat &amp;&amp; this.time &gt;= this.threat.until) this.threat = null;
+      for (const a of this.agents) {
+        // 1) 욕구 감소
+        for (const n of UAI.NEEDS) a.needs[n] = Math.max(0, a.needs[n] - UAI.NEED_DECAY[n] * this.dt * (n === "energy" &amp;&amp; this.hour() &gt;= 22 ? 1.8 : 1));
+        // 2) 결정 (06장, GAP1 11장): 숙고는 할 일이 끝났을 때만, 반응(인터럽트)은 주기적으로 검사
+        const due = (this.tickCount + a.thinkOffset) % this.thinkEvery === 0;
+        if (!a.current) this.think(a);
+        else if (due) this.think(a, true);
+        // 3) 실행
+        this.act(a);
+      }
+    }</code></pre>
+    <ul>
+      <li><code>if (!a.current) this.think(a);</code> — <b>숙고</b>. 할 일이 없을 때만, 그러나 그때는 즉시 한다. Côté의 숙고 트리거 (1) "현재 행동이 끝나 새 행동이 필요할 때"이고, The Sims Medieval의 "queue가 비었을 때만"과 같다.</li>
+      <li><code>else if (due) this.think(a, true);</code> — <b>반응 검사</b>. 바쁠 때는 <code>thinkEvery</code>틱마다 한 번, 인터럽트만 본다. <code>thinkOffset</code>(에이전트 번호)으로 에이전트마다 검사 시점을 엇갈려 한 틱에 부하가 몰리지 않게 한다(09장 time-slicing).</li>
+      <li>숙고 트리거 (2) "맥락이 바뀌어 현재 행동이 무효가 될 때"는 각 행동의 <code>run()</code>이 맡는다. 예컨대 "이용하기"는 도착했는데 자리가 차 있으면 <code>a.current = null</code>로 스스로 포기하고, 다음 틱에 숙고가 다시 돈다. 도망은 늑대와 거리가 14 이상이 되면 스스로 끝난다.</li>
+    </ul>
+    <p>인터럽트 검사의 규칙은 <code>think</code> 안에 있다.</p>
+<pre class="engine"><code>    // interruptOnly=true: 실행 중인 행동보다 rank가 높은 후보가 생겼을 때만 갈아탄다
+    think(a, interruptOnly) {
+      const res = this.reasoner.decide(a, this, this.rng);
+      a.lastEval = res;
+      const c = res.chosen;
+      if (!c) return;
+      if (a.current &amp;&amp; a.current.action === c.action.id &amp;&amp; a.current.target === c.target) return;
+      if (interruptOnly) {
+        const curAct = this.reasoner.actions.find(x =&gt; x.id === a.current.action);
+        if (c.rank &lt;= curAct.rank) return;
+      }
+      if (a.current &amp;&amp; a.current.using) this.release(a);
+      a.current = { action: c.action.id, target: c.target, label: c.action.label, started: this.time, using: false };</code></pre>
+    <p><code>c.rank &lt;= curAct.rank</code>이면 아무것도 바꾸지 않는다. 같은 rank의 더 좋은 행동이 나타나도 무시한다. 이것이 Côté의 표에서 "숙고 = 오래 유지할 최선"이고, 그 결과 같은 rank끼리는 <b>구조적으로 진동할 수 없다</b>. rank 10인 도망만 rank 0인 욕구 행동을 끊을 수 있다. 이것이 "반응 = 우선순위가 높은 인터럽트"다. Côté의 Action Selector가 알아야 할 유일한 개념(반응인가 숙고인가)이 엔진에서는 <code>rank</code> 비교 한 줄로 줄어든다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Côté 3계층</th><th>uai.js</th></tr>
+      <tr><td>Deliberation 모듈</td><td><code>think(a)</code>: current가 비었을 때, rank 0 욕구 행동(이용하기·수다·산책) 중 dual utility 선택</td></tr>
+      <tr><td>Reactivity 모듈</td><td>rank 10 행동 <code>flee</code>. "위협 존재" 스위치 × "위협 거리" 감소 커브</td></tr>
+      <tr><td>Action Selector (Sequencing)</td><td><code>think(a, true)</code>의 rank 비교 + <code>thinkEvery</code> 주기. 반응이 끝나면(<code>flee.run</code>이 current를 비우면) 다음 틱에 숙고 재요청</td></tr>
+      <tr><td>Controlling Layer</td><td>각 행동의 <code>run(world, a, cur)</code>: 이동·사용·해제를 스스로 처리</td></tr>
+    </table></div>
+
+    <h3>그렇다면 opt.inertia는 어디에 쓰이나</h3>
+    <p>여기서 미묘한 사실이 하나 드러난다. 엔진의 <code>World</code>에서 전체 숙고(<code>think(a)</code>)는 <code>a.current</code>가 비었을 때만 일어나므로, 그 순간에는 "현재 행동"이 없어 관성 보너스를 받을 후보가 없다. 인터럽트 검사(<code>think(a, true)</code>)에서는 관성이 현재 행동의 점수를 올리지만, 갈아탈지는 점수가 아니라 rank로 정해진다. 결국 <b>엔진 그대로의 World에서 <code>opt.inertia</code>는 결과를 바꾸지 않는다</b>(다음 절 실험에서 직접 확인한다). Hamlet의 기본값 <code>inertia: 0.1</code>은 "주기적으로 전체를 다시 숙고하는" 변형 정책이나, <code>Reasoner</code>를 <code>World</code> 밖에서 매 틱 직접 부르는 경우(위젯 1처럼)를 위한 것이다. 행동 종료 시 결정은 그 자체로 가장 강한 관성이다.</p>
+<pre class="engine"><code>      this.opt = Object.assign({ combine: "compensated", strategy: "best", inertia: 0, pct: 0.1, n: 3 }, opt);</code></pre>
+  </section>
+
+  <!-- ───────────────────────── s8 ───────────────────────── -->
+  <section id="s8">
+    <h2>8. Hamlet 실험: thinkEvery와 늑대</h2>
+    <p>이제 진짜 엔진을 돌린다. <code>UAI.makeHamlet</code>으로 만든 마을에서 주민 여섯이 욕구를 채우며 살고 있다. 늑대를 풀어 놓고, 늑대 반경(맨해튼 거리 14) 안에 있던 주민이 도망을 시작하기까지 몇 게임 분이 걸리는지 잰다. 정책은 두 가지다.</p>
+    <ul>
+      <li><b>엔진 그대로</b>: <code>World.tick</code> 기본 동작. 숙고는 행동 종료 시, 인터럽트 검사는 <code>thinkEvery</code>틱마다.</li>
+      <li><b>교육용 변형: 주기적 재숙고</b>: 바쁠 때도 <code>thinkEvery</code>틱마다 <code>interruptOnly</code> 없이 전체를 다시 숙고한다(챕터 코드가 <code>world.think</code>를 감싸 두 번째 인자를 <code>false</code>로 바꾼다). 같은 rank 안의 전환이 허용되므로 관성의 효과가 드러난다.</li>
+    </ul>
+    <div class="widget" id="w-hm">
+      <div class="w-title">Hamlet 반응 지연 실험실</div>
+      <div class="w-desc">지도를 클릭하면 그 자리에, 버튼을 누르면 주민들의 중심에 늑대가 40분간 나타난다. 원의 색은 현재 행동이다. 점선 마름모가 늑대 반경 14다.</div>
+      <div class="controls">
+        <button class="btn primary" id="hm-play">▶ 재생</button>
+        <button class="btn" id="hm-wolf">🐺 늑대 등장</button>
+        <button class="btn" id="hm-reset">↺ 마을 초기화</button>
+        <label>속도 <select id="hm-speed"><option value="1">1분/프레임</option><option value="2" selected>2분/프레임</option><option value="5">5분/프레임</option></select></label>
+      </div>
+      <div class="controls">
+        <label>thinkEvery <select id="hm-te"><option value="1">1</option><option value="5" selected>5</option><option value="20">20</option></select></label>
+        <label>inertia <input type="range" id="hm-in" min="0" max="0.3" step="0.05" value="0.1"> <output id="hm-inv"></output></label>
+        <label>정책 <select id="hm-mode"><option value="engine">엔진 그대로</option><option value="replan">교육용 변형: 주기적 재숙고</option></select></label>
+      </div>
+      <div class="stage"><svg class="hm-svg" id="hm-svg" viewBox="0 0 600 400"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>이용하기</span><span><i style="background:var(--violet)"></i>수다 떨기</span>
+        <span><i style="background:var(--muted)"></i>산책</span><span><i style="background:var(--bad)"></i>도망치기</span><span><i style="background:var(--border)"></i>결정 전</span>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">시각</div><div class="v" id="hm-clock">06:00</div></div>
+        <div class="stat"><div class="k">반응 지연 평균 (분)</div><div class="v" id="hm-lavg">–</div></div>
+        <div class="stat"><div class="k">반응 지연 최대 (분)</div><div class="v" id="hm-lmax">–</div></div>
+        <div class="stat"><div class="k">행동 전환 (중단) 횟수</div><div class="v" id="hm-sw">0</div></div>
+        <div class="stat"><div class="k">결정 횟수</div><div class="v" id="hm-dec">0</div></div>
+      </div>
+      <div class="chips" id="hm-chips"></div>
+      <div class="log" id="hm-log" style="max-height:140px"></div>
+      <div class="controls" style="margin-top:12px"><button class="btn" id="hm-exp">🧪 자동 실험 (시드 6개 × thinkEvery 1/5/20 × 정책 2)</button><span style="font-size:13px;color:var(--muted)">현재 inertia 값으로 2시간 워밍업 → 늑대 → 6시간 더 진행</span></div>
+      <div class="tbl-wrap"><table class="cmp" id="hm-exp-tbl"></table></div>
+    </div>
+    <p>실험에서 확인할 것.</p>
+    <ol>
+      <li><b>반응 지연 ≈ thinkEvery</b>. 엔진 그대로일 때 바쁜 주민은 다음 인터럽트 검사 틱까지 늑대를 모른다. thinkEvery = 1이면 지연은 1분(다음 틱), 5면 최대 5분 안팎, 20이면 최대 20분 안팎이다. 한가한 주민은 즉시 숙고하므로 1분 만에 도망친다. thinkEvery보다 긴 지연이나 "미도주"가 가끔 보이는 것은, 늑대가 나타난 순간에는 반경 안이었지만 검사 틱이 오기 전에 반경 밖으로 걸어 나간 주민이 있기 때문이다. 그런 주민은 나중에 다시 걸어 들어올 때 비로소 도망친다.</li>
+      <li><b>엔진 그대로에서는 inertia가 아무것도 바꾸지 않는다</b>. 슬라이더를 0에서 0.3까지 움직이고 자동 실험을 다시 돌려도 엔진 행의 숫자는 그대로다(§7).</li>
+      <li><b>주기적 재숙고는 진동한다</b>. thinkEvery = 1, inertia = 0이면 가중 랜덤(<code>dual</code>, pct 0.15) 때문에 매 틱 다른 대상·행동으로 갈아타 전환 횟수가 폭증한다. 노이즈 대신 <b>확률적 선택</b>이 진동을 만드는 경우다. inertia를 올리면 전환이 크게 줄어든다. 이 정책에서는 관성이 제 역할을 한다.</li>
+    </ol>
+    <div class="callout deep"><span class="title">thinkEvery는 무엇과 무엇의 거래인가</span>
+      <p>thinkEvery를 키우면 바쁜 에이전트의 평가 횟수가 1/thinkEvery로 줄어든다. 주민 6명이면 별 차이가 없지만, 수백 명이 사는 마을이나 consideration에 레이캐스트가 들어간 경우라면 결정적이다. 대가는 최대 thinkEvery틱의 반응 지연이다. 엔진의 혼합 정책은 이 거래를 <b>rank가 높은 행동에만</b> 걸리게 한다. 욕구 행동끼리는 어차피 서로 끊지 않으니 검사 주기가 의미 없고, 늑대 같은 위협만 주기의 영향을 받는다. 반응 지연을 더 줄이고 싶다면 주기를 줄이는 대신 위협 발생을 <b>이벤트</b>로 만들어, 늑대가 나타나는 순간 반경 안 에이전트의 <code>think(a, true)</code>를 바로 부르는 방법도 있다. 09장에서 스케줄링과 함께 다룬다.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── s9 ───────────────────────── -->
+  <section id="s9">
+    <h2>9. 함정과 설계 체크리스트</h2>
+    <div class="callout danger"><span class="title">함정 1: 런타임을 진동 처방으로 쓰기</span>
+      <p>런타임은 현재 행동을 스스로 끝내게 하는 장치라 단독으로 쓰면 전환이 늘어난다. 반복을 끊으려는 것인지 진동을 막으려는 것인지 먼저 구분하라. 반복을 끊는 것이 목적이면 쿨다운과 짝지어라.</p>
+    </div>
+    <div class="callout danger"><span class="title">함정 2: 관성을 키워 모든 걸 해결하기</span>
+      <p>δ를 크게 하면 진동은 사라지지만 반응도 사라진다. 진짜 긴급한 행동이 같은 rank에 있으면 δ가 그 행동을 막는다. 긴급한 행동은 관성으로 버티게 하지 말고 rank로 분리하라(05장 dual utility, 이 장 §7).</p>
+    </div>
+    <div class="callout danger"><span class="title">함정 3: 진동의 원인을 점수에서만 찾기</span>
+      <p>Hamlet 실험의 주기적 재숙고 정책에서 진동은 노이즈가 아니라 가중 랜덤 선택에서 나왔다. 점수가 완벽히 고정돼 있어도 매 틱 가중 랜덤으로 다시 뽑으면 매 틱 다른 결과가 나온다. Lewis가 최고점 선택을 "강력 추천"한 맥락과, 05장의 랜덤 선택은 <b>결정 시점이 드물 때</b> 써야 한다는 점을 함께 기억하라.</p>
+    </div>
+    <div class="callout warn"><span class="title">함정 4: 같은 행동, 다른 대상</span>
+      <p>엔진의 관성은 <code>action</code>과 <code>target</code>이 모두 같을 때만 붙는다. 빵집이 둘이면 "빵집 A로 가다가 빵집 B로" 진동할 수 있다. 08장에서 대상 평가를 다룰 때 이 문제가 다시 나온다.</p>
+    </div>
+    <h3>체크리스트</h3>
+    <ol>
+      <li>이 결정은 <b>숙고</b>인가 <b>반응</b>인가? 반응이면 rank를 올리고, 숙고면 결정 시점을 행동 종료로 미룰 수 있는지 먼저 본다.</li>
+      <li>진동이 보이면 두 결정이 <b>같은 입력의 거울상</b>만 보고 있지 않은지 확인한다. 그렇다면 한쪽에 다른 축의 consideration을 추가한다(Lewis).</li>
+      <li>추가할 consideration이 없으면 진동 구간을 슬라이더로 좁힌다(교차점 기울기 차를 키운다).</li>
+      <li>입력이 깜빡이는 인지 신호라면 그 신호에 히스테리시스를 건다(Côté).</li>
+      <li>그래도 남는 진동에만 관성·최소 지속·쿨다운을 쓰고, 그 값이 만드는 <b>반응 지연</b>을 측정해 둔다.</li>
+      <li>반복을 끊어야 하면 런타임 + 쿨다운. 시퀀스가 필요하면 쿨다운 + 차등 가중치.</li>
+    </ol>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>점수가 비슷한 두 행동을 매 프레임 argmax로 고르면 입력의 출렁임이 출력으로 새어 나와 진동한다. 행동은 완료되지 않고 애니메이션은 튄다.</li>
+    <li>관성·최소 지속·쿨다운은 진동을 <b>붙잡고</b>, 히스테리시스·곡선 조정은 진동 구간을 <b>좁힌다</b>. 붙잡는 방법은 모두 반응 지연을 대가로 치른다. 런타임은 진동이 아니라 반복을 끊는 장치다.</li>
+    <li>Lewis: 이런 장치는 진동 위치를 옮길 뿐이다. 가장 단순한 해법은 한쪽 결정에 consideration을 더하는 것이고, 안 되면 곡선을 조정해 진동 구간을 최소화한다. 쿨다운 차등은 시퀀스를 만든다.</li>
+    <li>결정 시점은 매 프레임 / 행동 종료 시(The Sims Medieval) / 주기적 / 혼합이 있다. 행동 종료 시 결정은 가장 강한 관성이지만 반응을 잃는다.</li>
+    <li>Côté: 반응성(고우선 인터럽트, 즉각 변화, 위험 인지)과 숙고(행동 종료·무효화 시, 오래 유지할 최선, 절차적 지식)는 트리거와 목표가 다르므로 하나의 모델로 합치지 말라. Action Selector와 3계층으로 분리한다.</li>
+    <li>uai.js는 이 분리를 dual rank로 구현한다: <code>!a.current</code>이면 숙고, 바쁘면 <code>thinkEvery</code>마다 <code>think(a, true)</code>로 더 높은 rank만 인터럽트. 그래서 엔진 그대로의 World에서는 <code>opt.inertia</code>가 결과를 바꾸지 않고, 반응 지연은 최대 thinkEvery틱이다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">두 행동 점수의 노이즈가 각각 ±0.05다. 최고점 선택에서 노이즈만으로는 전환이 일어나지 않게 하려면 관성 보너스 δ는 최소 얼마여야 하는가?</div>
+    <button class="opt">0.025</button><button class="opt">0.05</button><button class="opt">0.10</button><button class="opt">0.20</button>
+    <div class="explain">현재 행동이 −0.05, 도전자가 +0.05로 출렁이면 차이는 최대 0.10이다. δ ≥ 2ε = 0.10이어야 기준선이 같을 때 노이즈만으로 뒤집히지 않는다. 그만큼 실제 형세 변화에 대한 반응도 늦어진다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">Lewis가 commitment bonus, 가중치, runtime·cooldown의 공통 약점으로 든 것은?</div>
+    <button class="opt">계산 비용이 너무 크다</button>
+    <button class="opt">디자이너가 이해하기 어렵다</button>
+    <button class="opt">최고점 선택과 함께 쓸 수 없다</button>
+    <button class="opt">진동 가능성을 없애지 못하고, 진동이 일어나는 점수 위치를 옮길 뿐이다</button>
+    <div class="explain">Lewis는 이 방법들이 유용하다고 인정하면서도 진동이 일어날 때 점수가 떨어지는 위치를 옮길 뿐이라고 지적했다. 가장 단순한 해법으로는 한쪽 결정에 consideration을 추가하라고 권한다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">현재 행동이 R틱에 가까워질수록 점수를 0으로 떨어뜨리는 런타임(1 − x⁶)을 단독으로 켰다. 쫓아내기가 확실히 우세한 구간에서 무슨 일이 생기는가?</div>
+    <button class="opt">아무 변화 없다. 런타임은 애매한 구간에서만 작동한다</button>
+    <button class="opt">R틱마다 쫓아내기가 지쳐 다른 행동으로 넘어가므로 전환이 오히려 늘어난다</button>
+    <button class="opt">쫓아내기가 영원히 유지된다</button>
+    <button class="opt">두 행동 모두 점수가 0이 되어 AI가 멈춘다</button>
+    <div class="explain">런타임은 반복을 끊는 장치다. 우세한 행동도 R틱이 지나면 강제로 끝나므로 전환이 생긴다. Lewis의 Evade Dangerous Areas가 런타임과 쿨다운을 함께 쓴 것은 지친 행동이 곧바로 돌아오지 못하게 하기 위해서다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Côté에 따르면 반응성과 숙고를 하나의 결정 모델로 합치기 어려운 근본 이유는?</div>
+    <button class="opt">트리거(고우선 인터럽트 vs 행동 종료·무효화)와 목표(즉각 변화 vs 오래 유지할 최선)가 다르다</button>
+    <button class="opt">숙고 모델은 반응할 만큼 빠르게 계산할 수 없다</button>
+    <button class="opt">반응은 효용으로 표현할 수 없다</button>
+    <button class="opt">FSM으로는 반응을 구현할 수 없다</button>
+    <div class="explain">Côté는 숙고 모델이 충분히 빠르면 합칠 수 있다는 결론이 반응 속도만 본 것이라고 지적한다. 결정이 필요해지는 계기와 결정된 행동의 역학이 근본적으로 다르다. FSM으로도 반응 상태를 넣을 수는 있지만 전이가 폭발한다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">엔진 그대로의 <code>World</code>에서 Hamlet 주민이 빵집에서 빵을 먹는 중이다. 더 점수가 높은 rank 0 행동(선술집)이 생겼다. thinkEvery = 1이고 inertia = 0이다. 주민은 어떻게 하는가?</div>
+    <button class="opt">다음 틱에 선술집으로 간다</button>
+    <button class="opt">inertia가 0이라 즉시 갈아탄다</button>
+    <button class="opt">빵을 다 먹을 때까지 바꾸지 않는다. 인터럽트 검사는 rank가 더 높을 때만 갈아탄다</button>
+    <button class="opt">가중 랜덤에 따라 확률적으로 갈아탄다</button>
+    <div class="explain"><code>think(a, true)</code>는 <code>c.rank &lt;= curAct.rank</code>이면 반환한다. 같은 rank의 더 좋은 행동은 무시되고, 빵을 다 먹어 <code>run()</code>이 <code>a.current = null</code>로 만든 뒤에야 숙고가 다시 돈다. 이 경로에서는 inertia 값이 결과에 영향을 주지 않는다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">시야 가시도 신호에 L = 0.3, H = 0.6인 히스테리시스를 걸었다. 현재 "위협 목격" 상태가 켜져 있고 가시도가 0.45로 떨어졌다. 상태는?</div>
+    <button class="opt">꺼진다. 0.45 &lt; 0.6이므로</button>
+    <button class="opt">꺼진다. (L+H)/2 = 0.45 이하이므로</button>
+    <button class="opt">한 틱 뒤에 꺼진다</button>
+    <button class="opt">켜진 채로 유지된다. 켜진 상태는 L 아래로 내려가야 꺼진다</button>
+    <div class="explain">켜진 상태에서 꺼지는 문턱은 L(0.3)이다. [L, H] 사이에서는 직전 상태를 유지한다. 그래서 장애물에 반쯤 가리는 정도로는 Chase가 Patrol로 떨어지지 않는다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">쿨다운 차등 시퀀스 위젯에서 행동 A(1.00), B(0.95), C(0.90)에 같은 쿨다운을 걸었다. 매 틱 하나씩 고르고 쿨다운은 "남은 시간 &gt; 0이면 무효"다. A→B→C→A→B→C… 순서가 정확히 반복되는 쿨다운 값은?</div>
+    <button class="opt">2틱</button><button class="opt">3틱</button><button class="opt">4틱</button><button class="opt">어떤 값이든 같다</button>
+    <div class="explain">t=0에 A를 쓰면 쿨다운 3에서는 t=3에 다시 쓸 수 있다(남은 시간 3 − 3 = 0). 그래서 A,B,C,A,B,C가 된다. 2틱이면 C 차례에 A가 이미 돌아와 A,B,A,B가 되고, 4틱이면 한 틱 비어 지켜보기가 끼어든다. 시퀀스 길이와 쿨다운이 맞아야 한다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b>이 장의 위젯은 점수를 시나리오로 정해 주었다. 07장에서는 점수의 출처가 바뀐다. 배고픔·기력·재미·사교라는 욕구가 시간이 흐르며 줄어들고, 스마트 오브젝트가 "나를 쓰면 무엇이 얼마나 채워진다"를 광고한다. 시간이 결정을 흔드는 대신 결정을 <b>만들어 내는</b> 구조다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>David "Rez" Graham, "An Introduction to Utility Theory", <i>Game AI Pro</i>, Ch. 9 (9.7 Inertia: 공격/도망 0.5 진동, 현재 행동 가중, 쿨다운, 결정 보류, The Sims Medieval의 interaction queue).</li>
+    <li>Carle Côté, "Reactivity and Deliberation in Decision-Making Systems", <i>Game AI Pro</i>, Ch. 11 (반응/숙고의 트리거·목표 차이, Chase↔Patrol 진동과 히스테리시스, Action Selector, 3계층 구조).</li>
+    <li>R. R. Murphy, <i>Introduction to AI Robotics</i>, MIT Press, 2001, pp. 257–274 (Côté가 인용한 하이브리드 구조).</li>
+    <li>Mike Lewis, "Choosing Effective Utility-Based Considerations", <i>Game AI Pro 3</i>, Ch. 13 (runtime 1−x⁶, cooldown x⁵, Evade Dangerous Areas, 진동과 commitment bonus의 한계, 쿨다운 차등 시퀀스, 슬라이더 도구).</li>
+    <li>Kevin Dill, "Dual-Utility Reasoning", <i>Game AI Pro 2</i>, Ch. 3 (rank와 weight).</li>
+    <li>DeepBlue, "효용기반 의사결정 (Utility based Decision Making)", 2015, blog.naver.com/devdeepblue/220289807509 (관성: 공격/도망 진동, 현재 행동 가중, 액션 종결까지 결정 보류).</li>
+  </ul></div>
+</main>
+
+<script>
+(function () {
+"use strict";
+/*LOGIC-START*/
+// ── 위젯 1: 시간축 진동 시나리오 ──
+var OSC = { N: 600, RAMP0: 80, RAMP1: 180, CROSS: 130, AMB0: 260, NOISE: 0.07 };
+function oscBase(f) {
+  if (f < OSC.RAMP0) return [0.75, 0.3];
+  if (f < OSC.RAMP1) { var u = (f - OSC.RAMP0) / (OSC.RAMP1 - OSC.RAMP0); return [0.75 - 0.45 * u, 0.3 + 0.45 * u]; }
+  if (f < OSC.AMB0) return [0.3, 0.75];
+  var g = f - OSC.AMB0;
+  return [0.5 + 0.04 * Math.sin(2 * Math.PI * g / 170), 0.5 + 0.04 * Math.sin(2 * Math.PI * g / 110 + 1)];
+}
+function oscScenario(seed) {
+  var r = UAI.rng(seed), A = [], F = [];
+  for (var f = 0; f < OSC.N; f++) {
+    var b = oscBase(f);
+    A.push(b[0] + r.range(-OSC.NOISE, OSC.NOISE));
+    F.push(b[1] + r.range(-OSC.NOISE, OSC.NOISE));
+  }
+  return { A: A, F: F };
+}
+// P = { inertia, hyst, commit, cooldown, runtime } — 0이면 꺼짐
+function oscRun(sc, P) {
+  var ids = ["attack", "flee"];
+  var actions = ids.map(function (id) {
+    var cons = [{ name: "상황", input: function (ctx) { return ctx.world.sig[id]; }, curve: "선형 증가" }];
+    if (P.cooldown) cons.push({ name: "쿨다운", curve: "cooldown: x⁵", input: function (ctx) {
+      var e = ctx.agent.lastEnd[id]; return e == null ? 1 : (ctx.world.time - e) / P.cooldown; } });
+    if (P.runtime) cons.push({ name: "런타임", curve: "runtime: 1−x⁶", input: function (ctx) {
+      var c = ctx.agent.current; return c && c.action === id ? (ctx.world.time - c.started) / P.runtime : 0; } });
+    return { id: id, label: id === "attack" ? "쫓아내기" : "도망치기", considerations: cons };
+  });
+  var R = new UAI.Reasoner(actions, { combine: "product", strategy: "best", inertia: P.inertia || 0 });
+  var agent = { current: null, lastEnd: {} }, world = { time: 0, sig: {} };
+  var yA = sc.A[0], yF = sc.F[0], h = P.hyst || 0;
+  var out = [], switches = 0, amb = 0, react = null;
+  for (var f = 0; f < OSC.N; f++) {
+    world.time = f;
+    var a = sc.A[f], fl = sc.F[f];
+    if (h) { yA = Math.min(Math.max(yA, a - h), a + h); yF = Math.min(Math.max(yF, fl - h), fl + h); }
+    else { yA = a; yF = fl; }
+    world.sig.attack = yA; world.sig.flee = yF;
+    var res = R.decide(agent, world);
+    var pick = res.chosen ? res.chosen.action.id : (agent.current ? agent.current.action : "attack");
+    if (agent.current && P.commit && f - agent.current.started < P.commit) pick = agent.current.action;
+    if (!agent.current || pick !== agent.current.action) {
+      if (agent.current) { agent.lastEnd[agent.current.action] = f; switches++; if (f >= OSC.AMB0) amb++; }
+      agent.current = { action: pick, target: null, started: f };
+    }
+    if (react == null && f >= OSC.CROSS && pick === "flee") react = f - OSC.CROSS;
+    out.push({ pick: pick, sA: res.rows[0].score, sF: res.rows[1].score, yA: yA, yF: yF, sw: switches, amb: amb });
+  }
+  return { out: out, switches: switches, amb: amb, react: react };
+}
+
+// ── 위젯: 진동 구간 ──
+function zoneScan(fa, ff, eps, n) {
+  n = n || 400;
+  var inZone = 0, segs = [], start = null, cross = null, prevD = null;
+  for (var i = 0; i <= n; i++) {
+    var t = i / n, d = fa(t) - ff(t), z = Math.abs(d) < 2 * eps;
+    if (z) inZone++;
+    if (z && start == null) start = t;
+    if (!z && start != null) { segs.push([start, (i - 1) / n]); start = null; }
+    if (prevD != null && cross == null && Math.sign(d) !== Math.sign(prevD) && d !== 0) cross = t;
+    prevD = d;
+  }
+  if (start != null) segs.push([start, 1]);
+  return { frac: inZone / (n + 1), segs: segs, cross: cross };
+}
+
+// ── 위젯: 쿨다운 차등 시퀀스 (엔진 cooldown + lastUsed) ──
+var SEQ_ACTS = [
+  { id: "shout", label: "소리치기", weight: 1.0 },
+  { id: "torch", label: "횃불 휘두르기", weight: 0.95 },
+  { id: "stone", label: "돌 던지기", weight: 0.9 },
+  { id: "watch", label: "지켜보기", weight: 0.3 },
+];
+function cooldownSequence(cd, n) {
+  var acts = SEQ_ACTS.map(function (a) {
+    return { id: a.id, label: a.label, weight: a.weight, cooldown: a.id === "watch" ? 0 : cd,
+      considerations: [{ name: "늑대 근처", input: function () { return 1; } }] };
+  });
+  var R = new UAI.Reasoner(acts, { combine: "product", strategy: "best" });
+  var agent = { current: null, lastUsed: {} }, world = { time: 0 }, seq = [];
+  for (var t = 0; t < n; t++) {
+    world.time = t;
+    var id = R.decide(agent, world).chosen.action.id;
+    agent.lastUsed[id] = t;
+    seq.push(id);
+  }
+  return seq;
+}
+
+// ── 위젯: 히스테리시스 ──
+var HY = { N: 300, LOSS: 250, OCC: [[40, 54], [85, 95], [125, 148], [170, 180], [200, 214]] };
+function visSignal(seed) {
+  var r = UAI.rng(seed), v = [];
+  for (var f = 0; f < HY.N; f++) {
+    var base = f < 12 ? 0.08 : f >= HY.LOSS ? Math.max(0.1, 0.74 - (f - HY.LOSS) * 0.025) : 0.74;
+    for (var k = 0; k < HY.OCC.length; k++) if (f >= HY.OCC[k][0] && f < HY.OCC[k][1]) base = 0.4;
+    v.push(UAI.clamp01(base + r.range(-0.07, 0.07)));
+  }
+  return v;
+}
+function threshold1(v, th) { return v.map(function (x) { return x >= th; }); }
+function schmitt(v, lo, hi) { var s = false; return v.map(function (x) { s = s ? x >= lo : x >= hi; return s; }); }
+function flips(states) { var n = 0; for (var i = 1; i < states.length; i++) if (states[i] !== states[i - 1]) n++; return n; }
+function lossLag(states) { for (var f = HY.LOSS; f < states.length; f++) if (!states[f]) return f - HY.LOSS; return null; }
+
+// ── 위젯: Hamlet 실험 ──
+function hamletWrap(w, st) {
+  var base = UAI.World.prototype.think;
+  w.think = function (a, io) {
+    var prev = a.current;
+    base.call(this, a, st.mode === "replan" ? false : io);
+    if (a.current !== prev) { st.decisions++; if (prev) st.switches++; }
+  };
+}
+function makeVillage(seed, te, inertia, st) {
+  var w = UAI.makeHamlet({ seed: seed, thinkEvery: te, reasonerOpt: { combine: "compensated", strategy: "dual", pct: 0.15, inertia: inertia } });
+  hamletWrap(w, st);
+  return w;
+}
+function centroid(w) {
+  var x = 0, y = 0;
+  w.agents.forEach(function (a) { x += a.x; y += a.y; });
+  return { x: Math.round(x / w.agents.length), y: Math.round(y / w.agents.length) };
+}
+function releaseWolf(w, x, y) {
+  w.threat = { x: x, y: y, until: w.time + 40 };
+  var probe = { t0: w.time, near: [], lat: {} };
+  w.agents.forEach(function (a) {
+    if (w.dist(a, w.threat) < 14 && !(a.current && a.current.action === "flee")) probe.near.push(a);
+  });
+  return probe;
+}
+function probeUpdate(w, probe) {
+  probe.near.forEach(function (a) {
+    if (probe.lat[a.id] == null && a.current && a.current.action === "flee") probe.lat[a.id] = w.time - probe.t0;
+  });
+}
+function hamletTrial(mode, te, inertia, seed) {
+  var st = { mode: mode, switches: 0, decisions: 0 };
+  var w = makeVillage(seed, te, inertia, st);
+  for (var i = 0; i < 120; i++) w.tick();
+  var c = centroid(w), probe = releaseWolf(w, c.x, c.y);
+  for (i = 0; i < 60; i++) { w.tick(); probeUpdate(w, probe); }
+  for (i = 0; i < 300; i++) w.tick();
+  var ls = probe.near.map(function (a) { return probe.lat[a.id]; }).filter(function (v) { return v != null; });
+  return { lats: ls, missed: probe.near.length - ls.length, switches: st.switches, hours: w.agents.length * (w.time / 60) };
+}
+function hamletExperiment(mode, te, inertia, seeds) {
+  var all = [], sw = 0, hrs = 0, missed = 0;
+  seeds.forEach(function (s) { var r = hamletTrial(mode, te, inertia, s); all = all.concat(r.lats); sw += r.switches; hrs += r.hours; missed += r.missed; });
+  var avg = all.length ? all.reduce(function (a, b) { return a + b; }, 0) / all.length : null;
+  return { avg: avg, max: all.length ? Math.max.apply(null, all) : null, n: all.length, missed: missed, swPerHour: sw / hrs };
+}
+/*LOGIC-END*/
+
+var $ = function (id) { return document.getElementById(id); };
+function css(n) { return MM.cssVar(n); }
+
+// ═════════════ 위젯 1: 진동 시뮬레이터 ═════════════
+(function () {
+  var cv = $("osc-cv"), ctx = cv.getContext("2d");
+  var W = 680, H = 250, L = 34, R = 670, T = 10, B = 176, BAND0 = 188, BAND1 = 212;
+  var dpr = window.devicePixelRatio || 1;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.scale(dpr, dpr);
+  var seed = 11, sc = oscScenario(seed), run = null, cur = 0, playing = false, raf = null;
+  var keys = ["inertia", "hyst", "commit", "cooldown", "runtime"];
+  var on = { inertia: false, hyst: false, commit: false, cooldown: false, runtime: false };
+  var fmtP = { inertia: function (v) { return MM.fmt(v, 2); }, hyst: function (v) { return MM.fmt(v, 2); }, commit: String, cooldown: String, runtime: String };
+  var NAMES = { inertia: "관성 δ", hyst: "히스테리시스 h", commit: "최소 지속 D", cooldown: "쿨다운 C (x⁵)", runtime: "런타임 R (1−x⁶)" };
+  function val(k) { return +$("p-" + k).value; }
+  function params(only) {
+    var P = {};
+    keys.forEach(function (k) { if (only ? k === only : on[k]) P[k] = val(k); });
+    return P;
+  }
+  var X = function (f) { return L + (f / (OSC.N - 1)) * (R - L); };
+  var Y = function (s) { return B - (Math.max(0, Math.min(1.2, s)) / 1.2) * (B - T); };
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = "11px sans-serif";
+    // 구간 배경
+    ctx.fillStyle = css("--surface-2");
+    ctx.fillRect(X(OSC.RAMP0), T, X(OSC.RAMP1) - X(OSC.RAMP0), B - T);
+    ctx.fillRect(X(OSC.AMB0), T, R - X(OSC.AMB0), B - T);
+    // 격자
+    ctx.strokeStyle = css("--border"); ctx.lineWidth = 1; ctx.fillStyle = css("--muted");
+    [0, 0.5, 1].forEach(function (s) { ctx.beginPath(); ctx.moveTo(L, Y(s)); ctx.lineTo(R, Y(s)); ctx.stroke(); ctx.fillText(s.toFixed(1), 6, Y(s) + 4); });
+    ctx.fillText("① 쫓아내기 우세", X(4), B - 4);
+    ctx.fillText("② 뒤집힘", X(OSC.RAMP0 + 4), B - 4);
+    ctx.fillText("③ 도망 우세", X(OSC.RAMP1 + 4), B - 4);
+    ctx.fillText("④ 애매 구간 (둘 다 ≈0.5)", X(OSC.AMB0 + 6), B - 4);
+    // 교차선
+    ctx.strokeStyle = css("--bad"); ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(X(OSC.CROSS), T); ctx.lineTo(X(OSC.CROSS), BAND1); ctx.stroke(); ctx.setLineDash([]);
+    var n = Math.min(cur, OSC.N);
+    function line(get, color, width, dash) {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []);
+      ctx.beginPath();
+      for (var f = 0; f < n; f++) { var y = Y(get(f)); if (f) ctx.lineTo(X(f), y); else ctx.moveTo(X(f), y); }
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    var o = run.out;
+    // 원신호 (얇은 점선)
+    line(function (f) { return sc.A[f]; }, css("--warn"), 1, [2, 3]);
+    line(function (f) { return sc.F[f]; }, css("--teal"), 1, [2, 3]);
+    // Reasoner가 본 최종 점수
+    line(function (f) { return o[f].sA; }, css("--warn"), 2.2);
+    line(function (f) { return o[f].sF; }, css("--teal"), 2.2);
+    // 선택 띠
+    for (var f = 0; f < n; f++) {
+      ctx.fillStyle = o[f].pick === "attack" ? css("--warn") : css("--teal");
+      ctx.fillRect(X(f), BAND0, Math.max(1.2, X(f + 1) - X(f)), BAND1 - BAND0);
+      if (f && o[f].pick !== o[f - 1].pick) { ctx.fillStyle = css("--text"); ctx.fillRect(X(f) - 0.5, BAND1 + 2, 1, 6); }
+    }
+    ctx.strokeStyle = css("--border"); ctx.strokeRect(L, BAND0, R - L, BAND1 - BAND0);
+    ctx.fillStyle = css("--muted");
+    ctx.fillText("선택", 4, BAND0 + 15);
+    ctx.fillText("0", L, H - 16); ctx.fillText("130", X(OSC.CROSS) - 8, H - 16); ctx.fillText("260", X(OSC.AMB0) - 8, H - 16); ctx.fillText("600틱", R - 30, H - 16);
+    ctx.fillText("▲ 아래 눈금 = 전환", L, H - 3);
+    // 커서
+    if (n > 0 && n < OSC.N) { ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(n), T); ctx.lineTo(X(n), BAND1); ctx.stroke(); }
+    // 통계
+    var last = o[Math.max(0, n - 1)];
+    $("osc-t").textContent = n;
+    $("osc-sw").textContent = n ? last.sw : 0;
+    $("osc-amb").textContent = n ? last.amb : 0;
+    $("osc-react").textContent = run.react != null && n > OSC.CROSS + run.react ? run.react + "틱" : (n > OSC.CROSS ? "대기 중" : "–");
+    $("osc-cur").textContent = n ? (last.pick === "attack" ? "쫓아내기" : "도망치기") : "–";
+  }
+  function table() {
+    var rows = [["처방 없음", {}]];
+    keys.forEach(function (k) { rows.push([NAMES[k] + " = " + fmtP[k](val(k)), params(k)]); });
+    var combo = params();
+    var comboName = keys.filter(function (k) { return on[k]; }).map(function (k) { return NAMES[k]; }).join(" + ") || "체크한 처방 없음";
+    rows.push(["현재 조합: " + comboName, combo, true]);
+    var h = "<tr><th>정책</th><th class='num'>전환 (전체)</th><th class='num'>애매 구간 전환</th><th class='num'>반응 지연</th></tr>";
+    rows.forEach(function (r) {
+      var res = oscRun(sc, r[1]);
+      h += "<tr" + (r[2] ? " class='cur'" : "") + "><td>" + r[0] + "</td><td class='num'>" + res.switches + "</td><td class='num'>" + res.amb + "</td><td class='num'>" + (res.react == null ? "없음" : res.react + "틱") + "</td></tr>";
+    });
+    $("osc-cmp").innerHTML = h;
+  }
+  function recompute(keepCursor) {
+    run = oscRun(sc, params());
+    if (!keepCursor) cur = 0;
+    table(); draw();
+  }
+  function loop() {
+    cur = Math.min(OSC.N, cur + +$("osc-speed").value);
+    draw();
+    if (cur >= OSC.N) { stop(); return; }
+    raf = requestAnimationFrame(loop);
+  }
+  function play() { if (cur >= OSC.N) cur = 0; playing = true; $("osc-play").textContent = "⏸ 정지"; raf = requestAnimationFrame(loop); }
+  function stop() { playing = false; cancelAnimationFrame(raf); $("osc-play").textContent = "▶ 재생"; }
+  $("osc-play").onclick = function () { playing ? stop() : play(); };
+  $("osc-reset").onclick = function () { stop(); cur = 0; draw(); play(); };
+  $("osc-seed").onclick = function () { seed = (seed * 7 + 13) % 997 + 1; sc = oscScenario(seed); $("osc-seedv").textContent = "시드 " + seed; recompute(true); };
+  $("osc-seedv").textContent = "시드 " + seed;
+  document.querySelectorAll("[data-fix]").forEach(function (cb) {
+    cb.onchange = function () { on[cb.dataset.fix] = cb.checked; recompute(true); };
+  });
+  keys.forEach(function (k) {
+    var inp = $("p-" + k), out = $("o-" + k);
+    out.textContent = fmtP[k](inp.value);
+    inp.oninput = function () { out.textContent = fmtP[k](inp.value); recompute(true); };
+  });
+  cur = OSC.N;
+  recompute(true);
+  document.addEventListener("themechange", draw);
+})();
+
+// ═════════════ 그림 6-1: 런타임·쿨다운 곡선 ═════════════
+(function () {
+  var svg = $("rt-cd-svg"), NS = "http://www.w3.org/2000/svg";
+  [["runtime: 1−x⁶", "--bad", "런타임 y = 1 − x⁶", "실행 경과 / R", 10], ["cooldown: x⁵", "--teal", "쿨다운 y = x⁵", "쿨다운 경과 / C", 270]].forEach(function (d) {
+    var g = document.createElementNS(NS, "svg");
+    g.setAttribute("x", d[4]); g.setAttribute("y", 0); g.setAttribute("width", 240); g.setAttribute("height", 210);
+    g.setAttribute("viewBox", "0 0 240 210");
+    svg.appendChild(g);
+    MM.plotCurve(g, UAI.curve(d[0]), { color: d[1], label: d[2], xLabel: d[3] });
+  });
+})();
+
+// ═════════════ 진동 구간 탐색기 ═════════════
+(function () {
+  var svg = $("zone-svg");
+  var L = 40, T = 12, Wd = 460, Ht = 190;
+  var X = function (t) { return L + t * Wd; }, Y = function (s) { return T + (1 - s) * Ht; };
+  var ids = ["ma", "ca", "mf", "cf", "eps"];
+  function v(k) { return +$("z-" + k).value; }
+  function path(f) { var d = ""; for (var i = 0; i <= 160; i++) { var t = i / 160; d += (i ? "L" : "M") + X(t).toFixed(1) + "," + Y(f(t)).toFixed(1); } return d; }
+  function draw() {
+    ids.forEach(function (k) { $("zo-" + k).textContent = k === "ma" || k === "mf" ? v(k) : MM.fmt(v(k), 2); });
+    var fa = UAI.curve({ type: "logistic", m: -v("ma"), k: 1, c: v("ca") });
+    var ff = UAI.curve({ type: "logistic", m: v("mf"), k: 1, c: v("cf") });
+    var eps = v("eps"), z = zoneScan(fa, ff, eps);
+    var h = "<defs><pattern id='hatch' width='6' height='6' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'><line x1='0' y1='0' x2='0' y2='6' style='stroke:var(--bad);stroke-width:2;opacity:.35'/></pattern></defs>";
+    z.segs.forEach(function (s) { h += "<rect x='" + X(s[0]) + "' y='" + T + "' width='" + Math.max(1, X(s[1]) - X(s[0])) + "' height='" + Ht + "' style='fill:url(#hatch);stroke:var(--bad);stroke-dasharray:2 3'/>"; });
+    for (var i = 0; i <= 4; i++) {
+      h += "<line x1='" + X(i / 4) + "' y1='" + T + "' x2='" + X(i / 4) + "' y2='" + (T + Ht) + "' style='stroke:var(--border)'/>";
+      h += "<line x1='" + L + "' y1='" + Y(i / 4) + "' x2='" + (L + Wd) + "' y2='" + Y(i / 4) + "' style='stroke:var(--border)'/>";
+      h += "<text x='" + X(i / 4) + "' y='" + (T + Ht + 14) + "' text-anchor='middle'>" + (i / 4) + "</text>";
+      h += "<text x='" + (L - 6) + "' y='" + (Y(i / 4) + 4) + "' text-anchor='end'>" + (i / 4) + "</text>";
+    }
+    h += "<text x='" + (L + Wd / 2) + "' y='" + (T + Ht + 30) + "' text-anchor='middle'>늑대 위협도 t</text>";
+    // ε 띠
+    h += "<path d='" + path(function (t) { return fa(t) + eps; }) + path(function (t) { return fa(t) - eps; }).replace("M", "M") + "' style='fill:none;stroke:var(--warn);stroke-width:.8;opacity:.5'/>";
+    h += "<path d='" + path(function (t) { return ff(t) + eps; }) + "' style='fill:none;stroke:var(--teal);stroke-width:.8;opacity:.5'/>";
+    h += "<path d='" + path(function (t) { return ff(t) - eps; }) + "' style='fill:none;stroke:var(--teal);stroke-width:.8;opacity:.5'/>";
+    h += "<path d='" + path(fa) + "' style='fill:none;stroke:var(--warn);stroke-width:2.5'/>";
+    h += "<path d='" + path(ff) + "' style='fill:none;stroke:var(--teal);stroke-width:2.5'/>";
+    h += "<text x='" + (L + 6) + "' y='" + (T + 14) + "' style='fill:var(--warn);font-weight:700'>쫓아내기</text>";
+    h += "<text x='" + (L + Wd - 6) + "' y='" + (T + 14) + "' text-anchor='end' style='fill:var(--teal);font-weight:700'>도망치기</text>";
+    svg.innerHTML = h;
+    $("z-width").textContent = MM.pct(z.frac);
+    $("z-cross").textContent = z.cross == null ? "없음" : MM.fmt(z.cross, 2);
+    if (z.cross != null) {
+      var e = 1e-3, sA = (fa(z.cross + e) - fa(z.cross - e)) / (2 * e), sF = (ff(z.cross + e) - ff(z.cross - e)) / (2 * e);
+      $("z-slope").textContent = MM.fmt(Math.abs(sA - sF), 2);
+    } else $("z-slope").textContent = "–";
+  }
+  ids.forEach(function (k) { $("z-" + k).oninput = draw; });
+  draw();
+})();
+
+// ═════════════ 쿨다운 시퀀스 ═════════════
+(function () {
+  var LBL = {}, CLS = {};
+  SEQ_ACTS.forEach(function (a, i) { LBL[a.id] = a.label; CLS[a.id] = "s" + i; });
+  function draw() {
+    var cd = +$("seq-cd").value;
+    $("seq-cdv").textContent = cd + "틱";
+    var seq = cooldownSequence(cd, 16);
+    $("seq-out").innerHTML = seq.map(function (id, t) { return "<span class='chip " + CLS[id] + "'>t" + t + " " + LBL[id] + "</span>"; }).join("");
+    var note;
+    if (cd === 0) note = "쿨다운이 없으면 최고점인 소리치기만 반복한다.";
+    else if (cd < 3) note = "쿨다운(" + cd + ")이 시퀀스 길이(3)보다 짧아 소리치기가 너무 일찍 돌아온다. 뒤쪽 행동이 잘려 나간다.";
+    else if (cd === 3) note = "쿨다운 = 시퀀스 길이. 세 행동이 설계한 순서대로 정확히 반복된다. 가중치 차등(1.00 > 0.95 > 0.90)이 순서를 정하고, 쿨다운이 다음 칸으로 밀어낸다.";
+    else note = "쿨다운(" + cd + ")이 시퀀스 길이보다 길어 " + (cd - 3) + "틱 동안 쿨다운 없는 지켜보기(0.30)가 틈을 메운다. 콤보 사이의 숨 고르기를 이렇게 만들 수 있다.";
+    $("seq-note").textContent = note;
+  }
+  $("seq-cd").oninput = draw;
+  draw();
+})();
+
+// ═════════════ 히스테리시스 ═════════════
+(function () {
+  var v = visSignal(5), cur = HY.N, timer = null;
+  var tL = 34, tR = 352, tT = 10, tB = 150;
+  var TX = function (f) { return tL + (f / (HY.N - 1)) * (tR - tL); }, TY = function (x) { return tB - x * (tB - tT); };
+  var lL = 34, lR = 248, lT = 14, lB = 190;
+  var LX = function (x) { return lL + x * (lR - lL); }, LY = function (s) { return s ? lT + 30 : lB - 30; };
+  function draw() {
+    var lo = +$("hy-lo").value, hi = +$("hy-hi").value;
+    if (lo > hi) { lo = hi; $("hy-lo").value = lo; }
+    $("hy-lov").textContent = MM.fmt(lo, 2); $("hy-hiv").textContent = MM.fmt(hi, 2);
+    var th = (lo + hi) / 2, s1 = threshold1(v, th), s2 = schmitt(v, lo, hi), n = Math.min(cur, HY.N);
+    var h = "";
+    [0, 0.5, 1].forEach(function (x) { h += "<line class='grid' x1='" + tL + "' x2='" + tR + "' y1='" + TY(x) + "' y2='" + TY(x) + "'/><text x='" + (tL - 4) + "' y='" + (TY(x) + 4) + "' text-anchor='end'>" + x + "</text>"; });
+    h += "<line x1='" + tL + "' x2='" + tR + "' y1='" + TY(hi) + "' y2='" + TY(hi) + "' style='stroke:var(--ok);stroke-dasharray:4 3'/><text x='" + (tR - 2) + "' y='" + (TY(hi) - 3) + "' text-anchor='end' style='fill:var(--ok)'>H</text>";
+    h += "<line x1='" + tL + "' x2='" + tR + "' y1='" + TY(lo) + "' y2='" + TY(lo) + "' style='stroke:var(--ok);stroke-dasharray:4 3'/><text x='" + (tR - 2) + "' y='" + (TY(lo) + 11) + "' text-anchor='end' style='fill:var(--ok)'>L</text>";
+    h += "<line x1='" + tL + "' x2='" + tR + "' y1='" + TY(th) + "' y2='" + TY(th) + "' style='stroke:var(--bad);stroke-dasharray:1 3'/>";
+    var d = "";
+    for (var f = 0; f < n; f++) d += (f ? "L" : "M") + TX(f).toFixed(1) + "," + TY(v[f]).toFixed(1);
+    h += "<path d='" + d + "' style='fill:none;stroke:var(--accent);stroke-width:1.6'/>";
+    h += "<text x='" + tL + "' y='" + (tT + 8) + "' style='fill:var(--text);font-weight:700'>시야 가시도</text>";
+    function band(states, y, label) {
+      var r = "<text x='" + (tL - 4) + "' y='" + (y + 11) + "' text-anchor='end'>" + label + "</text>";
+      for (var f = 0; f < n; f++) r += "<rect x='" + TX(f) + "' y='" + y + "' width='" + (TX(1) - TX(0) + 0.4) + "' height='14' style='fill:var(" + (states[f] ? "--bad" : "--ok-soft") + ")'/>";
+      return r + "<rect x='" + tL + "' y='" + y + "' width='" + (tR - tL) + "' height='14' style='fill:none;stroke:var(--border)'/>";
+    }
+    h += band(s1, 166, "1문턱");
+    h += band(s2, 190, "히스");
+    h += "<text x='" + tL + "' y='" + 222 + "'>빨강 = Chase(위협 목격), 연두 = Patrol</text>";
+    $("hy-time").innerHTML = h;
+    // 루프 그래프
+    var g = "";
+    g += "<line class='axis' x1='" + lL + "' y1='" + lB + "' x2='" + lR + "' y2='" + lB + "'/><line class='axis' x1='" + lL + "' y1='" + lT + "' x2='" + lL + "' y2='" + lB + "'/>";
+    g += "<text x='" + ((lL + lR) / 2) + "' y='" + (lB + 16) + "' text-anchor='middle'>입력 (가시도)</text>";
+    g += "<text x='" + (lL - 4) + "' y='" + (LY(1) + 4) + "' text-anchor='end'>목격</text><text x='" + (lL - 4) + "' y='" + (LY(0) + 4) + "' text-anchor='end'>놓침</text>";
+    // 고리
+    var ok = "stroke:var(--ok);stroke-width:2.5;fill:none";
+    g += "<path d='M" + LX(0) + "," + LY(0) + " L" + LX(hi) + "," + LY(0) + " L" + LX(hi) + "," + LY(1) + " L" + LX(1) + "," + LY(1) + "' style='" + ok + "'/>";
+    g += "<path d='M" + LX(1) + "," + LY(1) + " L" + LX(lo) + "," + LY(1) + " L" + LX(lo) + "," + LY(0) + " L" + LX(0) + "," + LY(0) + "' style='" + ok + ";stroke-dasharray:5 3'/>";
+    g += "<text x='" + (LX(hi) + 4) + "' y='" + ((LY(0) + LY(1)) / 2 + 10) + "' style='fill:var(--ok)'>↑ H</text>";
+    g += "<text x='" + (LX(lo) - 4) + "' y='" + ((LY(0) + LY(1)) / 2 - 4) + "' text-anchor='end' style='fill:var(--ok)'>L ↓</text>";
+    g += "<line x1='" + LX(th) + "' y1='" + lT + "' x2='" + LX(th) + "' y2='" + lB + "' style='stroke:var(--bad);stroke-dasharray:1 3'/><text x='" + (LX(th) + 3) + "' y='" + (lT + 8) + "' style='fill:var(--bad)'>1문턱</text>";
+    if (n > 0) {
+      var f0 = n - 1, x = v[f0];
+      var trail = "";
+      for (var k = Math.max(0, n - 40); k < n; k++) trail += "<circle cx='" + LX(v[k]) + "' cy='" + LY(s2[k]) + "' r='2' style='fill:var(--accent);opacity:" + (0.15 + 0.6 * (k - n + 40) / 40) + "'/>";
+      g += trail + "<circle cx='" + LX(x) + "' cy='" + LY(s2[f0]) + "' r='6' style='fill:var(--accent);stroke:var(--surface);stroke-width:2'/>";
+    }
+    $("hy-loop").innerHTML = g;
+    $("hy-f1").textContent = flips(s1);
+    $("hy-f2").textContent = flips(s2);
+    var lag = lossLag(s2);
+    $("hy-lag").textContent = lag == null ? "안 꺼짐" : lag;
+  }
+  function stop() { clearInterval(timer); timer = null; $("hy-play").textContent = "▶ 재생"; }
+  $("hy-play").onclick = function () {
+    if (timer) return stop();
+    if (cur >= HY.N) cur = 0;
+    $("hy-play").textContent = "⏸ 정지";
+    timer = setInterval(function () { cur += 2; draw(); if (cur >= HY.N) stop(); }, 40);
+  };
+  $("hy-lo").oninput = draw; $("hy-hi").oninput = draw;
+  draw();
+})();
+
+// ═════════════ 그림 6-2: 결정 시점 ═════════════
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  var x0 = 120, x1 = 630, N = 60, threat = 34;
+  var X = function (i) { return x0 + (i / N) * (x1 - x0); };
+  // 행동 덩어리: [시작, 끝, 색]
+  function row(gid, y, segs, ticks, ints) {
+    var g = $(gid), h = "";
+    segs.forEach(function (s) { h += "<rect x='" + X(s[0]) + "' y='" + (y - 12) + "' width='" + (X(s[1]) - X(s[0])) + "' height='16' rx='3' style='fill:var(" + s[2] + ");opacity:.85'/>"; });
+    ticks.forEach(function (i) { h += "<line class='tk' x1='" + X(i) + "' y1='" + (y + 8) + "' x2='" + X(i) + "' y2='" + (y + 16) + "'/>"; });
+    (ints || []).forEach(function (i) { h += "<line class='tk int' x1='" + X(i) + "' y1='" + (y + 8) + "' x2='" + X(i) + "' y2='" + (y + 18) + "'/>"; });
+    h += "<text x='" + X(threat) + "' y='" + (y - 16) + "' text-anchor='middle' style='fill:var(--bad)'>⚡</text>";
+    g.innerHTML = h;
+  }
+  var all = []; for (var i = 0; i < N; i++) all.push(i);
+  // 매 프레임: 진동
+  var s1 = [], p = 0, cols = ["--warn", "--teal"], c = 0;
+  [0, 6, 8, 13, 15, 16, 22, 25, 27, 31, 34, 36, 38, 44, 47, 50, 53, 56, 60].reduce(function (a, b) { if (b > a) s1.push([a, b, cols[c++ % 2]]); return b; });
+  s1 = s1.map(function (s) { return s[0] >= threat ? [s[0], s[1], "--bad"] : s; });
+  row("tm-r1", 48, s1, all);
+  row("tm-r2", 108, [[0, 20, "--accent"], [20, 46, "--violet"], [46, 60, "--bad"]], [0, 20, 46]);
+  var per = []; for (i = 0; i < N; i += 10) per.push(i);
+  row("tm-r3", 168, [[0, 20, "--accent"], [20, 40, "--violet"], [40, 60, "--bad"]], per);
+  var ints = []; for (i = 5; i < N; i += 5) ints.push(i);
+  row("tm-r4", 222, [[0, 20, "--accent"], [20, 35, "--violet"], [35, 60, "--bad"]], [0, 20], ints);
+})();
+
+// ═════════════ Côté 3계층 스텝 애니메이션 ═════════════
+(function () {
+  var TL = ["순찰", "거기 서!", "전투", "아야!!!", "도망"];
+  var STEPS = [
+    { stim: "–", del: "순찰", rea: "–", sel: "숙고 행동 통과", on: ["ab-del", "ab-sel", "ab-b0"], arr: ["aa-d-sel", "aa-sel-b"], tl: 1,
+      cap: "<b>1. 순찰 중.</b> 반응할 자극이 없으므로 Action Selector는 숙고 모듈의 행동(순찰)을 그대로 통과시키고, 제어 계층의 순찰 행동이 실행된다." },
+    { stim: "위협 목격", del: "전투?", rea: "거기 서!", sel: "판단 중", on: ["ab-stim", "ab-del", "ab-rea"], arr: ["aa-s-d", "aa-s-r"], tl: 1,
+      cap: "<b>2. 자극: 위협 목격.</b> <i>같은 자극</i>이 두 모듈에 동시에 들어간다. 반응 모듈은 인지적 반응 \"거기 서!\"를, 숙고 모듈은 전투를 제안한다. 각자 자기 결정 모델과 개념 모델을 쓴다." },
+    { stim: "위협 목격", del: "전투 (대기)", rea: "거기 서!", sel: "반응 우선 → 실행", on: ["ab-rea", "ab-sel", "ab-b3"], hlr: ["ab-rea"], arr: ["aa-r-sel", "aa-sel-b"], tl: 2,
+      cap: "<b>3. 반응 먼저.</b> Action Selector가 아는 개념은 \"반응인가, 숙고 행동인가\" 하나뿐이다. 반응을 먼저 실행한다. 반응은 순간(몸을 돌리는 찰나)일 수도, 오래(10초 고통)일 수도 있다." },
+    { stim: "–", del: "전투", rea: "–", sel: "숙고 행동 통과", on: ["ab-del", "ab-sel", "ab-b1"], arr: ["aa-d-sel", "aa-sel-b"], tl: 3,
+      cap: "<b>4. 반응 종료 → 숙고 재개.</b> 반응이 끝나면 숙고 모듈이 정해 둔 전투가 이어진다. 숙고의 목표는 \"오래 유지할 최선\"이므로 전투는 웬만해서는 바뀌지 않는다." },
+    { stim: "피격", del: "전투", rea: "아야!!!", sel: "취소 신호 → 반응", on: ["ab-stim", "ab-rea", "ab-sel", "ab-b3"], hlr: ["ab-rea", "ab-stim"], arr: ["aa-s-r", "aa-r-sel", "aa-sel-d", "aa-sel-b"], tl: 4,
+      cap: "<b>5. 자극: 피격 → 비자발적 반응.</b> 진행 중인 것보다 우선순위가 높은 인터럽트다. Action Selector는 숙고 모듈에 <b>현재 숙고 행동을 취소</b>하는 제어 신호(점선)를 보내고 \"아야!!!\"를 실행한다." },
+    { stim: "–", del: "도망 (부상)", rea: "–", sel: "새 결정 요청 → 통과", on: ["ab-del", "ab-sel", "ab-b2"], arr: ["aa-sel-d", "aa-d-sel", "aa-sel-b"], tl: 5,
+      cap: "<b>6. 새 결정 요청.</b> 반응이 끝나자 Action Selector가 숙고 모듈에 새 결정을 요청한다. 숙고 모듈은 부상이라는 새 맥락에서 도망을 고른다. 숙고 FSM에는 반응 상태로 가는 전이가 하나도 없다. 전이 폭발이 사라진 이유다." },
+  ];
+  var BOXES = ["ab-stim", "ab-del", "ab-rea", "ab-sel", "ab-b0", "ab-b1", "ab-b2", "ab-b3"];
+  var ARR = ["aa-s-d", "aa-s-r", "aa-d-sel", "aa-r-sel", "aa-sel-d", "aa-sel-b"];
+  MM.stepper($("arch-step"), { steps: STEPS.length, interval: 2600, render: function (i) {
+    var s = STEPS[i];
+    BOXES.forEach(function (b) { var e = $(b); e.classList.remove("hl", "hlr"); if (s.on.indexOf(b) >= 0) e.classList.add((s.hlr || []).indexOf(b) >= 0 ? "hlr" : "hl"); });
+    ARR.forEach(function (a) { $(a).classList.toggle("on", s.arr.indexOf(a) >= 0); });
+    $("at-stim").textContent = s.stim; $("at-del").textContent = s.del; $("at-rea").textContent = s.rea; $("at-sel").textContent = s.sel;
+    var h = "", x = 100;
+    for (var k = 0; k < s.tl; k++) {
+      var w = TL[k].length * 12 + 18, react = k === 1 || k === 3;
+      h += "<rect x='" + x + "' y='330' width='" + w + "' height='22' rx='4' style='fill:var(" + (react ? "--bad-soft" : "--accent-soft") + ");stroke:var(" + (react ? "--bad" : "--accent") + ")'/><text x='" + (x + w / 2) + "' y='345' text-anchor='middle' style='font-size:11.5px'>" + TL[k] + "</text>";
+      x += w + 6;
+    }
+    $("arch-tl").innerHTML = h;
+    return s.cap;
+  } });
+})();
+
+// ═════════════ Hamlet 실험실 ═════════════
+(function () {
+  var CELL = 25, svg = $("hm-svg");
+  var COL = { use: "--accent", chat: "--violet", wander: "--muted", flee: "--bad" };
+  var st, w, probe = null, playing = false, timer = null;
+  function reset() {
+    st = { mode: $("hm-mode").value, switches: 0, decisions: 0 };
+    w = makeVillage(3, +$("hm-te").value, +$("hm-in").value, st);
+    probe = null;
+    draw();
+  }
+  function cx(x) { return x * CELL + CELL / 2; }
+  function draw() {
+    var h = "";
+    for (var x = 0; x <= w.w; x++) h += "<line class='gridl' x1='" + x * CELL + "' y1='0' x2='" + x * CELL + "' y2='" + w.h * CELL + "'/>";
+    for (var y = 0; y <= w.h; y++) h += "<line class='gridl' x1='0' y1='" + y * CELL + "' x2='" + w.w * CELL + "' y2='" + y * CELL + "'/>";
+    w.objects.forEach(function (o) {
+      h += "<rect class='obj' x='" + (o.x * CELL + 1) + "' y='" + (o.y * CELL + 1) + "' width='" + (CELL - 2) + "' height='" + (CELL - 2) + "' rx='4'/>";
+      h += "<text x='" + cx(o.x) + "' y='" + (cx(o.y) + 5) + "' text-anchor='middle' style='font-size:14px'>" + o.icon + "</text>";
+      h += "<text class='olabel' x='" + cx(o.x) + "' y='" + (o.y * CELL + CELL + 10) + "' text-anchor='middle'>" + o.label + " " + o.users + "/" + o.capacity + "</text>";
+    });
+    if (w.threat) {
+      var t = w.threat, r = 14 * CELL;
+      h += "<polygon points='" + [[cx(t.x) - r, cx(t.y)], [cx(t.x), cx(t.y) - r], [cx(t.x) + r, cx(t.y)], [cx(t.x), cx(t.y) + r]].map(function (p) { return p.join(","); }).join(" ") + "' style='fill:var(--bad-soft);fill-opacity:.35;stroke:var(--bad);stroke-dasharray:6 4'/>";
+      h += "<text x='" + cx(t.x) + "' y='" + (cx(t.y) + 7) + "' text-anchor='middle' style='font-size:20px'>🐺</text>";
+    }
+    w.agents.forEach(function (a) {
+      var col = a.current ? COL[a.current.action] : "--border";
+      h += "<circle cx='" + cx(a.x) + "' cy='" + cx(a.y) + "' r='9' style='fill:var(" + col + ");stroke:var(--surface);stroke-width:2'/>";
+      h += "<text class='aname' x='" + cx(a.x) + "' y='" + (cx(a.y) - 12) + "' text-anchor='middle'>" + a.name + "</text>";
+    });
+    svg.innerHTML = h;
+    $("hm-clock").textContent = UAI.clock(w.time);
+    $("hm-sw").textContent = st.switches;
+    $("hm-dec").textContent = st.decisions;
+    var chips = "";
+    if (probe) {
+      var ls = [];
+      probe.near.forEach(function (a) {
+        var l = probe.lat[a.id];
+        if (l != null) ls.push(l);
+        chips += "<span class='chip " + (l != null ? "flee" : "wait") + "'>" + a.name + ": " + (l != null ? l + "분 만에 도망" : "아직 " + (a.current ? a.current.label : "결정 전")) + "</span>";
+      });
+      if (!probe.near.length) chips = "<span class='chip'>늑대 반경 안에 있던 주민이 없다. 다른 곳을 클릭해 보라.</span>";
+      $("hm-lavg").textContent = ls.length ? MM.fmt(ls.reduce(function (a, b) { return a + b; }, 0) / ls.length, 1) : "–";
+      $("hm-lmax").textContent = ls.length ? Math.max.apply(null, ls) : "–";
+    } else { $("hm-lavg").textContent = "–"; $("hm-lmax").textContent = "–"; }
+    $("hm-chips").innerHTML = chips;
+    $("hm-log").textContent = w.log.slice(-8).reverse().join("\n");
+  }
+  function step() {
+    var k = +$("hm-speed").value;
+    for (var i = 0; i < k; i++) { w.tick(); if (probe) probeUpdate(w, probe); }
+    draw();
+  }
+  function play() { playing = true; $("hm-play").textContent = "⏸ 정지"; timer = setInterval(step, 120); }
+  function stop() { playing = false; clearInterval(timer); $("hm-play").textContent = "▶ 재생"; }
+  function wolfAt(x, y) { probe = releaseWolf(w, x, y); draw(); if (!playing) play(); }
+  $("hm-play").onclick = function () { playing ? stop() : play(); };
+  $("hm-reset").onclick = function () { reset(); };
+  $("hm-wolf").onclick = function () { var c = centroid(w); wolfAt(c.x, c.y); };
+  svg.addEventListener("click", function (e) {
+    var r = svg.getBoundingClientRect();
+    var x = Math.floor(((e.clientX - r.left) / r.width) * w.w), y = Math.floor(((e.clientY - r.top) / r.height) * w.h);
+    wolfAt(Math.max(0, Math.min(w.w - 1, x)), Math.max(0, Math.min(w.h - 1, y)));
+  });
+  $("hm-te").onchange = function () { w.thinkEvery = +$("hm-te").value; };
+  $("hm-in").oninput = function () { $("hm-inv").textContent = MM.fmt($("hm-in").value, 2); w.reasoner.opt.inertia = +$("hm-in").value; };
+  $("hm-inv").textContent = MM.fmt($("hm-in").value, 2);
+  $("hm-mode").onchange = function () { st.mode = $("hm-mode").value; };
+  $("hm-exp").onclick = function () {
+    var inr = +$("hm-in").value, seeds = [1, 2, 3, 4, 5, 6];
+    var h = "<tr><th>정책</th><th class='num'>thinkEvery</th><th class='num'>지연 평균(분)</th><th class='num'>지연 최대(분)</th><th class='num'>측정 인원</th><th class='num'>주민·시간당 전환</th></tr>";
+    ["engine", "replan"].forEach(function (m) {
+      [1, 5, 20].forEach(function (te) {
+        var r = hamletExperiment(m, te, inr, seeds);
+        h += "<tr><td>" + (m === "engine" ? "엔진 그대로" : "주기적 재숙고") + "</td><td class='num'>" + te + "</td><td class='num'>" + (r.avg == null ? "–" : MM.fmt(r.avg, 1)) + "</td><td class='num'>" + (r.max == null ? "–" : r.max) + "</td><td class='num'>" + r.n + (r.missed ? " (+" + r.missed + " 미도주)" : "") + "</td><td class='num'>" + MM.fmt(r.swPerHour, 2) + "</td></tr>";
+      });
+    });
+    $("hm-exp-tbl").innerHTML = h + "<tr><td colspan='6' style='font-size:13px;color:var(--muted)'>inertia = " + MM.fmt(inr, 2) + ". 미도주 = 반경 안에 있었지만 1시간 안에 한 번도 도망을 고르지 않은 주민(검사 전에 반경 밖으로 걸어 나간 경우).</td></tr>";
+  };
+  reset();
+  document.addEventListener("themechange", draw);
+})();
+
+})();
+</script>
+</body></html>

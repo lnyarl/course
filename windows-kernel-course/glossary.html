@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>커널 용어집</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .count { font-size: .85rem; color: var(--muted); }
+  dl.gloss dt .ch { font: 600 .72rem var(--sans); margin-left: 8px; }
+</style>
+</head>
+<body data-chapter="glossary">
+<main>
+<header class="hero">
+  <div class="kicker">Reference</div>
+  <h1>커널 용어집</h1>
+  <p class="sub">코스 전체에서 쓰는 핵심 용어. 검색하거나 챕터 태그를 눌러 해당 장으로 이동하세요.</p>
+</header>
+
+<input type="text" class="gloss-search" id="q" placeholder="용어 검색 (예: IRQL, PFN, 토큰, 미니필터)" aria-label="용어 검색">
+<div class="filters" id="filters"></div>
+<p class="count" id="count"></p>
+<dl class="gloss" id="list"></dl>
+</main>
+
+<script>
+(function () {
+  const T = [
+    ['ACE (Access Control Entry)', 'ACL의 한 항목. 허용/거부/감사 종류, 대상 SID, 접근 마스크로 구성된다.', '13'],
+    ['ACL / DACL / SACL', '보안 설명자의 접근 제어 목록. DACL은 접근 허용·거부를, SACL은 감사와 무결성 레이블을 담는다.', '13'],
+    ['ALPC', 'Advanced Local Procedure Call. 동일 머신 내 고속 메시지 기반 IPC. 로컬 RPC의 전송 계층.', '01'],
+    ['APC (Asynchronous Procedure Call)', '특정 스레드의 문맥에서 비동기로 실행되는 함수 호출. 커널/스페셜 커널/유저 APC가 있다.', '06'],
+    ['APIC', 'Advanced Programmable Interrupt Controller. CPU별 Local APIC와 I/O APIC로 인터럽트를 전달한다.', '06'],
+    ['AppContainer', '기능(capability) SID 기반의 저권한 샌드박스. UWP 앱·브라우저 샌드박스에서 사용.', '13'],
+    ['Bugcheck (BSOD)', '커널이 복구 불가능한 상태를 감지해 KeBugCheckEx로 시스템을 정지시키는 것. 코드와 4개 파라미터를 가진다.', '15'],
+    ['Cache Manager', '파일 데이터를 시스템 가상 주소 공간(VACB)에 매핑해 캐싱하는 구성요소. 메모리 관리자 위에 구현된다.', '12'],
+    ['Commit / Commit Charge', '물리 메모리 또는 페이지 파일로 뒷받침될 것을 보장한 가상 메모리 양. 커밋 한도를 넘을 수 없다.', '09'],
+    ['Context Switch', '한 스레드의 레지스터 상태를 저장하고 다른 스레드의 상태를 복원해 CPU를 넘기는 과정.', '05'],
+    ['CR3', '현재 주소 공간의 최상위 페이지 테이블(PML4) 물리 주소를 담는 제어 레지스터. 프로세스마다 다르다.', '08'],
+    ['Critical Process', '종료되면 시스템이 버그체크(0xEF)하도록 표시된 프로세스. csrss, wininit, smss 등.', '03'],
+    ['Device Object', '드라이버가 만든 장치 표현 객체. I/O 요청(IRP)의 대상이 되며 디바이스 스택을 이룬다.', '11'],
+    ['Device Stack', '하나의 장치에 대해 PDO(버스 드라이버), FDO(기능 드라이버), 필터 DO가 쌓인 계층.', '11'],
+    ['Dispatcher Object', 'DISPATCHER_HEADER를 가진 대기 가능한 커널 객체. 이벤트, 뮤텍스, 세마포어, 타이머, 프로세스, 스레드 등.', '07'],
+    ['DPC (Deferred Procedure Call)', 'ISR이 높은 IRQL에서 최소 작업만 하고 나머지를 DISPATCH_LEVEL에서 처리하도록 미룬 콜백.', '06'],
+    ['Driver Object', '로드된 드라이버를 나타내는 객체. MajorFunction 디스패치 테이블, DriverUnload 등을 가진다.', '11'],
+    ['Driver Verifier', '드라이버의 잘못된 동작(IRQL 위반, 풀 손상, 누수 등)을 강하게 검사하는 내장 도구(verifier.exe).', '14'],
+    ['DSE (Driver Signature Enforcement)', '서명되지 않은 커널 드라이버 로드를 막는 코드 무결성 정책.', '16'],
+    ['ELAM', 'Early Launch Anti-Malware. 다른 부트 드라이버보다 먼저 로드되어 드라이버 초기화 허용 여부를 판단한다.', '03'],
+    ['EPROCESS / KPROCESS', '프로세스를 나타내는 Executive 구조체와 그 첫 멤버인 Kernel 구조체.', '04'],
+    ['ERESOURCE', '공유(읽기)/배타(쓰기) 획득을 지원하는 Executive 리소스 락. APC_LEVEL 이하에서 사용.', '07'],
+    ['ETHREAD / KTHREAD', '스레드를 나타내는 Executive 구조체와 그 첫 멤버인 Kernel 구조체.', '04'],
+    ['ETW', 'Event Tracing for Windows. 커널·유저 구성요소의 고성능 이벤트 추적 프레임워크.', '15'],
+    ['Executive', 'ntoskrnl.exe의 상위 계층. Io, Mm, Ps, Ob, Se, Cm, Cc, Po 등 OS 서비스 구성요소.', '01'],
+    ['Fast I/O', 'IRP를 만들지 않고 캐시된 데이터에 직접 접근하는 파일 시스템 고속 경로.', '11'],
+    ['FCB / SCB / CCB', '파일 시스템의 파일 제어 블록 / 스트림 제어 블록 / 핸들별 컨텍스트 블록.', '12'],
+    ['File Object', '열린 파일·장치의 인스턴스. 현재 위치, 공유 모드, FsContext 등을 담는다. 핸들은 이것을 가리킨다.', '11'],
+    ['Filter Manager / Minifilter', '파일 시스템 필터 프레임워크(fltmgr.sys)와 그 위에서 고도(altitude) 순서로 동작하는 필터 드라이버.', '12'],
+    ['HAL', 'Hardware Abstraction Layer. 인터럽트 컨트롤러·타이머 등 플랫폼 차이를 추상화.', '01'],
+    ['Handle Table', '프로세스별 핸들 → 객체 포인터·접근 마스크 매핑 테이블. 다단계 구조.', '10'],
+    ['HVCI (Memory Integrity)', '하이퍼바이저가 SLAT 권한으로 커널 코드 무결성을 강제하는 기능. 커널 페이지에 W^X를 보장.', '16'],
+    ['IDT', 'Interrupt Descriptor Table. 인터럽트/예외 벡터 → 핸들러 주소 테이블. CPU마다 존재.', '06'],
+    ['Integrity Level', '토큰과 객체에 붙는 신뢰 수준(Untrusted/Low/Medium/High/System). 낮은 수준이 높은 객체에 쓰기 금지.', '13'],
+    ['IOCTL', 'DeviceIoControl로 드라이버에 보내는 제어 코드. DeviceType·Function·Method·Access 필드로 구성.', '11'],
+    ['IRP', 'I/O Request Packet. I/O 관리자가 드라이버 스택에 전달하는 요청 구조체.', '11'],
+    ['IO_STACK_LOCATION', 'IRP 안의 드라이버 계층별 파라미터 슬롯. 각 드라이버는 자기 위치의 파라미터를 읽는다.', '11'],
+    ['IRQL', 'Interrupt Request Level. CPU가 현재 어떤 수준 이하의 인터럽트를 마스킹하는지 나타내는 값(x64: 0–15).', '06'],
+    ['ISR', 'Interrupt Service Routine. 장치 인터럽트에 응답하는 드라이버 루틴. DIRQL에서 실행.', '06'],
+    ['Job Object', '프로세스 그룹에 자원 제한·회계·종료 정책을 적용하는 객체.', '04'],
+    ['KASLR', '커널 이미지와 주요 영역의 가상 주소를 부팅마다 무작위화하는 완화 기법.', '16'],
+    ['KDNET', '네트워크를 통한 커널 디버깅 전송. 가상 머신/실장비 디버깅의 표준 방식.', '15'],
+    ['KPCR / KPRCB', '프로세서별 제어 영역과 그 안의 제어 블록. 현재 스레드, DPC 큐, 레디 큐 등을 담는다. gs 세그먼트로 접근.', '02'],
+    ['KTRAP_FRAME', '커널 진입 시(시스템 콜, 인터럽트, 예외) 저장되는 레지스터 상태 구조체.', '02'],
+    ['KVA Shadow', 'Meltdown 대응으로 유저 모드 실행 중에는 커널 매핑을 최소화한 별도 페이지 테이블을 쓰는 기법.', '16'],
+    ['Lazy Writer', '캐시 매니저의 더티 페이지를 주기적으로 디스크에 기록하는 시스템 스레드 메커니즘.', '12'],
+    ['MDL', 'Memory Descriptor List. 버퍼의 물리 페이지 목록을 기술. Direct I/O와 DMA에 사용.', '11'],
+    ['MFT', 'Master File Table. NTFS의 모든 파일·디렉토리 레코드를 담는 테이블.', '12'],
+    ['Modified Page Writer', 'Modified 리스트의 더티 페이지를 페이지 파일·매핑 파일에 기록하는 시스템 스레드.', '09'],
+    ['Nt* / Zw*', '시스템 서비스의 두 진입점. Zw는 커널 호출용으로 PreviousMode를 KernelMode로 설정한다.', '02'],
+    ['Object Header', '모든 커널 객체 본문 앞에 붙는 헤더(OBJECT_HEADER). 참조/핸들 카운트, 타입 인덱스 등.', '10'],
+    ['PatchGuard (KPP)', 'Kernel Patch Protection. 커널 핵심 구조·코드의 무단 수정을 감지해 버그체크(0x109)한다.', '16'],
+    ['Paged / NonPaged Pool', '커널 동적 메모리. Paged는 페이지아웃 가능(IRQL < DISPATCH 전용), NonPaged는 항상 상주.', '09'],
+    ['PEB / TEB', '프로세스·스레드 환경 블록. 유저 모드에서 접근 가능한 프로세스/스레드 정보 구조체.', '04'],
+    ['PFN Database', '물리 페이지 프레임마다 하나씩 있는 MMPFN 엔트리 배열. 페이지 상태·리스트·참조 카운트를 추적.', '09'],
+    ['PnP Manager', '장치 열거, 드라이버 로드, 리소스 할당, 장치 트리를 관리하는 구성요소.', '11'],
+    ['Pool Tag', '풀 할당마다 붙이는 4바이트 식별자. 누수·손상 분석의 핵심 단서(!poolused, poolmon).', '09'],
+    ['PPL (Protected Process Light)', '서명자 수준으로 보호되는 프로세스. 더 낮은 수준의 프로세스가 메모리 접근 등을 할 수 없다.', '13'],
+    ['PreviousMode', '현재 요청이 유저 모드에서 왔는지 커널 모드에서 왔는지 나타내는 스레드 필드. 인자 검증 여부를 결정.', '02'],
+    ['Priority Boost', '대기 해제·I/O 완료·포그라운드 등 이벤트 시 스레드 우선순위를 일시적으로 올리는 정책.', '05'],
+    ['Prototype PTE', '공유 섹션 페이지를 위한 중간 PTE. 여러 프로세스의 PTE가 이것을 통해 같은 물리 페이지를 가리킨다.', '09'],
+    ['PTE', 'Page Table Entry. 가상 페이지 → 물리 페이지 매핑과 권한 비트(P, R/W, U/S, NX…)를 담는다.', '08'],
+    ['Pushlock', '포인터 크기의 경량 읽기/쓰기 락. 커널 내부에서 널리 사용.', '07'],
+    ['Quantum', '스레드가 선점 전까지 실행할 수 있는 시간 단위. 클락 인터벌 기반으로 계산.', '05'],
+    ['Ready Queue', '우선순위별 실행 대기 스레드 큐. 프로세서(KPRCB)마다 존재하며 ReadySummary 비트맵으로 빠르게 탐색.', '05'],
+    ['Rundown Protection', '객체가 사용 중인 동안 해제되지 않도록 보호하는 경량 메커니즘. 언로드 안전성에 사용.', '07'],
+    ['Section Object', '메모리 매핑 파일·공유 메모리를 나타내는 객체. 이미지 섹션과 데이터 섹션이 있다.', '09'],
+    ['Secure Kernel', 'VBS의 VTL1에서 실행되는 보안 커널(securekernel.exe).', '16'],
+    ['Security Descriptor', '객체의 소유자, 그룹, DACL, SACL을 담는 구조.', '13'],
+    ['SID', 'Security Identifier. 사용자·그룹·로그온 세션 등을 식별하는 가변 길이 값(S-1-5-…).', '13'],
+    ['SLAT (EPT / NPT)', '2단계 주소 변환. 하이퍼바이저가 게스트 물리 주소 → 시스템 물리 주소 매핑과 권한을 통제.', '16'],
+    ['SMEP / SMAP', '커널 모드에서 유저 페이지 코드 실행(SMEP)·데이터 접근(SMAP)을 막는 CPU 기능.', '16'],
+    ['Spinlock', '대기 중 CPU를 돌며(spin) 기다리는 락. 획득 시 IRQL을 DISPATCH_LEVEL 이상으로 올린다.', '07'],
+    ['SSDT', 'System Service Descriptor Table. 시스템 콜 번호 → 커널 서비스 함수 매핑 테이블.', '02'],
+    ['Standby / Modified / Free / Zero List', '물리 페이지 상태별 리스트. 재사용 가능한 캐시(Standby), 기록 대기(Modified), 미사용(Free), 0으로 채워짐(Zero).', '09'],
+    ['syscall', 'x64에서 유저 모드 → 커널 모드로 빠르게 진입하는 CPU 명령. IA32_LSTAR가 진입 주소.', '02'],
+    ['TLB', 'Translation Lookaside Buffer. 가상→물리 변환 결과를 캐싱하는 CPU 내부 버퍼.', '08'],
+    ['Token', '프로세스·스레드의 보안 문맥. 사용자/그룹 SID, 특권, 무결성 수준 등을 담는다.', '13'],
+    ['VAD', 'Virtual Address Descriptor. 프로세스의 예약/커밋된 가상 주소 범위를 기술하는 AVL 트리 노드.', '09'],
+    ['VBS', 'Virtualization-Based Security. 하이퍼바이저로 VTL0/VTL1을 분리해 보안 기능을 격리하는 아키텍처.', '16'],
+    ['VPB', 'Volume Parameter Block. 디스크 장치 객체와 마운트된 파일 시스템 볼륨 장치를 연결한다.', '12'],
+    ['VTL', 'Virtual Trust Level. VTL0(일반 Windows)과 VTL1(Secure Kernel, 격리된 사용자 모드).', '16'],
+    ['Win32k', '창 관리(USER)와 그래픽(GDI)의 커널 구현(win32k*.sys). 별도 시스템 콜 테이블을 가진다.', '01'],
+    ['Working Set', '프로세스가 현재 물리 메모리에 상주시키고 있는 페이지 집합.', '09'],
+  ];
+  const { CHAPTERS } = window.WK;
+  const chMap = Object.fromEntries(CHAPTERS.map(c => [c.id, c]));
+  const list = document.getElementById('list');
+  const q = document.getElementById('q');
+  const count = document.getElementById('count');
+  const filters = document.getElementById('filters');
+  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let chFilter = null;
+
+  const used = [...new Set(T.map(t => t[2]))].sort();
+  const allBtn = document.createElement('button');
+  allBtn.className = 'btn on'; allBtn.textContent = '전체';
+  filters.appendChild(allBtn);
+  used.forEach(id => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = id + '장'; b.dataset.ch = id;
+    b.title = chMap[id] ? chMap[id].title : '';
+    filters.appendChild(b);
+  });
+  filters.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    chFilter = b.dataset.ch || null;
+    filters.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    render();
+  });
+
+  function render() {
+    const k = q.value.trim().toLowerCase();
+    const rows = T.slice().sort((a, b) => a[0].localeCompare(b[0]))
+      .filter(t => (!chFilter || t[2] === chFilter) && (!k || (t[0] + ' ' + t[1]).toLowerCase().includes(k)));
+    list.innerHTML = rows.map(([term, def, ch]) => {
+      const c = chMap[ch];
+      return `<dt>${esc(term)}${c ? `<a class="pill ch" href="${c.file}">${ch} ${esc(c.title)}</a>` : ''}</dt><dd>${esc(def)}</dd>`;
+    }).join('');
+    count.textContent = `${rows.length} / ${T.length}개 용어`;
+  }
+  q.addEventListener('input', render);
+  render();
+})();
+</script>
+</body>
+</html>

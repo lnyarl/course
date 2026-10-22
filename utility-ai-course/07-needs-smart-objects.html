@@ -1,0 +1,1023 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>욕구와 스마트 오브젝트</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 07장 전용 */
+.mono { font-family: var(--mono); }
+.c-muted { color: var(--muted); }
+.sliders { display: grid; grid-template-columns: minmax(64px, auto) 1fr minmax(48px, auto); gap: 4px 10px; align-items: center; font-size: 14px; }
+.sliders input[type=range] { width: 100%; min-width: 0; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.dash { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 680px) { .dash { grid-template-columns: 1fr; } }
+.panel { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.panel h5 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.need-row { display: grid; grid-template-columns: 54px 1fr 42px; gap: 8px; align-items: center; font-size: 13.5px; margin: 6px 0; }
+.need-row .bar { height: 14px; }
+.need-row .v { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.need-row small { grid-column: 2 / 4; color: var(--muted); font-size: 12px; margin-top: -4px; font-family: var(--mono); }
+.rank-box { position: relative; }
+.rank-row { position: absolute; left: 0; right: 0; height: 34px; display: grid; grid-template-columns: 22px 78px 1fr 46px; gap: 6px; align-items: center; font-size: 13.5px; transition: top .45s ease; }
+.rank-row .no { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.rank-row .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rank-row .v { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.rank-row .bar { height: 12px; }
+.rank-row .br { grid-column: 2 / 5; font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: -8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rank-row.top .nm { font-weight: 700; color: var(--accent); }
+.rank-row.using .nm::after { content: " ◀ 이용 중"; color: var(--ok); font-size: 11px; }
+.chip { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
+.chip.on { background: var(--accent-soft); border-color: var(--accent); }
+.hbar { display: grid; grid-template-columns: 86px 1fr 70px; gap: 8px; align-items: center; font-size: 13.5px; margin: 4px 0; }
+.hbar .track { position: relative; height: 16px; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border); overflow: hidden; }
+.hbar .track i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); transition: width .35s; }
+.hbar .track i.base { background: var(--border); height: 5px; top: auto; }
+.hbar .track i.new { background: var(--ok); }
+.hbar .num { font-family: var(--mono); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.custom-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.custom-list .chip button { border: 0; background: none; color: var(--bad); cursor: pointer; font: inherit; padding: 0 0 0 4px; }
+svg.map { width: 100%; height: auto; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; font-family: var(--sans); }
+svg.map .g { stroke: var(--border); stroke-width: .5; }
+svg.map .obj { fill: var(--surface-2); stroke: var(--muted); }
+svg.map .obj.full { fill: var(--warn-soft); stroke: var(--warn); }
+svg.map .obj.custom { fill: var(--ok-soft); stroke: var(--ok); }
+svg.map .obj.draft { fill: none; stroke: var(--ok); stroke-dasharray: 3 2; }
+svg.map text { fill: var(--text); font-size: 10px; }
+svg.map text.cap { fill: var(--muted); font-size: 9px; }
+svg.map .ag { stroke: var(--surface); stroke-width: 1.5; transition: cx .12s linear, cy .12s linear; }
+svg.map .ag.use { fill: var(--accent); } svg.map .ag.chat { fill: var(--violet); }
+svg.map .ag.wander { fill: var(--muted); } svg.map .ag.flee { fill: var(--bad); } svg.map .ag.idle { fill: var(--border); }
+svg.map .ag.eat { fill: var(--warn); }
+svg.map text.an { font-size: 9px; font-weight: 700; fill: var(--text); pointer-events: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+/* 루프 도식 */
+svg.loop .nd { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; transition: fill .3s, stroke .3s; }
+svg.loop .nd.on { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+svg.loop .ar { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+svg.loop .ar.on { stroke: var(--accent); stroke-width: 2.6; }
+svg.loop .sub { fill: var(--muted); font-size: 11px; }
+svg.loop .ttl { font-weight: 700; }
+svg.bc .wave { fill: none; stroke: var(--teal); stroke-width: 1.4; stroke-dasharray: 4 3; }
+svg.bc .wave.neg { stroke: var(--bad); }
+svg.bc .pulse { fill: var(--teal); }
+@keyframes bcflow { from { stroke-dashoffset: 14; } to { stroke-dashoffset: 0; } }
+svg.bc .wave { animation: bcflow .9s linear infinite; }
+svg.hist .b0 { fill: var(--muted); } svg.hist .b1 { fill: var(--warn); } svg.hist .b2 { fill: var(--accent); }
+svg.hist .zone { fill: var(--bad-soft); }
+svg.hist text { fill: var(--muted); font-size: 10.5px; font-family: var(--mono); }
+svg.hist .ax { stroke: var(--muted); }
+.res-tbl td.num, .res-tbl th.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.res-tbl td.hi { background: var(--warn-soft); }
+.plots2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 600px) { .plots2 { grid-template-columns: 1fr; } }
+.plots2 svg { width: 100%; height: auto; }
+.room-viz { width: 100%; height: auto; }
+.room-viz .fill { fill: var(--ok); } .room-viz .room { fill: var(--accent-soft); stroke: var(--accent); }
+.room-viz .waste { fill: var(--bad-soft); stroke: var(--bad); stroke-dasharray: 3 2; }
+.room-viz .frame { fill: none; stroke: var(--muted); }
+.room-viz text { fill: var(--text); font-size: 12px; } .room-viz text.m { fill: var(--muted); font-size: 11px; }
+.status-line { font-size: 13.5px; padding: 6px 10px; border-radius: 6px; background: var(--surface-2); margin: 8px 0; min-height: 1.8em; }
+.editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 680px) { .editor-grid { grid-template-columns: 1fr; } }
+.editor-grid input[type=text] { width: 7.5em; }
+</style>
+</head>
+<body data-chapter="07">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">엔진 · Chapter 07</span>
+    <h1>욕구 모델과 스마트 오브젝트</h1>
+    <p class="lead">지금까지는 행동 하나하나에 consideration을 손으로 붙였다. 마을 시뮬레이션에서는 이 방식이 금방 한계에 부딪힌다. 오브젝트가 수십 개로 늘어나면 주민 AI가 오브젝트를 전부 알아야 하기 때문이다. 이 장에서는 주민에게 <b>욕구</b>를 주고, 지능의 상당 부분을 <b>오브젝트 쪽으로</b> 옮긴다. 오브젝트는 "나는 배고픔을 60만큼 채워 준다"고 광고하고, 주민은 그 광고를 자기 긴급도로 저울질한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>욕구값(0~100)이 시간에 따라 감소하는 모델과, 욕구값을 <b>긴급도</b>로 바꾸는 반응 커브의 역할을 설명한다.</li>
+      <li>배고픔에 수식 곡선 대신 구간 선형(piecewise) 커브를 쓰는 이유를 시뮬레이션 수치로 확인한다.</li>
+      <li>스마트 오브젝트·광고(advertisement) 구조가 왜 확장에 강한지, 주민 코드를 건드리지 않고 오브젝트를 추가해 본다.</li>
+      <li><code>UAI.adValue</code>의 <code>room = min(광고량, 100 − 현재값)</code>이 한계효용 체감을 구현한다는 것과 음수 광고(부작용 비용)의 의미를 이해한다.</li>
+      <li>성격(trait) 가중치와 오브젝트 수용량(capacity)이 마을 전체의 창발적 행동을 어떻게 만드는지 관찰한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> <code>UAI.NEEDS</code> <code>UAI.NEED_DECAY</code> <code>UAI.NEED_CURVE</code> <code>UAI.OBJECT_TYPES</code> <code>UAI.adValue()</code> <code>World.addObject()</code> <code>agent.traits</code> — 욕구가 줄고, 오브젝트가 광고하고, 주민이 긴급도로 광고를 저울질하는 Hamlet의 심장부.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">왜 욕구 모델인가: 행동 목록의 한계</a></li>
+    <li><a href="#s2">욕구값과 시간에 따른 감소</a></li>
+    <li><a href="#s3">욕구 → 긴급도 커브 (배고픔은 왜 piecewise인가)</a></li>
+    <li><a href="#s4">스마트 오브젝트와 광고</a></li>
+    <li><a href="#s5">한계효용: room과 음수 광고</a></li>
+    <li><a href="#s6">피드백 루프 한 바퀴 따라가기</a></li>
+    <li><a href="#s7">욕구 대시보드: 주민 한 명의 머릿속</a></li>
+    <li><a href="#s8">성격(traits): 같은 마을, 다른 사람</a></li>
+    <li><a href="#s9">오브젝트 광고 에디터: 엔진을 고치지 않고 마을 확장하기</a></li>
+    <li><a href="#s10">실험: 배부른데 먹는 주민</a></li>
+    <li><a href="#s11">창발: 점심시간의 빵집</a></li>
+    <li><a href="#s12">트레이드오프와 함정</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. 왜 욕구 모델인가: 행동 목록의 한계</h2>
+    <p><a class="xref" href="04-considerations.html">04장 Consideration</a>에서 만든 행동은 "빵집에서 먹기 = 배고픔 consideration × 거리 consideration"처럼 행동마다 입력과 커브를 직접 정했다. 행동이 대여섯 개일 때는 이게 가장 명확하다. 그런데 마을에 밭, 우물, 선술집, 광장 무대가 하나씩 생길 때마다 다음 일이 반복된다.</p>
+    <ul>
+      <li>주민 행동 목록에 "밭에서 일하기", "우물가에서 쉬기"를 새로 추가한다.</li>
+      <li>각 행동에 맞는 consideration을 고르고 커브를 튜닝한다.</li>
+      <li>새 행동이 기존 행동들과 점수 스케일이 맞는지 다시 밸런싱한다.</li>
+    </ul>
+    <p>오브젝트 N개, 주민 종류 M개면 작업량이 N×M으로 늘어난다. 욕구 모델은 이 문제를 두 단계로 쪼갠다.</p>
+    <ol>
+      <li><b>주민은 욕구만 안다.</b> 배고픔·기력·재미·사교 네 개의 수치와, 각 수치가 얼마나 급한지(긴급도)만 계산한다.</li>
+      <li><b>오브젝트는 자기가 채워 주는 욕구만 안다.</b> 빵집은 "배고픔 +60", 선술집은 "재미 +45, 사교 +40, 배고픔 +10, 기력 −10"이라고 스스로 광고한다.</li>
+    </ol>
+    <p>둘 사이를 잇는 공식은 단 하나, <code>UAI.adValue(agent, obj)</code>다. 그래서 오브젝트를 추가할 때 주민 코드는 바뀌지 않는다. 오브젝트 하나가 광고 표 한 줄을 들고 들어오면 끝이다.</p>
+    <div class="callout deep"><span class="title">The Sims와 스마트 오브젝트</span>
+      Will Wright가 만든 <i>The Sims</i>(Maxis)는 이 방식으로 널리 알려져 있다. 행동 지식을 캐릭터가 아니라 <b>오브젝트</b>가 갖고 있어서, 오브젝트가 "나를 쓰면 무엇이 채워지는지"를 알리고 그 상호작용에 필요한 행동과 애니메이션까지 함께 제공한다. 새 오브젝트(확장팩 가구 등)를 넣어도 심(Sim)의 AI를 고칠 필요가 없는 이유다. Graham은 Game AI Pro 9장에서 The Sims의 심이 "각 오브젝트의 개별 행동을 점수화"하되 가장 급한 욕구(motive)를 채우는 행동만 본다고 설명한다. 이 장의 Hamlet은 그 구조를 교육용으로 단순화한 것이며, 실제 The Sims의 수치를 재현한 것은 아니다.
+    </div>
+    <p>욕구 기반 행동은 The Sims만의 이야기가 아니다. Dill은 <i>Zoo Tycoon 2</i>에서 동물의 욕구 행동(배고픔·오락·화장실 등)을 모두 rank 0에 두고 weight만 상황에 따라 바꿨다고 설명한다(<a class="xref" href="05-action-selection.html">05장 Dual Utility</a>). Hamlet의 "이용하기" 행동이 rank 0인 것도 같은 설계다.</p>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. 욕구값과 시간에 따른 감소</h2>
+    <p>Hamlet에서 욕구는 <b>0(완전 결핍) ~ 100(완전 충족)</b>이다. "배고픔 80"은 배가 꽤 부르다는 뜻이다. 이름과 방향이 헷갈리기 쉬운데, The Sims의 Hunger 수치도 "얼마나 배부른가"를 재는 값이라 낮을수록 배고프다(Graham). 엔진은 이 관례를 따른다.</p>
+    <pre class="engine"><code>  UAI.NEEDS = ["hunger", "energy", "fun", "social"];
+  UAI.NEED_LABEL = { hunger: "배고픔", energy: "기력", fun: "재미", social: "사교" };
+  UAI.NEED_DECAY = { hunger: 0.2, energy: 0.11, fun: 0.16, social: 0.12 }; // 게임 분당 감소량</code></pre>
+    <p>감소 속도를 시간으로 환산하면 설계 의도가 보인다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>욕구</th><th class="num">분당 감소</th><th class="num">100 → 0까지</th><th>의도</th></tr>
+      <tr><td>배고픔</td><td class="mono">0.20</td><td class="mono">500분 ≈ 8.3시간</td><td>하루 두세 번 식사</td></tr>
+      <tr><td>재미</td><td class="mono">0.16</td><td class="mono">625분 ≈ 10.4시간</td><td>오후~저녁 여가 수요</td></tr>
+      <tr><td>사교</td><td class="mono">0.12</td><td class="mono">≈ 13.9시간</td><td>하루 한두 번 만남</td></tr>
+      <tr><td>기력</td><td class="mono">0.11</td><td class="mono">≈ 15.2시간</td><td>하루 한 번 긴 잠</td></tr>
+    </table></div>
+    <p>감소는 <a class="xref" href="09-engine-architecture.html">09장 World.tick</a>의 첫 단계에서 일어난다. 모든 주민의 모든 욕구가 tick마다 깎이고, 기력만 밤에 더 빨리 준다.</p>
+    <pre class="engine"><code>        // 1) 욕구 감소
+        for (const n of UAI.NEEDS) a.needs[n] = Math.max(0, a.needs[n] - UAI.NEED_DECAY[n] * this.dt * (n === "energy" &amp;&amp; this.hour() >= 22 ? 1.8 : 1));</code></pre>
+    <p>밤 가속(×1.8)은 "밤이 되면 졸리다"를 욕구값 하나로 표현한 장치다. 시간대를 별도 consideration으로 넣지 않아도, 기력이 빨리 떨어지면 긴급도가 올라가고 결국 집으로 향한다. <b>상태를 바꿔서 행동을 유도하는 방식</b>은 행동 점수에 직접 손을 대는 것보다 시스템 전체에 일관되게 작용한다.</p>
+    <div class="callout warn"><span class="title">코드 읽기: "밤"은 몇 시부터 몇 시까지인가?</span>
+      <code>hour()</code>는 <code>(time / 60 + 6) % 24</code>로 06:00에서 시작해 0~24를 돈다. 조건 <code>hour() >= 22</code>는 <b>22:00~23:59에만</b> 참이고, 자정이 지나 <code>hour()</code>가 0으로 돌아가면 다시 거짓이 된다. 이름만 보면 "밤 내내"처럼 읽히지만 실제로는 두 시간짜리 창이다. 의도대로 새벽까지 적용하려면 <code>h >= 22 || h &lt; 6</code>처럼 써야 한다. 이런 시간 경계 버그는 시뮬레이션에서 흔하고, 증상(새벽에 주민이 덜 졸려함)만 보고 원인을 찾기는 어렵다. <a class="xref" href="11-tuning-debugging.html">11장</a>의 trace 도구가 필요한 이유다.
+    </div>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. 욕구 → 긴급도 커브 (배고픔은 왜 piecewise인가)</h2>
+    <p>욕구값을 그대로 점수로 쓰지는 않는다. "배고픔 50"과 "배고픔 10"의 차이는 "90"과 "50"의 차이보다 훨씬 크게 느껴져야 한다. 그래서 욕구값을 0~1로 정규화한 뒤 <a class="xref" href="03-response-curves.html">03장 반응 커브</a>로 <b>긴급도(urgency)</b>로 바꾼다. 네 커브 모두 <code>invert</code>되어 있거나 감소형이라, 욕구가 낮을수록 긴급도가 높다.</p>
+    <pre class="engine"><code>  UAI.NEED_CURVE = {
+    hunger: { type: "piecewise", points: [[0, 1], [0.3, 0.85], [0.6, 0.25], [0.85, 0.02], [1, 0]] },
+    energy: { type: "poly", m: 1, k: 2.5, invert: true },
+    fun: { type: "poly", m: 1, k: 1.5, invert: true },
+    social: { type: "poly", m: 1, k: 2, invert: true },
+  };</code></pre>
+    <div class="plots2">
+      <figure style="margin:0"><svg id="curve-hunger" viewBox="0 0 240 200"></svg><figcaption>배고픔: 엔진의 piecewise(파랑) vs 선형(회색 점선)</figcaption></figure>
+      <figure style="margin:0"><svg id="curve-others" viewBox="0 0 240 200"></svg><figcaption>기력 k=2.5(초록) · 사교 k=2(보라) · 재미 k=1.5(청록)</figcaption></figure>
+    </div>
+    <p>기력·재미·사교는 <code>(1−x)^k</code> 꼴의 다항 커브다. k가 클수록 "어느 정도 차 있을 때는 거의 신경 쓰지 않다가 바닥 근처에서 급해지는" 모양이 된다. 기력(k=2.5)이 가장 늦게 급해지고, 재미(k=1.5)는 조금만 줄어도 슬슬 신경 쓰인다.</p>
+    <h3>배고픔만 손으로 찍은 점(piecewise)인 이유</h3>
+    <p>Graham은 The Sims의 배고픔을 예로 든다. 배고픔을 회전된 2차 곡선 같은 수식으로 모델링하면 배고픔이 낮을 때 강하게 먹고 싶어지는 건 맞지만, <b>배가 거의 찼을 때도 먹을 확률이 작게나마 남는다</b>. 그 확률이 아무리 작아도 시뮬레이션이 길어지면 결국 언젠가 선택된다. 디자이너가 원하는 건 "일정 수준까지는 배고픔을 완전히 무시하다가, 조금 배고파지고, 그러다 갑자기 몹시 배고파지는" 모양인데, 단순한 수식 하나로는 그 모양을 원하는 대로 만들고 튜닝하기 어렵다. 그래서 2D 점을 손으로 찍고 사이를 선형 보간하는 구간 선형 커브를 쓴다. Graham은 이것이 "정확히 The Sims가 쓰는 방식"이라고 쓴다.</p>
+    <p>엔진의 점을 읽어 보면 세 구간이 보인다.</p>
+    <ul>
+      <li><b>x 0.85~1 (배부름)</b>: 긴급도 0.02 → 0. 사실상 무시.</li>
+      <li><b>x 0.6~0.85 (출출함)</b>: 0.25 → 0.02. 다른 할 일이 없으면 먹는다.</li>
+      <li><b>x 0~0.6 (배고픔~굶주림)</b>: 0.25에서 0.85, 1로 가파르게 오른다. 이 구간에서는 거의 항상 이긴다.</li>
+    </ul>
+    <p>"정말 그런가?"는 <a href="#s10">10절 실험</a>에서 시뮬레이션으로 확인한다. 미리 말하면, 엔진 기본 설정(시드 20개)에서 배고픔 70 이상일 때 내린 식사 결정은 piecewise에서 0건, 선형 커브로 바꾸면 816건 중 226건(28%)이었다.</p>
+    <p>단, piecewise가 모든 수식 곡선보다 "덜 먹게" 만드는 것은 아니다. 핵심은 <b>통제력</b>이다. <code>(1−x)²</code> 같은 수식은 k 하나로 곡선 전체가 함께 움직여서 "0.85 위는 무시, 0.6~0.85는 적당히, 0.3 아래는 급격히"처럼 구간마다 다른 요구를 독립적으로 맞출 수 없다. piecewise는 점 하나를 옮겨 한 구간만 고친다.</p>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. 스마트 오브젝트와 광고</h2>
+    <p>이제 오브젝트 쪽을 보자. Hamlet의 일곱 오브젝트 타입은 각자 광고표(<code>ads</code>), 이용 시간(<code>duration</code>, 분), 동시 수용량(<code>capacity</code>)을 갖는다.</p>
+    <pre class="engine"><code>  UAI.OBJECT_TYPES = {
+    bakery: { label: "빵집", icon: "🍞", ads: { hunger: 60 }, duration: 20, capacity: 2 },
+    farm: { label: "밭", icon: "🌾", ads: { hunger: 25, fun: -5 }, duration: 25, capacity: 3 },
+    house: { label: "집", icon: "🏠", ads: { energy: 80 }, duration: 60, capacity: 2 },
+    bench: { label: "벤치", icon: "🪑", ads: { energy: 20, social: 10 }, duration: 15, capacity: 2 },
+    tavern: { label: "선술집", icon: "🍺", ads: { fun: 45, social: 40, hunger: 10, energy: -10 }, duration: 30, capacity: 4 },
+    well: { label: "우물", icon: "⛲", ads: { social: 20, fun: 5 }, duration: 10, capacity: 3 },
+    stage: { label: "광장 무대", icon: "🎭", ads: { fun: 60 }, duration: 25, capacity: 5 },
+  };</code></pre>
+    <p>광고는 <b>약속</b>이기도 하다. 주민이 오브젝트를 실제로 이용하면 엔진은 광고량을 이용 시간에 고르게 나눠 욕구에 더한다. 빵집은 20분 동안 분당 3씩, 합계 60을 채워 준다. 광고와 실제 효과가 같은 숫자에서 나오므로 "광고는 60인데 실제로는 10만 채워 주는" 거짓 광고가 생길 수 없다.</p>
+    <pre class="engine"><code>        for (const n in o.ads) a.needs[n] = Math.min(100, Math.max(0, a.needs[n] + (o.ads[n] / o.duration) * world.dt));</code></pre>
+    <figure>
+      <svg class="diagram bc" viewBox="0 0 640 330" role="img" aria-label="오브젝트가 광고를 방송하고 주민이 긴급도로 가중하는 도식">
+        <defs><marker id="bcArr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--teal)"/></marker></defs>
+        <!-- objects -->
+        <g>
+          <rect class="box" x="16" y="20" width="150" height="50" rx="8"/><text x="91" y="41" text-anchor="middle" class="ttl" style="font-weight:700">🍞 빵집</text><text x="91" y="59" text-anchor="middle" class="muted" style="font-size:11.5px">배고픔 +60</text>
+          <rect class="box" x="16" y="92" width="150" height="50" rx="8"/><text x="91" y="113" text-anchor="middle" style="font-weight:700">🌾 밭</text><text x="91" y="131" text-anchor="middle" class="muted" style="font-size:11.5px">배고픔 +25 · 재미 −5</text>
+          <rect class="box" x="16" y="164" width="150" height="50" rx="8"/><text x="91" y="185" text-anchor="middle" style="font-weight:700">🍺 선술집</text><text x="91" y="203" text-anchor="middle" class="muted" style="font-size:11.5px">재미+45 사교+40 기력−10</text>
+          <rect class="box" x="16" y="236" width="150" height="50" rx="8"/><text x="91" y="257" text-anchor="middle" style="font-weight:700">🏠 집</text><text x="91" y="275" text-anchor="middle" class="muted" style="font-size:11.5px">기력 +80</text>
+        </g>
+        <path class="wave" d="M166,45 C260,45 300,140 360,150" marker-end="url(#bcArr)"/>
+        <path class="wave" d="M166,117 C250,117 300,150 360,158"/>
+        <path class="wave" d="M166,189 C250,189 300,168 360,166"/>
+        <path class="wave neg" d="M166,261 C260,261 300,180 360,174"/>
+        <text x="262" y="34" class="muted" style="font-size:11px">"나를 쓰면 이만큼 채워 줘"</text>
+        <!-- agent -->
+        <rect x="360" y="110" width="140" height="104" rx="12" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5"/>
+        <text x="430" y="132" text-anchor="middle" style="font-weight:700">아리</text>
+        <text x="372" y="152" style="font-size:11.5px">배고픔 25 → 긴급 0.88</text>
+        <text x="372" y="168" style="font-size:11.5px">기력 70 → 긴급 0.05</text>
+        <text x="372" y="184" style="font-size:11.5px">재미 55 → 긴급 0.30</text>
+        <text x="372" y="200" style="font-size:11.5px">사교 60 → 긴급 0.16</text>
+        <path class="line" d="M500,162 L536,162" marker-end="url(#bcArr)" style="stroke:var(--accent)"/>
+        <rect x="538" y="96" width="94" height="132" rx="8" class="box"/>
+        <text x="585" y="114" text-anchor="middle" style="font-weight:700;font-size:12px">adValue</text>
+        <text x="548" y="136" style="font-size:11.5px">빵집 0.53</text>
+        <text x="548" y="154" style="font-size:11.5px">선술집 0.28</text>
+        <text x="548" y="172" style="font-size:11.5px">밭 0.20</text>
+        <text x="548" y="190" style="font-size:11.5px">무대 0.14</text>
+        <text x="548" y="208" style="font-size:11.5px">집 0.02</text>
+        <text x="430" y="246" text-anchor="middle" class="muted" style="font-size:11.5px">주민은 오브젝트가 뭔지 몰라도 된다</text>
+        <text x="430" y="262" text-anchor="middle" class="muted" style="font-size:11.5px">광고 × 내 긴급도 × 내 성격만 계산</text>
+        <text x="320" y="318" text-anchor="middle" class="muted" style="font-size:11.5px">청록 점선 = 광고(이득), 빨강 점선 = 음수 광고(부작용). 새 오브젝트는 왼쪽에 상자를 하나 더 그리는 것으로 끝난다.</text>
+      </svg>
+      <figcaption>그림 7-1. 광고 브로드캐스트: 오브젝트가 방송하고, 주민이 자기 긴급도로 듣는다</figcaption>
+    </figure>
+    <h3>광고 가치 공식</h3>
+    <p>주민 a가 오브젝트 o의 광고를 들었을 때의 가치는 욕구별 항의 합이다.</p>
+    <div class="formula">adValue(a, o) = clamp₀₁( Σₙ  room(n)/100 × urgencyₙ(needₙ/100) × traitₙ )</div>
+    <pre class="engine"><code>  UAI.adValue = function (agent, obj) {
+    let v = 0;
+    for (const n in obj.ads) {
+      const urgency = UAI.curve(UAI.NEED_CURVE[n])(agent.needs[n] / 100);
+      const room = Math.min(obj.ads[n], 100 - agent.needs[n]); // 한계효용: 이미 찬 만큼은 의미 없음
+      v += (Math.max(room, Math.min(0, obj.ads[n])) / 100) * urgency * (agent.traits[n] || 1);
+    }
+    return clamp01(v);
+  };</code></pre>
+    <p>세 요소가 곱해진다는 점이 중요하다. <b>광고량</b>(오브젝트가 결정), <b>긴급도</b>(주민 상태가 결정), <b>성격</b>(주민 개성이 결정). 하나라도 0이면 그 욕구 항은 사라진다. 아리(배고픔 25)에게 빵집은 0.60 × 0.875 = 0.525, 기력이 70이라 집은 0.30 × 0.049 ≈ 0.015에 그친다.</p>
+    <p><code>adValue</code>는 행동의 최종 점수가 아니라 <b>consideration 하나</b>다. Hamlet의 "이용하기" 행동은 오브젝트마다 대상(target)을 하나씩 만들고(<a class="xref" href="08-context-targets.html">08장</a>), 광고 가치에 거리와 혼잡을 곱해 최종 점수를 낸다.</p>
+    <pre class="engine"><code>      targets: ({ world }) => world.objects.filter(o => o.users &lt; o.capacity || false),
+      considerations: [
+        // 광고된 욕구 충족량 × 그 욕구의 긴급도 합 → 0~1 (07장)
+        { name: "광고 가치", input: ({ agent, target }) => UAI.adValue(agent, target), lo: 0, hi: 1, curve: "선형 증가" },
+        // 거리: 가까울수록 좋다. 너무 멀면 0 근처 (08장)
+        { name: "거리", input: ({ agent, target }) => Math.abs(agent.x - target.x) + Math.abs(agent.y - target.y), lo: 0, hi: 30, curve: { type: "poly", m: -1, k: 2, b: 1 } },
+        // 이미 사용 중이면 붐빔 감점
+        { name: "혼잡", input: ({ target }) => target.users / target.capacity, lo: 0, hi: 1, curve: { type: "linear", m: -0.7, b: 1 } },
+      ],</code></pre>
+    <p>세 consideration은 <a class="xref" href="04-considerations.html">04장 compensated 곱</a>으로 결합되고, 행동 선택은 <a class="xref" href="05-action-selection.html">05장 dual 전략</a>(최고 rank 안에서 최고점의 85% 이상만 남겨 가중 랜덤)을 쓴다.</p>
+    <div class="callout tip"><span class="title">왜 이렇게 설계했나: 지식의 위치</span>
+      "무엇이 무엇을 채우는가"는 오브젝트에 대한 지식이고, "지금 무엇이 급한가"는 주민에 대한 지식이다. 각 지식을 그 주인에게 두면 <b>오브젝트 추가 = 데이터 한 줄</b>, <b>주민 성격 추가 = 가중치 네 개</b>가 된다. 디자이너는 코드 없이 광고표만 고쳐 밸런싱할 수 있다. <a class="xref" href="03-response-curves.html">03장</a>에서 말한 "데이터 주도" 원칙이 오브젝트 단위로 확장된 셈이다.
+    </div>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 한계효용: room과 음수 광고</h2>
+    <p><a class="xref" href="02-utility-expected-utility.html">02장 효용과 기대 효용</a>에서 같은 양의 재화라도 이미 많이 가진 사람에게는 가치가 작다는 <b>한계효용 체감</b>을 봤다. <code>adValue</code>의 한 줄이 그것을 그대로 구현한다.</p>
+    <div class="formula">room = min(광고량, 100 − 현재값)</div>
+    <p>배고픔 70인 주민에게 빵집의 "+60"은 실제로 30만 의미가 있다. 나머지 30은 욕구가 100에 막혀 버려진다(엔진의 실행 코드도 <code>Math.min(100, …)</code>으로 넘친 양을 버린다). 광고 가치를 매길 때 이 30을 빼 주지 않으면, 주민은 배가 꽤 찼는데도 "빵집은 60짜리"라고 착각하고 큰 오브젝트를 과대평가한다. 작은 간식(+15)과 잔치(+60)를 비교할 때 이 차이가 결정적이다.</p>
+    <div class="widget" id="w-room">
+      <div class="w-title">계산기: room과 버려지는 광고</div>
+      <div class="w-desc">현재 욕구값과 광고량을 바꿔 보자. 파란 칸이 실제로 채워지는 양(room), 빨간 점선 칸이 넘쳐서 버려지는 양이다. 오른쪽 숫자는 이 욕구 항 하나의 adValue 기여(배고픔 커브, 성격 1 기준)다.</div>
+      <div class="sliders">
+        <label for="rm-need">현재값</label><input type="range" id="rm-need" min="0" max="100" value="70"><output id="rm-need-o">70</output>
+        <label for="rm-ad">광고량</label><input type="range" id="rm-ad" min="-30" max="100" value="60"><output id="rm-ad-o">60</output>
+      </div>
+      <svg class="room-viz" id="rm-svg" viewBox="0 0 560 96"></svg>
+      <div class="status-line" id="rm-out"></div>
+    </div>
+    <h3>음수 광고 = 부작용 비용</h3>
+    <p>선술집은 재미와 사교를 크게 채우지만 기력을 10 깎는다(<code>energy: -10</code>). 밭은 배를 채워 주지만 재미가 5 준다. 음수 광고에는 room 제한이 없다: 코드의 <code>Math.max(room, Math.min(0, obj.ads[n]))</code>는 광고량이 음수면 room 대신 광고량 자체를 쓴다. 그리고 이 비용도 <b>긴급도로 곱해진다</b>.</p>
+    <ul>
+      <li>기력 100인 주민에게 선술집의 기력 −10은 긴급도 0이라 비용 0이다. 쌩쌩하면 술 한잔쯤 상관없다.</li>
+      <li>기력 10인 주민에게는 긴급도가 높아 −10이 크게 깎인다. 같은 주민(배고픔 90·재미 20·사교 30)으로 계산하면 선술집 가치가 기력 100일 때 0.52, 기력 10일 때 0.44다.</li>
+    </ul>
+    <p>"비용은 그 자원이 아쉬울 때만 비싸다"는 직관을 별도 규칙 없이 같은 공식이 표현한다. 부작용은 또 하나의 연쇄를 만든다. 선술집에서 놀고 나온 주민은 기력이 더 빨리 바닥나 집으로 향하고, 그 사이 배고픔이 쌓여 빵집으로 간다. 오브젝트 하나의 광고표가 하루 일과의 순서를 바꾼다.</p>
+    <div class="callout warn"><span class="title">엔진의 단순화 두 가지</span>
+      (1) 음수 광고는 room처럼 제한되지 않는다. 기력이 5 남은 주민에게도 −10 전체가 비용으로 계산되지만, 실제 실행에서는 <code>Math.max(0, …)</code>으로 5만 깎인다. 교육용으로는 무해하지만, 비용이 큰 오브젝트를 설계할 때는 평가와 실행이 어긋날 수 있다는 점을 기억하자. (2) 합계를 <code>clamp01</code>로 자르므로 비용이 이득보다 크면 0이 되고, 음수 점수끼리의 비교("덜 나쁜 오브젝트")는 사라진다. 점수 0은 <a class="xref" href="04-considerations.html">04장 early-out</a>에 걸려 그 대상을 아예 고려하지 않는다.
+    </div>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 피드백 루프 한 바퀴 따라가기</h2>
+    <p>욕구 모델은 <b>음의 피드백 루프</b>다. 욕구가 줄면 그 욕구를 채우는 행동의 점수가 오르고, 행동이 욕구를 채우면 점수가 다시 내려간다. 온도 조절기처럼 주민의 상태를 일정 범위에 붙잡아 두는 구조다. 아래 스텝 애니메이션은 엔진 함수를 실제로 호출해 아리의 숫자를 한 단계씩 보여 준다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram loop" id="loop-svg" viewBox="0 0 640 360" style="min-width:520px" role="img" aria-label="욕구 피드백 루프">
+        <defs><marker id="lpArr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <g id="lp-nodes"></g>
+      </svg>
+      </div>
+      <figcaption>그림 7-2. 욕구 감소 → 긴급도 → 광고 × 긴급도 → 점수 → 행동 → 욕구 회복 → (다시 감소)</figcaption>
+    </figure>
+    <div id="loop-step"></div>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. 욕구 대시보드: 주민 한 명의 머릿속</h2>
+    <p>이제 주민 한 명의 상태를 실시간으로 돌려 보자. 왼쪽 막대는 <code>UAI.NEED_DECAY</code> 속도로 줄어들고(22시 이후엔 기력 ×1.8), 오른쪽은 일곱 오브젝트의 <code>UAI.adValue</code> 순위다. 시간이 흐르면 순위가 계속 뒤바뀐다. "자동 이용"을 켜면 주민이 1위 오브젝트를 골라 엔진과 같은 방식(광고량 ÷ 이용 시간을 분마다 더함)으로 이용한다. 이 위젯은 거리·혼잡을 빼고 <b>광고 가치 consideration 하나</b>만 보여 준다.</p>
+    <div class="widget" id="w-dash">
+      <div class="w-title">욕구 대시보드</div>
+      <div class="w-desc">슬라이더로 욕구를 직접 바꾸거나 성격 프리셋을 골라 보자. 순위 막대 아래 작은 글씨는 욕구별 기여(room/100 × 긴급도 × 성격)다.</div>
+      <div class="controls">
+        <button class="btn primary" id="d-play">▶ 재생</button>
+        <label>속도 <select id="d-speed"><option value="1">분당 1분</option><option value="3" selected>×3</option><option value="8">×8</option></select></label>
+        <label><input type="checkbox" id="d-auto" checked> 자동 이용</label>
+        <button class="btn" id="d-night">22:00로 점프</button>
+        <span class="chip mono" id="d-clock">06:00</span>
+      </div>
+      <div class="dash">
+        <div class="panel">
+          <h5>욕구 (0 결핍 ~ 100 충족) · 아래는 긴급도</h5>
+          <div id="d-needs"></div>
+          <h5 style="margin-top:12px">성격 가중치 (traits)</h5>
+          <div class="controls" id="d-presets"></div>
+          <div class="sliders" id="d-traits"></div>
+        </div>
+        <div class="panel">
+          <h5>오브젝트 광고 가치 순위 (UAI.adValue)</h5>
+          <div class="rank-box" id="d-rank"></div>
+          <div class="status-line" id="d-status"></div>
+        </div>
+      </div>
+    </div>
+    <p>관찰 포인트 몇 가지.</p>
+    <ul>
+      <li>배고픔이 60 근처를 지나면 빵집이 갑자기 1위로 치고 올라온다. piecewise 커브의 꺾임점(0.6 → 0.25, 0.3 → 0.85)이 순위 변화로 그대로 보인다.</li>
+      <li>배고픔 슬라이더를 90으로 올리면 빵집 가치가 거의 0이 된다. 긴급도가 0.02 이하이고 room도 10뿐이기 때문이다.</li>
+      <li>선술집은 여러 욕구를 동시에 채우는 "만능 오브젝트"라 아무 욕구도 극단적이지 않을 때 자주 1위가 된다. 광고를 여러 욕구로 나누면 평범한 상태에서 강해지고, 한 욕구에 몰면 위기 상황에서 강해진다.</li>
+      <li>"22:00로 점프"를 누르면 기력 막대가 눈에 띄게 빨리 준다. 자정이 지나면 다시 원래 속도로 돌아온다(<a href="#s2">2절</a>의 경계 문제).</li>
+    </ul>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 성격(traits): 같은 마을, 다른 사람</h2>
+    <p>모든 주민이 같은 커브, 같은 광고표를 쓰면 같은 상황에서 같은 행동을 한다. 개성을 주는 가장 싼 방법은 욕구별 가중치다. <code>World.addAgent</code>는 <code>traits</code>를 기본값 1로 채우고, <code>adValue</code>는 각 욕구 항에 <code>agent.traits[n]</code>을 곱한다.</p>
+    <pre class="engine"><code>      const a = { id: "a" + this.agents.length, name, x, y, needs, traits: Object.assign({ hunger: 1, energy: 1, fun: 1, social: 1 }, traits),</code></pre>
+    <p>사교 1.6인 주민은 같은 사교 결핍에서도 우물·선술집을 1.6배 강하게 원한다. 커브 모양은 그대로 두고 높이만 바꾸므로, "언제 급해지는가"는 모두 같고 "얼마나 원하는가"만 다르다. 커브 자체를 성격별로 바꾸는 것보다 튜닝 축이 적어 밸런싱이 쉽다.</p>
+    <div class="widget" id="w-traits">
+      <div class="w-title">실험: 성격만 다른 여섯 주민의 하루</div>
+      <div class="w-desc"><code>UAI.makeHamlet</code>으로 같은 마을을 두 번 만든다. 한 번은 모든 traits가 1, 한 번은 주민마다 다른 traits. 각각 하루(1,440 tick)씩 시드 5개로 돌려 하루 평균 욕구와 이용 횟수를 비교한다. 괄호 안은 "모두 기본값" 대비 변화이고, 성격이 겨냥한 욕구 칸은 강조했다.</div>
+      <div class="controls">
+        <button class="btn primary" id="t-run">실행</button>
+        <span class="c-muted" style="font-size:13px" id="t-legend"></span>
+      </div>
+      <div class="tbl-wrap"><table class="res-tbl" id="t-tbl"><tr><td>실행 버튼을 누르세요.</td></tr></table></div>
+    </div>
+    <p>실행해 보면 방향은 모두 의도대로다. 먹보(배고픔×2)는 하루 평균 배고픔이 약 4 높고, 잠꾸러기는 기력이 약 5 높고, 파티광은 재미가 약 6 높다. 외톨이(사교×0.3)는 선술집을 덜 가고 광장 무대를 더 간다. 부지런(기력×0.5)은 평균 기력이 4 낮은 채로 지낸다. 다만 효과의 크기는 수 포인트로 크지 않다. 모든 주민이 같은 감소 속도와 같은 커브 위에 있어서, 성격은 "언제 무엇을 먼저 채우는가"의 순서를 바꿀 뿐 욕구를 일정 범위에 붙잡는 피드백 루프 자체는 그대로이기 때문이다. 더 극적인 개성이 필요하면 감소 속도(대사량)나 커브 자체를 주민별로 바꾸는 축을 추가할 수 있지만, 튜닝할 숫자가 그만큼 늘어난다.</p>
+    <div class="callout warn"><span class="title">함정: trait 0은 0이 아니다</span>
+      <code>(agent.traits[n] || 1)</code>은 trait가 0이면 <code>0 || 1</code> = 1이 된다. "이 주민은 재미에 전혀 관심 없음"을 0으로 표현하려 하면 기본값으로 되돌아가 버린다. JavaScript의 <code>||</code> 기본값 관용구가 0·빈 문자열을 "없음"으로 취급하기 때문이다. 엔진에서 0을 허용하려면 <code>?? 1</code>을 써야 한다. 이 장의 위젯은 trait 슬라이더 최솟값을 0.2로 막아 두었다.
+    </div>
+  </section>
+
+  <!-- ============================== S9 ============================== -->
+  <section id="s9">
+    <h2>9. 오브젝트 광고 에디터: 엔진을 고치지 않고 마을 확장하기</h2>
+    <p>스마트 오브젝트 구조의 진짜 가치는 확장에서 드러난다. 아래 에디터에서 새 오브젝트의 광고표·이용 시간·수용량을 정하고 지도를 클릭해 위치를 고른 뒤 "마을에 추가"를 누르자. 위젯은 <code>uai.js</code>를 한 줄도 고치지 않는다. <code>UAI.makeHamlet()</code>으로 만든 마을에 <code>world.addObject()</code>로 오브젝트를 넣고, 반환된 객체에 광고표를 덮어쓸 뿐이다.</p>
+    <pre><code>const w = UAI.makeHamlet({ seed });
+// OBJECT_TYPES에 없는 타입이면 addObject는 {id, type, x, y, users: 0}만 만든다 → 광고표를 덮어쓴다
+Object.assign(w.addObject("custom", x, y), { label: "목욕탕", ads: { energy: 40, fun: 20 }, duration: 30, capacity: 3 });</code></pre>
+    <div class="widget" id="w-editor">
+      <div class="w-title">오브젝트 광고 에디터</div>
+      <div class="w-desc">"하루 시뮬레이션"은 새 오브젝트가 없는 기준 마을과, 추가한 마을을 각각 시드 5개로 하루씩 돌린다. 회색 가는 막대가 기준 마을, 초록 막대가 새 마을의 이용 선택 횟수(하루 평균)다.</div>
+      <div class="editor-grid">
+        <div>
+          <div class="controls">
+            <label>이름 <input type="text" id="e-name" value="목욕탕"></label>
+            <label>아이콘 <input type="text" id="e-icon" value="🛁" style="width:3em"></label>
+          </div>
+          <div class="controls" id="e-presets"></div>
+          <div class="sliders" id="e-ads"></div>
+          <div class="sliders" style="margin-top:6px">
+            <label for="e-dur">이용 시간</label><input type="range" id="e-dur" min="5" max="90" value="30"><output id="e-dur-o">30분</output>
+            <label for="e-cap">수용량</label><input type="range" id="e-cap" min="1" max="6" value="3"><output id="e-cap-o">3명</output>
+          </div>
+          <div class="controls">
+            <button class="btn primary" id="e-add">마을에 추가</button>
+            <button class="btn" id="e-clear">추가한 오브젝트 모두 제거</button>
+          </div>
+          <div class="custom-list" id="e-list"></div>
+          <div class="status-line mono" id="e-preview"></div>
+        </div>
+        <div>
+          <svg class="map" id="e-map" viewBox="0 0 480 320" role="img" aria-label="Hamlet 지도. 클릭해 위치 선택"></svg>
+          <div class="legend"><span>지도를 클릭해 위치 선택 (점선 = 배치 예정)</span></div>
+        </div>
+      </div>
+      <div class="controls"><button class="btn primary" id="e-sim">하루 시뮬레이션 (시드 5개)</button><span id="e-busy" class="c-muted"></span></div>
+      <div id="e-bars"></div>
+      <div class="stat-row" id="e-stats"></div>
+    </div>
+    <p>해 볼 만한 실험.</p>
+    <ul>
+      <li><b>목욕탕</b>(기력 +40, 재미 +20): 집 이용이 크게 줄고 목욕탕이 그 자리를 차지한다. 기력과 재미를 함께 채우는 오브젝트가 "기력만 채우는" 집보다 평범한 상태에서 유리하기 때문이다.</li>
+      <li><b>노점</b>(배고픔 +35, 8분, 수용량 1): 빠르지만 좁다. 빵집 옆(6,5)에 두면 빵집 선택이 하루 31.8회에서 18.8회로 줄고 노점이 17.4회를 가져간다. 먼 구석(20,14)에 둬도 14.8회로 꽤 쓰인다. 주민이 산책으로 마을 곳곳을 돌아다니므로 거리 consideration이 생각보다 덜 결정적이다. 직관 대신 수치로 확인해야 하는 이유다.</li>
+      <li><b>도서관</b>(재미 +35, 사교 −5, 40분): 광장 무대(재미 +60)보다 약해서 거의 선택되지 않는다. 광고량이 기존 오브젝트에 지배당하면 그 오브젝트는 사실상 죽은 콘텐츠가 된다. 실제 게임에서 "아무도 안 쓰는 가구"가 생기는 전형적인 원인이다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================== S10 ============================== -->
+  <section id="s10">
+    <h2>10. 실험: 배부른데 먹는 주민</h2>
+    <p><a href="#s3">3절</a>의 주장을 직접 재 보자. 배고픔 커브만 바꿔 끼우고 Hamlet을 하루씩 돌린 뒤, 빵집·밭을 고른 순간의 배고픔 값을 기록한다. 그 값이 "배부름 기준" 이상이면 <b>배부른데 먹기</b>로 센다. 실험 동안만 <code>UAI.NEED_CURVE.hunger</code>를 교체하고 끝나면 원래대로 되돌린다(엔진 파일은 그대로).</p>
+    <div class="widget" id="w-full">
+      <div class="w-title">욕구 곡선 비교 실험</div>
+      <div class="w-desc">세 커브를 같은 시드로 돌린다. 왼쪽 그래프는 커브 모양, 오른쪽은 빵집에 대한 adValue(= room/100 × 긴급도)다. 아래 히스토그램은 식사 결정 시점의 배고픔 분포이며, 빨간 영역이 "배부름" 구간이다.</div>
+      <div class="plots2">
+        <svg id="f-curve" viewBox="0 0 240 200"></svg>
+        <svg id="f-ad" viewBox="0 0 240 200"></svg>
+      </div>
+      <div class="legend"><span><i style="background:var(--muted)"></i>선형 1−x</span><span><i style="background:var(--warn)"></i>2차 (1−x)²</span><span><i style="background:var(--accent)"></i>piecewise (엔진)</span></div>
+      <div class="controls">
+        <label>선택 전략 <select id="f-strat"><option value="dual" selected>dual (Hamlet 기본)</option><option value="weighted">weighted (순수 가중 랜덤)</option></select></label>
+        <label>배부름 기준 <select id="f-th"><option value="60">≥ 60</option><option value="70" selected>≥ 70</option><option value="80">≥ 80</option><option value="85">≥ 85</option><option value="90">≥ 90</option></select></label>
+        <label>시드 수 <select id="f-seeds"><option value="10">10</option><option value="20" selected>20</option><option value="40">40</option></select></label>
+        <button class="btn primary" id="f-run">실험 실행</button>
+      </div>
+      <div class="tbl-wrap"><table class="res-tbl" id="f-tbl"><tr><td>실행 버튼을 누르세요.</td></tr></table></div>
+      <div class="stage"><svg class="hist" id="f-hist" viewBox="0 0 560 190" style="min-width:420px;width:100%"></svg></div>
+    </div>
+    <p>엔진 기본값(dual, 기준 70, 시드 20)으로 돌려 보면 선형은 816건 중 226건(28%)이 배부른 식사이고, 2차와 piecewise는 0건이다. 기준을 60으로 낮추면 piecewise만 274건이 나오는데, 이는 의도된 결과다. 0.6~0.85를 "다른 할 일이 없으면 먹는 출출함 구간"으로 찍어 두었기 때문이다. 두 가지 방어선이 겹쳐 있다는 점에 주목하자.</p>
+    <ol>
+      <li><b>커브</b>: piecewise는 0.85 위에서 긴급도를 0.02 이하로 누른다. 선형은 배고픔 80에서도 0.2를 준다.</li>
+      <li><b>room</b>: 배가 찰수록 room이 줄어 adValue가 한 번 더 깎인다. 오른쪽 그래프에서 모든 커브가 오른쪽 끝에서 0으로 수렴하는 이유다. room만으로도 상당 부분 막히지만 선형 커브에서는 충분하지 않다.</li>
+    </ol>
+    <p>전략을 <b>weighted</b>로 바꾸면 세 커브 모두 배부른 식사가 생긴다(기준 70에서 선형 803 · 2차 314 · piecewise 426건). 순수 가중 랜덤은 점수가 아무리 작아도 0보다 크면 언젠가 뽑기 때문이다. 기준을 85, 90으로 올려 보면 piecewise와 2차는 수십 건 이하로 떨어지지만 선형은 여전히 수백 건(85에서 223건)이다. 출출함 구간을 넓게 둔 piecewise가 70~80대에서는 2차보다 오히려 더 먹는다는 점도 보인다. 커브는 "얼마나 덜 먹는가"보다 "어느 구간에서 먹게 할 것인가"를 정하는 도구다. Graham이 지적한 "작은 확률도 결국 선택된다"는 문제는 커브만이 아니라 <b>선택 전략과 함께</b> 풀어야 한다. dual 전략의 "최고점 대비 일정 비율 미만 제거"(<a class="xref" href="05-action-selection.html">05장</a>)가 두 번째 방어선 역할을 한다.</p>
+  </section>
+
+  <!-- ============================== S11 ============================== -->
+  <section id="s11">
+    <h2>11. 창발: 점심시간의 빵집</h2>
+    <p>지금까지는 주민 한 명을 봤다. 여러 명이 같은 규칙을 따르면 아무도 명시하지 않은 패턴이 나타난다. 가장 단순한 예가 <b>동시에 배고파지는 주민들</b>이다. 모두가 빵집을 최고로 평가하지만 빵집 수용량은 2명뿐이다.</p>
+    <ul>
+      <li>빵집이 차면 <code>targets</code> 필터(<code>o.users &lt; o.capacity</code>)가 빵집을 후보에서 아예 뺀다.</li>
+      <li>먼저 도착한 사람이 자리를 차지하면 다른 사람에게 <b>혼잡</b> consideration이 감점을 준다(이용자 1/2이면 커브 출력 0.65).</li>
+      <li>빵집으로 걷다가 자리가 없음을 알게 된 주민은 행동이 취소되어(<code>a.current = null</code>) 다시 생각한다. 그때 2순위인 밭이 선택된다.</li>
+    </ul>
+    <p>결과적으로 "빵집이 붐비면 밭으로 분산된다"는 행동이 나온다. 누구도 "빵집이 차면 밭에 가라"는 규칙을 쓰지 않았다. 광고·거리·혼잡 세 consideration과 수용량 데이터의 상호작용이 만든 것이다.</p>
+    <div class="widget" id="w-emerge">
+      <div class="w-title">Hamlet 라이브: 점심 종을 울려라</div>
+      <div class="w-desc">"점심 종"을 누르면 모든 주민의 배고픔이 12가 된다. 주황 점은 빵집·밭을 이용하러 가는 주민, 파랑은 다른 오브젝트, 보라는 수다, 회색은 산책이다. 오브젝트 칸의 숫자는 이용자/수용량이고, 꽉 차면 주황으로 바뀐다.</div>
+      <div class="controls">
+        <button class="btn primary" id="m-play">▶ 재생</button>
+        <button class="btn" id="m-bell">🔔 점심 종</button>
+        <label>빵집 수용량 <select id="m-cap"><option>1</option><option selected>2</option><option>3</option><option>6</option></select></label>
+        <label>속도 <select id="m-speed"><option value="1">×1</option><option value="3" selected>×3</option><option value="6">×6</option></select></label>
+        <button class="btn" id="m-reset">새 마을</button>
+        <span class="chip mono" id="m-clock">06:00</span>
+      </div>
+      <div class="stage"><svg class="map" id="m-map" viewBox="0 0 480 320" role="img" aria-label="Hamlet 마을 지도"></svg></div>
+      <div class="legend"><span><i style="background:var(--warn)"></i>먹으러 감</span><span><i style="background:var(--accent)"></i>다른 오브젝트</span><span><i style="background:var(--violet)"></i>수다</span><span><i style="background:var(--muted)"></i>산책</span><span><i style="background:var(--bad)"></i>도망</span></div>
+      <div class="stat-row" id="m-stats"></div>
+      <div class="log" id="m-log" style="max-height:140px"></div>
+      <div class="controls"><button class="btn" id="m-batch">일괄 실험: 수용량별 30개 시드</button></div>
+      <div class="tbl-wrap"><table class="res-tbl" id="m-tbl"></table></div>
+    </div>
+    <p>일괄 실험에서는 수용량이 작을수록 밭 선택이 급격히 늘어난다(수용량 6에서 밭은 거의 쓰이지 않고, 1에서는 빵집과 비슷해진다). 같은 데이터를 보고 디자이너가 할 수 있는 판단은 여러 가지다. 빵집을 하나 더 짓거나, 수용량을 늘리거나, 밭의 광고를 올려 처음부터 분산시키거나. 어느 쪽이든 <b>광고표와 수용량이라는 데이터</b>로 해결되고, 주민 AI는 그대로다.</p>
+    <div class="callout"><span class="title">창발은 공짜가 아니다</span>
+      같은 구조가 원치 않는 패턴도 만든다. 모든 주민의 배고픔이 같은 속도로 줄고 시작값이 비슷하면 식사 시간이 동기화되어 매번 빵집 앞이 붐빈다. Hamlet은 시작 욕구를 난수(40~89)로 주고 생각하는 tick을 주민마다 어긋나게(<code>thinkOffset</code>, <a class="xref" href="09-engine-architecture.html">09장</a>) 해서 동기화를 완화한다. 성격 가중치도 같은 효과를 낸다.
+    </div>
+  </section>
+
+  <!-- ============================== S12 ============================== -->
+  <section id="s12">
+    <h2>12. 트레이드오프와 함정</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>설계 선택</th><th>얻는 것</th><th>잃는 것 / 주의</th></tr>
+      <tr><td>지능을 오브젝트에 둠</td><td>오브젝트 추가가 데이터 작업. 주민 코드 불변.</td><td>오브젝트가 광고하지 않는 행동(수다, 산책, 도망)은 여전히 행동으로 따로 만들어야 한다. Hamlet도 <code>chat</code>·<code>wander</code>·<code>flee</code>를 별도로 둔다.</td></tr>
+      <tr><td>광고량 = 실제 효과</td><td>거짓 광고가 없다. 밸런싱 숫자가 하나.</td><td>"맛있어 보이지만 실은 별로인" 오브젝트 같은 의도된 착각은 별도 필드가 필요하다.</td></tr>
+      <tr><td>욕구별 곱(광고 × 긴급도 × 성격)</td><td>각 축을 독립적으로 튜닝.</td><td>광고량이 큰 오브젝트가 모든 상황을 지배하기 쉽다. 죽은 콘텐츠(<a href="#s9">9절</a> 도서관) 점검 필요.</td></tr>
+      <tr><td>room 한계효용</td><td>배부를 때 큰 오브젝트 과대평가 방지.</td><td>음수 광고에는 적용되지 않는다(<a href="#s5">5절</a>).</td></tr>
+      <tr><td>배고픔 piecewise</td><td>배부를 때 먹지 않음. 꺾임점을 손으로 튜닝.</td><td>점이 많아지면 의도를 잃기 쉽다. 점마다 "왜 이 값인가"를 기록하자.</td></tr>
+      <tr><td>합을 clamp01</td><td>다른 consideration과 같은 0~1 스케일.</td><td>여러 욕구가 동시에 급하면 1에 포화되어 오브젝트 간 차이가 사라질 수 있다.</td></tr>
+    </table></div>
+    <div class="callout danger"><span class="title">실제 게임에서 나타나는 문제</span>
+      <ul style="margin:4px 0 0">
+        <li><b>욕구 하나가 모든 걸 잡아먹음</b>: 감소 속도가 너무 빠른 욕구가 있으면 주민이 그 욕구만 채우러 다닌다. 표(<a href="#s2">2절</a>)처럼 "100 → 0 시간"으로 환산해 하루 일과에 맞는지 검산하자.</li>
+        <li><b>오브젝트 독점</b>: 만능 오브젝트(선술집)가 너무 강하면 마을이 선술집 앞에만 모인다. 이용 횟수 통계(<a href="#s9">9절</a> 에디터)를 정기적으로 확인하자.</li>
+        <li><b>굶주림 직전의 산책</b>: 광고 가치가 거리·혼잡에 곱해져 너무 작아지면 산책(weight 0.12)에 진다. Graham의 Sims 예처럼 아주 급한 욕구는 버킷(rank)으로 끌어올리는 방법을 고려하자(<a class="xref" href="05-action-selection.html">05장</a>).</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>욕구는 0(결핍)~100(충족) 값이고 <code>UAI.NEED_DECAY</code>만큼 매 분 줄어든다. 기력은 <code>hour() >= 22</code>일 때 1.8배 빨리 준다(실제로는 22:00~23:59만).</li>
+    <li>욕구값은 <code>UAI.NEED_CURVE</code>로 긴급도가 된다. 배고픔은 piecewise로 배부른 구간을 거의 0으로 눌러 "배부른데 먹기"를 막는다. 수식 곡선은 작은 확률을 남긴다(Graham).</li>
+    <li>스마트 오브젝트는 자기가 채워 주는 욕구를 광고하고, 주민은 <code>adValue = Σ room/100 × 긴급도 × 성격</code>으로 저울질한다. 오브젝트 추가는 데이터 한 줄이다.</li>
+    <li><code>room = min(광고량, 100 − 현재값)</code>이 한계효용 체감을 구현한다. 음수 광고는 부작용 비용이며 그 욕구가 급할 때만 비싸다.</li>
+    <li>성격 가중치는 커브 모양은 두고 높이만 바꿔 개성을 만든다. <code>traits[n] || 1</code> 때문에 0은 1로 취급된다.</li>
+    <li>수용량·혼잡·거리의 상호작용이 "빵집이 차면 밭으로" 같은 창발적 분산을 만든다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Hamlet에 새 오브젝트 "목욕탕"을 추가하려면 최소한 무엇을 바꿔야 하는가?</div>
+    <button class="opt">모든 주민의 행동 목록에 "목욕하기" 행동과 consideration을 추가한다.</button>
+    <button class="opt"><code>UAI.adValue</code>에 목욕탕 전용 분기를 넣는다.</button>
+    <button class="opt">광고표·이용 시간·수용량을 가진 오브젝트 하나를 마을에 넣는다. 주민 코드는 그대로다.</button>
+    <button class="opt">긴급도 커브 <code>UAI.NEED_CURVE</code>에 목욕탕 항목을 추가한다.</button>
+    <div class="explain">스마트 오브젝트 구조에서는 "무엇이 무엇을 채우는가"를 오브젝트가 들고 온다. "이용하기" 행동의 <code>targets</code>가 <code>world.objects</code> 전체를 돌기 때문에 새 오브젝트는 자동으로 후보가 된다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">배고픔 70인 주민(성격 1)에게 빵집(배고픔 +60)의 adValue는? piecewise 커브에서 x=0.7의 긴급도는 약 0.158이다.</div>
+    <button class="opt">0.60 × 0.158 ≈ 0.095</button>
+    <button class="opt">0.30 × 0.158 ≈ 0.047</button>
+    <button class="opt">0.70 × 0.158 ≈ 0.111</button>
+    <button class="opt">0.158</button>
+    <div class="explain">room = min(60, 100 − 70) = 30. 넘치는 30은 가치가 없으므로 30/100 × 0.158 ≈ 0.047. 한계효용 체감이 이 한 줄에 들어 있다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">선술집의 "기력 −10" 광고에 대한 설명으로 옳은 것은?</div>
+    <button class="opt">음수 광고는 무시되므로 선술집의 가치에 영향이 없다.</button>
+    <button class="opt">기력이 높을수록 비용이 크다.</button>
+    <button class="opt">음수도 room으로 제한되므로 기력이 5 남았으면 비용은 −5로 계산된다.</button>
+    <button class="opt">비용에 기력 긴급도가 곱해지므로 기력이 가득 찬 주민에게는 비용이 0에 가깝고, 기력이 바닥난 주민에게는 크다.</button>
+    <div class="explain">음수 광고는 <code>Math.min(0, ads[n])</code>로 그대로 쓰이고 긴급도가 곱해진다. 기력 100이면 긴급도 0이라 비용 0. room 제한은 양수 광고에만 걸린다(그래서 C는 틀렸다).</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">10절 실험에서 dual 전략 + piecewise는 배부른 식사가 0건이었지만 weighted 전략에서는 생겼다. 가장 정확한 이유는?</div>
+    <button class="opt">순수 가중 랜덤은 점수가 0보다 크면 아무리 작아도 언젠가 뽑는다. dual의 "최고점 대비 비율 미만 제거"가 그런 후보를 잘라 냈다.</button>
+    <button class="opt">weighted 전략은 piecewise 커브를 지원하지 않는다.</button>
+    <button class="opt">weighted 전략에서는 room 계산이 꺼진다.</button>
+    <button class="opt">dual 전략은 배고픔 행동에 더 높은 rank를 준다.</button>
+    <div class="explain">커브가 작은 값을 남기면, 선택 전략이 그 작은 값을 기회로 바꾼다. 커브와 선택 전략은 함께 설계해야 한다(05장).</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">"재미에 전혀 관심 없는 주민"을 만들려고 <code>traits.fun = 0</code>을 줬다. 엔진에서 실제로 일어나는 일은?</div>
+    <button class="opt">재미 항이 0이 되어 무대·선술집의 재미 광고를 무시한다.</button>
+    <button class="opt">adValue가 NaN이 된다.</button>
+    <button class="opt"><code>(agent.traits[n] || 1)</code> 때문에 0이 1로 바뀌어 보통 주민과 같아진다.</button>
+    <button class="opt"><code>addAgent</code>가 0을 거부하고 예외를 던진다.</button>
+    <div class="explain"><code>0 || 1</code>은 1이다. 0을 유효한 값으로 쓰려면 <code>??</code>(nullish coalescing)를 써야 한다. 작은 관용구가 디자이너의 의도를 조용히 무시하는 전형적인 사례다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">빵집 수용량을 6에서 1로 줄였더니 밭 이용이 크게 늘었다. 이 분산을 만든 메커니즘이 <b>아닌</b> 것은?</div>
+    <button class="opt">가득 찬 오브젝트를 후보에서 빼는 <code>targets</code> 필터</button>
+    <button class="opt">빵집이 차면 밭으로 가라는 명시적 규칙</button>
+    <button class="opt">이용자 비율에 따라 감점하는 혼잡 consideration</button>
+    <button class="opt">도착했는데 자리가 없으면 행동을 취소하고 다시 생각하는 <code>run</code> 로직</button>
+    <div class="explain">그런 규칙은 어디에도 없다. 필터·혼잡·재결정이라는 일반 규칙이 조합되어 분산이 "창발"했다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q"><code>this.hour() >= 22</code> 조건(기력 감소 ×1.8)이 참인 시간대는?</div>
+    <button class="opt">22:00~06:00</button>
+    <button class="opt">항상 (hour()는 22 이상에서 시작)</button>
+    <button class="opt">00:00~06:00</button>
+    <button class="opt">22:00~23:59</button>
+    <div class="explain"><code>hour()</code>는 <code>% 24</code>로 자정에 0으로 돌아간다. 새벽까지 적용하려면 <code>h >= 22 || h &lt; 6</code>이 필요하다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b> 이 장에서 주민은 "빵집"이라는 오브젝트 타입 하나만 평가했다. 그런데 빵집이 두 곳이면? 가까운데 붐비는 빵집과 멀지만 한산한 빵집 중 어디로 갈까? 08장에서는 행동 하나를 여러 대상(target)과 짝지어 <b>행동 × 대상</b> 쌍을 평가하는 컨텍스트 구조를 다룬다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>David "Rez" Graham, "An Introduction to Utility Theory," <i>Game AI Pro</i>, Ch. 9 (2013). — The Sims 배고픔과 piecewise linear 커브, 욕구 버킷, The Sims Medieval의 interaction queue.</li>
+    <li>Michael Dawe et al., "Behavior Selection Algorithms: An Overview," <i>Game AI Pro</i>, Ch. 4 (2013). — 유틸리티 시스템의 사례로 Sims의 배고픔과 음식 평가.</li>
+    <li>Kevin Dill, "Dual-Utility Reasoning," <i>Game AI Pro 2</i>, Ch. 3 (2015). — Zoo Tycoon 2의 욕구 행동 rank 0, weight 변동.</li>
+    <li>Mike Lewis, "Choosing Effective Utility-Based Considerations," <i>Game AI Pro 3</i>, Ch. 13 (2017). — bookend 정규화, 곱 결합과 early-out.</li>
+    <li>Dave Mark, <i>Behavioral Mathematics for Game AI</i>. — 효용·반응 커브 일반.</li>
+    <li>Maxis / Will Wright, <i>The Sims</i> (2000). — 스마트 오브젝트 방식의 대표 사례.</li>
+  </ul></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const N = UAI.NEEDS, NL = UAI.NEED_LABEL;
+  const OT = UAI.OBJECT_TYPES;
+  const urg = {}; N.forEach(n => urg[n] = UAI.curve(UAI.NEED_CURVE[n]));
+  const NEED_COLOR = { hunger: "--warn", energy: "--ok", fun: "--teal", social: "--violet" };
+  const BAR_CLASS = { hunger: "warn", energy: "ok", fun: "", social: "violet" };
+  const $ = id => document.getElementById(id);
+
+  // 설명용 분해: UAI.adValue의 욕구별 항 (합을 clamp01하면 UAI.adValue와 같다)
+  function adTerm(agent, n, amt) {
+    const room = Math.min(amt, 100 - agent.needs[n]);
+    return (Math.max(room, Math.min(0, amt)) / 100) * urg[n](agent.needs[n] / 100) * (agent.traits[n] || 1);
+  }
+
+  // ───────── 3절: 커브 플롯 ─────────
+  MM.plotCurve($("curve-hunger"), urg.hunger, { color: "--accent", xLabel: "배고픔 / 100", yLabel: "긴급도",
+    extra: [{ fn: x => 1 - x, color: "--muted", dash: true }] });
+  MM.plotCurve($("curve-others"), urg.energy, { color: "--ok", xLabel: "욕구 / 100", yLabel: "긴급도",
+    extra: [{ fn: urg.social, color: "--violet" }, { fn: urg.fun, color: "--teal" }] });
+
+  // ───────── 5절: room 계산기 ─────────
+  function drawRoom() {
+    const need = +$("rm-need").value, ad = +$("rm-ad").value;
+    $("rm-need-o").textContent = need; $("rm-ad-o").textContent = ad;
+    const X = v => 20 + v * 2.6, y = 26, h = 26;
+    let s = `<rect class="frame" x="${X(0)}" y="${y}" width="${X(100) - X(0)}" height="${h}" rx="4"/>`;
+    s += `<rect class="fill" x="${X(0)}" y="${y}" width="${X(need) - X(0)}" height="${h}" rx="4"/>`;
+    const room = Math.min(ad, 100 - need);
+    if (ad >= 0) {
+      s += `<rect class="room" x="${X(need)}" y="${y}" width="${X(need + room) - X(need)}" height="${h}"/>`;
+      if (ad > room) s += `<rect class="waste" x="${X(100)}" y="${y}" width="${(ad - room) * 2.6}" height="${h}"/>`;
+    } else {
+      const lo = Math.max(0, need + ad);
+      s += `<rect class="waste" x="${X(lo)}" y="${y}" width="${X(need) - X(lo)}" height="${h}"/>`;
+    }
+    s += `<text x="${X(0)}" y="18" class="m">0</text><text x="${X(100)}" y="18" class="m" text-anchor="end">100</text>`;
+    s += `<text x="${X(need)}" y="${y + h + 16}" class="m" text-anchor="middle">현재 ${need}</text>`;
+    if (ad > room && ad >= 0) s += `<text x="${X(100) + 4}" y="${y + h + 16}" class="m">버려짐 ${ad - room}</text>`;
+    $("rm-svg").innerHTML = s;
+    const agent = { needs: { hunger: need }, traits: {} };
+    const u = urg.hunger(need / 100), term = adTerm(agent, "hunger", ad);
+    const v = UAI.adValue(agent, { ads: { hunger: ad } });
+    $("rm-out").innerHTML = ad >= 0
+      ? `room = min(${ad}, 100 − ${need}) = <b>${room}</b> · 긴급도 ${MM.fmt(u, 3)} → 기여 ${room}/100 × ${MM.fmt(u, 3)} = <b>${MM.fmt(term, 3)}</b> <span class="c-muted">(UAI.adValue = ${MM.fmt(v, 3)})</span>`
+      : `음수 광고: room 대신 ${ad} 그대로 → 기여 ${ad}/100 × ${MM.fmt(u, 3)} = <b>${MM.fmt(term, 3)}</b> <span class="c-muted">(UAI.adValue는 clamp01로 ${MM.fmt(v, 3)})</span>`;
+  }
+  $("rm-need").oninput = $("rm-ad").oninput = drawRoom; drawRoom();
+
+  // ───────── 6절: 피드백 루프 스테퍼 ─────────
+  const LOOP = [
+    { t: "욕구 감소", s: "NEED_DECAY × dt", x: 250, y: 18 },
+    { t: "긴급도", s: "NEED_CURVE", x: 452, y: 82 },
+    { t: "광고 × 긴급도", s: "adValue()", x: 452, y: 222 },
+    { t: "행동 점수", s: "× 거리 × 혼잡", x: 250, y: 288 },
+    { t: "선택·실행", s: "select · run", x: 48, y: 222 },
+    { t: "욕구 회복", s: "+ ads/duration", x: 48, y: 82 },
+  ];
+  const BW = 140, BH = 54;
+  function loopSvg(on) {
+    let s = "";
+    for (let i = 0; i < LOOP.length; i++) {
+      const a = LOOP[i], b = LOOP[(i + 1) % LOOP.length];
+      const ax = a.x + BW / 2, ay = a.y + BH / 2, bx = b.x + BW / 2, by = b.y + BH / 2;
+      const dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy);
+      const sx = ax + dx / L * 78, sy = ay + dy / L * 34, ex = bx - dx / L * 80, ey = by - dy / L * 36;
+      s += `<path class="ar${on === i ? " on" : ""}" d="M${sx.toFixed(0)},${sy.toFixed(0)} L${ex.toFixed(0)},${ey.toFixed(0)}" marker-end="url(#lpArr)"/>`;
+    }
+    LOOP.forEach((n, i) => {
+      s += `<rect class="nd${on === i ? " on" : ""}" x="${n.x}" y="${n.y}" width="${BW}" height="${BH}" rx="10"/>`;
+      s += `<text class="ttl" x="${n.x + BW / 2}" y="${n.y + 23}" text-anchor="middle">${n.t}</text>`;
+      s += `<text class="sub" x="${n.x + BW / 2}" y="${n.y + 41}" text-anchor="middle">${n.s}</text>`;
+    });
+    s += `<text x="320" y="170" text-anchor="middle" style="font-weight:700;fill:var(--accent)">음의 피드백</text>`;
+    s += `<text x="320" y="188" text-anchor="middle" class="muted" style="font-size:11.5px">결핍 ↑ → 점수 ↑ → 충족 ↑ → 점수 ↓</text>`;
+    $("lp-nodes").innerHTML = s;
+  }
+  // 실제 엔진으로 아리 계산
+  const lw = UAI.makeHamlet({ seed: 7 });
+  const ari = lw.agents[0];
+  Object.assign(ari.needs, { hunger: 25, energy: 70, fun: 55, social: 60 });
+  const lrows = lw.reasoner.evaluate(ari, lw).sort((a, b) => b.score - a.score);
+  const ranked = Object.keys(OT).map(k => ({ k, v: UAI.adValue(ari, OT[k]) })).sort((a, b) => b.v - a.v);
+  MM.stepper($("loop-step"), {
+    steps: 6, interval: 2200,
+    render(i) {
+      loopSvg(i);
+      switch (i) {
+        case 0: return `<b>① 욕구 감소</b> — 매 tick 배고픔 −0.20, 재미 −0.16, 사교 −0.12, 기력 −0.11. 아리는 지금 배고픔 <b>25</b>, 기력 70, 재미 55, 사교 60이다.`;
+        case 1: return `<b>② 긴급도</b> — <code>UAI.curve(NEED_CURVE[n])(값/100)</code>: ` + N.map(n => `${NL[n]} ${MM.fmt(urg[n](ari.needs[n] / 100))}`).join(" · ") + `. 배고픔이 piecewise 커브의 가파른 구간에 있다.`;
+        case 2: return `<b>③ 광고 × 긴급도</b> — 오브젝트 7종의 <code>UAI.adValue</code>: ` + ranked.slice(0, 4).map(r => `${OT[r.k].label} <b>${MM.fmt(r.v)}</b>`).join(" · ") + ` … 빵집 = 60/100 × ${MM.fmt(urg.hunger(0.25), 3)}.`;
+        case 3: return `<b>④ 행동 점수</b> — Reasoner가 광고 가치 × 거리 × 혼잡을 compensated 곱으로 결합: ` + lrows.slice(0, 3).map(r => `${r.action.label}${r.target ? "@" + (r.target.label || r.target.name) : ""} <b>${MM.fmt(r.score)}</b>`).join(" · ") + `.`;
+        case 4: return `<b>⑤ 선택·실행</b> — dual 전략은 최고점(${MM.fmt(lrows[0].score)})의 85% 이상만 남기므로 빵집이 유일한 후보. 아리는 빵집으로 걸어가 자리를 잡는다(users 0 → 1).`;
+        case 5: return `<b>⑥ 욕구 회복</b> — 20분 동안 분당 60/20 = 3씩 배고픔이 오른다(감소 0.2를 빼면 순증 2.8). 배고픔이 오르면 ②의 긴급도가 떨어지고 빵집 점수도 내려간다. 다 먹고 나면 다음 결정에서는 다른 욕구가 이긴다 → 다시 ①.`;
+      }
+    },
+  });
+
+  // ───────── 7절: 욕구 대시보드 ─────────
+  const dAgent = { needs: { hunger: 72, energy: 64, fun: 48, social: 55 }, traits: { hunger: 1, energy: 1, fun: 1, social: 1 } };
+  let dTime = 0, dUse = null, dTimer = null;
+  const dKeys = Object.keys(OT);
+  const PRESETS = { "기본": { hunger: 1, energy: 1, fun: 1, social: 1 }, "먹보": { hunger: 1.6, energy: 1, fun: 0.8, social: 1 },
+    "잠꾸러기": { hunger: 1, energy: 1.7, fun: 0.8, social: 0.8 }, "파티광": { hunger: 0.9, energy: 0.7, fun: 1.5, social: 1.6 } };
+  // 욕구 슬라이더
+  $("d-needs").innerHTML = N.map(n => `<div class="need-row"><label for="dn-${n}">${NL[n]}</label>
+    <input type="range" id="dn-${n}" min="0" max="100" step="0.1" value="${dAgent.needs[n]}" aria-label="${NL[n]}">
+    <span class="v" id="dv-${n}"></span><small id="du-${n}"></small></div>`).join("");
+  N.forEach(n => $("dn-" + n).oninput = e => { dAgent.needs[n] = +e.target.value; dRender(); });
+  $("d-traits").innerHTML = N.map(n => `<label for="dt-${n}">${NL[n]}</label><input type="range" id="dt-${n}" min="0.2" max="2" step="0.1" value="1"><output id="dto-${n}">1.0</output>`).join("");
+  N.forEach(n => $("dt-" + n).oninput = e => { dAgent.traits[n] = +e.target.value; dRender(); });
+  $("d-presets").innerHTML = Object.keys(PRESETS).map(p => `<button class="btn" data-p="${p}">${p}</button>`).join("");
+  $("d-presets").onclick = e => { const p = e.target.dataset.p; if (!p) return; Object.assign(dAgent.traits, PRESETS[p]); dRender(); };
+  // 순위 행
+  $("d-rank").style.height = (dKeys.length * 38) + "px";
+  $("d-rank").innerHTML = dKeys.map(k => `<div class="rank-row" id="dr-${k}"><span class="no"></span><span class="nm">${OT[k].icon} ${OT[k].label}</span>
+    <div class="bar"><i></i></div><span class="v"></span><span class="br"></span></div>`).join("");
+  function dRender() {
+    N.forEach(n => {
+      const v = dAgent.needs[n];
+      const sl = $("dn-" + n); if (document.activeElement !== sl) sl.value = v;
+      $("dv-" + n).textContent = v.toFixed(0);
+      $("du-" + n).textContent = `긴급도 ${urg[n](v / 100).toFixed(2)}`;
+      $("dt-" + n).value = dAgent.traits[n]; $("dto-" + n).textContent = dAgent.traits[n].toFixed(1);
+    });
+    const vals = dKeys.map(k => ({ k, v: UAI.adValue(dAgent, OT[k]) })).sort((a, b) => b.v - a.v);
+    vals.forEach((r, i) => {
+      const row = $("dr-" + r.k);
+      row.style.top = (i * 38) + "px";
+      row.classList.toggle("top", i === 0);
+      row.classList.toggle("using", !!dUse && dUse.k === r.k);
+      row.querySelector(".no").textContent = (i + 1) + ".";
+      row.querySelector(".bar i").style.width = (r.v * 100).toFixed(1) + "%";
+      row.querySelector(".v").textContent = r.v.toFixed(3);
+      row.querySelector(".br").textContent = Object.keys(OT[r.k].ads).map(n => {
+        const t = adTerm(dAgent, n, OT[r.k].ads[n]); return `${NL[n]}${t >= 0 ? "+" : ""}${t.toFixed(2)}`; }).join(" ");
+    });
+    $("d-clock").textContent = UAI.clock(dTime) + (dHour() >= 22 ? " 🌙 기력×1.8" : "");
+    $("d-status").innerHTML = dUse ? `<b>${OT[dUse.k].icon} ${OT[dUse.k].label}</b> 이용 중 — ${Math.ceil(dUse.until - dTime)}분 남음 (분당 ${Object.keys(OT[dUse.k].ads).map(n => `${NL[n]} ${(OT[dUse.k].ads[n] / OT[dUse.k].duration).toFixed(2)}`).join(", ")})`
+      : ($("d-auto").checked ? "다음 결정 대기 중" : "자동 이용 꺼짐 — 욕구가 줄기만 한다");
+  }
+  const dHour = () => (dTime / 60 + 6) % 24; // World.hour()와 같은 식
+  function dTick() {
+    dTime += 1;
+    for (const n of N) dAgent.needs[n] = Math.max(0, dAgent.needs[n] - UAI.NEED_DECAY[n] * (n === "energy" && dHour() >= 22 ? 1.8 : 1));
+    if (!dUse && $("d-auto").checked) {
+      const best = dKeys.map(k => ({ k, v: UAI.adValue(dAgent, OT[k]) })).sort((a, b) => b.v - a.v)[0];
+      if (best.v > 0.02) dUse = { k: best.k, until: dTime + OT[best.k].duration };
+    }
+    if (dUse) {
+      const o = OT[dUse.k];
+      for (const n in o.ads) dAgent.needs[n] = Math.min(100, Math.max(0, dAgent.needs[n] + o.ads[n] / o.duration));
+      if (dTime >= dUse.until) dUse = null;
+    }
+  }
+  function dStart() { dTimer = setInterval(() => { const sp = +$("d-speed").value; for (let i = 0; i < sp; i++) dTick(); dRender(); }, 250); $("d-play").textContent = "⏸ 정지"; }
+  function dStop() { clearInterval(dTimer); dTimer = null; $("d-play").textContent = "▶ 재생"; }
+  let dPaused = false;
+  $("d-play").onclick = () => { dPaused = !!dTimer; dTimer ? dStop() : dStart(); };
+  $("d-auto").onchange = () => { if (!$("d-auto").checked) dUse = null; dRender(); };
+  $("d-night").onclick = () => { dTime = 16 * 60; dRender(); };
+  dRender();
+
+  // ───────── 공용: 하루 시뮬레이션 ─────────
+  // customs: [{label, icon, ads, duration, capacity, x, y}], traitsList: 주민별 traits 배열
+  function runDay(seed, opt) {
+    opt = opt || {};
+    const w = UAI.makeHamlet({ seed, reasonerOpt: opt.reasonerOpt });
+    (opt.customs || []).forEach(c => Object.assign(w.addObject("custom", c.x, c.y), JSON.parse(JSON.stringify(c))));
+    if (opt.traitsList) w.agents.forEach((a, i) => Object.assign(a.traits, opt.traitsList[i]));
+    const uses = {}, perAgent = w.agents.map(() => ({})), eats = [];
+    const needSum = {}; N.forEach(n => needSum[n] = 0); let samples = 0;
+    const agentSum = w.agents.map(() => { const o = {}; N.forEach(n => o[n] = 0); return o; });
+    for (let t = 0; t < (opt.ticks || 1440); t++) {
+      w.tick();
+      w.agents.forEach((a, i) => {
+        const c = a.current;
+        if (c && c.started === w.time && c.action === "use") {
+          const lb = c.target.label;
+          uses[lb] = (uses[lb] || 0) + 1;
+          perAgent[i][lb] = (perAgent[i][lb] || 0) + 1;
+          if (c.target.type === "bakery" || c.target.type === "farm") eats.push(a.needs.hunger);
+        }
+      });
+      if (t % 10 === 0) { w.agents.forEach((a, i) => { for (const n of N) { needSum[n] += a.needs[n]; agentSum[i][n] += a.needs[n]; } }); samples += w.agents.length; }
+    }
+    const avg = {}; N.forEach(n => avg[n] = needSum[n] / samples);
+    const per = samples / w.agents.length;
+    const agentAvg = agentSum.map(o => { const r = {}; N.forEach(n => r[n] = o[n] / per); return r; });
+    return { uses, perAgent, eats, avg, agentAvg, names: w.agents.map(a => a.name), labels: w.objects.map(o => o.label) };
+  }
+  function uniq(arr) { return [...new Set(arr)]; }
+
+  // ───────── 8절: 성격 실험 ─────────
+  const TRAITS6 = [
+    { tag: "먹보", t: { hunger: 2 } }, { tag: "잠꾸러기", t: { energy: 2 } }, { tag: "파티광", t: { fun: 2, social: 1.5 } },
+    { tag: "외톨이", t: { social: 0.3, fun: 1.3 } }, { tag: "부지런", t: { hunger: 1.3, energy: 0.5 } }, { tag: "수다쟁이", t: { social: 2 } }];
+  $("t-legend").textContent = TRAITS6.map(x => x.tag + " " + Object.keys(x.t).map(n => NL[n] + "×" + x.t[n]).join(",")).join(" · ");
+  function traitExp() {
+    const seeds = [1, 2, 3, 4, 5];
+    const agg = runs => runs[0].names.map((_, i) => {
+      const r = { avg: {}, uses: {} };
+      N.forEach(n => r.avg[n] = runs.reduce((s, x) => s + x.agentAvg[i][n], 0) / runs.length);
+      for (const x of runs) for (const k in x.perAgent[i]) r.uses[k] = (r.uses[k] || 0) + x.perAgent[i][k] / runs.length;
+      return r;
+    });
+    const base = agg(seeds.map(s => runDay(s))), tr = agg(seeds.map(s => runDay(s, { traitsList: TRAITS6.map(x => x.t) })));
+    const names = runDay(1, { ticks: 1 }).names;
+    const OBJ = ["빵집", "집", "선술집", "광장 무대"];
+    const cell = (v, b, hi) => { const d = v - b; return `<td class="num${hi ? " hi" : ""}">${v.toFixed(1)} <span class="c-muted" style="font-size:11.5px">(${d >= 0 ? "+" : ""}${d.toFixed(1)})</span></td>`; };
+    let h = `<tr><th>주민 (성격)</th>${N.map(n => `<th class="num">평균 ${NL[n]}</th>`).join("")}${OBJ.map(o => `<th class="num">${o}</th>`).join("")}</tr>`;
+    names.forEach((nm, i) => {
+      const t = TRAITS6[i].t;
+      h += `<tr><td>${nm} <span class="c-muted">(${TRAITS6[i].tag})</span></td>` +
+        N.map(n => cell(tr[i].avg[n], base[i].avg[n], t[n] != null)).join("") +
+        OBJ.map(o => cell(tr[i].uses[o] || 0, base[i].uses[o] || 0, false)).join("") + `</tr>`;
+    });
+    $("t-tbl").innerHTML = h;
+  }
+  $("t-run").onclick = traitExp;
+
+  // ───────── 공용: 지도 그리기 ─────────
+  const CELL = 20;
+  function drawMap(svg, objs, agents, draft) {
+    let s = "";
+    for (let x = 0; x <= 24; x += 2) s += `<line class="g" x1="${x * CELL}" y1="0" x2="${x * CELL}" y2="320"/>`;
+    for (let y = 0; y <= 16; y += 2) s += `<line class="g" x1="0" y1="${y * CELL}" x2="480" y2="${y * CELL}"/>`;
+    for (const o of objs) {
+      const cls = o.type === "custom" ? "custom" : (o.users >= o.capacity ? "full" : "");
+      const cx = o.x * CELL + CELL / 2, cy = o.y * CELL + CELL / 2;
+      s += `<rect class="obj ${cls}" x="${cx - 26}" y="${cy - 14}" width="52" height="28" rx="6"/>`;
+      s += `<text x="${cx}" y="${cy - 1}" text-anchor="middle">${o.icon || "◆"} ${o.label}</text>`;
+      s += `<text class="cap" x="${cx}" y="${cy + 10}" text-anchor="middle">${o.users}/${o.capacity}</text>`;
+    }
+    if (draft) { const cx = draft.x * CELL + CELL / 2, cy = draft.y * CELL + CELL / 2;
+      s += `<rect class="obj draft" x="${cx - 26}" y="${cy - 14}" width="52" height="28" rx="6"/><text x="${cx}" y="${cy + 4}" text-anchor="middle">${draft.icon} ${draft.label}</text>`; }
+    for (const a of agents || []) {
+      const c = a.current;
+      let cls = !c ? "idle" : c.action;
+      if (c && c.action === "use" && c.target && (c.target.type === "bakery" || c.target.type === "farm")) cls = "eat";
+      const cx = a.x * CELL + CELL / 2, cy = a.y * CELL + CELL / 2;
+      s += `<circle class="ag ${cls}" cx="${cx}" cy="${cy}" r="7"/><text class="an" x="${cx}" y="${cy - 9}" text-anchor="middle">${a.name}</text>`;
+    }
+    svg.innerHTML = s;
+  }
+
+  // ───────── 9절: 오브젝트 광고 에디터 ─────────
+  const E_PRESETS = {
+    "목욕탕": { icon: "🛁", ads: { hunger: 0, energy: 40, fun: 20, social: 0 }, duration: 30, capacity: 3, x: 8, y: 9 },
+    "도서관": { icon: "📚", ads: { hunger: 0, energy: 0, fun: 35, social: -5 }, duration: 40, capacity: 4, x: 17, y: 5 },
+    "노점": { icon: "🥟", ads: { hunger: 35, energy: 0, fun: 0, social: 0 }, duration: 8, capacity: 1, x: 6, y: 5 },
+  };
+  let customs = [], draft = { x: 8, y: 9 };
+  $("e-ads").innerHTML = N.map(n => `<label for="ea-${n}">${NL[n]}</label><input type="range" id="ea-${n}" min="-30" max="80" step="5" value="0"><output id="eao-${n}">0</output>`).join("");
+  $("e-presets").innerHTML = "프리셋 " + Object.keys(E_PRESETS).map(p => `<button class="btn" data-p="${p}">${p}</button>`).join("");
+  function eSetPreset(p) {
+    const P = E_PRESETS[p]; $("e-name").value = p; $("e-icon").value = P.icon;
+    N.forEach(n => $("ea-" + n).value = P.ads[n]); $("e-dur").value = P.duration; $("e-cap").value = P.capacity;
+    draft = { x: P.x, y: P.y }; eRefresh();
+  }
+  $("e-presets").onclick = e => { if (e.target.dataset.p) eSetPreset(e.target.dataset.p); };
+  function eDraft() {
+    const ads = {}; N.forEach(n => { const v = +$("ea-" + n).value; if (v) ads[n] = v; });
+    return { label: $("e-name").value.trim().slice(0, 6) || "새 건물", icon: $("e-icon").value.trim().slice(0, 2) || "◆",
+      ads, duration: +$("e-dur").value, capacity: +$("e-cap").value, x: draft.x, y: draft.y };
+  }
+  function eRefresh() {
+    N.forEach(n => $("eao-" + n).textContent = (+$("ea-" + n).value > 0 ? "+" : "") + $("ea-" + n).value);
+    $("e-dur-o").textContent = $("e-dur").value + "분"; $("e-cap-o").textContent = $("e-cap").value + "명";
+    const d = eDraft();
+    const w = UAI.makeHamlet({ seed: 1 });
+    customs.forEach(c => Object.assign(w.addObject("custom", c.x, c.y), c));
+    drawMap($("e-map"), w.objects, [], d);
+    // 미리보기: 평범한 주민(모든 욕구 50)과 지친 주민(기력 15)에게의 광고 가치
+    const avgA = { needs: { hunger: 50, energy: 50, fun: 50, social: 50 }, traits: {} };
+    const tired = { needs: { hunger: 60, energy: 15, fun: 40, social: 50 }, traits: {} };
+    $("e-preview").innerHTML = Object.keys(d.ads).length
+      ? `광고 ${JSON.stringify(d.ads)} · adValue: 욕구 모두 50인 주민 ${UAI.adValue(avgA, d).toFixed(3)}, 지친 주민 ${UAI.adValue(tired, d).toFixed(3)} (참고: 빵집 ${UAI.adValue(avgA, OT.bakery).toFixed(3)} / ${UAI.adValue(tired, OT.bakery).toFixed(3)})`
+      : "광고 값이 모두 0이면 아무도 이용하지 않는다.";
+    $("e-list").innerHTML = customs.map((c, i) => `<span class="chip on">${c.icon} ${c.label} (${c.x},${c.y})<button data-i="${i}" aria-label="제거">×</button></span>`).join("");
+  }
+  ["e-name", "e-icon", "e-dur", "e-cap"].concat(N.map(n => "ea-" + n)).forEach(id => $(id).addEventListener("input", eRefresh));
+  $("e-map").addEventListener("click", ev => {
+    const svg = $("e-map"), r = svg.getBoundingClientRect();
+    const x = Math.floor((ev.clientX - r.left) / r.width * 24), y = Math.floor((ev.clientY - r.top) / r.height * 16);
+    draft = { x: Math.max(1, Math.min(22, x)), y: Math.max(0, Math.min(15, y)) }; eRefresh();
+  });
+  $("e-add").onclick = () => { const d = eDraft(); if (!Object.keys(d.ads).length) return; if (customs.length >= 4) customs.shift(); customs.push(d); eRefresh(); };
+  $("e-clear").onclick = () => { customs = []; eRefresh(); $("e-bars").innerHTML = ""; $("e-stats").innerHTML = ""; };
+  $("e-list").onclick = e => { if (e.target.dataset.i != null) { customs.splice(+e.target.dataset.i, 1); eRefresh(); } };
+  function avgRuns(runs) {
+    const uses = {}, avg = {}; N.forEach(n => avg[n] = 0);
+    runs.forEach(r => { for (const k in r.uses) uses[k] = (uses[k] || 0) + r.uses[k] / runs.length; N.forEach(n => avg[n] += r.avg[n] / runs.length); });
+    return { uses, avg, labels: uniq(runs[0].labels) };
+  }
+  $("e-sim").onclick = () => {
+    $("e-busy").textContent = " 계산 중…";
+    setTimeout(() => {
+      const seeds = [1, 2, 3, 4, 5];
+      const base = avgRuns(seeds.map(s => runDay(s)));
+      const neu = avgRuns(seeds.map(s => runDay(s, { customs })));
+      const max = Math.max(1, ...Object.values(base.uses), ...Object.values(neu.uses));
+      $("e-bars").innerHTML = neu.labels.map(l => {
+        const b = base.uses[l] || 0, v = neu.uses[l] || 0, isNew = !base.labels.includes(l);
+        return `<div class="hbar"><span>${l}${isNew ? " ✨" : ""}</span><div class="track"><i class="new" style="width:${v / max * 100}%"></i><i class="base" style="width:${b / max * 100}%"></i></div>
+          <span class="num">${v.toFixed(1)}${isNew ? "" : ` <span class="c-muted">(${b.toFixed(1)})</span>`}</span></div>`;
+      }).join("");
+      $("e-stats").innerHTML = N.map(n => {
+        const d = neu.avg[n] - base.avg[n];
+        return `<div class="stat"><div class="k">평균 ${NL[n]} (기준 ${base.avg[n].toFixed(0)})</div><div class="v">${neu.avg[n].toFixed(1)} <span class="${d >= 0 ? "c-ok" : "c-bad"}" style="font-size:13px">${d >= 0 ? "+" : ""}${d.toFixed(1)}</span></div></div>`;
+      }).join("");
+      $("e-busy").textContent = customs.length ? "" : " (추가한 오브젝트가 없어 기준 마을과 같다)";
+    }, 20);
+  };
+  eSetPreset("목욕탕");
+
+  // ───────── 10절: 배고픔 커브 비교 실험 ─────────
+  const HCURVES = [
+    { key: "linear", label: "선형 1−x", color: "--muted", cls: "b0", spec: { type: "linear", m: -1, b: 1, c: 0 } },
+    { key: "quad", label: "2차 (1−x)²", color: "--warn", cls: "b1", spec: { type: "poly", m: 1, k: 2, invert: true } },
+    { key: "piece", label: "piecewise (엔진)", color: "--accent", cls: "b2", spec: UAI.NEED_CURVE.hunger },
+  ];
+  HCURVES.forEach(c => c.fn = UAI.curve(c.spec));
+  MM.plotCurve($("f-curve"), HCURVES[2].fn, { color: "--accent", xLabel: "배고픔 / 100", yLabel: "긴급도", label: "긴급도",
+    extra: [{ fn: HCURVES[0].fn, color: "--muted", dash: true }, { fn: HCURVES[1].fn, color: "--warn" }] });
+  const adOf = f => x => (Math.min(60, 100 - x * 100) / 100) * f(x);
+  MM.plotCurve($("f-ad"), adOf(HCURVES[2].fn), { color: "--accent", xLabel: "배고픔 / 100", yLabel: "빵집 adValue", label: "빵집 가치",
+    extra: [{ fn: adOf(HCURVES[0].fn), color: "--muted", dash: true }, { fn: adOf(HCURVES[1].fn), color: "--warn" }] });
+  function withHunger(spec, fn) {
+    const saved = UAI.NEED_CURVE.hunger;
+    UAI.NEED_CURVE.hunger = spec;
+    try { return fn(); } finally { UAI.NEED_CURVE.hunger = saved; }
+  }
+  function drawHist(res, th) {
+    const W = 560, H = 190, L = 34, B = 160, T = 12, bw = (W - L - 10) / 10;
+    const bins = res.map(r => { const b = new Array(10).fill(0); r.eats.forEach(h => b[Math.min(9, Math.floor(h / 10))]++); return b.map(v => v / Math.max(1, r.eats.length)); });
+    const mx = Math.max(0.05, ...bins.flat());
+    let s = `<rect class="zone" x="${L + th / 10 * bw}" y="${T}" width="${(10 - th / 10) * bw}" height="${B - T}"/>`;
+    s += `<line class="ax" x1="${L}" y1="${B}" x2="${W - 10}" y2="${B}"/><line class="ax" x1="${L}" y1="${T}" x2="${L}" y2="${B}"/>`;
+    for (let i = 0; i < 10; i++) {
+      bins.forEach((b, j) => {
+        const h = b[i] / mx * (B - T);
+        s += `<rect class="${HCURVES[j].cls}" x="${L + i * bw + 4 + j * (bw - 8) / 3}" y="${B - h}" width="${(bw - 8) / 3 - 1}" height="${h}"/>`;
+      });
+      s += `<text x="${L + i * bw + bw / 2}" y="${B + 13}" text-anchor="middle">${i * 10}</text>`;
+    }
+    s += `<text x="${L - 4}" y="${T + 8}" text-anchor="end">${Math.round(mx * 100)}%</text><text x="${L - 4}" y="${B}" text-anchor="end">0</text>`;
+    s += `<text x="${(W + L) / 2}" y="${B + 27}" text-anchor="middle">식사 결정 시점의 배고픔 (막대 = 각 커브의 식사 결정 중 비율)</text>`;
+    $("f-hist").innerHTML = s;
+  }
+  $("f-run").onclick = () => {
+    const strat = $("f-strat").value, th = +$("f-th").value, ns = +$("f-seeds").value;
+    $("f-tbl").innerHTML = `<tr><td>계산 중…</td></tr>`;
+    setTimeout(() => {
+      const ro = { combine: "compensated", strategy: strat, pct: 0.15, inertia: 0.1 };
+      const res = HCURVES.map(c => withHunger(c.spec, () => {
+        const eats = []; let hs = 0;
+        for (let s = 1; s <= ns; s++) { const r = runDay(s, { reasonerOpt: ro }); eats.push(...r.eats); hs += r.avg.hunger; }
+        return { eats, avgH: hs / ns };
+      }));
+      let h = `<tr><th>배고픔 커브</th><th class="num">식사 결정</th><th class="num">배부른데 먹기 (≥${th})</th><th class="num">비율</th><th class="num">하루 평균 배고픔</th></tr>`;
+      res.forEach((r, i) => {
+        const full = r.eats.filter(x => x >= th).length;
+        h += `<tr><td>${HCURVES[i].label}</td><td class="num">${r.eats.length}</td><td class="num${full ? " hi" : ""}">${full}</td><td class="num">${MM.pct(full / Math.max(1, r.eats.length))}</td><td class="num">${r.avgH.toFixed(1)}</td></tr>`;
+      });
+      $("f-tbl").innerHTML = h;
+      drawHist(res, th);
+    }, 20);
+  };
+
+  // ───────── 11절: 라이브 마을 ─────────
+  let mw, mTimer = null, mSeed = 3, mBell = null;
+  function mNew() {
+    mw = UAI.makeHamlet({ seed: mSeed++ });
+    mw.objects[0].capacity = +$("m-cap").value;
+    mBell = null; mDraw();
+  }
+  function mDraw() {
+    drawMap($("m-map"), mw.objects, mw.agents);
+    $("m-clock").textContent = UAI.clock(mw.time);
+    const bk = mw.objects.find(o => o.type === "bakery");
+    const avgH = mw.agents.reduce((s, a) => s + a.needs.hunger, 0) / mw.agents.length;
+    $("m-stats").innerHTML = `<div class="stat"><div class="k">빵집 이용자</div><div class="v">${bk.users}/${bk.capacity}</div></div>
+      <div class="stat"><div class="k">종 이후 빵집 선택</div><div class="v">${mBell ? mBell.bakery : "–"}</div></div>
+      <div class="stat"><div class="k">종 이후 밭 선택</div><div class="v">${mBell ? mBell.farm : "–"}</div></div>
+      <div class="stat"><div class="k">평균 배고픔</div><div class="v">${avgH.toFixed(0)}</div></div>`;
+    $("m-log").textContent = mw.log.slice(-8).reverse().join("\n");
+  }
+  function mStep() {
+    mw.tick();
+    if (mBell) for (const a of mw.agents) {
+      const c = a.current;
+      if (c && c.started === mw.time && c.action === "use") { if (c.target.type === "bakery") mBell.bakery++; if (c.target.type === "farm") mBell.farm++; }
+    }
+  }
+  function mStart() { mTimer = setInterval(() => { for (let i = 0; i < +$("m-speed").value; i++) mStep(); mDraw(); }, 140); $("m-play").textContent = "⏸ 정지"; }
+  function mStop() { clearInterval(mTimer); mTimer = null; $("m-play").textContent = "▶ 재생"; }
+  $("m-play").onclick = () => (mTimer ? mStop() : mStart());
+  $("m-bell").onclick = () => { for (const a of mw.agents) a.needs.hunger = 12; mBell = { bakery: 0, farm: 0 }; mDraw(); if (!mTimer) mStart(); };
+  $("m-cap").onchange = () => { mw.objects[0].capacity = +$("m-cap").value; mDraw(); };
+  $("m-reset").onclick = () => { mNew(); };
+  $("m-batch").onclick = () => {
+    $("m-tbl").innerHTML = `<tr><td>계산 중…</td></tr>`;
+    setTimeout(() => {
+      let h = `<tr><th>빵집 수용량</th><th class="num">빵집 선택</th><th class="num">밭 선택</th><th class="num">밭 비율</th><th class="num">선술집</th><th class="num">기타</th></tr>`;
+      for (const cap of [1, 2, 3, 6]) {
+        let B = 0, F = 0, T = 0, O = 0;
+        for (let seed = 1; seed <= 30; seed++) {
+          const w = UAI.makeHamlet({ seed });
+          w.objects[0].capacity = cap;
+          for (let i = 0; i < 120; i++) w.tick();
+          for (const a of w.agents) a.needs.hunger = 12;
+          for (let i = 0; i < 120; i++) {
+            w.tick();
+            for (const a of w.agents) { const c = a.current;
+              if (c && c.started === w.time && c.action === "use") { const ty = c.target.type; if (ty === "bakery") B++; else if (ty === "farm") F++; else if (ty === "tavern") T++; else O++; } }
+          }
+        }
+        h += `<tr><td>${cap}명</td><td class="num">${B}</td><td class="num">${F}</td><td class="num">${MM.pct(F / (B + F))}</td><td class="num">${T}</td><td class="num">${O}</td></tr>`;
+      }
+      $("m-tbl").innerHTML = h + `<tr><td colspan="6" class="c-muted" style="font-size:12.5px">각 시드: 2시간 진행 후 모두 배고픔 12로 설정, 이후 2시간 동안의 "이용하기" 선택 횟수 합계(30개 시드)</td></tr>`;
+    }, 20);
+  };
+  mNew();
+  // 화면 밖이면 라이브 애니메이션 정지 (배터리 절약)
+  // 대시보드는 화면에 보이면 자동 재생(사용자가 정지했으면 유지), 두 라이브 위젯 모두 화면 밖이면 정지
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver(es => es.forEach(e => {
+      if (e.isIntersecting) { if (!dTimer && !dPaused) dStart(); } else if (dTimer) dStop();
+    })).observe($("w-dash"));
+    new IntersectionObserver(es => es.forEach(e => { if (!e.isIntersecting && mTimer) mStop(); })).observe($("w-emerge"));
+  } else dStart();
+})();
+</script>
+</body>
+</html>

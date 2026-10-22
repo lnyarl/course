@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09. TCP 심화 옵션과 동작 · TCP/IP 전문가 과정</title>
+<link rel="stylesheet" href="assets/style.css">
+<style>
+.calc{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+@media (max-width:760px){.calc{grid-template-columns:1fr}}
+.calc .out{background:var(--surface-2);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:.86rem;line-height:1.9}
+.calc .out b{color:var(--primary-text)}
+.calc .out .big{font-size:1.3rem;font-weight:800;color:var(--primary-text)}
+.bytes{display:flex;gap:2px;margin:10px 0;height:38px}
+.bytes div{display:flex;align-items:center;justify-content:center;color:#fff;font-size:.75rem;font-weight:600;border-radius:5px;transition:flex .4s}
+.sim-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;border-top:1px solid var(--border);background:var(--surface-2);font-size:.86rem}
+.sim-ctl label{display:inline-flex;align-items:center;gap:5px;color:var(--text-2)}
+.sim-ctl input[type=number]{width:80px;padding:4px 6px}
+canvas{width:100%;height:auto;display:block;background:var(--surface);border-radius:8px}
+.seq-msg{transition:opacity .4s}
+.opt-row{cursor:pointer}
+.opt-row:hover td{background:var(--primary-soft)}
+.opt-row.sel td{background:var(--primary-soft);font-weight:600}
+</style>
+</head>
+<body data-chapter="09">
+<div class="layout">
+<nav id="sidebar"></nav>
+<main class="content">
+<article>
+<header class="chapter-head">
+  <div class="eyebrow">PART 2 · 심화 — CHAPTER 09</div>
+  <h1>TCP 심화 옵션과 동작</h1>
+  <p class="lead">RFC 793의 20바이트 헤더만으로는 오늘날의 10 Gbps·장거리·수백만 연결 환경을 감당할 수 없습니다. TCP는 옵션(Window Scale, Timestamps, SACK, TFO)과 타이머(TIME_WAIT, Keepalive), 송신 휴리스틱(Nagle, Delayed ACK)을 덧붙이며 진화해 왔습니다. 이 장은 "왜 이 연결이 느린가"를 진단할 때 반드시 알아야 하는 메커니즘들을 다룹니다.</p>
+  <div class="meta"><span class="chip">⏱ 약 90분</span><span class="chip l-tr">전송</span><span class="chip">RFC 9293 · 7323 · 2018 · 7413 · 1122 · 896</span></div>
+</header>
+
+<div class="objectives">
+  <h3>학습 목표</h3>
+  <ul>
+    <li>TCP 옵션 포맷을 읽고, SYN에 실리는 MSS·Window Scale·SACK-permitted·Timestamps의 역할을 설명할 수 있다.</li>
+    <li>MTU와 MSS의 관계를 계산하고, 터널·VLAN 환경에서 MSS clamping이 왜 필요한지 설명할 수 있다.</li>
+    <li>Nagle과 Delayed ACK의 상호작용이 만드는 지연을 그림으로 설명하고 해결책을 제시할 수 있다.</li>
+    <li>TIME_WAIT의 존재 이유와 폭증 시 대응책을 트레이드오프와 함께 설명할 수 있다.</li>
+    <li>BDP를 계산하고, 주어진 대역폭·RTT에서 필요한 윈도우와 소켓 버퍼 크기를 산출할 수 있다.</li>
+  </ul>
+</div>
+
+<h2 id="options"><span class="num">9.1</span>TCP 옵션: 20바이트 뒤의 확장 공간</h2>
+<p>TCP 헤더의 Data Offset 필드는 4비트이므로 헤더 최대 길이는 15 × 4 = 60바이트, 즉 옵션은 <b>최대 40바이트</b>입니다. 옵션은 TLV(Type-Length-Value) 형식으로 연속해서 놓이며, 4바이트 정렬을 위해 NOP(Kind 1)로 패딩합니다.</p>
+<div id="opt-hdr"></div>
+<table>
+  <thead><tr><th>Kind</th><th>이름</th><th>길이</th><th>어디에</th><th>역할</th></tr></thead>
+  <tbody id="opt-table">
+    <tr class="opt-row" data-k="0"><td>0</td><td>EOL</td><td>1</td><td>—</td><td>옵션 목록 끝</td></tr>
+    <tr class="opt-row" data-k="1"><td>1</td><td>NOP</td><td>1</td><td>—</td><td>4바이트 정렬 패딩</td></tr>
+    <tr class="opt-row" data-k="2"><td>2</td><td>MSS</td><td>4</td><td>SYN만</td><td>내가 받을 수 있는 최대 세그먼트 크기 (RFC 9293)</td></tr>
+    <tr class="opt-row" data-k="3"><td>3</td><td>Window Scale</td><td>3</td><td>SYN만</td><td>Window 필드를 2^shift 배로 해석 (RFC 7323)</td></tr>
+    <tr class="opt-row" data-k="4"><td>4</td><td>SACK-Permitted</td><td>2</td><td>SYN만</td><td>선택적 확인응답 지원 선언 (RFC 2018)</td></tr>
+    <tr class="opt-row" data-k="5"><td>5</td><td>SACK</td><td>가변(10–34)</td><td>데이터/ACK</td><td>수신한 비연속 블록 목록 (최대 4블록, TS와 함께면 3블록)</td></tr>
+    <tr class="opt-row" data-k="8"><td>8</td><td>Timestamps</td><td>10</td><td>모든 세그먼트</td><td>TSval/TSecr로 RTT 측정 + PAWS (RFC 7323)</td></tr>
+    <tr class="opt-row" data-k="34"><td>34</td><td>TCP Fast Open</td><td>가변</td><td>SYN</td><td>쿠키로 SYN에 데이터 실어 1 RTT 절약 (RFC 7413)</td></tr>
+    <tr class="opt-row" data-k="29"><td>29</td><td>TCP-AO</td><td>가변</td><td>모든 세그먼트</td><td>인증 옵션, BGP 세션 보호 (RFC 5925)</td></tr>
+  </tbody>
+</table>
+<p>전형적인 리눅스 SYN의 옵션 20바이트는 이렇습니다:</p>
+<div class="term"><span class="c"># tcpdump -nn 'tcp[tcpflags] & tcp-syn != 0'</span>
+10.0.0.5.51234 > 93.184.216.34.443: Flags [S], seq 1958263, win 64240,
+  options [<span class="y">mss 1460</span>,<span class="y">sackOK</span>,<span class="y">TS val 2817 ecr 0</span>,<span class="y">nop</span>,<span class="y">wscale 7</span>], length 0
+<span class="c"># 바이트 단위: 02 04 05b4 | 04 02 | 08 0a 00000b01 00000000 | 01 | 03 03 07  = 4+2+10+1+3 = 20바이트</span></div>
+<div class="callout"><div class="t">📌 SYN에서만 협상되는 것들</div><p>MSS, Window Scale, SACK-Permitted는 <b>SYN과 SYN-ACK에만</b> 실립니다. 연결 중간에 바꿀 수 없고, <b>양쪽 모두</b> SYN에 실어야 활성화됩니다. 한쪽이 wscale을 빼먹으면 양쪽 다 스케일링 없이(최대 64 KB) 통신합니다. 방화벽이 SYN의 옵션을 지워 버리는 "옵션 스트리핑" 사고가 성능 장애의 단골 원인입니다.</p></div>
+
+<h2 id="mss"><span class="num">9.2</span>MSS와 MTU: 1460은 어디서 왔나</h2>
+<p>MSS(Maximum Segment Size)는 TCP <b>페이로드</b>의 최대 크기입니다. 헤더는 포함하지 않습니다. 이더넷 MTU 1500에서 IPv4 헤더 20, TCP 헤더 20을 빼면 1460이 됩니다. SYN에 실리는 MSS는 "나는 이만큼 받을 수 있다"는 <i>광고</i>이고, 실제 송신 세그먼트 크기는 min(내 경로 MTU 기반값, 상대가 광고한 MSS)입니다.</p>
+<div class="card">
+  <div class="row"><label>캡슐화 환경 <select id="mss-env">
+    <option value="1500,0,20,IPv4 이더넷 (기본)">IPv4 · 이더넷 1500</option>
+    <option value="1500,0,40,IPv6 이더넷">IPv6 · 이더넷 1500 (IPv6 헤더 40)</option>
+    <option value="1500,12,20,Timestamps 옵션 사용 시 (헤더 32)">IPv4 + Timestamps 옵션 (TCP 헤더 32)</option>
+    <option value="1492,0,20,PPPoE (8바이트 오버헤드)">PPPoE 1492</option>
+    <option value="1450,0,20,VXLAN 오버레이 (50바이트)">VXLAN 터널 (언더레이 1500 − 50)</option>
+    <option value="1420,0,20,WireGuard (80바이트, IPv4)">WireGuard VPN 1420</option>
+    <option value="9000,0,20,점보 프레임">점보 프레임 9000</option>
+    <option value="1280,0,40,IPv6 최소 MTU">IPv6 최소 MTU 1280</option>
+  </select></label></div>
+  <div class="bytes" id="mss-bytes"></div>
+  <div class="small" id="mss-note"></div>
+</div>
+<div class="callout warn"><div class="t">⚠️ MSS Clamping</div><p>VPN·터널 뒤의 호스트는 자기 MTU가 1500인 줄 알고 MSS 1460을 광고합니다. 그러면 상대가 보낸 1500바이트 패킷이 터널 입구에서 캡슐화되며 1550이 되어 <b>DF 비트 때문에 버려집니다</b>. ICMP Fragmentation Needed가 방화벽에 막히면(PMTUD 블랙홀) 작은 패킷만 통하고 큰 응답은 멈추는 "웹 페이지가 반쯤 뜨다 멈춤" 증상이 됩니다. 해법은 라우터가 지나가는 SYN의 MSS를 강제로 낮추는 것: <code>iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu</code>.</p></div>
+
+<h2 id="wscale"><span class="num">9.3</span>Window Scale: 64 KB의 벽 넘기 <small>(계산기)</small></h2>
+<p>Window 필드는 16비트, 최대 65,535바이트입니다. 1 Gbps · RTT 50 ms 경로의 BDP는 6.25 MB이므로 65 KB 윈도우로는 <b>1%</b>도 못 씁니다. Window Scale 옵션(RFC 7323)은 SYN에서 shift 값(0–14)을 교환하고, 이후 모든 세그먼트의 Window 값을 <code>Window &lt;&lt; shift</code>로 해석합니다. 최대 65535 × 2¹⁴ ≈ 1 GB.</p>
+<div class="card calc">
+  <div>
+    <div class="row"><label>shift (0–14) <input type="range" id="ws-shift" min="0" max="14" value="7" style="width:150px"> <b id="ws-shift-v" class="mono">7</b></label></div>
+    <div class="row" style="margin-top:8px"><label>헤더 Window 값 <input type="number" id="ws-win" value="501" min="0" max="65535"></label></div>
+    <div class="row" style="margin-top:8px"><label>대역폭 (Mbps) <input type="number" id="ws-bw" value="1000"></label><label>RTT (ms) <input type="number" id="ws-rtt" value="50"></label></div>
+  </div>
+  <div class="out" id="ws-out"></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: LFN(Long Fat Network, "엘리펀트")과 RFC 7323</div><p>RFC 1323(1992) → RFC 7323(2014)은 BDP가 큰 경로를 LFN이라 부르고 세 가지 문제를 지적합니다. ① <b>윈도우 한계</b>: 위에서 본 64 KB 문제 → Window Scale. ② <b>RTT 측정 부족</b>: 윈도우당 1개 샘플로는 RTO를 정확히 못 잡음 → Timestamps로 세그먼트마다 측정(RTTM). ③ <b>시퀀스 번호 재사용</b>: 10 Gbps에서 2³² 바이트(4 GB)는 약 3.4초면 소진되므로, 네트워크에 오래 머문 옛 세그먼트가 새 데이터로 오인될 수 있음(MSL 2분 ≫ 3.4초) → Timestamps 기반 PAWS. 즉 Timestamps 옵션은 "RTT 측정용"이 아니라 <b>고속 경로에서 TCP가 정확성을 유지하는 데 필수</b>입니다. 리눅스는 세 옵션 모두 기본 활성화(<code>tcp_window_scaling=1, tcp_timestamps=1, tcp_sack=1</code>)입니다.</p></div>
+
+<h2 id="timestamps"><span class="num">9.4</span>Timestamps: RTTM과 PAWS</h2>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">RTTM (Round-Trip Time Measurement)</h4><p>송신자는 TSval에 자기 시계(ms 단위 임의 원점)를 적어 보내고, 수신자는 ACK의 TSecr에 <b>마지막으로 받은 TSval</b>을 그대로 복사합니다. 송신자는 ACK가 오면 (현재 시각 − TSecr)로 RTT를 얻습니다. 재전송된 세그먼트의 ACK인지 구분할 수 있어 <b>Karn의 모호성 문제가 사라집니다</b>.</p></div>
+  <div class="card"><h4 style="margin-top:0">PAWS (Protect Against Wrapped Sequences)</h4><p>수신자는 연결마다 마지막으로 받은 TSval(TS.Recent)을 기억합니다. 새 세그먼트의 TSval이 그보다 <b>작으면</b> 시퀀스 번호가 맞아 보여도 "옛날 세그먼트"로 판단해 버립니다. 시퀀스 번호 32비트가 시간 축에서 한 바퀴 돌아도 타임스탬프가 단조 증가하므로 안전합니다.</p></div>
+</div>
+<div class="figure card">
+  <svg viewBox="0 0 760 180">
+    <defs><marker id="a9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <line x1="120" y1="20" x2="120" y2="170" class="wire"/><line x1="640" y1="20" x2="640" y2="170" class="wire"/>
+    <text x="120" y="14" text-anchor="middle" font-weight="700">송신자 (시계 t)</text><text x="640" y="14" text-anchor="middle" font-weight="700">수신자</text>
+    <line x1="120" y1="40" x2="640" y2="70" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#a9)"/><text x="380" y="46" text-anchor="middle" font-size="11" class="mono">seq=1000  TSval=5000  TSecr=…</text>
+    <line x1="640" y1="90" x2="120" y2="120" stroke="var(--l-net)" stroke-width="2" marker-end="url(#a9)"/><text x="380" y="98" text-anchor="middle" font-size="11" class="mono">ack=2460  TSval=9001  TSecr=5000</text>
+    <text x="20" y="128" font-size="11" fill="var(--primary-text)">t=5042 도착</text><text x="20" y="144" font-size="11" fill="var(--primary-text)">RTT = 5042 − 5000 = 42 ms</text>
+    <text x="520" y="150" font-size="11" fill="var(--red)">TSval &lt; TS.Recent 이면 → 폐기 (PAWS)</text>
+  </svg>
+  <div class="cap">TSecr은 "네가 보낸 그 타임스탬프"를 메아리친다. 송신자는 자기 시계와 비교만 하면 된다.</div>
+</div>
+<p>부수 효과: TSval은 호스트 가동 시간과 상관된 값이라 <b>핑거프린팅</b>에 쓰일 수 있고(리눅스는 연결마다 무작위 오프셋을 더해 완화, 4.10+), 10바이트 옵션이 모든 세그먼트에 붙어 MSS가 1448로 줄어듭니다. 그래도 끄는 것보다 켜는 이익이 훨씬 큽니다.</p>
+
+<h2 id="nagle"><span class="num">9.5</span>Nagle 알고리즘 vs Delayed ACK <small>(애니메이션)</small></h2>
+<p>1984년 John Nagle은 telnet처럼 한 글자씩 보내는 응용이 1바이트 데이터에 40바이트 헤더를 붙여 네트워크를 낭비하는 "작은 패킷 문제"를 해결하려 했습니다(RFC 896). 규칙은 하나입니다.</p>
+<div class="callout"><div class="t">Nagle 규칙</div><p><b>ACK되지 않은 데이터가 네트워크에 남아 있으면</b>, MSS를 채우지 못한 작은 세그먼트는 보내지 말고 버퍼에 모아 두어라. (ACK가 오거나, MSS만큼 모이면 보낸다.)</p></div>
+<p>한편 수신 측은 ACK를 하나씩 보내는 대신 조금 기다렸다가(리눅스 최대 40 ms, 다른 OS 최대 200 ms) 응답 데이터에 얹거나 두 세그먼트당 하나로 합치는 <b>Delayed ACK</b>(RFC 1122)를 합니다. 두 규칙은 각각 합리적이지만, 만나면 교착이 생깁니다.</p>
+<div class="anim" id="nagle-anim">
+  <div class="stage">
+    <svg viewBox="0 0 860 300" id="nagle-svg">
+      <defs><marker id="a9n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+      <line x1="160" y1="30" x2="160" y2="280" class="wire"/><line x1="700" y1="30" x2="700" y2="280" class="wire"/>
+      <text x="160" y="20" text-anchor="middle" font-weight="700">클라이언트 (Nagle ON)</text><text x="700" y="20" text-anchor="middle" font-weight="700">서버 (Delayed ACK)</text>
+      <text x="20" y="60" font-size="11" class="mono muted">t=0</text>
+      <g id="ng-1" class="seq-msg" style="opacity:0"><line x1="160" y1="55" x2="700" y2="85" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#a9n)"/><text x="430" y="62" text-anchor="middle" font-size="11" class="mono">write #1: 헤더 100 B → 즉시 송신 (미확인 데이터 없음)</text></g>
+      <g id="ng-2" class="seq-msg" style="opacity:0"><rect x="30" y="95" width="120" height="40" rx="6" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="90" y="112" text-anchor="middle" font-size="10">write #2: 본문 50 B</text><text x="90" y="126" text-anchor="middle" font-size="10" fill="var(--accent)">Nagle: 버퍼에 보류</text></g>
+      <g id="ng-3" class="seq-msg" style="opacity:0"><rect x="710" y="95" width="130" height="40" rx="6" fill="var(--green-soft)" stroke="var(--green)"/><text x="775" y="112" text-anchor="middle" font-size="10">100 B 수신. 응답 없음</text><text x="775" y="126" text-anchor="middle" font-size="10" fill="var(--green)">Delayed ACK: 40ms 대기</text></g>
+      <g id="ng-4" class="seq-msg" style="opacity:0"><rect x="300" y="150" width="260" height="34" rx="6" fill="var(--red-soft)" stroke="var(--red)"/><text x="430" y="171" text-anchor="middle" font-size="11" fill="var(--red)" font-weight="700">교착: 서로 상대를 기다림 (최대 40~200 ms)</text></g>
+      <g id="ng-5" class="seq-msg" style="opacity:0"><line x1="700" y1="200" x2="160" y2="225" stroke="var(--l-net)" stroke-width="2" marker-end="url(#a9n)"/><text x="430" y="205" text-anchor="middle" font-size="11" class="mono">t=40ms: 지연 ACK 타이머 만료 → ACK</text></g>
+      <g id="ng-6" class="seq-msg" style="opacity:0"><line x1="160" y1="240" x2="700" y2="268" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#a9n)"/><text x="430" y="248" text-anchor="middle" font-size="11" class="mono">ACK 수신 → 보류했던 50 B 송신. 요청 완료까지 +40 ms</text></g>
+      <text x="430" y="292" text-anchor="middle" font-size="11" id="ng-msg" class="muted"></text>
+    </svg>
+  </div>
+</div>
+<p>HTTP처럼 "헤더 write, 본문 write"로 두 번 쓰는 클라이언트, 또는 RPC처럼 요청-응답이 번갈아 가는 패턴에서 전형적으로 나타납니다. 대응은 세 가지입니다.</p>
+<ul>
+  <li><code>TCP_NODELAY</code>로 Nagle을 끈다. 대부분의 RPC/DB 라이브러리, Redis, Nginx(<code>tcp_nodelay on</code>)의 기본값. 대화형·지연 민감 트래픽은 거의 항상 이쪽.</li>
+  <li>응용이 <b>한 번의 write</b>로 보낸다(writev, 버퍼링). 근본 해결.</li>
+  <li><code>TCP_QUICKACK</code>으로 수신 측 지연 ACK를 끈다(리눅스, 일시적). 상대 쪽 수정이 가능한 경우에만.</li>
+</ul>
+<div class="callout deep"><div class="t">🔬 깊이 보기: Silly Window Syndrome과 Clark의 해법</div><p>Nagle이 송신 측의 "작은 세그먼트" 문제라면, SWS는 수신 측 문제입니다. 수신 버퍼가 꽉 찬 뒤 응용이 1바이트씩 읽으면 수신자는 "1바이트 받을 수 있음"을 광고하고, 송신자는 1바이트 세그먼트를 보내고… 가 반복됩니다. RFC 1122는 Clark의 해법을 요구합니다: 수신자는 <b>min(MSS, 버퍼의 절반)</b> 이상 여유가 생기기 전에는 윈도우를 키워 광고하지 않는다. 송신자 쪽에서는 Nagle이 같은 역할을 합니다. SWS 회피 → Nagle → Delayed ACK, 세 규칙은 모두 "작은 세그먼트를 피하자"라는 하나의 목표에서 나온 식구들입니다.</p></div>
+
+<h2 id="timewait"><span class="num">9.6</span>TIME_WAIT: 왜 2MSL을 기다리는가</h2>
+<p>능동 종료(active close) 측은 마지막 ACK를 보낸 뒤 <b>2 × MSL</b>(Maximum Segment Lifetime, RFC 9293은 2분, 리눅스 구현은 고정 60초) 동안 TIME_WAIT 상태로 연결의 4-tuple을 붙잡고 있습니다. 이유는 두 가지입니다.</p>
+<div class="grid-2">
+  <div class="card"><h4 style="margin-top:0">① 마지막 ACK 손실 복구</h4>
+    <svg viewBox="0 0 360 150"><defs><marker id="a9t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+      <line x1="60" y1="10" x2="60" y2="140" class="wire"/><line x1="300" y1="10" x2="300" y2="140" class="wire"/>
+      <line x1="300" y1="25" x2="60" y2="45" stroke="var(--l-net)" stroke-width="2" marker-end="url(#a9t)"/><text x="180" y="28" text-anchor="middle" font-size="10">FIN</text>
+      <line x1="60" y1="55" x2="200" y2="66" stroke="var(--l-tr)" stroke-width="2"/><text x="215" y="72" font-size="12" fill="var(--red)">✕ ACK 유실</text>
+      <line x1="300" y1="85" x2="60" y2="105" stroke="var(--l-net)" stroke-width="2" marker-end="url(#a9t)"/><text x="180" y="88" text-anchor="middle" font-size="10">FIN 재전송</text>
+      <line x1="60" y1="115" x2="300" y2="135" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#a9t)"/><text x="180" y="132" text-anchor="middle" font-size="10">ACK 재전송 (TIME_WAIT가 처리)</text>
+      <text x="60" y="8" text-anchor="middle" font-size="10" font-weight="700">능동 종료</text><text x="300" y="8" text-anchor="middle" font-size="10" font-weight="700">수동 종료</text>
+    </svg>
+    <p class="small">TIME_WAIT가 없다면 재전송된 FIN에 RST로 답하게 되고, 상대는 "비정상 종료"로 기록한다.</p></div>
+  <div class="card"><h4 style="margin-top:0">② 지연 세그먼트와 새 연결의 격리</h4>
+    <svg viewBox="0 0 360 150">
+      <rect x="20" y="20" width="320" height="30" rx="6" fill="var(--primary-soft)"/><text x="180" y="40" text-anchor="middle" font-size="11">연결 #1 (10.0.0.5:51234 → 서버:80)  seq 1000…</text>
+      <rect x="20" y="60" width="320" height="24" rx="6" fill="var(--surface-3)"/><text x="180" y="76" text-anchor="middle" font-size="11" fill="var(--text-2)">TIME_WAIT 2MSL — 같은 4-tuple 재사용 금지</text>
+      <rect x="20" y="94" width="320" height="30" rx="6" fill="var(--green-soft)"/><text x="180" y="114" text-anchor="middle" font-size="11">연결 #2 (같은 4-tuple)  seq 1000…?</text>
+      <text x="180" y="142" text-anchor="middle" font-size="10" fill="var(--red)">#1의 늦게 도착한 세그먼트가 #2의 데이터로 끼어드는 것을 막는다</text>
+    </svg>
+    <p class="small">2MSL은 "왕복으로 가장 오래 살아남을 수 있는 세그먼트"가 모두 죽기를 기다리는 시간이다.</p></div>
+</div>
+<div class="callout deep"><div class="t">🔬 깊이 보기: TIME_WAIT를 그냥 없애면 생기는 일</div><p><code>tcp_tw_recycle</code>(리눅스 4.12에서 삭제됨)은 TIME_WAIT를 빨리 재활용하려고 타임스탬프로 옛 세그먼트를 걸러냈는데, NAT 뒤의 여러 클라이언트는 타임스탬프가 제각각이라 <b>정상 SYN이 무작위로 버려지는</b> 장애를 일으켰습니다. 반면 <code>tcp_tw_reuse=1</code>(기본값 2: 루프백만)은 <b>나가는 연결</b>에 한해, 1초 이상 지난 TIME_WAIT 소켓을 타임스탬프(PAWS)로 보호하며 재사용합니다. 자기 자신이 능동 종료한 연결을 자기 자신이 다시 열 때만 적용되므로 비교적 안전합니다. 핵심: TIME_WAIT는 비용이 아니라 <b>정확성의 대가</b>이며, 줄이려면 그 대가를 무엇으로 대체하는지(타임스탬프) 알고 써야 합니다.</p></div>
+<h3>TIME_WAIT 폭증과 포트 고갈 <small>(계산기)</small></h3>
+<p>프록시나 API 게이트웨이처럼 <b>클라이언트로서</b> 짧은 연결을 많이 여는 서버는 (자기 IP, 임시 포트, 상대 IP, 상대 포트)의 4-tuple 중 자기가 고를 수 있는 것이 임시 포트뿐이라 금방 바닥납니다.</p>
+<div class="card calc">
+  <div>
+    <div class="row"><label>임시 포트 범위 <input type="number" id="pe-lo" value="32768" style="width:80px"> – <input type="number" id="pe-hi" value="60999" style="width:80px"></label></div>
+    <div class="row" style="margin-top:8px"><label>TIME_WAIT 지속 (s) <input type="number" id="pe-tw" value="60"></label><label>초당 신규 연결 <input type="number" id="pe-rate" value="400"></label></div>
+    <div class="row" style="margin-top:8px"><label>목적지 (IP:port) 수 <input type="number" id="pe-dst" value="1"></label></div>
+  </div>
+  <div class="out" id="pe-out"></div>
+</div>
+<ul>
+  <li>리눅스 기본 범위 32768–60999 = 28,232개. <code>net.ipv4.ip_local_port_range = 1024 65535</code>로 늘릴 수 있다.</li>
+  <li>4-tuple은 목적지별로 독립이므로, 백엔드가 여러 IP/포트면 한도는 그 수만큼 곱해진다. 리눅스 4.2+는 <code>IP_BIND_ADDRESS_NO_PORT</code>로 connect 시점에 4-tuple 단위로 포트를 고른다.</li>
+  <li>근본 해법은 <b>연결 재사용</b>(keep-alive, 커넥션 풀). 그 다음이 <code>tcp_tw_reuse</code>, 소스 IP 추가.</li>
+  <li><code>SO_REUSEADDR</code>는 <i>서버</i>가 TIME_WAIT 포트에 다시 bind()할 수 있게 해 주는 옵션(재시작 시 "Address already in use" 방지)이지, 클라이언트 포트 고갈과는 무관하다.</li>
+</ul>
+
+<h2 id="syncookies"><span class="num">9.7</span>SYN 큐, Accept 큐, SYN Cookies</h2>
+<p>서버의 listen 소켓은 두 개의 큐를 가집니다. 핸드셰이크 중인 연결(SYN_RECV)은 <b>SYN 큐</b>에, 핸드셰이크가 끝나 accept()를 기다리는 연결은 <b>accept 큐</b>(backlog)에 들어갑니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 820 220">
+    <defs><marker id="a9s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+    <text x="40" y="60" font-size="12" font-weight="700">SYN →</text>
+    <rect x="110" y="30" width="220" height="60" rx="8" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="220" y="52" text-anchor="middle" font-weight="700">SYN 큐 (request sock)</text><text x="220" y="72" text-anchor="middle" font-size="10" class="mono">tcp_max_syn_backlog · 상태 SYN_RECV</text>
+    <line x1="330" y1="60" x2="400" y2="60" class="wire" marker-end="url(#a9s)"/><text x="365" y="50" text-anchor="middle" font-size="10">ACK 도착</text>
+    <rect x="400" y="30" width="220" height="60" rx="8" fill="var(--green-soft)" stroke="var(--green)"/><text x="510" y="52" text-anchor="middle" font-weight="700">Accept 큐</text><text x="510" y="72" text-anchor="middle" font-size="10" class="mono">min(backlog, somaxconn) · ESTABLISHED</text>
+    <line x1="620" y1="60" x2="690" y2="60" class="wire" marker-end="url(#a9s)"/><text x="655" y="50" text-anchor="middle" font-size="10">accept()</text>
+    <rect x="690" y="30" width="110" height="60" rx="8" class="node"/><text x="745" y="65" text-anchor="middle" font-weight="700">응용</text>
+    <text x="220" y="125" text-anchor="middle" font-size="11" fill="var(--red)">가득 참 → SYN cookies로 전환 (tcp_syncookies=1)</text>
+    <text x="510" y="125" text-anchor="middle" font-size="11" fill="var(--red)">가득 참 → 마지막 ACK 무시(기본) 또는 RST</text>
+    <text x="510" y="142" text-anchor="middle" font-size="10" class="mono muted">tcp_abort_on_overflow · ss -ltn 의 Recv-Q/Send-Q</text>
+    <rect x="110" y="160" width="690" height="50" rx="8" fill="var(--surface-2)"/>
+    <text x="455" y="180" text-anchor="middle" font-size="11"><tspan font-weight="700">SYN cookie</tspan> = ISN에 (시간 5비트 | MSS 인덱스 3비트 | hash(src,dst,ports,시간) 24비트)를 인코딩</text>
+    <text x="455" y="198" text-anchor="middle" font-size="11">→ SYN 큐에 아무것도 저장하지 않고 SYN-ACK 응답. ACK의 ack−1 을 검증해 복원. 대가: wscale·SACK 옵션 정보 손실(타임스탬프 켜져 있으면 TSval에 보존)</text>
+  </svg>
+</div>
+<p>SYN flood 공격 자체와 방어 전략은 12장에서 다룹니다. 여기서 기억할 것은 <b>SYN 큐가 넘치면 커널이 자동으로 쿠키 모드로 전환</b>하며 로그에 "possible SYN flooding on port"가 남는다는 것, 그리고 <b>accept 큐가 넘치는</b> 것은 공격이 아니라 응용이 accept()를 늦게 부르는 것(스레드 부족, GC 정지)이라는 점입니다. <code>nstat -az TcpExtListenOverflows TcpExtListenDrops</code>로 누적 횟수를 봅니다.</p>
+
+<h2 id="tfo"><span class="num">9.8</span>TCP Fast Open: 핸드셰이크에 데이터 싣기 <small>(애니메이션)</small></h2>
+<p>일반 TCP는 SYN/SYN-ACK/ACK 1 RTT를 소비한 뒤에야 첫 데이터를 보낼 수 있습니다. TFO(RFC 7413)는 서버가 발급한 <b>쿠키</b>를 가진 클라이언트가 SYN에 데이터를 실어 보내고, 서버는 핸드셰이크 완료 전에 그 데이터를 응용에 전달하도록 허용합니다. 짧은 HTTP 요청이 1 RTT 빨라집니다.</p>
+<div class="anim" id="tfo-anim">
+  <div class="stage">
+    <svg viewBox="0 0 860 320" id="tfo-svg">
+      <defs><marker id="a9f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5 0 10z" fill="var(--muted)"/></marker></defs>
+      <line x1="150" y1="40" x2="150" y2="300" class="wire"/><line x1="710" y1="40" x2="710" y2="300" class="wire"/>
+      <text x="150" y="28" text-anchor="middle" font-weight="700">클라이언트</text><text x="710" y="28" text-anchor="middle" font-weight="700">서버</text>
+      <text x="430" y="60" text-anchor="middle" font-size="11" fill="var(--purple)" font-weight="700" id="tfo-title">첫 연결: 쿠키 요청</text>
+      <g id="tf-1" class="seq-msg" style="opacity:0"><line x1="150" y1="75" x2="710" y2="100" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#a9f)"/><text x="430" y="80" text-anchor="middle" font-size="11" class="mono" id="tf-1t">SYN + TFO 옵션(빈 쿠키)</text></g>
+      <g id="tf-2" class="seq-msg" style="opacity:0"><line x1="710" y1="115" x2="150" y2="140" stroke="var(--l-net)" stroke-width="2" marker-end="url(#a9f)"/><text x="430" y="120" text-anchor="middle" font-size="11" class="mono" id="tf-2t">SYN-ACK + TFO 쿠키 (서버 비밀키로 클라이언트 IP를 암호화)</text></g>
+      <g id="tf-3" class="seq-msg" style="opacity:0"><line x1="150" y1="155" x2="710" y2="180" stroke="var(--l-tr)" stroke-width="2" marker-end="url(#a9f)"/><text x="430" y="160" text-anchor="middle" font-size="11" class="mono" id="tf-3t">ACK → 이후 일반 데이터 (첫 연결은 이득 없음, 쿠키만 저장)</text></g>
+      <g id="tf-4" class="seq-msg" style="opacity:0"><line x1="150" y1="205" x2="710" y2="230" stroke="var(--l-tr)" stroke-width="3" marker-end="url(#a9f)"/><text x="430" y="210" text-anchor="middle" font-size="11" class="mono" id="tf-4t">SYN + 쿠키 + "GET / HTTP/1.1…" (데이터 포함!)</text></g>
+      <g id="tf-5" class="seq-msg" style="opacity:0"><rect x="720" y="215" width="130" height="36" rx="6" fill="var(--green-soft)" stroke="var(--green)"/><text x="785" y="230" text-anchor="middle" font-size="10">쿠키 검증 OK</text><text x="785" y="244" text-anchor="middle" font-size="10">→ 응용에 즉시 전달</text></g>
+      <g id="tf-6" class="seq-msg" style="opacity:0"><line x1="710" y1="250" x2="150" y2="275" stroke="var(--l-net)" stroke-width="3" marker-end="url(#a9f)"/><text x="430" y="255" text-anchor="middle" font-size="11" class="mono">SYN-ACK + 응답 데이터 "HTTP/1.1 200 OK…"</text></g>
+      <text x="430" y="300" text-anchor="middle" font-size="11" id="tfo-msg" class="muted"></text>
+    </svg>
+  </div>
+</div>
+<div class="callout warn"><div class="t">⚠️ TFO의 제약</div><p>① SYN의 데이터는 <b>중복 전달</b>될 수 있다(SYN 재전송 시). 따라서 멱등한 요청(GET)에만 안전하며, 응용이 알고 써야 한다(<code>sendto(MSG_FASTOPEN)</code> 또는 <code>TCP_FASTOPEN_CONNECT</code>). ② 쿠키는 클라이언트 IP에 묶이므로 NAT 뒤 다수 클라이언트는 같은 쿠키를 공유 → 증폭 공격 우려로 서버는 쿠키당 미완료 요청 수를 제한한다. ③ 중간 장비가 "데이터 있는 SYN"을 버리는 경우가 많아 인터넷 전반 보급률은 낮고, 이 문제의식이 QUIC의 0-RTT로 이어졌다. 리눅스: <code>net.ipv4.tcp_fastopen=3</code>(클라이언트+서버).</p></div>
+
+<h2 id="keepalive"><span class="num">9.9</span>Keepalive: 죽은 연결 찾아내기</h2>
+<p>TCP는 데이터를 주고받지 않으면 아무 패킷도 보내지 않습니다. 상대가 전원이 꺼졌거나 중간 NAT가 매핑을 지워도 양쪽 소켓은 ESTABLISHED로 영원히 남습니다. Keepalive(RFC 1122 §4.2.3.6)는 소켓 옵션 <code>SO_KEEPALIVE</code>를 켠 연결에서 일정 시간 유휴 상태가 지속되면 <b>seq = snd.nxt − 1</b>인 빈 세그먼트(프로브)를 보내 ACK를 유도합니다.</p>
+<table>
+  <thead><tr><th>sysctl (리눅스)</th><th>기본값</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td><code>net.ipv4.tcp_keepalive_time</code></td><td>7200 s (2시간)</td><td>마지막 데이터 이후 첫 프로브까지 유휴 시간</td></tr>
+    <tr><td><code>net.ipv4.tcp_keepalive_intvl</code></td><td>75 s</td><td>응답 없을 때 프로브 재전송 간격</td></tr>
+    <tr><td><code>net.ipv4.tcp_keepalive_probes</code></td><td>9</td><td>이 횟수만큼 실패하면 연결을 끊고 ETIMEDOUT</td></tr>
+  </tbody>
+</table>
+<p>기본값대로면 죽은 연결을 알아채는 데 2시간 + 75 × 9 ≈ <b>2시간 11분</b>이 걸립니다. 실제로는 소켓별로 <code>TCP_KEEPIDLE/KEEPINTVL/KEEPCNT</code>를 수십 초 단위로 낮춰 씁니다. NAT·로드밸런서의 유휴 타임아웃(AWS NLB 350 s, 많은 가정용 공유기 수 분)보다 짧게 잡아야 매핑이 유지됩니다. 응용 계층 heartbeat(HTTP/2 PING, WebSocket ping)는 프록시를 넘어서도 동작한다는 점에서 TCP keepalive와 역할이 다릅니다.</p>
+
+<h2 id="bdp"><span class="num">9.10</span>BDP와 처리량의 상한 <small>(계산기)</small></h2>
+<p>대역폭-지연 곱(Bandwidth-Delay Product)은 "파이프를 가득 채우려면 네트워크에 떠 있어야 하는 바이트 수"입니다. 윈도우가 BDP보다 작으면 송신자는 ACK를 기다리며 쉬게 되고, 처리량은 <b>윈도우 / RTT</b>로 제한됩니다.</p>
+<div class="card calc">
+  <div>
+    <div class="row"><label>대역폭 (Mbps) <input type="number" id="bdp-bw" value="1000"></label><label>RTT (ms) <input type="number" id="bdp-rtt" value="80"></label></div>
+    <div class="row" style="margin-top:8px"><label>현재 윈도우 (KB) <input type="number" id="bdp-win" value="256"></label></div>
+    <div class="out" id="bdp-out" style="margin-top:10px"></div>
+  </div>
+  <div><canvas id="bdp-cv" width="440" height="280"></canvas><div class="small" style="text-align:center">윈도우 크기에 따른 달성 가능 처리량 (파란 점 = 현재)</div></div>
+</div>
+<h3>소켓 버퍼 튜닝</h3>
+<pre><code># 리눅스 자동 튜닝 범위: min default max (바이트)
+net.ipv4.tcp_rmem = 4096  131072  6291456     # 수신 버퍼 → rwnd 상한
+net.ipv4.tcp_wmem = 4096  16384   4194304     # 송신 버퍼 → cwnd 활용 상한
+net.core.rmem_max = 212992                     # SO_RCVBUF로 지정 가능한 최대
+net.ipv4.tcp_moderate_rcvbuf = 1               # 수신 버퍼 자동 조정 (DRS)
+# 10 Gbps × 100 ms = 125 MB → 고속 장거리 전송용 예시
+net.ipv4.tcp_rmem = 4096 87380 134217728
+net.ipv4.tcp_wmem = 4096 65536 134217728
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728</code></pre>
+<div class="callout"><div class="t">📌 버퍼에 관한 두 가지 함정</div><p>① 응용이 <code>setsockopt(SO_RCVBUF)</code>를 호출하면 <b>자동 튜닝이 꺼집니다</b>. 작게 고정한 값이 처리량을 묶는 사고가 흔합니다. ② 리눅스는 수신 버퍼의 약 절반을 메타데이터(sk_buff) 오버헤드용으로 잡으므로(<code>tcp_adv_win_scale</code>), 광고되는 rwnd는 버퍼 크기의 절반 정도입니다. <code>ss -tim</code>의 <code>rcv_space</code>, <code>skmem</code>으로 실제 값을 확인하세요.</p></div>
+
+<h2 id="hol"><span class="num">9.11</span>Head-of-Line Blocking: 순서 보장의 대가</h2>
+<p>TCP는 바이트 스트림의 <b>순서</b>를 보장합니다. 세그먼트 #2가 손실되면 #3~#10이 이미 도착해 커널 버퍼에 있어도, #2가 재전송되어 올 때까지 응용은 한 바이트도 읽을 수 없습니다. HTTP/2처럼 한 TCP 연결에 여러 스트림을 다중화하면, 한 스트림의 손실이 <b>무관한 다른 스트림까지</b> 멈춥니다.</p>
+<div class="figure card">
+  <svg viewBox="0 0 820 170">
+    <text x="20" y="30" font-size="12" font-weight="700">수신 버퍼</text>
+    <g id="hol-g"></g>
+    <text x="20" y="150" font-size="11" fill="var(--red)">#2 하나가 빠지면 #3~#8(이미 도착)은 응용에 전달되지 못한다. 스트림 B·C는 #2와 무관한데도 멈춘다.</text>
+  </svg>
+</div>
+<p>QUIC(RFC 9000)은 스트림마다 독립된 순서 보장을 두어, 손실된 패킷이 속한 스트림만 멈추게 합니다. 이것이 HTTP/3가 손실률이 높은 모바일 환경에서 HTTP/2보다 체감 성능이 좋은 이유이며, 13장에서 비교합니다.</p>
+
+<h2 id="practice"><span class="num">9.12</span>실습</h2>
+<pre><code># TCP 관련 커널 파라미터 한눈에
+sysctl -a 2>/dev/null | grep -E 'tcp_(window_scaling|timestamps|sack|fastopen|tw_reuse|syncookies|keepalive|rmem|wmem|fin_timeout)'
+# 연결별 옵션·타이머 확인 (wscale, ts, sack, rto, cwnd, rcv_space …)
+ss -tio
+# TIME_WAIT 개수와 분포
+ss -tan state time-wait | awk 'NR>1{print $4}' | cut -d: -f1 | sort | uniq -c | sort -rn | head
+# accept 큐 오버플로 누적
+nstat -az TcpExtListenOverflows TcpExtListenDrops TcpExtTCPTimeouts</code></pre>
+<p>Python으로 소켓 옵션을 직접 다루는 예시입니다.</p>
+<pre><code>import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)        # Nagle 끄기
+s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)       # 30초 유휴 후 프로브 (Linux)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+s.connect(("example.com", 80))
+# 협상 결과 확인: TCP_INFO 구조체 (Linux)
+import struct
+info = s.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 232)
+state, _, _, _, _, snd_wscale_rcv_wscale = struct.unpack("BBBBBB", info[:6])
+print("snd_wscale", snd_wscale_rcv_wscale & 0xF, "rcv_wscale", snd_wscale_rcv_wscale >> 4)</code></pre>
+
+<h2 id="quiz"><span class="num">9.13</span>이해도 점검</h2>
+<div id="quiz"></div>
+
+<div class="summary">
+  <h3>요약</h3>
+  <ul>
+    <li>옵션 공간은 40바이트. MSS·Window Scale·SACK-Permitted는 SYN에서만, 양쪽 모두 실어야 활성화된다.</li>
+    <li>MSS = MTU − IP 헤더 − TCP 헤더. 터널·VPN 환경에서는 MSS clamping으로 PMTUD 블랙홀을 피한다.</li>
+    <li>Window Scale은 64 KB 한계를, Timestamps는 RTT 측정(RTTM)과 시퀀스 재사용 보호(PAWS)를 해결한다. 셋이 모여 LFN 대응(RFC 7323).</li>
+    <li>Nagle(송신 보류)과 Delayed ACK(수신 보류)가 만나면 40~200 ms 교착. TCP_NODELAY 또는 단일 write로 해결.</li>
+    <li>TIME_WAIT 2MSL은 마지막 ACK 손실 복구와 옛 세그먼트 격리를 위한 것. 폭증 시 연결 재사용 → tcp_tw_reuse → 포트 범위/소스 IP 확장 순으로 대응.</li>
+    <li>BDP = 대역폭 × RTT. 윈도우가 BDP보다 작으면 처리량 = 윈도우/RTT. 소켓 버퍼 자동 튜닝을 끄지 말 것.</li>
+  </ul>
+</div>
+</article>
+</main>
+<aside id="toc"></aside>
+</div>
+<script src="assets/common.js"></script>
+<script>
+(function(){
+  const {$, $$, svg, HeaderDiagram, Stepper, Quiz} = TCPIP;
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  /* 9.1 옵션 포맷 */
+  HeaderDiagram('#opt-hdr',{bitsPerRow:32, fields:[
+    {name:'Kind',bits:8,cls:'c1',desc:'옵션 종류 번호. 0(EOL)과 1(NOP)은 Length 없이 1바이트.'},
+    {name:'Length',bits:8,cls:'c1',desc:'Kind와 Length 자체를 포함한 옵션 전체 길이(바이트).'},
+    {name:'Data',bits:16,cls:'c4',variable:true,desc:'옵션 값. MSS는 2바이트, Window Scale은 1바이트(shift), Timestamps는 8바이트(TSval 4 + TSecr 4), SACK는 블록당 8바이트(left edge, right edge).'},
+  ], selected:0});
+  const OPTD = {0:'EOL: 더 이상 옵션 없음. 헤더 끝이 4바이트 경계가 아닐 때 표시용.',1:'NOP: 다음 옵션을 4바이트 경계에 맞추기 위한 1바이트 패딩. 리눅스 SYN의 "nop,wscale"이 그 예.',2:'MSS: 2바이트 값. IPv4 기본 1460, IPv6 1440. 생략하면 536(IPv4)을 가정한다(RFC 9293). SYN이 아닌 세그먼트에선 무시.',3:'Window Scale: shift 1바이트(0–14). SYN에서 양쪽이 모두 보내야 적용되며, SYN 자체의 Window 값은 스케일되지 않는다.',4:'SACK-Permitted: 2바이트. "나는 SACK 블록을 보낼 수 있다/받겠다". 이후 손실 시 SACK 옵션이 ACK에 실린다.',5:'SACK: 수신자가 받은 비연속 블록을 [left, right) 쌍으로 알린다. 옵션 공간 40바이트 중 Timestamps 10바이트를 쓰면 블록 3개(2+3×8=26)까지.',8:'Timestamps: TSval(송신 시각), TSecr(상대 TSval 복사). SYN에서 협상되며 이후 모든 세그먼트에 10바이트가 붙는다. RTTM과 PAWS의 기반.',34:'TFO: SYN에 쿠키 요청(빈 옵션) 또는 쿠키(4–16바이트)를 실어, 핸드셰이크 완료 전에 데이터를 전달하도록 허용. RFC 7413.',29:'TCP-AO: MD5 옵션(Kind 19)의 후속. 세그먼트마다 MAC을 실어 BGP 세션 등의 위변조를 막는다.'};
+  const optDesc = document.createElement('div'); optDesc.className='callout'; optDesc.innerHTML='<div class="t">행을 클릭하면 옵션 설명이 표시됩니다.</div>';
+  $('#opt-table').closest('table').after(optDesc);
+  $$('.opt-row').forEach(r=>r.addEventListener('click',()=>{ $$('.opt-row').forEach(x=>x.classList.toggle('sel',x===r)); optDesc.innerHTML=`<div class="t">Kind ${r.dataset.k} · ${r.children[1].textContent}</div><p>${OPTD[r.dataset.k]}</p>`; }));
+
+  /* 9.2 MSS */
+  function drawMss(){
+    const [mtu, optb, iph, label] = $('#mss-env').value.split(','); const M=+mtu, O=+optb, I=+iph; const tcp=20+O; const mss=M-I-tcp;
+    const box=$('#mss-bytes'); box.innerHTML='';
+    const seg=(n,c,t)=>{ const d=document.createElement('div'); d.style.flex=n; d.style.background=c; d.textContent=t; box.appendChild(d); };
+    seg(I,'var(--l-net)',`IP ${I}`); seg(tcp,'var(--l-tr)',`TCP ${tcp}`); seg(mss,'var(--l-phy)',`MSS = ${M} − ${I} − ${tcp} = ${mss}`);
+    $('#mss-note').innerHTML=`<b>${label}</b> · MTU ${M} → MSS <b>${mss}</b> 바이트. ${M<1500?'1500을 가정한 상대가 1460짜리 세그먼트를 보내면 이 경로에서 단편화되거나(DF 없을 때) 버려진다(DF 있을 때) → MSS clamping 필요.':M>1500?'점보 프레임은 경로의 모든 장비가 지원해야 한다. 한 구간이라도 1500이면 PMTUD가 동작해야 한다.':'가장 흔한 조합.'}`;
+  }
+  $('#mss-env').onchange=drawMss; drawMss();
+
+  /* 9.3 Window scale */
+  function ws(){
+    const sh=+$('#ws-shift').value, win=+$('#ws-win').value, bw=+$('#ws-bw').value, rtt=+$('#ws-rtt').value;
+    $('#ws-shift-v').textContent=sh;
+    const eff=win*Math.pow(2,sh), max=65535*Math.pow(2,sh), bdp=bw*1e6/8*rtt/1000;
+    const thr=eff/(rtt/1000)*8/1e6;
+    $('#ws-out').innerHTML=`실효 윈도우 = ${win} × 2<sup>${sh}</sup> = <b>${eff.toLocaleString()}</b> B (${(eff/1024).toFixed(0)} KB)<br>이 shift의 최대 윈도우 = 65535 × 2<sup>${sh}</sup> = <b>${(max/1048576).toFixed(1)}</b> MB<br>경로 BDP = ${bw} Mbps × ${rtt} ms = <b>${(bdp/1048576).toFixed(2)}</b> MB<br>최대 윈도우로 가능한 처리량 ≈ <b>${Math.min(bw,(max/(rtt/1000)*8/1e6)).toFixed(0)}</b> Mbps<br>현재 윈도우로 가능한 처리량 ≈ <span class="big">${Math.min(bw,thr).toFixed(1)} Mbps</span><br><span style="color:${max>=bdp?'var(--green)':'var(--red)'}">${max>=bdp?'✓ shift 충분':'✗ shift 부족: 최소 '+Math.max(0,Math.ceil(Math.log2(bdp/65535)))+' 필요'}</span>`;
+  }
+  ['ws-shift','ws-win','ws-bw','ws-rtt'].forEach(id=>$('#'+id).oninput=ws); ws();
+
+  /* 9.5 Nagle */
+  const show=(id,on=true)=>$('#'+id).style.opacity=on?1:0;
+  Stepper('#nagle-anim',{steps:[
+    {title:'write #1 — 즉시 송신', text:'클라이언트가 HTTP 헤더 100바이트를 write(). 미확인 데이터가 없으므로 Nagle은 바로 내보낸다.', run(){ show('ng-1'); $('#ng-msg').textContent='in-flight: 100 B (미확인)'; }},
+    {title:'write #2 — Nagle이 보류', text:'본문 50바이트를 write(). 아직 #1의 ACK가 오지 않았고 50 B < MSS이므로 Nagle 규칙에 따라 <b>버퍼에 보류</b>한다.', run(){ show('ng-2'); }},
+    {title:'서버 — Delayed ACK 대기', text:'서버는 100 B를 받았지만 요청이 완성되지 않아 응답할 데이터가 없다. "곧 보낼 데이터에 ACK를 얹자"며 <b>최대 40 ms</b>(리눅스) 기다린다.', run(){ show('ng-3'); }},
+    {title:'교착', text:'클라이언트는 ACK를 기다리고(Nagle), 서버는 데이터를 기다린다(Delayed ACK). 둘 다 규칙대로 행동하고 있다.', run(){ show('ng-4'); $('#ng-msg').textContent='양쪽 모두 대기 중…'; }},
+    {title:'지연 ACK 타이머 만료', text:'40 ms 후 서버가 포기하고 ACK만 보낸다. 다른 OS(Windows, 예전 BSD)는 200 ms.', run(){ show('ng-5'); }},
+    {title:'보류 데이터 송신', text:'ACK를 받은 클라이언트가 50 B를 보내고 요청이 완성된다. 요청 하나당 40 ms가 추가됐다. 초당 수천 건이면 치명적. <b>TCP_NODELAY</b>를 켜면 2단계에서 즉시 송신된다.', run(){ show('ng-6'); $('#ng-msg').textContent='총 지연 = RTT + 40 ms (Nagle OFF면 RTT만)'; }},
+  ], reset(){ ['ng-1','ng-2','ng-3','ng-4','ng-5','ng-6'].forEach(i=>show(i,false)); $('#ng-msg').textContent=''; }, intro:'헤더와 본문을 두 번 write()하는 HTTP 클라이언트의 전형적 시나리오.'});
+
+  /* 9.6 포트 고갈 */
+  function pe(){
+    const lo=+$('#pe-lo').value, hi=+$('#pe-hi').value, tw=+$('#pe-tw').value, rate=+$('#pe-rate').value, dst=Math.max(1,+$('#pe-dst').value);
+    const ports=Math.max(0,hi-lo+1), cap=ports*dst, maxRate=cap/tw, steady=rate*tw, t=rate>0?cap/rate:Infinity;
+    $('#pe-out').innerHTML=`사용 가능한 4-tuple = ${ports.toLocaleString()} 포트 × ${dst} 목적지 = <b>${cap.toLocaleString()}</b><br>지속 가능한 최대 연결률 = ${cap.toLocaleString()} / ${tw} s = <span class="big">${maxRate.toFixed(0)} 연결/s</span><br>현재 ${rate}/s 에서 정상 상태 TIME_WAIT 수 = ${rate} × ${tw} = <b>${steady.toLocaleString()}</b><br><span style="color:${steady<=cap?'var(--green)':'var(--red)'}">${steady<=cap?'✓ 여유 '+(cap-steady).toLocaleString():'✗ 약 '+t.toFixed(0)+'초 후 포트 고갈 (EADDRNOTAVAIL)'}</span>`;
+  }
+  ['pe-lo','pe-hi','pe-tw','pe-rate','pe-dst'].forEach(id=>$('#'+id).oninput=pe); pe();
+
+  /* 9.8 TFO */
+  Stepper('#tfo-anim',{steps:[
+    {title:'첫 연결: 빈 TFO 옵션으로 쿠키 요청', text:'클라이언트는 아직 쿠키가 없다. SYN에 길이 2의 빈 TFO 옵션을 실어 "쿠키 주세요"라고 요청한다. 데이터는 실을 수 없다.', run(){ show('tf-1'); }},
+    {title:'서버: 쿠키 발급', text:'서버는 비밀키로 클라이언트 IP(와 선택적으로 포트)를 암호화한 4~16바이트 쿠키를 SYN-ACK에 실어 준다. 서버는 상태를 저장하지 않는다 — 쿠키 자체가 증명이다.', run(){ show('tf-2'); }},
+    {title:'일반 핸드셰이크 완료', text:'첫 연결은 평소처럼 1 RTT 뒤에 데이터를 보낸다. 클라이언트는 (서버 IP → 쿠키)를 캐시한다.', run(){ show('tf-3'); $('#tfo-msg').textContent='쿠키 캐시됨. 이후 연결부터 효과.'; }},
+    {title:'재연결: SYN에 쿠키 + 데이터', text:'다음 연결에서 클라이언트는 SYN에 쿠키와 함께 HTTP 요청을 실어 보낸다(최대 MSS까지).', run(){ $('#tfo-title').textContent='재연결: 0-RTT 데이터'; show('tf-4'); }},
+    {title:'서버: 쿠키 검증 후 즉시 전달', text:'서버는 쿠키를 복호화해 SYN의 출발지 IP와 일치하는지 확인한다. 일치하면 핸드셰이크가 끝나기도 전에 데이터를 accept 큐의 소켓에 넣어 응용이 읽게 한다.', run(){ show('tf-5'); }},
+    {title:'SYN-ACK에 응답 데이터', text:'응용이 즉시 응답하면 SYN-ACK와 함께 응답 데이터가 나간다. 클라이언트 입장에서 요청→응답이 <b>1 RTT</b>에 끝났다(일반 TCP는 2 RTT).', run(){ show('tf-6'); $('#tfo-msg').textContent='절약: 1 RTT. 단, SYN 재전송 시 데이터 중복 가능 → 멱등 요청만.'; }},
+  ], reset(){ ['tf-1','tf-2','tf-3','tf-4','tf-5','tf-6'].forEach(i=>show(i,false)); $('#tfo-title').textContent='첫 연결: 쿠키 요청'; $('#tfo-msg').textContent=''; }});
+
+  /* 9.10 BDP */
+  const bc=$('#bdp-cv'), bx=bc.getContext('2d');
+  function bdp(){
+    const bw=+$('#bdp-bw').value, rtt=+$('#bdp-rtt').value, win=+$('#bdp-win').value*1024;
+    const B=bw*1e6/8*rtt/1000; const thr=Math.min(bw, win/(rtt/1000)*8/1e6);
+    $('#bdp-out').innerHTML=`BDP = ${bw} Mbps × ${rtt} ms = <b>${B.toLocaleString(undefined,{maximumFractionDigits:0})}</b> B ≈ <b>${(B/1048576).toFixed(2)} MB</b> ≈ ${(B/1460).toFixed(0)} MSS<br>필요한 윈도우(rwnd·cwnd·버퍼) ≥ BDP<br>현재 윈도우 ${(win/1024).toFixed(0)} KB로 가능한 처리량 = 윈도우/RTT = <span class="big">${thr.toFixed(1)} Mbps</span> (${(thr/bw*100).toFixed(0)}% 활용)<br>권장 소켓 버퍼 ≈ 2 × BDP = <b>${(2*B/1048576).toFixed(1)} MB</b> (재전송 여유)`;
+    // graph
+    const W=bc.width,H=bc.height,L=50,R=16,T=16,Bm=36; bx.fillStyle=css('--surface'); bx.fillRect(0,0,W,H);
+    const wmax=Math.max(B*2, win*1.2); const X=w=>L+w/wmax*(W-L-R), Y=v=>H-Bm-v/bw*(H-T-Bm);
+    bx.strokeStyle=css('--border'); bx.fillStyle=css('--muted'); bx.font='10px monospace'; bx.textAlign='right';
+    for(let i=0;i<=4;i++){ const v=bw*i/4; bx.beginPath(); bx.moveTo(L,Y(v)); bx.lineTo(W-R,Y(v)); bx.stroke(); bx.fillText(v.toFixed(0),L-4,Y(v)+3); }
+    bx.textAlign='center'; for(let i=0;i<=4;i++){ const w=wmax*i/4; bx.fillText((w/1048576).toFixed(1)+'MB',X(w),H-Bm+14); }
+    bx.fillStyle=css('--text'); bx.font='bold 10px sans-serif'; bx.fillText('윈도우 →',W/2,H-4); bx.save(); bx.translate(12,H/2); bx.rotate(-Math.PI/2); bx.fillText('Mbps',0,0); bx.restore();
+    bx.strokeStyle=css('--l-net'); bx.lineWidth=2.5; bx.beginPath(); bx.moveTo(X(0),Y(0)); bx.lineTo(X(B),Y(bw)); bx.lineTo(X(wmax),Y(bw)); bx.stroke();
+    bx.setLineDash([4,3]); bx.strokeStyle=css('--red'); bx.lineWidth=1; bx.beginPath(); bx.moveTo(X(B),T); bx.lineTo(X(B),H-Bm); bx.stroke(); bx.setLineDash([]);
+    bx.fillStyle=css('--red'); bx.textAlign='left'; bx.fillText('BDP',X(B)+4,T+10);
+    bx.fillStyle=css('--primary'); bx.beginPath(); bx.arc(X(Math.min(win,wmax)),Y(thr),5,0,7); bx.fill();
+  }
+  ['bdp-bw','bdp-rtt','bdp-win'].forEach(id=>$('#'+id).oninput=bdp); bdp();
+  $('#theme-btn') && $('#theme-btn').addEventListener('click',()=>setTimeout(bdp,50));
+
+  /* 9.11 HOL */
+  const hg=$('#hol-g'); const streams=['A','B','C','A','B','C','A','B'];
+  for(let i=1;i<=8;i++){ const x=20+(i-1)*95; const lost=i===2; hg.appendChild(svg('rect',{x,y:45,width:85,height:50,rx:6,fill:lost?'var(--red-soft)':'var(--surface-2)',stroke:lost?'var(--red)':'var(--border)','stroke-dasharray':lost?'5 3':null})); hg.appendChild(svg('text',{x:x+42,y:66,'text-anchor':'middle','font-weight':'700','font-size':12},lost?'#2 손실':'#'+i)); hg.appendChild(svg('text',{x:x+42,y:84,'text-anchor':'middle','font-size':10,fill:'var(--muted)'},lost?'재전송 대기':'스트림 '+streams[i-1])); }
+  hg.appendChild(svg('rect',{x:20,y:105,width:85,height:18,rx:4,fill:'var(--green)',opacity:.7})); hg.appendChild(svg('text',{x:62,y:118,'text-anchor':'middle','font-size':10,fill:'#fff'},'응용에 전달됨'));
+  hg.appendChild(svg('rect',{x:115,y:105,width:655,height:18,rx:4,fill:'var(--red)',opacity:.5})); hg.appendChild(svg('text',{x:442,y:118,'text-anchor':'middle','font-size':10,fill:'#fff'},'도착했지만 전달 불가 (순서 대기) — 1 RTT 이상'));
+
+  /* 9.13 퀴즈 */
+  Quiz('#quiz',[
+    {q:'다음 중 연결 중간에 변경할 수 없고 SYN에서만 협상되는 옵션은?',options:['SACK 블록','Timestamps 값','Window Scale shift','Urgent Pointer'],answer:2,explain:'MSS, Window Scale, SACK-Permitted, TFO 쿠키 요청은 SYN/SYN-ACK에서만 유효하다.'},
+    {q:'IPv4, Timestamps 옵션 사용, 이더넷 MTU 1500일 때 실제 세그먼트 페이로드 최대치는?',options:['1460','1448','1440','1500'],answer:1,explain:'1500 − 20(IP) − 20(TCP) − 12(TS 10 + NOP 2) = 1448. 광고 MSS는 1460이지만 옵션이 매 세그먼트 붙으므로 실제 페이로드는 1448.'},
+    {q:'Window Scale shift가 7일 때 헤더 Window 값 500은 실효 윈도우 몇 바이트인가?',options:['500','3,500','64,000','500 × 2^7 = 64,000 (정확히 64,000)'],answer:3,explain:'500 × 128 = 64,000바이트. 수신자는 광고 값을 2^shift로 나눠 헤더에 넣고 송신자는 곱해서 해석한다.'},
+    {q:'PAWS가 보호하는 문제는?',options:['SYN flood','시퀀스 번호가 한 바퀴 돌아 옛 세그먼트가 새 데이터로 오인되는 것','ACK 손실','MTU 불일치'],answer:1,explain:'고속 경로에서 2^32 바이트는 수 초면 소진된다. Timestamps의 단조 증가 TSval로 옛 세그먼트를 걸러낸다.'},
+    {q:'Nagle과 Delayed ACK의 교착이 발생하는 조건은?',options:['송신자가 MSS 크기의 세그먼트만 보낼 때','미확인 데이터가 있는 상태에서 작은 데이터를 추가로 write하고, 수신자가 보낼 데이터가 없어 ACK를 지연할 때','수신 윈도우가 0일 때','SACK가 꺼져 있을 때'],answer:1,explain:'Nagle은 ACK를 기다리고, Delayed ACK는 데이터를 기다린다. TCP_NODELAY 또는 단일 write로 해결.'},
+    {q:'TIME_WAIT 상태는 어느 쪽에 생기며 지속 시간은?',options:['수동 종료 측, 1 MSL','능동 종료 측, 2 MSL','양쪽 모두, RTO','능동 종료 측, RTT × 2'],answer:1,explain:'FIN을 먼저 보낸(능동 종료) 쪽이 마지막 ACK를 보낸 뒤 2MSL 대기. 리눅스는 60초 고정.'},
+    {q:'클라이언트 역할의 프록시 서버에서 포트 고갈(EADDRNOTAVAIL)이 났다. 가장 먼저 검토할 대책은?',options:['tcp_tw_recycle 활성화','SO_REUSEADDR 설정','백엔드 연결 keep-alive/커넥션 풀로 연결 재사용','TIME_WAIT를 1초로 줄이기'],answer:2,explain:'연결 재사용이 근본 해법. tcp_tw_recycle은 삭제된 위험한 옵션, SO_REUSEADDR는 서버 bind용, TIME_WAIT 시간은 리눅스에서 조정 불가.'},
+    {q:'accept 큐 오버플로(ListenOverflows)의 가장 흔한 원인은?',options:['SYN flood 공격','응용이 accept()를 충분히 빨리 호출하지 못함 (스레드 부족, GC 등)','MTU 불일치','Window Scale 미협상'],answer:1,explain:'accept 큐는 핸드셰이크가 끝난 연결이 쌓이는 곳. 넘치면 커널 문제가 아니라 응용의 처리 지연이다. somaxconn·backlog 증설은 완충일 뿐.'},
+    {q:'TCP Fast Open에서 SYN에 실린 데이터를 멱등 요청에만 써야 하는 이유는?',options:['쿠키가 IP에 묶여 있어서','SYN이 재전송되면 데이터가 서버 응용에 두 번 전달될 수 있어서','SYN 데이터는 암호화되지 않아서','서버가 SYN 데이터를 항상 버리기 때문'],answer:1,explain:'핸드셰이크 전 전달이므로 중복 제거가 보장되지 않는다. RFC 7413이 명시한 제약.'},
+    {q:'1 Gbps, RTT 100 ms 경로에서 수신 윈도우가 1 MB로 고정되어 있다. 달성 가능한 최대 처리량은?',options:['1 Gbps','약 80 Mbps','약 10 Mbps','약 500 Mbps'],answer:1,explain:'처리량 = 윈도우/RTT = 1 MB / 0.1 s = 10 MB/s = 80 Mbps. BDP 12.5 MB의 8%만 활용.'},
+  ]);
+})();
+</script>
+</body>
+</html>

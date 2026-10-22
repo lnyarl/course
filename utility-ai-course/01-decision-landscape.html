@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>의사결정 아키텍처 지형도</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<script src="assets/uai.js"></script>
+<style>
+/* 01장 전용 */
+.mono { font-family: var(--mono); }
+.small { font-size: 12px; }
+
+/* Sense–Think–Act 루프 */
+#sta .node rect { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.2; transition: fill .3s, stroke .3s; }
+#sta .node.on rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.2; }
+#sta .flow { stroke: var(--muted); stroke-width: 2; fill: none; }
+#sta .flow.on { stroke: var(--accent); stroke-width: 2.6; stroke-dasharray: 7 5; animation: sta-dash .7s linear infinite; }
+@keyframes sta-dash { to { stroke-dashoffset: -24; } }
+#sta .fam { opacity: .28; transition: opacity .35s; }
+#sta .fam.on { opacity: 1; }
+#sta .fam rect { stroke-width: 1.2; }
+#sta .fam.pulse rect { animation: sta-pulse 1.5s ease-in-out infinite; }
+#sta .fam.pulse:nth-of-type(2) rect { animation-delay: .5s; }
+#sta .fam.pulse:nth-of-type(3) rect { animation-delay: 1s; }
+@keyframes sta-pulse { 0%, 100% { stroke-width: 1.2; } 50% { stroke-width: 3.2; } }
+#sta-tok { transition: transform .65s ease; }
+
+/* 비교기 */
+.sliders { display: grid; grid-template-columns: minmax(150px, auto) 1fr minmax(64px, auto); gap: 6px 12px; align-items: center; font-size: 14px; }
+.sliders input[type=range] { width: 100%; }
+.sliders output { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.sliders small { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+@media (max-width: 640px) { .cmp-grid { grid-template-columns: 1fr; } .sliders { grid-template-columns: 1fr minmax(56px, auto); } .sliders label { grid-column: 1 / -1; } }
+.cmp-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; background: var(--bg); }
+.cmp-card h4 { margin: 0 0 6px; font-size: 14.5px; }
+.cmp-card ol { margin: 0; padding-left: 20px; font-size: 13.5px; }
+.cmp-card ol li { padding: 1px 6px; border-radius: 5px; transition: background .2s; }
+.cmp-card ol li.miss { color: var(--muted); text-decoration: line-through; }
+.cmp-card ol li.fire { background: var(--accent-soft); font-weight: 700; }
+.cmp-card ol li.skip { color: var(--muted); }
+.verdict { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 14px; }
+.verdict b { font-size: 16px; }
+.urow { display: grid; grid-template-columns: 96px 1fr 44px; gap: 2px 8px; align-items: center; font-size: 13.5px; padding: 3px 6px; border-radius: 6px; }
+.urow.win { background: var(--accent-soft); font-weight: 700; }
+.urow .us { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.urow .up { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); font-weight: 400; font-family: var(--mono); }
+#cmp-sweep { min-width: 540px; width: 100%; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.legend i { display: inline-block; width: 16px; height: 4px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+#cmp-note { font-size: 14.5px; }
+.plot-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.plot-pair svg { width: 100%; height: auto; }
+@media (max-width: 520px) { .plot-pair { grid-template-columns: 1fr; } }
+
+/* 전이 폭발 */
+.exp-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 640px) { .exp-grid { grid-template-columns: 1fr; } }
+#exp-fsm { width: 100%; height: auto; }
+#exp-fsm .e { fill: none; stroke: var(--muted); stroke-width: 1; opacity: .55; }
+#exp-fsm .e.re { stroke: var(--bad); opacity: .6; }
+#exp-fsm .e.new { animation: exp-new 1.6s ease-out; }
+@keyframes exp-new { 0% { stroke: var(--accent); stroke-width: 3; opacity: 1; } 100% { stroke-width: 1; opacity: .55; } }
+#exp-fsm .st { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+#exp-fsm .st.r { fill: var(--bad-soft); stroke: var(--bad); }
+.exp-uai { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); }
+.exp-uai h4 { margin: 0 0 6px; font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { font-size: 12.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--ok); background: var(--ok-soft); }
+.chip.r { border-color: var(--bad); background: var(--bad-soft); }
+.chip.new { animation: chip-pop .6s ease-out; }
+@keyframes chip-pop { 0% { transform: scale(1.5); } 100% { transform: scale(1); } }
+#exp-chart { width: 100%; height: auto; min-width: 480px; }
+
+/* 코스 지도 */
+#map { min-width: 600px; width: 100%; height: auto; }
+#map .mb { cursor: pointer; }
+#map .mb rect { fill: var(--surface); stroke: var(--border); stroke-width: 1.2; transition: fill .2s, stroke .2s; }
+#map .mb:hover rect { stroke: var(--accent); }
+#map .mb.sel rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.4; }
+#map .mb .bt { font-weight: 700; font-size: 13px; }
+#map .mb .bs { font-size: 11px; fill: var(--muted); }
+#map .mb .bc { font-size: 10.5px; font-weight: 700; fill: var(--teal); }
+#map .cont { fill: none; stroke-width: 1.4; stroke-dasharray: 5 4; }
+#map .flowl { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+#map-info { min-height: 7em; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; background: var(--bg); font-size: 14.5px; margin-top: 10px; }
+#map-info h4 { margin: 0 0 4px; font-size: 15px; }
+#map-info .fns code { margin-right: 6px; display: inline-block; margin-bottom: 3px; }
+</style>
+</head>
+<body data-chapter="01">
+<main>
+  <header class="chapter-head">
+    <span class="label">기초 · Chapter 01</span>
+    <h1>의사결정 아키텍처 지형도</h1>
+    <p class="lead">NPC가 "다음에 무엇을 할지" 고르는 방법은 하나가 아니다. FSM, 행동 트리, 플래너, 그리고 효용(utility) 시스템은 같은 질문에 서로 다른 방식으로 답한다. 이 장에서는 이 지형을 한 번 훑고, 이 코스가 왜 효용 기반 의사결정을 시뮬레이션 엔진의 중심에 두는지, 그리고 그 선택이 어떤 숙제를 남기는지 정리한다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>Sense–Think–Act 루프에서 Think 단계를 맡는 대표 기법 6가지(FSM·HFSM·BT·GOAP·HTN·Utility)의 핵심 아이디어와 함정을 설명한다.</li>
+      <li>Boolean 판단("할까/말까")과 효용 판단("얼마나 원하나")의 차이를 회색지대 문제로 설명한다.</li>
+      <li>같은 상황에서 임계값 규칙과 <code>UAI.Reasoner</code>가 어떻게 다르게 반응하는지 직접 확인한다.</li>
+      <li>상태 수가 늘 때 FSM 전이 수가 어떻게 커지는지, utility에서는 행동 추가 비용이 왜 국소적인지 설명한다.</li>
+      <li>utility의 약점(예측·튜닝·연출 통제·진동)을 알고, 코스의 어느 장이 각 약점을 다루는지 연결한다.</li>
+    </ul></div>
+  </header>
+
+  <div class="engine-part"><b>엔진 부품</b> 새 부품 없음 — 엔진 전체 지도 <code>UAI.Reasoner</code> <code>UAI.NEED_CURVE</code> <code>World.tick()</code> — Reasoner를 블랙박스로 먼저 써 보고, 각 부품이 어느 장에서 열리는지 확인한다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">출발점: 이 코스가 만들려는 것</a></li>
+    <li><a href="#s2">Sense–Think–Act 루프</a></li>
+    <li><a href="#s3">Think 단계의 후보들</a></li>
+    <li><a href="#s4">"할까/말까" vs "얼마나 원하나"</a></li>
+    <li><a href="#s5">비교기: 임계값 규칙 vs Reasoner</a></li>
+    <li><a href="#s6">상태를 늘리면 무엇이 폭발하나</a></li>
+    <li><a href="#s7">Utility의 약점과 이 코스의 구성</a></li>
+    <li><a href="#s8">코스 지도: uai.js 한눈에 보기</a></li>
+  </ol></nav>
+
+  <!-- ============================== S1 ============================== -->
+  <section id="s1">
+    <h2>1. 출발점: 이 코스가 만들려는 것</h2>
+    <p>이 코스는 블로그 글 한 편에서 시작했다. DeepBlue의 「효용기반 의사결정 (Utility based Decision Making)」(2015, blog.naver.com/devdeepblue/220289807509)이다. 이 글은 짧은 분량 안에 효용 이론, 기대 효용 <code>EU = Σ D·P</code>, 고려 요소(consideration) 결합, 반응 커브(선형·2차·로지스틱·구간 선형), 행동 선택(최고점·룰렛·상위 10%·bucketing), 관성(공격과 도망이 둘 다 0.5일 때의 진동)을 소개하고, 참고 자료로 Rez Graham의 Game AI Pro 장, Dave Mark의 <i>Behavioral Mathematics for Game AI</i>, Mark의 GDC 2010 강연을 든다.</p>
+    <p>글의 뼈대는 그대로 이 코스의 목차가 된다. 효용과 기대 효용은 <a class="xref" href="02-utility-expected-utility.html">02장</a>, 반응 커브는 <a class="xref" href="03-response-curves.html">03장</a>, 고려 요소 결합은 <a class="xref" href="04-considerations.html">04장</a>, 행동 선택과 bucketing(dual utility)은 <a class="xref" href="05-action-selection.html">05장</a>, 관성은 <a class="xref" href="06-time-inertia.html">06장</a>에서 다룬다. 블로그와 다른 점은 하나다. <b>개념마다 실제로 돌아가는 엔진 코드를 붙인다.</b> 모든 위젯은 공유 엔진 <code>assets/uai.js</code>를 호출하고, 마지막 <a class="xref" href="12-capstone-hamlet.html">12장</a>에서는 그 부품을 모두 조립해 주민 여섯 명이 사는 Hamlet 마을을 돌린다.</p>
+    <div class="callout">
+      <span class="title">러닝 예제: Hamlet 마을</span>
+      주민 아리·보람·찬·두리·은솔·파랑이 산다. 주민마다 욕구 네 가지(배고픔·기력·재미·사교)가 있고, 시간이 지나면 줄어든다. 마을에는 빵집·밭·집·벤치·선술집·우물·광장 무대가 있으며, 가끔 늑대가 나타난다. 이 장의 예시도 모두 이 마을에서 든다.
+    </div>
+    <p>왜 하필 효용인가? 시뮬레이션 게임의 주민은 "지금 하나의 목표"를 쫓는 전투 NPC와 성격이 다르다. 배가 조금 고프고, 꽤 피곤하고, 친구가 근처에 있고, 늑대는 멀리 있다. 이런 <b>여러 욕구가 동시에 조금씩 걸린 상태</b>에서 무엇을 우선할지 매 순간 정해야 한다. 이 장의 나머지는 그 요구가 다른 기법에서는 왜 어렵고, 효용에서는 왜 자연스러운지 보여 준다.</p>
+  </section>
+
+  <!-- ============================== S2 ============================== -->
+  <section id="s2">
+    <h2>2. Sense–Think–Act 루프</h2>
+    <p>게임 AI 에이전트는 보통 세 단계를 반복한다. 세계를 <b>감지(Sense)</b>하고, 다음 행동을 <b>결정(Think)</b>하고, 그 행동을 <b>실행(Act)</b>한다. 실행은 세계를 바꾸고, 바뀐 세계를 다시 감지한다. Game AI Pro 1권 4장(Dawe 외)은 이 중 Think 단계에 "정답은 하나가 아니다"라고 정리한다. 게임의 성격, NPC가 알아야 할 지식, 플랫폼 제약에 따라 맞는 기법이 다르다.</p>
+
+    <div class="widget" id="sta-wrap">
+      <div class="w-title">Sense–Think–Act 한 바퀴 — 아리의 1분</div>
+      <div class="w-desc">재생하거나 단계별로 넘겨 보자. 파란 점이 지금 처리 중인 단계다. 마지막 단계에서 Think 상자만 다른 기법으로 갈아 끼울 수 있다는 점에 주목하자.</div>
+      <figure style="margin:8px 0">
+        <svg id="sta" class="diagram" viewBox="0 0 640 320" role="img" aria-label="Sense Think Act 루프">
+          <defs>
+            <marker id="staA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+          </defs>
+          <g class="node" data-n="sense"><rect x="30" y="40" width="160" height="96" rx="10"/>
+            <text x="110" y="78" text-anchor="middle" font-weight="700" font-size="16">Sense 감지</text>
+            <text x="110" y="100" text-anchor="middle" class="muted">욕구·늑대 위치 읽기</text></g>
+          <g class="node" data-n="think"><rect x="240" y="40" width="160" height="96" rx="10"/>
+            <text x="320" y="78" text-anchor="middle" font-weight="700" font-size="16">Think 결정</text>
+            <text x="320" y="100" text-anchor="middle" class="muted">다음 행동 고르기</text></g>
+          <g class="node" data-n="act"><rect x="450" y="40" width="160" height="96" rx="10"/>
+            <text x="530" y="78" text-anchor="middle" font-weight="700" font-size="16">Act 실행</text>
+            <text x="530" y="100" text-anchor="middle" class="muted">이동·이용·도망</text></g>
+          <g class="node" data-n="world"><rect x="30" y="232" width="580" height="70" rx="10"/>
+            <text x="320" y="262" text-anchor="middle" font-weight="700" font-size="16">World — Hamlet 마을</text>
+            <text x="320" y="284" text-anchor="middle" class="muted">시간이 흐르고 욕구가 줄고 늑대가 움직인다</text></g>
+          <path class="flow" data-f="st" d="M190,88 L236,88" marker-end="url(#staA)"/>
+          <path class="flow" data-f="ta" d="M400,88 L446,88" marker-end="url(#staA)"/>
+          <path class="flow" data-f="aw" d="M530,136 L530,228" marker-end="url(#staA)"/>
+          <path class="flow" data-f="ws" d="M110,232 L110,140" marker-end="url(#staA)"/>
+          <line x1="320" y1="136" x2="320" y2="146" class="line" style="stroke-dasharray:3 3"/>
+          <g class="fam"><rect x="200" y="148" width="240" height="22" rx="6" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+            <text x="320" y="164" text-anchor="middle" font-size="12.5">규칙 기반: FSM · HFSM · BT</text></g>
+          <g class="fam"><rect x="200" y="174" width="240" height="22" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+            <text x="320" y="190" text-anchor="middle" font-size="12.5">계획 기반: GOAP · HTN</text></g>
+          <g class="fam"><rect x="200" y="200" width="240" height="22" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+            <text x="320" y="216" text-anchor="middle" font-size="12.5">점수 기반: Utility</text></g>
+          <g id="sta-tok"><circle r="9" style="fill:var(--accent);stroke:var(--surface);stroke-width:3"/></g>
+        </svg>
+      </figure>
+    </div>
+
+    <p><code>uai.js</code>에서 이 루프 한 바퀴는 <code>World.tick()</code>이다. 욕구 감소(세계의 변화) → 결정 → 실행 순서로 모든 주민을 한 번씩 돌린다. 감지 단계는 따로 함수가 없다. 각 consideration의 <code>input(ctx)</code> 함수가 결정 순간에 세계를 직접 읽는다. 필요할 때만 읽는 "게으른 감지"다.</p>
+<pre class="engine"><code>    tick() {
+      this.time += this.dt; this.tickCount++;
+      if (this.threat &amp;&amp; this.time &gt;= this.threat.until) this.threat = null;
+      for (const a of this.agents) {
+        // 1) 욕구 감소
+        for (const n of UAI.NEEDS) a.needs[n] = Math.max(0, a.needs[n] - UAI.NEED_DECAY[n] * this.dt * (n === "energy" &amp;&amp; this.hour() &gt;= 22 ? 1.8 : 1));
+        // 2) 결정 (06장, GAP1 11장): 숙고는 할 일이 끝났을 때만, 반응(인터럽트)은 주기적으로 검사
+        const due = (this.tickCount + a.thinkOffset) % this.thinkEvery === 0;
+        if (!a.current) this.think(a);
+        else if (due) this.think(a, true);
+        // 3) 실행
+        this.act(a);
+      }
+    }</code></pre>
+    <p>"2) 결정"의 두 갈래(할 일이 없을 때의 숙고, 주기적인 인터럽트 검사)는 <a class="xref" href="06-time-inertia.html">06장</a>과 <a class="xref" href="09-engine-architecture.html">09장</a>의 주제다. 이 장에서는 Think 상자 안에 무엇을 넣을지만 생각한다.</p>
+  </section>
+
+  <!-- ============================== S3 ============================== -->
+  <section id="s3">
+    <h2>3. Think 단계의 후보들</h2>
+    <p>Game AI Pro 1권 4장은 대표적인 행동 선택 알고리즘을 여섯 갈래로 정리한다. 큰 줄기는 세 가지다. <b>조건을 따라가는 규칙 기반</b>(FSM·HFSM·BT), <b>목표까지 행동열을 짜는 계획 기반</b>(GOAP·HTN), <b>모든 후보를 점수로 비교하는 점수 기반</b>(Utility)이다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th style="min-width:72px">기법</th><th>핵심 아이디어</th><th>강점</th><th>약점·함정</th><th style="min-width:120px">문헌 속 사례</th></tr>
+      <tr><td><b>FSM</b></td>
+        <td>한 번에 상태 하나. 상태마다 <code>onEnter/onUpdate/onExit</code>와 전이 목록(<code>isValid</code>, <code>getNextState</code>, <code>onTransition</code>)을 둔다.</td>
+        <td>지금 무슨 상태인지 명확하다. 작은 행동 집합에서는 구현과 추적이 쉽다.</td>
+        <td>상태가 늘면 전이 관리가 폭증한다. Merrill은 FSM을 "특수 케이스가 폭증하는" 방식으로 평가한다.</td>
+        <td>4장 예제: 성 경비병 Patrol / Investigate / Attack / Flee</td></tr>
+      <tr><td><b>HFSM</b></td>
+        <td>상태를 계층으로 묶는다. 상위 상태를 빠져나왔다 돌아올 때 history state(H)로 마지막 하위 상태를 기억한다.</td>
+        <td>상태가 20~30개 수준으로 커져 삽입·재사용이 어려워진 FSM을 정리한다.</td>
+        <td>계층 사이 전이가 다시 늘어나는 transition overload 함정이 있다.</td>
+        <td>4장의 일반 설명</td></tr>
+      <tr><td><b>BT</b></td>
+        <td>매 결정마다 루트에서 시작해 precondition을 검사하며 내려간다. 노드는 상태를 갖지 않는(stateless) 모듈이다.</td>
+        <td>모듈성, 시각화, 팀이 배우기 쉬움(Merrill).</td>
+        <td>매번 루트부터 평가해 느릴 수 있다. 기억이 없어, 전투 지역에서 도망친 시민이 조건이 풀리자 다시 전투 지역으로 돌아오는 루프가 생긴다. 우선순위가 정적이고 조건이 Boolean이라 회색지대에 약하다.</td>
+        <td>Halo, Crysis 2 (Merrill 10장 배경)</td></tr>
+      <tr><td><b>GOAP</b></td>
+        <td>목표 상태에서 거꾸로(backward chaining) 행동을 이어 붙여 계획을 만든다. STRIPS 계열이며, 행동에 context precondition을 단다.</td>
+        <td>디자이너가 일일이 엮지 않은 행동 조합이 계획으로 나온다.</td>
+        <td>연출 통제를 잃기 쉽다. Merrill은 STRIPS식 플래너가 디자이너에게 불투명하다고 지적한다.</td>
+        <td>F.E.A.R.(Orkin, 2005), Just Cause 2, Deus Ex: Human Revolution</td></tr>
+      <tr><td><b>HTN</b></td>
+        <td>상위 과업(task)을 method 조건에 따라 앞쪽으로(forward) 분해한다. 분해가 막히면 롤백한다.</td>
+        <td>디자이너가 정의한 분해 방식 안에서만 계획하므로 결과를 통제하기 쉽다.</td>
+        <td>정의된 method 밖의, 예상하지 못한 계획은 만들지 못한다.</td>
+        <td>Killzone 2, Transformers: Fall of Cybertron</td></tr>
+      <tr><td><b>Utility</b></td>
+        <td>모든 후보 행동에 "얼마나 원하나"를 0~1 점수로 매기고 최고점(또는 가중 랜덤)을 고른다.</td>
+        <td>상황 변화에 연속적으로 적응하고, 행동이 창발적으로 섞인다. 행동 추가가 국소적이다.</td>
+        <td>예측하기 어렵다. 스크립트 override가 필요하다. 튜닝은 "예술"에 가깝다.</td>
+        <td>The Sims(배고픔 × 음식 품질), Zoo Tycoon 2(Dill), Guild Wars 2: Heart of Thorns(Lewis), Dragon Age: Inquisition(Hanlon·Watts)</td></tr>
+    </table></div>
+
+    <p>표를 세로로 읽으면 패턴이 보인다. 규칙 기반은 <b>작성자가 조건과 순서를 쓴다.</b> 계획 기반은 <b>목표를 주면 시스템이 순서를 찾는다.</b> 점수 기반은 <b>작성자가 "얼마나 원하는가"의 함수를 쓰고, 순서는 매 순간 점수 비교로 정해진다.</b></p>
+    <p>계획 기반은 "문을 열려면 열쇠가 필요하고, 열쇠는 경비실에 있다" 같은 <b>여러 단계의 인과</b>가 중요한 게임에 강하다. Hamlet 주민의 결정은 대부분 한 단계짜리다. "빵집에 간다", "집에서 잔다", "도망친다". 이 경우 어려운 부분은 순서 찾기가 아니라 <b>여러 욕구 사이의 저울질</b>이다. 그 저울질을 직접 모델링하는 것이 utility다.</p>
+
+    <div class="callout tip">
+      <span class="title">경쟁이 아니라 조합</span>
+      실제 게임은 이 기법들을 섞어 쓴다. Merrill(GAP1 10장)은 BT를 갈아엎지 말고 필요한 노드에만 utility를 넣으라고 권한다. Dragon Age: Inquisition은 수정된 BT로 점수를 매긴다(GAP3 31장). Unreal Engine 5.5의 StateTree에도 자식 상태를 utility 점수로 고르는 selection behavior가 들어갔다. 이런 조합은 <a class="xref" href="10-hybrid-architectures.html">10장 하이브리드 아키텍처</a>에서 비교한다.
+    </div>
+  </section>
+
+  <!-- ============================== S4 ============================== -->
+  <section id="s4">
+    <h2>4. "할까/말까" vs "얼마나 원하나"</h2>
+    <p>FSM의 전이 조건과 BT의 precondition은 모두 <b>Boolean</b>이다. "배고픔이 30 미만인가?", "체력이 30% 미만인가?" 답은 예/아니오뿐이다. 반면 utility는 같은 상황에 <b>연속값</b>으로 답한다. "지금 먹으러 가고 싶은 정도는 0.83이다."</p>
+    <p>이 차이는 표현력의 차이로 이어진다. Boolean 조건은 사실 <b>계단 모양의 반응 커브</b>다. 임계값에서 0이 1로 바뀌는 커브다. utility는 계단 대신 아무 모양의 커브든 쓸 수 있다. 아래 두 그림은 같은 입력(<code>needs.hunger / 100</code>)에 대한 FSM 규칙과 엔진의 배고픔 긴급도 커브 <code>UAI.NEED_CURVE.hunger</code>다. 주황 점은 아래 비교기의 배고픔 슬라이더를 따라 움직인다.</p>
+    <figure>
+      <div class="plot-pair">
+        <svg id="plot-step" class="diagram" role="img" aria-label="계단 커브"></svg>
+        <svg id="plot-need" class="diagram" role="img" aria-label="배고픔 긴급도 커브"></svg>
+      </div>
+      <figcaption>왼쪽: FSM 규칙 "hunger &lt; 30이면 먹으러 간다"를 커브로 그리면 <code>{ type: "step", m: −1, c: 0.3 }</code>이 된다. 오른쪽: 엔진의 구간 선형 커브. 29와 31의 차이가 오른쪽에서는 약 0.85 vs 0.83, 왼쪽에서는 1 vs 0이다.</figcaption>
+    </figure>
+
+    <h3>회색지대 문제</h3>
+    <p>Bill Merrill(GAP1 10장)은 BT의 장점(구현이 쉽고 시각화가 좋고 팀이 배우기 쉬움)을 인정하면서도, 정적 우선순위와 Boolean 조건 때문에 BT가 <b>회색지대</b>에 약하다고 지적한다. 그가 드는 Monster Hunter 예제를 보자. 캐릭터는 Combat 서브트리(Reload / Shoot / Seek Medic)와 Relaxed 서브트리(Eat / Nap / Patrol)를 가진다.</p>
+    <p>문제는 <b>Seek Medic(치료 찾기)</b>이다. 체력이 아주 낮으면 전투 중에도 최우선이어야 하지만, 체력이 조금 깎인 정도라면 사격보다 뒤에 있어야 한다. 한가할 때는 먹기·낮잠보다 앞일 수도, 뒤일 수도 있다. 우선순위가 상황에 따라 달라지는데 BT의 우선순위는 트리 위치로 고정된다. 결국 같은 행동을 트리 여러 곳에 <b>복제</b>해 넣고, 복사본마다 조금씩 다른 조건을 단다.</p>
+    <figure>
+      <svg class="diagram" viewBox="0 0 640 250" role="img" aria-label="치료 찾기가 복제된 행동 트리">
+        <defs><marker id="btA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="262" y="10" width="116" height="36" rx="8" class="box"/>
+        <text x="320" y="33" text-anchor="middle" font-weight="700">Selector (루트)</text>
+        <rect x="84" y="86" width="116" height="36" rx="8" class="box"/>
+        <text x="142" y="109" text-anchor="middle" font-weight="700">Combat</text>
+        <rect x="422" y="86" width="116" height="36" rx="8" class="box"/>
+        <text x="480" y="109" text-anchor="middle" font-weight="700">Relaxed</text>
+        <path class="line" d="M300,46 L160,84" marker-end="url(#btA)"/>
+        <path class="line" d="M340,46 L462,84" marker-end="url(#btA)"/>
+        <g font-size="12.5">
+          <rect x="16" y="170" width="76" height="44" rx="8" style="fill:var(--warn-soft);stroke:var(--warn);stroke-width:2"/>
+          <text x="54" y="189" text-anchor="middle" font-weight="700">치료 찾기</text><text x="54" y="205" text-anchor="middle" class="muted">체력 &lt; 20%?</text>
+          <rect x="104" y="170" width="76" height="44" rx="8" class="box"/>
+          <text x="142" y="189" text-anchor="middle">재장전</text><text x="142" y="205" text-anchor="middle" class="muted">Reload</text>
+          <rect x="192" y="170" width="76" height="44" rx="8" class="box"/>
+          <text x="230" y="189" text-anchor="middle">사격</text><text x="230" y="205" text-anchor="middle" class="muted">Shoot</text>
+          <rect x="280" y="170" width="76" height="44" rx="8" style="fill:var(--warn-soft);stroke:var(--warn);stroke-width:2"/>
+          <text x="318" y="189" text-anchor="middle" font-weight="700">치료 찾기</text><text x="318" y="205" text-anchor="middle" class="muted">체력 &lt; 60%?</text>
+          <rect x="374" y="170" width="62" height="44" rx="8" class="box"/>
+          <text x="405" y="189" text-anchor="middle">먹기</text><text x="405" y="205" text-anchor="middle" class="muted">Eat</text>
+          <rect x="444" y="170" width="62" height="44" rx="8" class="box"/>
+          <text x="475" y="189" text-anchor="middle">낮잠</text><text x="475" y="205" text-anchor="middle" class="muted">Nap</text>
+          <rect x="514" y="170" width="62" height="44" rx="8" class="box"/>
+          <text x="545" y="189" text-anchor="middle">순찰</text><text x="545" y="205" text-anchor="middle" class="muted">Patrol</text>
+        </g>
+        <path class="line" d="M120,122 L58,168" marker-end="url(#btA)"/>
+        <path class="line" d="M142,122 L142,168" marker-end="url(#btA)"/>
+        <path class="line" d="M164,122 L226,168" marker-end="url(#btA)"/>
+        <path class="line" d="M440,122 L330,168" marker-end="url(#btA)"/>
+        <path class="line" d="M460,122 L410,168" marker-end="url(#btA)"/>
+        <path class="line" d="M480,122 L476,168" marker-end="url(#btA)"/>
+        <path class="line" d="M500,122 L540,168" marker-end="url(#btA)"/>
+        <text x="320" y="240" text-anchor="middle" style="fill:var(--warn)" font-weight="700">같은 행동이 두 번 → 조건이 바뀔 때마다 두 곳을 고쳐야 한다</text>
+      </svg>
+      <figcaption>Merrill의 Monster Hunter 예제를 단순화한 그림. 왼쪽부터 먼저 시도한다. 상황별 우선순위를 표현하려고 "치료 찾기"를 위치와 임계값을 바꿔 복제했다. 임계값(20%, 60%)은 설명용으로 붙인 값이다.</figcaption>
+    </figure>
+    <p>utility에서는 이 질문이 "치료 찾기를 <b>얼마나</b> 원하는가"로 바뀐다. 체력, 위협, 의무병까지 거리를 넣은 함수 하나가 점수를 내고, 그 점수가 사격·먹기·낮잠의 점수와 같은 저울에서 비교된다. 복제할 필요가 없다. Merrill은 이 값을 얻는 출발점으로 "얻는 체력과 잃는 체력의 차"를 든다.</p>
+    <div class="formula">RawUtility = HealthGained − HealthLost &nbsp;&nbsp;(GAP1 식 10.1)</div>
+    <p>이 원시값을 곡선과 가중치로 다듬는 방법이 <a class="xref" href="03-response-curves.html">03장</a>과 <a class="xref" href="04-considerations.html">04장</a>의 내용이다. Merrill의 결론도 기억해 두자. 이 문제 때문에 BT를 버릴 필요는 없다. 회색지대가 있는 노드에만 utility를 넣으면 된다(10장).</p>
+  </section>
+
+  <!-- ============================== S5 ============================== -->
+  <section id="s5">
+    <h2>5. 비교기: 임계값 규칙 vs Reasoner</h2>
+    <p>직접 비교해 보자. 왼쪽은 FSM식 임계값 규칙이다. "산책" 상태에서 나가는 전이 네 개를 우선순위대로 검사하고, 처음 참이 되는 규칙을 따른다. 오른쪽은 엔진의 <code>UAI.Reasoner</code>에 행동 네 개를 등록한 것이다. 배고픔·기력 긴급도는 엔진의 <code>UAI.NEED_CURVE</code>를 그대로 쓰고, 점수 결합은 엔진 기본값인 보정 곱(<code>"compensated"</code>, 04장), 선택은 최고점(<code>"best"</code>, 05장)이다.</p>
+
+    <div class="widget" id="cmp">
+      <div class="w-title">FSM vs Utility 비교기 — 아리의 다음 행동</div>
+      <div class="w-desc">욕구 값은 엔진 관례대로 0(완전 결핍)~100(충족)이다. 배고픔 슬라이더를 30 근처에서 천천히 움직이거나 프리셋을 눌러 보자. 아래 그래프는 선택한 축 하나만 바꿔 가며 나머지는 현재 값으로 고정했을 때 두 시스템의 결정과 utility 점수를 그린다.</div>
+      <div class="sliders">
+        <label for="cmp-h">배고픔 욕구 <small>needs.hunger</small></label><input type="range" id="cmp-h" min="0" max="100" value="45"><output id="cmp-h-o"></output>
+        <label for="cmp-e">기력 욕구 <small>needs.energy</small></label><input type="range" id="cmp-e" min="0" max="100" value="60"><output id="cmp-e-o"></output>
+        <label for="cmp-t">늑대까지 거리 <small>칸</small></label><input type="range" id="cmp-t" min="0" max="20" value="20"><output id="cmp-t-o"></output>
+      </div>
+      <div class="controls">
+        <button class="btn" data-p="31,60,20">배고픔 31</button>
+        <button class="btn" data-p="29,60,20">배고픔 29</button>
+        <button class="btn" data-p="35,30,20">둘 다 애매</button>
+        <button class="btn" data-p="28,3,20">기진맥진 + 살짝 배고픔</button>
+        <button class="btn" data-p="80,80,7">한가한데 늑대 7칸</button>
+        <button class="btn primary" id="cmp-run">▶ 배고파지는 시간 흘리기</button>
+      </div>
+      <div class="cmp-grid">
+        <div class="cmp-card">
+          <h4>FSM — 임계값 전이 (위에서부터 검사)</h4>
+          <ol id="cmp-rules">
+            <li>늑대 거리 &lt; 6칸 → 도망치기</li>
+            <li>배고픔 &lt; 30 → 빵집에서 먹기</li>
+            <li>기력 &lt; 25 → 집에서 자기</li>
+            <li>그 외 → 산책</li>
+          </ol>
+          <div class="verdict" id="cmp-fsm-v"></div>
+        </div>
+        <div class="cmp-card">
+          <h4>Utility — <code>UAI.Reasoner</code></h4>
+          <div id="cmp-rows"></div>
+          <div class="verdict" id="cmp-uai-v"></div>
+        </div>
+      </div>
+      <div class="callout" id="cmp-note"></div>
+      <div class="controls"><label>스윕 축 <select id="cmp-axis">
+        <option value="h">배고픔 (0~100)</option><option value="e">기력 (0~100)</option><option value="t">늑대 거리 (0~20칸)</option>
+      </select></label></div>
+      <div class="stage"><svg id="cmp-sweep" class="diagram" viewBox="0 0 640 262" role="img" aria-label="결정 스윕 그래프"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--bad)"></i>도망치기</span>
+        <span><i style="background:var(--warn)"></i>빵집에서 먹기</span>
+        <span><i style="background:var(--violet)"></i>집에서 자기</span>
+        <span><i style="background:var(--teal)"></i>산책</span>
+        <span>위 띠: 각 시스템이 고른 행동 · 선: utility 점수 · 빨간 점선: FSM 임계값 · 검은 점선: 현재 값</span>
+      </div>
+    </div>
+
+    <p>관찰할 점은 세 가지다.</p>
+    <ol>
+      <li><b>경계에서의 반응.</b> 배고픔 29와 31에서 FSM은 "먹기"와 "산책"으로 갈린다. 2만큼의 차이가 행동을 통째로 바꾼다. utility의 먹기 점수는 0.92에서 0.90으로 거의 그대로다. 점수가 연속적이라 행동도 "배고픔이 꽤 차오른 뒤에야" 산책으로 넘어간다.</li>
+      <li><b>여러 요인의 합.</b> "둘 다 애매"(배고픔 35, 기력 30)에서 FSM은 어느 임계값에도 걸리지 않아 산책한다. "기진맥진 + 살짝 배고픔"(배고픔 28, 기력 3)에서는 규칙 순서 때문에 쓰러지기 직전인데도 빵집으로 간다. utility는 두 욕구의 크기를 같은 저울에 올린다.</li>
+      <li><b>맥락에 따라 움직이는 경계.</b> "한가한데 늑대 7칸"에서 FSM은 6칸 규칙에 걸리지 않아 산책한다. utility는 다른 할 일이 없으니 늑대를 피한다. 반대로 굶주린 주민은 늑대가 더 가까워질 때까지 빵집을 고집한다. 도망치는 거리가 고정값이 아니라 다른 욕구에 따라 달라진다. 스윕 축을 "늑대 거리"로 바꾸고 배고픔 슬라이더를 움직이며 확인해 보자.</li>
+    </ol>
+    <div class="callout warn">
+      <span class="title">utility도 결국 하나를 고른다</span>
+      점수는 연속이지만 최고점 선택(argmax)의 결과는 여전히 이산적이다. 위 띠 그래프에서도 utility의 행동은 어느 지점에서 바뀐다. 차이는 그 경계가 <b>모든 입력의 연속 함수끼리의 비교</b>로 정해진다는 것, 그리고 1등과 2등의 점수 차(여유)가 정보로 남는다는 것이다. 여유가 0에 가까운 곳에서는 작은 변화에도 행동이 왔다 갔다 할 수 있다. 이 진동 문제가 <a class="xref" href="06-time-inertia.html">06장 관성</a>의 출발점이다.
+    </div>
+    <details class="deep"><summary>이 비교기의 Reasoner 정의</summary><div>
+      <p>행동 네 개를 데이터로만 정의했다. 먹기·자기에는 "안전" consideration(늑대가 가까울수록 0.2까지 낮아짐)을 붙였고, 도망치기는 거리에 대한 로지스틱 감소 커브 하나로 점수를 낸다. 산책은 상수 1에 weight 0.3을 곱한 기본값이다. 모든 숫자는 설명용으로 고른 값이며, 실제 Hamlet 행동 세트(<code>UAI.hamletActions()</code>)는 07·08장에서 다룬다.</p>
+<pre><code>const safety = { name: "안전", input: ({ world }) =&gt; world.threatDist, lo: 0, hi: 14,
+                 curve: { type: "linear", m: 0.8, b: 0.2 } };
+new UAI.Reasoner([
+  { id: "flee",   considerations: [{ name: "위협 근접", input: ({ world }) =&gt; world.threatDist, lo: 0, hi: 14,
+                                     curve: { type: "logistic", m: -10, k: 1, c: 0.45 } }] },
+  { id: "eat",    considerations: [{ name: "배고픔 긴급도", input: ({ agent }) =&gt; agent.needs.hunger, lo: 0, hi: 100,
+                                     curve: UAI.NEED_CURVE.hunger }, safety] },
+  { id: "sleep",  considerations: [{ name: "기력 긴급도", input: ({ agent }) =&gt; agent.needs.energy, lo: 0, hi: 100,
+                                     curve: UAI.NEED_CURVE.energy }, safety] },
+  { id: "wander", weight: 0.3, considerations: [{ name: "기본값", input: () =&gt; 1, curve: "선형 증가" }] },
+], { combine: "compensated", strategy: "best" });</code></pre>
+      <p>엔진의 실제 Hamlet은 도망치기에 <code>rank: 10</code>을 줘서 늑대가 근처에 있으면 욕구 행동보다 <b>무조건</b> 먼저 고르게 한다(dual utility, 05장). 일부러 FSM처럼 "뚝 끊기는" 경계를 다시 만드는 셈이다. 생존처럼 저울질하면 안 되는 결정도 있기 때문이다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================== S6 ============================== -->
+  <section id="s6">
+    <h2>6. 상태를 늘리면 무엇이 폭발하나</h2>
+    <p>FSM에서 상태 <i>n</i>개가 서로 자유롭게 오갈 수 있으면 방향 있는 전이는 최악 <i>n</i>(<i>n</i>−1)개다. 실제 FSM은 완전 그래프가 아닌 경우가 많지만, <b>"어느 상태에서든 일어날 수 있는 사건"</b>이 생기면 그 사건의 상태는 사실상 모든 상태와 연결된다. Carle Côté(GAP1 11장)는 피격(Hurt)·질식(Suffocate) 같은 반응 상태를 FSM에 넣으면 모든 숙고 상태에서 모든 반응 상태로 가는 전이가 필요해 폭발한다고 지적한다.</p>
+    <div class="formula">FSM 최악 전이 수 = n(n−1) &nbsp;+&nbsp; 2·n·r &nbsp;&nbsp;(n: 숙고 상태, r: 반응 상태, 반응 진입 n·r + 복귀 n·r)</div>
+    <p>utility에는 전이라는 개념이 없다. <code>Reasoner.evaluate()</code>가 생각할 때마다 등록된 모든 행동을 점수화하고, 그중 하나를 고른다. 행동을 하나 추가하면 행동 배열에 객체가 하나 늘 뿐 기존 행동은 건드리지 않는다.</p>
+
+    <div class="widget" id="exp">
+      <div class="w-title">전이 폭발 시각화</div>
+      <div class="w-desc">상태를 하나씩 추가해 보자. 새로 생긴 전이는 파랗게 깜빡인다. 곡선 한 쌍이 양방향 전이 두 개다. 반응 상태를 켜면 Côté가 말한 피격·질식 상태가 가운데에 생긴다.</div>
+      <div class="controls">
+        <label>숙고 상태 수 n <input type="range" id="exp-n" min="2" max="16" value="5"> <output id="exp-n-o" class="mono"></output></label>
+        <button class="btn" id="exp-minus">− 상태</button><button class="btn primary" id="exp-plus">+ 상태 추가</button>
+        <label><input type="checkbox" id="exp-r"> 반응 상태(피격·질식) 추가</label>
+      </div>
+      <div class="exp-grid">
+        <svg id="exp-fsm" class="diagram" viewBox="-50 -12 460 384" role="img" aria-label="FSM 전이 그래프"></svg>
+        <div class="exp-uai">
+          <h4>Utility: Reasoner에 등록된 행동</h4>
+          <div class="chips" id="exp-acts"></div>
+          <p class="small" style="color:var(--muted);margin:8px 0 0">행동 사이 연결선: <b>0개</b>. 각 행동은 자기 consideration만 갖는다. 생각할 때마다 전부 점수화해 비교한다.</p>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">FSM 전이 (최악)</div><div class="v c-bad" id="exp-s1"></div></div>
+        <div class="stat"><div class="k">다음 상태 추가 시 새 전이</div><div class="v c-bad" id="exp-s2"></div></div>
+        <div class="stat"><div class="k">Utility 행동 수</div><div class="v c-ok" id="exp-s3"></div></div>
+        <div class="stat"><div class="k">다음 행동 추가 시</div><div class="v c-ok">+1 행동</div></div>
+      </div>
+      <div class="stage"><svg id="exp-chart" class="diagram" viewBox="0 0 640 190" role="img" aria-label="전이 수 그래프"></svg></div>
+    </div>
+
+    <div class="callout deep">
+      <span class="title">공짜는 아니다: utility가 대신 치르는 비용</span>
+      전이가 없는 대신 utility는 <b>생각할 때마다 모든 (행동, 대상) 쌍을 점수화</b>한다. 행동 수 × 대상 수 × consideration 수만큼 계산하므로, 주민이 많은 시뮬레이션에서는 이 비용이 문제다. 엔진은 점수가 0이 되는 순간 나머지 consideration을 건너뛰고(early-out, GAP3 13장), 주민마다 생각하는 tick을 엇갈리게 한다(<code>thinkEvery</code>·<code>thinkOffset</code>, 09장). Merrill이 BT 안의 utility 계산을 리프에서 주기적으로 캐싱하라고 권하는 것도 같은 이유다.
+    </div>
+    <p>HFSM은 상태를 계층으로 묶어 이 폭발을 누그러뜨린다. "피격"을 최상위 상태 하나에서 나가는 전이로 두면 하위 상태마다 전이를 둘 필요가 없다. 하지만 계층 사이 전이가 다시 쌓이는 transition overload 함정이 남는다(GAP1 4장). Côté의 해법은 더 근본적이다. 숙고와 반응을 <b>하나의 결정 모델에 넣지 말고</b> 별도 모듈로 나눈 뒤, Action Selector가 둘 사이를 전환하게 한다. 엔진의 <code>World.think(a, interruptOnly)</code>가 이 아이디어를 작게 구현한 것이다(06장).</p>
+  </section>
+
+  <!-- ============================== S7 ============================== -->
+  <section id="s7">
+    <h2>7. Utility의 약점과 이 코스의 구성</h2>
+    <p>GAP1 4장은 utility의 단점을 분명히 적는다. <b>예측하기 어렵고, 스크립트 override가 필요하며, 튜닝은 예술에 가깝다.</b> 여기에 앞에서 본 진동과 평가 비용을 더하면, 이 코스 후반부가 왜 이런 순서로 짜였는지 보인다. 순수 utility 시스템만으로는 실전 엔진이 되지 않는다. 이 코스가 만드는 것은 <b>utility를 중심에 두고 약점마다 보완 장치를 단 엔진</b>이다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>약점</th><th>실제 게임에서 나타나는 모습</th><th>보완 장치</th><th>장</th></tr>
+      <tr><td><b>연출 통제 / override</b></td><td>죽은 동물이 점수 계산 결과로 다시 일어나면 안 된다. 쇼처럼 짜인 순서는 저울질이 아니라 보장이 필요하다.</td><td>dual utility의 rank. Zoo Tycoon 2는 욕구 행동 rank 0, 해양 동물 쇼 rank 98–102, 죽음 rank 1,000,000을 썼다(Dill).</td><td><a class="xref" href="05-action-selection.html">05</a></td></tr>
+      <tr><td><b>진동</b></td><td>공격과 도망이 둘 다 0.5면 매 프레임 갈아탄다(Graham). Guild Wars 2 팀도 ping-pong을 보고했다(Lewis).</td><td>현재 행동 보너스, 쿨다운, 행동이 끝날 때까지 결정 보류(Sims Medieval의 interaction queue).</td><td><a class="xref" href="06-time-inertia.html">06</a></td></tr>
+      <tr><td><b>반응 vs 숙고</b></td><td>시야가 장애물로 깜빡이면 Chase↔Patrol이 진동하고 애니메이션이 튄다(Côté).</td><td>숙고는 할 일이 끝났을 때만, 반응은 rank 높은 인터럽트로만 갈아탄다.</td><td><a class="xref" href="06-time-inertia.html">06</a> · <a class="xref" href="10-hybrid-architectures.html">10</a></td></tr>
+      <tr><td><b>스크립트·기존 구조와의 공존</b></td><td>이미 BT로 만든 게임에 utility를 넣어야 한다.</td><td>Merrill의 utility selector, Dragon Age: Inquisition의 평가 트리와 점수 관례(Basic 10 / Offensive 20–40 / Support 25–45 / Reaction 50–70).</td><td><a class="xref" href="10-hybrid-architectures.html">10</a></td></tr>
+      <tr><td><b>튜닝은 예술</b></td><td>커브와 가중치가 수십 개다. Graham은 Threat 계산에 평균 피해를 쓰다가 너무 느슨해서 최대 피해로 바꾼 일화를 소개한다.</td><td>소수의 커브 프리셋 팔레트 + 고급 모드, 슬라이더 튜닝 도구(Lewis).</td><td><a class="xref" href="03-response-curves.html">03</a> · <a class="xref" href="11-tuning-debugging.html">11</a></td></tr>
+      <tr><td><b>예측·디버깅 어려움</b></td><td>"왜 저 주민은 저기서 저걸 하지?"에 답하기 어렵다.</td><td>결정마다 전체 점수표를 남긴다. Dragon Age: Inquisition 팀도 디버그 테이블 기록이 디버깅에 큰 도움이 됐다고 보고했다.</td><td><a class="xref" href="11-tuning-debugging.html">11</a></td></tr>
+    </table></div>
+    <p>표의 마지막 열을 이어 보면 코스의 후반 흐름이 그대로 나온다. 05장에서 "언제는 저울질하지 않는다"를 배우고, 06장에서 시간 축의 안정성을, 10장에서 다른 구조와의 결합을, 11장에서 튜닝과 디버깅을 다룬다.</p>
+  </section>
+
+  <!-- ============================== S8 ============================== -->
+  <section id="s8">
+    <h2>8. 코스 지도: uai.js 한눈에 보기</h2>
+    <p>아래는 공유 엔진 <code>assets/uai.js</code>의 구조도다. 블록을 누르면 그 부품의 함수와 담당 장이 나온다. 아래 스텝 플레이어는 주민 한 명이 한 번 결정하는 흐름을 따라 블록을 하나씩 짚는다.</p>
+    <div class="widget" id="map-wrap">
+      <div class="w-title">코스 지도 — 엔진 모듈과 담당 장</div>
+      <div class="w-desc">블록 오른쪽 위의 숫자가 그 부품을 여는 장이다. 점선 상자는 컨테이너(World, Reasoner)다.</div>
+      <div class="stage"><svg id="map" class="diagram" viewBox="0 0 730 452" role="img" aria-label="uai.js 모듈 구조도"></svg></div>
+      <div id="map-info"></div>
+    </div>
+    <p>Reasoner의 결정 함수는 짧다. 점수표를 만들고(<code>evaluate</code>), 하나를 고른다(<code>select</code>). 복잡함은 전부 행동 데이터와 그것을 해석하는 부품에 있다.</p>
+<pre class="engine"><code>    decide(agent, world, rng) {
+      const rows = this.evaluate(agent, world);
+      const res = UAI.select(rows, this.opt, rng);
+      return { rows, chosen: res.chosen, pool: res.pool };
+    }</code></pre>
+    <p>5절 비교기의 오른쪽 카드는 바로 이 <code>decide()</code>의 반환값(<code>rows</code>와 <code>chosen</code>)을 그대로 그린 것이다.</p>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>Sense–Think–Act 루프의 Think 단계에 정답은 없다. 규칙 기반(FSM·HFSM·BT), 계획 기반(GOAP·HTN), 점수 기반(Utility)이 각자 다른 문제에 강하다.</li>
+    <li>Boolean 조건은 계단 모양 반응 커브의 특수한 경우다. 임계값 근처에서 행동이 뚝 끊기고, 여러 요인의 크기를 저울질하지 못한다(회색지대).</li>
+    <li>BT에서 상황별 우선순위를 표현하려면 같은 행동을 복제하게 된다(Merrill의 Seek Medic). utility는 "얼마나 원하나" 점수 하나로 해결한다.</li>
+    <li>FSM 전이는 최악 n(n−1)개로 늘고, 어디서든 일어나는 반응 상태가 이를 키운다. utility에서 행동 추가는 행동 하나 추가다. 대신 생각할 때마다 모든 후보를 평가하는 비용을 치른다.</li>
+    <li>utility의 약점(override·진동·튜닝·디버깅)은 05·06·10·11장의 보완 장치로 다룬다. 이 코스의 엔진은 "utility + 보완 장치"다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">FSM 전이 조건과 utility consideration의 근본적인 차이로 가장 알맞은 것은?</div>
+    <button class="opt">FSM은 C++로, utility는 스크립트로 작성한다.</button>
+    <button class="opt">utility는 항상 랜덤으로 행동을 고른다.</button>
+    <button class="opt">FSM 조건은 "할까/말까"의 예/아니오로 답하고, utility는 "얼마나 원하나"를 연속값으로 답해 다른 행동과 크기를 비교한다.</button>
+    <button class="opt">FSM은 세계를 감지하지 않는다.</button>
+    <div class="explain">Boolean 조건은 임계값에서 0→1로 뛰는 계단 커브와 같다. utility는 연속 점수를 내므로 여러 요인의 크기를 같은 저울에서 비교할 수 있다. utility도 기본은 최고점 선택이며, 랜덤은 선택 전략 중 하나일 뿐이다(05장).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">숙고 상태 8개가 서로 자유롭게 오갈 수 있는 FSM의 최악 전이 수는? (반응 상태 없음)</div>
+    <button class="opt">28</button>
+    <button class="opt">56</button>
+    <button class="opt">64</button>
+    <button class="opt">16</button>
+    <div class="explain">방향 있는 전이는 n(n−1) = 8 × 7 = 56개다. 28은 방향을 무시한 쌍의 수다. 같은 행동 8개를 utility로 만들면 행동 8개, 전이 0개다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">Merrill의 Monster Hunter 예제에서 BT가 겪는 문제는?</div>
+    <button class="opt">BT가 너무 빨라서 행동이 진동한다.</button>
+    <button class="opt">Seek Medic 행동을 구현할 수 없다.</button>
+    <button class="opt">BT는 Combat과 Relaxed를 동시에 가질 수 없다.</button>
+    <button class="opt">Seek Medic의 우선순위가 상황마다 달라야 하는데 BT의 우선순위는 트리 위치로 고정되어, 같은 행동을 트리 여러 곳에 중복 삽입해야 한다.</button>
+    <div class="explain">정적 우선순위와 Boolean 조건 때문에 회색지대를 표현하려면 복제가 필요하다. Merrill의 해법은 BT를 버리는 것이 아니라 해당 selector만 utility로 바꾸는 것이다(10장).</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Zoo Tycoon 2에서 동물의 "죽음" 행동에 rank 1,000,000을 준 이유와, 이 장치를 다루는 장의 짝으로 옳은 것은?</div>
+    <button class="opt">점수 저울질 결과로 죽은 동물이 다시 살아나는 일을 막기 위해 — 05장 dual utility</button>
+    <button class="opt">죽음 애니메이션을 빨리 재생하기 위해 — 09장 엔진 아키텍처</button>
+    <button class="opt">죽음 확률을 높이기 위해 — 02장 기대 효용</button>
+    <button class="opt">진동을 막기 위해 — 06장 관성</button>
+    <div class="explain">utility에는 "스크립트 override가 필요하다"는 약점이 있다. Dill의 dual utility는 rank로 범주를 먼저 정해, 높은 rank의 유효한 행동이 있으면 낮은 rank는 아예 후보에서 뺀다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">비교기에서 "기진맥진 + 살짝 배고픔"(배고픔 28, 기력 3)일 때 FSM이 먹으러 가는 이유는?</div>
+    <button class="opt">먹기의 utility 점수가 더 높아서</button>
+    <button class="opt">FSM은 기력을 감지하지 못해서</button>
+    <button class="opt">"배고픔 &lt; 30" 규칙이 "기력 &lt; 25" 규칙보다 먼저 검사되어, 두 욕구의 크기와 상관없이 순서가 결정을 정하기 때문에</button>
+    <button class="opt">늑대가 가까워서</button>
+    <div class="explain">규칙 기반 결정은 "어느 조건이 먼저 참이 되는가"로 정해진다. utility는 배고픔 긴급도(약 0.86)와 기력 긴급도(약 0.93)를 비교해 자러 간다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">BT가 "기억이 없다(stateless)"는 성질 때문에 생기는 문제로 GAP1 4장이 든 예는?</div>
+    <button class="opt">경비병이 순찰 경로를 잊는다.</button>
+    <button class="opt">전투 지역에서 도망친 시민이 조건이 풀리자 다시 전투 지역으로 돌아오는 루프</button>
+    <button class="opt">플래너가 예상하지 못한 계획을 만든다.</button>
+    <button class="opt">history state가 너무 많아진다.</button>
+    <div class="explain">매번 루트에서 조건만 보고 결정하므로, 방금 왜 도망쳤는지 기억하지 못한다. 같은 종류의 문제(결정이 오가는 현상)는 utility에도 진동으로 나타나며 06장에서 다룬다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">GOAP와 HTN의 차이로 옳은 것은?</div>
+    <button class="opt">GOAP는 점수를, HTN은 Boolean을 쓴다.</button>
+    <button class="opt">둘은 같은 알고리즘의 다른 이름이다.</button>
+    <button class="opt">HTN은 목표에서 거꾸로 탐색하고, GOAP는 과업을 앞으로 분해한다.</button>
+    <button class="opt">GOAP는 목표에서 거꾸로(backward chaining) 행동을 이어 붙이고, HTN은 상위 과업을 method 조건에 따라 앞으로 분해한다. 그래서 HTN은 정의된 method 밖의 예상 밖 계획을 만들지 못한다.</button>
+    <div class="explain">GOAP(F.E.A.R. 등)는 STRIPS 계열 backward chaining이라 창발적 계획이 가능하지만 연출 통제를 잃기 쉽다. HTN(Killzone 2 등)은 forward 분해와 롤백을 쓴다.</div>
+  </div>
+
+  <div class="next-hook"><b>다음 장으로</b> 이 장에서는 "얼마나 원하나"를 0~1 점수로 쓴다고만 했다. 그런데 그 점수, 효용(utility)은 정확히 무엇이고 가격이나 체력 같은 "값"과는 어떻게 다를까? 02장에서는 Graham의 장난감 구매 예와 기대 효용 EU = Σ D·P로 점수의 의미와 스케일을 세운다.</div>
+
+  <div class="refs"><b>참고 문헌</b><ul>
+    <li>DeepBlue, 「효용기반 의사결정 (Utility based Decision Making)」, 2015. blog.naver.com/devdeepblue/220289807509 — 이 코스의 출발점.</li>
+    <li>Kevin Dawe, Michael Gargolinski, Luke Dicken, Tim Humphreys, Dave Mark, "Behavior Selection Algorithms: An Overview", <i>Game AI Pro</i>, Ch.4, 2013.</li>
+    <li>David "Rez" Graham, "An Introduction to Utility Theory", <i>Game AI Pro</i>, Ch.9, 2013.</li>
+    <li>Bill Merrill, "Building Utility Decisions into Your Existing Behavior Tree", <i>Game AI Pro</i>, Ch.10, 2013.</li>
+    <li>Carle Côté, "Reactivity and Deliberation in Decision-Making Systems", <i>Game AI Pro</i>, Ch.11, 2013.</li>
+    <li>Kevin Dill, "Dual-Utility Reasoning", <i>Game AI Pro 2</i>, Ch.3, 2015.</li>
+    <li>Mike Lewis, "Choosing Effective Utility-Based Considerations", <i>Game AI Pro 3</i>, Ch.13, 2017.</li>
+    <li>Sebastian Hanlon, Cody Watts, "Behavior Decision System: Dragon Age Inquisition's Utility Scoring Architecture", <i>Game AI Pro 3</i>, Ch.31, 2017.</li>
+    <li>Dave Mark, <i>Behavioral Mathematics for Game AI</i>. Dave Mark &amp; Kevin Dill, "Improving AI Decision Modeling Through Utility Theory", GDC 2010.</li>
+    <li>Epic Games, "StateTree Selectors Overview", Unreal Engine 문서 (dev.epicgames.com/documentation/unreal-engine/statetree-selectors-overview).</li>
+  </ul></div>
+</main>
+<script>
+(function () {
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+
+  // ───────────── 1. Sense–Think–Act 스텝 애니메이션 ─────────────
+  (function () {
+    const tok = $("#sta-tok");
+    const POS = { world: [320, 267], sense: [110, 88], think: [320, 88], act: [530, 88] };
+    const STEPS = [
+      { at: "world", on: [], flow: [], fam: false,
+        cap: "<b>루프 전체.</b> NPC의 하루는 감지 → 결정 → 실행 → 세계 변화의 반복이다. 엔진에서는 <code>World.tick()</code> 한 번이 이 루프 한 바퀴(게임 시간 1분)다." },
+      { at: "sense", on: ["sense"], flow: ["ws"], fam: false,
+        cap: "<b>Sense.</b> 아리가 자기 상태와 주변을 읽는다. 배고픔 28, 기력 60, 늑대는 9칸 밖. 이 단계의 출력은 아직 <b>원시값(raw)</b>이다. 무엇을 할지는 정하지 않았다." },
+      { at: "think", on: ["think"], flow: ["st"], fam: true,
+        cap: "<b>Think.</b> \"다음에 무엇을 할까?\" 이 장의 주제가 바로 이 상자다. 규칙을 따라갈 수도(FSM·BT), 계획을 세울 수도(GOAP·HTN), 모든 후보에 점수를 매길 수도(Utility) 있다." },
+      { at: "act", on: ["act"], flow: ["ta"], fam: false,
+        cap: "<b>Act.</b> 결정된 행동을 실행한다. 빵집 쪽으로 한 칸 이동한다. 실행은 보통 여러 tick에 걸치고, 그동안 다시 생각할지가 06장의 주제다." },
+      { at: "world", on: ["world"], flow: ["aw"], fam: false,
+        cap: "<b>World.</b> 시간이 흐른다. 매분 배고픔은 0.2, 기력은 0.11씩 줄고(<code>UAI.NEED_DECAY</code>), 늑대가 다가온다. 바뀐 세계가 다음 Sense의 입력이 된다." },
+      { at: "think", on: ["think"], flow: [], fam: "pulse",
+        cap: "<b>Think만 갈아 끼우기.</b> Sense와 Act는 그대로 두고 Think 상자만 FSM, BT, Utility로 바꿀 수 있다. 실제 게임이 여러 기법을 섞어 쓰는 이유이며(10장), 이 코스는 이 상자에 <code>UAI.Reasoner</code>를 넣는다." },
+    ];
+    MM.stepper($("#sta-wrap"), {
+      steps: STEPS.length, interval: 2600,
+      render(i) {
+        const s = STEPS[i];
+        $$("#sta .node").forEach(g => g.classList.toggle("on", s.on.includes(g.dataset.n)));
+        $$("#sta .flow").forEach(p => p.classList.toggle("on", s.flow.includes(p.dataset.f)));
+        $$("#sta .fam").forEach(g => { g.classList.toggle("on", !!s.fam); g.classList.toggle("pulse", s.fam === "pulse"); });
+        const [x, y] = POS[s.at];
+        tok.style.transform = `translate(${x}px, ${y}px)`;
+        return s.cap;
+      },
+    });
+  })();
+
+  // ───────────── 2. FSM vs Utility 비교기 ─────────────
+  const ACT_META = {
+    flee: { label: "도망치기", color: "--bad" },
+    eat: { label: "빵집에서 먹기", color: "--warn" },
+    sleep: { label: "집에서 자기", color: "--violet" },
+    wander: { label: "산책", color: "--teal" },
+  };
+  const FSM_RULES = [
+    { id: "flee", test: s => s.threat < 6 },
+    { id: "eat", test: s => s.hunger < 30 },
+    { id: "sleep", test: s => s.energy < 25 },
+    { id: "wander", test: () => true },
+  ];
+  function fsmDecide(s) {
+    for (let i = 0; i < FSM_RULES.length; i++) if (FSM_RULES[i].test(s)) return { id: FSM_RULES[i].id, rule: i };
+  }
+  const safety = { name: "안전", input: ({ world }) => world.threatDist, lo: 0, hi: 14, curve: { type: "linear", m: 0.8, b: 0.2 } };
+  const reasoner = new UAI.Reasoner([
+    { id: "flee", label: "도망치기", considerations: [
+      { name: "위협 근접", input: ({ world }) => world.threatDist, lo: 0, hi: 14, curve: { type: "logistic", m: -10, k: 1, c: 0.45 } }] },
+    { id: "eat", label: "빵집에서 먹기", considerations: [
+      { name: "배고픔 긴급도", input: ({ agent }) => agent.needs.hunger, lo: 0, hi: 100, curve: UAI.NEED_CURVE.hunger }, safety] },
+    { id: "sleep", label: "집에서 자기", considerations: [
+      { name: "기력 긴급도", input: ({ agent }) => agent.needs.energy, lo: 0, hi: 100, curve: UAI.NEED_CURVE.energy }, safety] },
+    { id: "wander", label: "산책", weight: 0.3, considerations: [{ name: "기본값", input: () => 1, curve: "선형 증가" }] },
+  ], { combine: "compensated", strategy: "best" });
+  function uaiDecide(s) {
+    const agent = { name: "아리", needs: { hunger: s.hunger, energy: s.energy, fun: 70, social: 70 }, current: null, lastUsed: {} };
+    return reasoner.decide(agent, { time: 0, threatDist: s.threat });
+  }
+
+  // 계단 커브 vs 엔진 커브 (4절 그림)
+  const stepFn = UAI.curve({ type: "step", m: -1, c: 0.3 });
+  const needFn = UAI.curve(UAI.NEED_CURVE.hunger);
+  const plotStep = MM.plotCurve($("#plot-step"), stepFn, { color: "--bad", label: "FSM: hunger < 30", xLabel: "needs.hunger / 100", marker: 0.45 });
+  const plotNeed = MM.plotCurve($("#plot-need"), needFn, { color: "--accent", label: "NEED_CURVE.hunger", xLabel: "needs.hunger / 100", marker: 0.45 });
+
+  (function () {
+    const H = $("#cmp-h"), E = $("#cmp-e"), T = $("#cmp-t"), AX = $("#cmp-axis"), svg = $("#cmp-sweep"), runBtn = $("#cmp-run");
+    const AXES = {
+      h: { key: "hunger", min: 0, max: 100, thr: 30, name: "배고픔 욕구 needs.hunger" },
+      e: { key: "energy", min: 0, max: 100, thr: 25, name: "기력 욕구 needs.energy" },
+      t: { key: "threat", min: 0, max: 20, thr: 6, name: "늑대까지 거리 (칸)" },
+    };
+    const lbl = id => ACT_META[id].label;
+    const col = id => `var(${ACT_META[id].color})`;
+    const state = () => ({ hunger: +H.value, energy: +E.value, threat: +T.value });
+
+    function render() {
+      const s = state();
+      $("#cmp-h-o").textContent = s.hunger;
+      $("#cmp-e-o").textContent = s.energy;
+      $("#cmp-t-o").textContent = s.threat + "칸";
+      const f = fsmDecide(s);
+      $$("#cmp-rules li").forEach((li, i) => { li.className = i < f.rule ? "miss" : i === f.rule ? "fire" : "skip"; });
+      $("#cmp-fsm-v").innerHTML = `결정: <b style="color:${col(f.id)}">${lbl(f.id)}</b> <span class="small" style="color:var(--muted)">(${f.rule === 3 ? "어느 임계값에도 걸리지 않음" : "규칙 " + (f.rule + 1) + "번이 먼저 참"})</span>`;
+
+      const res = uaiDecide(s);
+      const win = res.chosen.action.id;
+      const sorted = [...res.rows].sort((a, b) => b.score - a.score);
+      const margin = sorted[0].score - sorted[1].score;
+      $("#cmp-rows").innerHTML = res.rows.map(r => {
+        const id = r.action.id;
+        const parts = r.parts.map(p => `${p.name} ${p.skipped ? "생략" : MM.fmt(p.y)}`).join(" · ") + (r.action.weight !== 1 ? ` · weight ${r.action.weight}` : "");
+        return `<div class="urow${id === win ? " win" : ""}"><span>${lbl(id)}</span>` +
+          `<div class="bar"><i style="width:${(Math.min(1, r.score) * 100).toFixed(1)}%;background:${col(id)}"></i></div>` +
+          `<span class="us">${MM.fmt(r.score)}</span><span class="up">${parts}</span></div>`;
+      }).join("");
+      $("#cmp-uai-v").innerHTML = `결정: <b style="color:${col(win)}">${lbl(win)}</b> <span class="small" style="color:var(--muted)">(2등: ${lbl(sorted[1].action.id)}, 점수 차 ${MM.fmt(margin)})</span>`;
+
+      const score = id => res.rows.find(r => r.action.id === id).score;
+      let note;
+      if (f.id === win) {
+        note = `두 시스템의 결론이 같다: <b>${lbl(win)}</b>. 다만 utility는 이 결정이 얼마나 확실한지도 알려 준다. 2등과의 점수 차는 <b>${MM.fmt(margin)}</b>${margin < 0.05 ? "로, 아주 작은 변화에도 결정이 뒤집힐 수 있는 경계 근처다" : "다"}.`;
+      } else {
+        const why = f.rule === 3 ? "어느 임계값에도 걸리지 않아" : `규칙 ${f.rule + 1}번이 먼저 참이 되어`;
+        note = `<b>결론이 다르다.</b> FSM은 ${why} <b>${lbl(f.id)}</b>을(를) 골랐다. utility는 <b>${lbl(win)} ${MM.fmt(score(win))}</b> &gt; ${lbl(f.id)} ${MM.fmt(score(f.id))}로 판단했다. 임계값이 놓친 크기 정보를 점수가 담고 있다.`;
+      }
+      $("#cmp-note").innerHTML = note;
+
+      plotStep.update(null, s.hunger / 100);
+      plotNeed.update(null, s.hunger / 100);
+      drawSweep(s);
+    }
+
+    function drawSweep(s) {
+      const ax = AXES[AX.value];
+      const L = 52, R = 624, T0 = 54, B = 222, N = 200;
+      const X = v => L + ((v - ax.min) / (ax.max - ax.min)) * (R - L);
+      const Y = y => B - y * (B - T0);
+      const dx = (R - L) / N;
+      const sm = [];
+      for (let i = 0; i <= N; i++) {
+        const v = ax.min + ((ax.max - ax.min) * i) / N;
+        const st = Object.assign({}, s, { [ax.key]: v });
+        const res = uaiDecide(st);
+        const sc = {};
+        res.rows.forEach(r => { sc[r.action.id] = r.score; });
+        sm.push({ v, fsm: fsmDecide(st).id, uai: res.chosen.action.id, sc });
+      }
+      let h = "";
+      for (let k = 0; k <= 4; k++) {
+        const y = Y(k / 4);
+        h += `<line x1="${L}" y1="${y}" x2="${R}" y2="${y}" style="stroke:var(--border)"/>`;
+        h += `<text x="${L - 6}" y="${y + 4}" text-anchor="end" class="muted" font-size="11">${k / 4}</text>`;
+      }
+      for (let k = 0; k <= 5; k++) {
+        const v = ax.min + ((ax.max - ax.min) * k) / 5;
+        h += `<text x="${X(v)}" y="${B + 16}" text-anchor="middle" class="muted" font-size="11">${MM.fmt(v, 0)}</text>`;
+      }
+      h += `<line x1="${L}" y1="${B}" x2="${R}" y2="${B}" style="stroke:var(--muted)"/>`;
+      h += `<text x="${(L + R) / 2}" y="${B + 34}" text-anchor="middle" class="muted" font-size="12">${ax.name}</text>`;
+      h += `<text x="14" y="${(T0 + B) / 2}" text-anchor="middle" class="muted" font-size="11" transform="rotate(-90 14 ${(T0 + B) / 2})">utility 점수</text>`;
+      // 결정 띠
+      [["fsm", 6, "FSM"], ["uai", 28, "Utility"]].forEach(([key, y, name]) => {
+        h += `<text x="${L - 6}" y="${y + 13}" text-anchor="end" font-size="11" font-weight="700">${name}</text>`;
+        let start = 0;
+        for (let i = 1; i <= sm.length; i++) {
+          if (i < sm.length && sm[i][key] === sm[start][key]) continue;
+          const id = sm[start][key];
+          const x0 = Math.max(L, X(sm[start].v) - dx / 2), x1 = Math.min(R, X(sm[i - 1].v) + dx / 2);
+          h += `<rect x="${x0.toFixed(1)}" y="${y}" width="${(x1 - x0).toFixed(1)}" height="18" style="fill:${col(id)};opacity:.85"/>`;
+          if (x1 - x0 > 58) h += `<text x="${((x0 + x1) / 2).toFixed(1)}" y="${y + 13}" text-anchor="middle" font-size="11" style="fill:var(--surface)" font-weight="700">${lbl(id)}</text>`;
+          start = i;
+        }
+      });
+      // FSM 임계값
+      const tx = X(ax.thr);
+      h += `<line x1="${tx}" y1="4" x2="${tx}" y2="${B}" style="stroke:var(--bad);stroke-dasharray:5 4;stroke-width:1.4"/>`;
+      h += `<text x="${tx + 4}" y="${T0 + 12}" font-size="11" style="fill:var(--bad)">FSM 임계값 ${ax.thr}</text>`;
+      // 점수 선
+      for (const id of Object.keys(ACT_META)) {
+        const d = sm.map((p, i) => (i ? "L" : "M") + X(p.v).toFixed(1) + "," + Y(Math.min(1, p.sc[id])).toFixed(1)).join("");
+        h += `<path d="${d}" style="fill:none;stroke:${col(id)};stroke-width:2.4"/>`;
+      }
+      // 현재 값
+      const cx = X(s[ax.key]);
+      h += `<line x1="${cx}" y1="4" x2="${cx}" y2="${B}" style="stroke:var(--text);stroke-dasharray:2 3;stroke-width:1.4"/>`;
+      h += `<path d="M${cx - 5},${B + 2} L${cx + 5},${B + 2} L${cx},${B - 6} z" style="fill:var(--text)"/>`;
+      svg.innerHTML = h;
+    }
+
+    let timer = null;
+    function stopRun() { clearInterval(timer); timer = null; runBtn.textContent = "▶ 배고파지는 시간 흘리기"; }
+    runBtn.onclick = () => {
+      if (timer) return stopRun();
+      AX.value = "h";
+      if (+H.value <= 1) H.value = 70;
+      runBtn.textContent = "⏸ 멈춤";
+      timer = setInterval(() => {
+        H.value = +H.value - 1;
+        render();
+        if (+H.value <= 0) stopRun();
+      }, 150);
+    };
+    [H, E, T].forEach(i => i.addEventListener("input", () => { if (timer) stopRun(); render(); }));
+    AX.addEventListener("change", render);
+    $$("#cmp [data-p]").forEach(b => {
+      b.onclick = () => {
+        if (timer) stopRun();
+        const [h, e, t] = b.dataset.p.split(",").map(Number);
+        H.value = h; E.value = e; T.value = t;
+        AX.value = t < 20 ? "t" : e < 25 ? "e" : "h";
+        render();
+      };
+    });
+    render();
+  })();
+
+  // ───────────── 3. 전이 폭발 ─────────────
+  (function () {
+    const NAMES = ["순찰", "조사", "추격", "공격", "도망", "재장전", "엄폐", "치료 찾기", "먹기", "잠자기", "수다", "경계", "수색", "항복", "복귀", "대기"];
+    const REACT = ["피격", "질식"];
+    const nIn = $("#exp-n"), rIn = $("#exp-r"), svg = $("#exp-fsm");
+    let prevN = +nIn.value, prevR = rIn.checked, first = true;
+    const C = 180, RAD = 130;
+    const transitions = (n, r) => n * (n - 1) + 2 * n * r;
+
+    function curve(p, q, off, cls) {
+      const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+      const dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy) || 1;
+      const cx = mx - (dy / len) * off, cy = my + (dx / len) * off;
+      return `<path class="${cls}" d="M${p[0].toFixed(1)},${p[1].toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${q[0].toFixed(1)},${q[1].toFixed(1)}"/>`;
+    }
+    function render() {
+      const n = +nIn.value, react = rIn.checked, r = react ? REACT.length : 0;
+      $("#exp-n-o").textContent = n;
+      const ang = i => -Math.PI / 2 + (i * 2 * Math.PI) / n;
+      const pos = i => [C + RAD * Math.cos(ang(i)), C + RAD * Math.sin(ang(i))];
+      const rpos = k => [C, C - 28 + 56 * k];
+      const isNew = i => !first && i >= prevN;
+      let h = "";
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const cls = "e" + (isNew(j) ? " new" : "");
+        h += curve(pos(i), pos(j), 10, cls) + curve(pos(j), pos(i), 10, cls);
+      }
+      if (react) for (let i = 0; i < n; i++) for (let k = 0; k < r; k++) {
+        const cls = "e re" + (isNew(i) || (!first && !prevR) ? " new" : "");
+        h += curve(pos(i), rpos(k), 8, cls) + curve(rpos(k), pos(i), 8, cls);
+      }
+      const nr = n > 10 ? 11 : 15;
+      for (let i = 0; i < n; i++) {
+        const [x, y] = pos(i), a = ang(i), c = Math.cos(a);
+        h += `<circle class="st" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${nr}"/>`;
+        const lx = C + (RAD + nr + 8) * c, ly = C + (RAD + nr + 8) * Math.sin(a) + 4;
+        h += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="12" text-anchor="${c > 0.3 ? "start" : c < -0.3 ? "end" : "middle"}">${NAMES[i]}</text>`;
+      }
+      if (react) REACT.forEach((nm, k) => {
+        const [x, y] = rpos(k);
+        h += `<circle class="st r" cx="${x}" cy="${y}" r="17"/><text x="${x}" y="${y + 4}" font-size="11" text-anchor="middle" font-weight="700">${nm}</text>`;
+      });
+      svg.innerHTML = h;
+
+      const acts = $("#exp-acts");
+      acts.innerHTML = NAMES.slice(0, n).map((nm, i) => `<span class="chip${isNew(i) ? " new" : ""}">${nm}</span>`).join("") +
+        (react ? REACT.map(nm => `<span class="chip r${!first && !prevR ? " new" : ""}">${nm}</span>`).join("") : "");
+      $("#exp-s1").textContent = transitions(n, r);
+      $("#exp-s2").textContent = n < 16 ? "+" + (transitions(n + 1, r) - transitions(n, r)) : "—";
+      $("#exp-s3").textContent = n + r;
+      drawChart(n, r);
+      prevN = n; prevR = react; first = false;
+    }
+    function drawChart(n, r) {
+      const L = 50, R = 620, T = 14, B = 150, maxY = transitions(16, REACT.length);
+      const X = k => L + ((k - 2) / 14) * (R - L), Y = v => B - (v / maxY) * (B - T);
+      let h = "";
+      for (let v = 0; v <= maxY; v += 100) {
+        h += `<line x1="${L}" y1="${Y(v)}" x2="${R}" y2="${Y(v)}" style="stroke:var(--border)"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end" font-size="11" class="muted">${v}</text>`;
+      }
+      for (let k = 2; k <= 16; k += 2) h += `<text x="${X(k)}" y="${B + 16}" text-anchor="middle" font-size="11" class="muted">${k}</text>`;
+      h += `<text x="${(L + R) / 2}" y="${B + 34}" text-anchor="middle" font-size="12" class="muted">숙고 상태(행동) 수 n</text>`;
+      const line = (f, color, dash) => {
+        let d = "";
+        for (let k = 2; k <= 16; k++) d += (k === 2 ? "M" : "L") + X(k).toFixed(1) + "," + Y(f(k)).toFixed(1);
+        return `<path d="${d}" style="fill:none;stroke:var(${color});stroke-width:2.4${dash ? ";stroke-dasharray:5 4" : ""}"/>`;
+      };
+      if (r) h += line(k => transitions(k, 0), "--muted", true);
+      h += line(k => transitions(k, r), "--bad") + line(k => k + r, "--ok");
+      h += `<circle cx="${X(n)}" cy="${Y(transitions(n, r))}" r="5" style="fill:var(--bad)"/><text x="${X(n) - 8}" y="${Y(transitions(n, r)) - 8}" text-anchor="end" font-size="12" style="fill:var(--bad)" font-weight="700">FSM ${transitions(n, r)}</text>`;
+      h += `<circle cx="${X(n)}" cy="${Y(n + r)}" r="5" style="fill:var(--ok)"/><text x="${X(n) + 8}" y="${Y(n + r) - 6}" font-size="12" style="fill:var(--ok)" font-weight="700">Utility 행동 ${n + r}</text>`;
+      $("#exp-chart").innerHTML = h;
+    }
+    nIn.addEventListener("input", render);
+    rIn.addEventListener("change", render);
+    $("#exp-plus").onclick = () => { nIn.value = Math.min(16, +nIn.value + 1); render(); };
+    $("#exp-minus").onclick = () => { nIn.value = Math.max(2, +nIn.value - 1); render(); };
+    render();
+  })();
+
+  // ───────────── 4. 코스 지도 ─────────────
+  (function () {
+    const svg = $("#map"), info = $("#map-info");
+    const chap = id => MM.CHAPTERS.find(c => c.id === id);
+    const link = id => { const c = chap(id); return `<a class="xref" href="${c.file}">${c.id}장 ${c.title}</a>`; };
+    const INFO = {
+      tick: { t: "World.tick() — 시뮬레이션 한 박자", ch: ["09"], fns: ["World.tick()", "World.think(a, interruptOnly)", "thinkEvery", "thinkOffset", "UAI.rng(seed)"],
+        d: "Sense–Think–Act 루프 한 바퀴. 욕구 감소 → 결정 → 실행 순서로 모든 주민을 돌린다. 주민마다 thinkOffset을 달리 둬 같은 tick에 모두가 생각하지 않게 분산하고, 시드 고정 RNG로 같은 시뮬레이션을 재현한다." },
+      needs: { t: "욕구와 스마트 오브젝트", ch: ["07"], fns: ["UAI.NEEDS", "UAI.NEED_DECAY", "UAI.NEED_CURVE", "UAI.OBJECT_TYPES", "UAI.adValue(agent, obj)"],
+        d: "배고픔·기력·재미·사교는 0(완전 결핍)~100(충족)이고 매분 줄어든다. 빵집·집·선술집 같은 오브젝트가 \"나를 쓰면 어떤 욕구가 얼마나 찬다\"를 광고하고, 주민은 그 광고를 자기 긴급도로 환산한다(The Sims 방식).",
+        here: "5절 비교기의 배고픔·기력 긴급도가 UAI.NEED_CURVE를 그대로 쓴다." },
+      hamlet: { t: "makeHamlet() — 러닝 예제 마을", ch: ["12"], fns: ["UAI.makeHamlet(opt)", "UAI.hamletActions()"],
+        d: "빵집·밭·집 두 채·벤치·선술집·우물·광장 무대(오브젝트 8개)와 주민 6명을 배치한 기본 마을. 캡스톤에서 모든 부품을 합쳐 이 마을을 돌린다." },
+      reasoner: { t: "Reasoner.decide() — 점수표 만들고 하나 고르기", ch: ["04", "06", "08"], fns: ["new UAI.Reasoner(actions, opt)", "evaluate(agent, world)", "decide(agent, world, rng)"],
+        d: "등록된 모든 (행동, 대상) 쌍을 점수화해 rows를 만들고 select로 하나를 고른다. 이 장의 Think 상자에 들어가는 부품이다.",
+        here: "5절 비교기의 오른쪽 카드가 decide()의 반환값을 그대로 그린다." },
+      targets: { t: "행동 × 대상 (targets)", ch: ["08"], fns: ["action.targets(ctx)", "ctx = { agent, world, target }"],
+        d: "\"먹기\"가 아니라 \"어느 빵집에서 먹기\"를 평가한다. 행동마다 후보 대상을 나열하고 (행동, 대상) 쌍마다 점수를 매긴다. 거리·혼잡 같은 consideration은 대상이 있어야 계산된다." },
+      cons: { t: "Consideration: 입력 → 정규화 → 커브", ch: ["03"], fns: ["UAI.normalize(v, lo, hi)", "UAI.curve(spec)", "UAI.PRESETS", "UAI.piecewise(points)"],
+        d: "원시값(거리, 배고픔 28 등)을 bookend 정규화로 0~1에 넣고 반응 커브로 \"얼마나 원하나\"로 바꾼다. Boolean 조건은 이 커브가 계단 모양인 특수한 경우다(4절 그림)." },
+      combine: { t: "점수 결합", ch: ["04"], fns: ["UAI.combine(vals, method)", "UAI.compensate(s, n)"],
+        d: "여러 consideration 점수를 하나로 합친다. 곱셈은 하나라도 0이면 행동을 끄는 거부권이 되지만 consideration이 많을수록 점수가 깎인다. IAUS의 make-up 보정(compensate)이 이를 메운다." },
+      inertia: { t: "관성과 쿨다운", ch: ["06"], fns: ["opt.inertia", "action.cooldown", "agent.lastUsed"],
+        d: "지금 하던 행동이면 점수에 inertia를 더하고, 쿨다운 중인 행동은 consideration을 계산하기 전에 0으로 만든다. 점수가 비슷한 두 행동 사이를 매번 갈아타는 진동을 막는다." },
+      action: { t: "행동 정의 (데이터 배열)", ch: ["04", "05"], fns: ["{ id, label, weight, rank, considerations, targets, run }"],
+        d: "행동은 코드 분기가 아니라 데이터다. 행동을 하나 추가하면 배열에 객체가 하나 늘 뿐 다른 행동을 건드리지 않는다. 6절 전이 폭발과 대조되는 지점이다.",
+        here: "5절 비교기의 행동 4개도 이 형식의 데이터다." },
+      select: { t: "행동 선택", ch: ["05"], fns: ["UAI.select(cands, opt, rng)", "best · weighted · topN · topPct · dual", "action.rank"],
+        d: "점수표에서 하나를 고른다. 최고점은 예측 가능하지만 기계적이고, 가중 랜덤은 다양하지만 가끔 멍청하다. dual utility는 rank(범주)로 먼저 거르고 그 안에서 점수로 고른다. 늑대가 나타나면 도망이 욕구 행동보다 무조건 먼저인 이유다." },
+      trace: { t: "디버그 기록", ch: ["11"], fns: ["agent.lastEval", "agent.trace", "world.log"],
+        d: "\"왜 저 행동을 했지?\"에 답하는 장치. 매 결정의 전체 점수표와 선택 이력을 남긴다. Dragon Age: Inquisition 팀도 점수 디버그 테이블이 디버깅에 큰 도움이 됐다고 보고했다." },
+      hybrid: { t: "하이브리드 아키텍처", ch: ["10"], fns: ["action.rank (Zoo Tycoon 2식 범주)", "DAI식 점수 관례"],
+        d: "utility는 BT·FSM을 대체하기보다 함께 쓰인다. Merrill의 utility selector, Dragon Age: Inquisition의 평가 트리, Côté의 반응/숙고 분리를 이 엔진의 rank 체계와 비교한다." },
+      eu: { t: "효용과 기대 효용 (개념)", ch: ["02"], fns: ["EU = Σ Dᵢ · Pᵢ"],
+        d: "엔진 코드 이전에 \"효용은 값이 아니라 맥락에 따른 선호\"라는 개념을 세운다. 시스템 전체의 점수 스케일을 0~1로 통일해야 하는 이유도 여기서 나온다." },
+    };
+    const BLOCKS = [
+      { k: "tick", x: 40, y: 46, w: 200, h: 52, t: "World.tick()", s: "욕구 감소 → 결정 → 실행", c: "09" },
+      { k: "needs", x: 260, y: 46, w: 250, h: 52, t: "욕구 · 스마트 오브젝트", s: "NEEDS · NEED_CURVE · adValue", c: "07" },
+      { k: "hamlet", x: 530, y: 46, w: 150, h: 52, t: "makeHamlet()", s: "주민 6 · 오브젝트 8", c: "12" },
+      { k: "reasoner", x: 40, y: 146, w: 640, h: 26, t: "Reasoner.decide() = evaluate() → select()", s: "", c: "04·06·08" },
+      { k: "targets", x: 40, y: 186, w: 120, h: 56, t: "targets", s: "행동 × 대상 쌍", c: "08" },
+      { k: "cons", x: 180, y: 186, w: 200, h: 56, t: "Consideration", s: "input → normalize → curve", c: "03" },
+      { k: "combine", x: 400, y: 186, w: 140, h: 56, t: "combine", s: "곱 · 보정 · 평균 · min", c: "04" },
+      { k: "inertia", x: 560, y: 186, w: 120, h: 56, t: "inertia · cooldown", s: "진동 억제", c: "06" },
+      { k: "action", x: 40, y: 272, w: 500, h: 56, t: "행동 정의 (데이터 배열)", s: "{ id, rank, weight, considerations, run }", c: "04" },
+      { k: "select", x: 560, y: 272, w: 120, h: 56, t: "select", s: "best · weighted · dual", c: "05" },
+      { k: "trace", x: 20, y: 380, w: 220, h: 56, t: "lastEval · trace · log", s: "왜 그 행동을 했나", c: "11" },
+      { k: "hybrid", x: 255, y: 380, w: 220, h: 56, t: "하이브리드 비교", s: "rank 체계 vs DAI 점수 관례", c: "10" },
+      { k: "eu", x: 490, y: 380, w: 220, h: 56, t: "효용 · 기대 효용", s: "EU = Σ D·P (엔진 밖 개념)", c: "02" },
+    ];
+    let h = `<defs><marker id="mapA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>`;
+    h += `<rect class="cont" x="20" y="16" width="680" height="96" rx="12" style="stroke:var(--teal)"/><text x="32" y="34" font-size="12" font-weight="700" style="fill:var(--teal)">World (Hamlet 마을)</text>`;
+    h += `<rect class="cont" x="20" y="132" width="680" height="210" rx="12" style="stroke:var(--accent)"/>`;
+    const A = (d, dash) => `<path class="flowl" d="${d}" marker-end="url(#mapA)"${dash ? ' style="stroke-dasharray:4 4"' : ""}/>`;
+    h += A("M140,98 L140,144");
+    h += `<text x="148" y="126" font-size="11" class="muted">think()</text>`;
+    h += A("M160,214 L178,214") + A("M380,214 L398,214") + A("M540,214 L558,214") + A("M620,242 L620,270");
+    h += A("M290,272 L290,244", true);
+    h += A("M680,300 L714,300 L714,64 L702,64");
+    h += `<text x="710" y="190" font-size="11" class="muted" text-anchor="end" transform="rotate(-90 710 190)">act() → 세계 변화</text>`;
+    h += A("M130,342 L130,378", true);
+    h += `<text x="138" y="364" font-size="11" class="muted">결정 기록</text>`;
+    for (const b of BLOCKS) {
+      const small = b.h < 30;
+      h += `<g class="mb" data-k="${b.k}" tabindex="0" role="button" aria-label="${b.t}"><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="8"/>`;
+      h += `<text class="bt" x="${b.x + 10}" y="${b.y + (small ? 18 : 22)}">${b.t}</text>`;
+      if (b.s) h += `<text class="bs" x="${b.x + 10}" y="${b.y + 41}">${b.s}</text>`;
+      h += `<text class="bc" x="${b.x + b.w - 8}" y="${b.y + (small ? 18 : 15)}" text-anchor="end">${b.c}</text></g>`;
+    }
+    svg.innerHTML = h;
+
+    function select(k) {
+      $$("#map .mb").forEach(g => g.classList.toggle("sel", g.dataset.k === k));
+      const d = INFO[k];
+      info.innerHTML = `<h4>${d.t}</h4><div class="fns">${d.fns.map(f => `<code>${f}</code>`).join("")}</div>` +
+        `<p style="margin:6px 0">${d.d}</p>` + (d.here ? `<p class="small" style="margin:4px 0;color:var(--teal)">이 장에서 써 본 곳: ${d.here}</p>` : "") +
+        `<div class="small">담당: ${d.ch.map(link).join(" · ")}</div>`;
+    }
+    $$("#map .mb").forEach(g => {
+      g.addEventListener("click", () => select(g.dataset.k));
+      g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(g.dataset.k); } });
+    });
+
+    const SEQ = [
+      ["tick", "<b>① World.tick()</b> 시간이 1분 흐르고 아리의 욕구가 줄어든다. 아리가 할 일이 없으므로 <code>think()</code>를 부른다."],
+      ["needs", "<b>② 욕구 읽기</b> 결정에 쓸 입력은 욕구(<code>needs</code>)와 오브젝트 광고(<code>OBJECT_TYPES</code>)다. 긴급도는 <code>NEED_CURVE</code>로 계산한다."],
+      ["reasoner", "<b>③ Reasoner.decide()</b> 등록된 행동 전부를 평가해 점수표를 만들고 하나를 고른다."],
+      ["targets", "<b>④ targets</b> 행동마다 대상 후보를 나열한다. \"이용하기\"는 빵집·집·선술집…, \"수다 떨기\"는 다른 주민 5명."],
+      ["cons", "<b>⑤ Consideration</b> (행동, 대상) 쌍마다 consideration을 하나씩 계산한다. 원시값 → 0~1 정규화 → 커브. 하나가 0이면 나머지는 건너뛴다(early-out)."],
+      ["combine", "<b>⑥ combine</b> consideration 점수들을 보정 곱으로 합치고 행동의 weight를 곱한다."],
+      ["inertia", "<b>⑦ inertia · cooldown</b> 지금 하던 행동이면 보너스를 더한다. 쿨다운 중이면 이미 0이다."],
+      ["select", "<b>⑧ select</b> Hamlet 기본 설정은 dual 전략이다. 가장 높은 rank만 남긴 뒤 상위 점수 안에서 가중 랜덤으로 고른다. 선택된 행동은 <code>act()</code>로 실행되어 세계를 바꾼다."],
+      ["trace", "<b>⑨ 기록</b> 전체 점수표는 <code>agent.lastEval</code>에, 선택은 <code>agent.trace</code>와 <code>world.log</code>에 남는다. 11장 디버거가 이것을 읽는다."],
+    ];
+    MM.stepper($("#map-wrap"), { steps: SEQ.length, interval: 2400, render(i) { select(SEQ[i][0]); return SEQ[i][1]; } });
+  })();
+})();
+</script>
+</body>
+</html>
