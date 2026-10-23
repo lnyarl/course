@@ -1,0 +1,5 @@
+**/target/
+rootfs*/
+.work/
+*.tar.gz
+*.tar.gz.sha256

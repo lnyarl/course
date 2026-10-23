@@ -1,0 +1,6 @@
+index  be2656061b53 → linux/arm64 e311ae748be7
+manifest e311ae748be7 (application/vnd.oci.image.manifest.v1+json)
+blob   f7bbaec1bd03 0.0 MB 검증 완료
+blob   d3531b7a4f21 4.2 MB 검증 완료
+layer  d3531b7a4f21 풀기 완료 (whiteout 0개)
+library/alpine:3.24 → e311ae748be7

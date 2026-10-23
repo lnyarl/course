@@ -1,0 +1,4 @@
+PASS CH06 loopback resolver bridge requires explicit --dns
+Error: 호스트 resolver가 loopback입니다. bridge에서 접근 가능한 --dns ADDRESS를 지정하세요
+PASS CH07 loopback resolver bridge requires explicit --dns
+Error: 호스트 resolver가 loopback입니다. bridge에서 접근 가능한 --dns ADDRESS를 지정하세요

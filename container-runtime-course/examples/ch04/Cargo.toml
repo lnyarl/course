@@ -1,0 +1,8 @@
+[package]
+name="myctr"
+version="0.1.0"
+edition="2024"
+[dependencies]
+anyhow="1"
+clap={version="4",features=["derive"]}
+nix={version="0.29",features=["process", "signal", "sched", "hostname", "mount", "fs"]}

@@ -1,0 +1,106 @@
+PASS  [0] true
+PASS  [1] false
+PASS  [3] /bin/sh -c exit 3
+PASS  [127] no-such-command
+PASS  stdout 전달
+PASS  hostname 격리
+PASS  명령이 PID 1
+PASS  [143] --init /bin/sh -c kill -TERM $$
+PASS  SIGPIPE 기본값
+PASS  루트가 Alpine
+PASS  이전 루트가 보이지 않음
+PASS  /proc/self가 컨테이너 PID
+PASS  ps에는 컨테이너 프로세스만
+PASS  /dev/null 동작
+PASS  /dev/zero 동작
+PASS  호스트 마운트 개수 그대로
+PASS  rootfs에 .oldroot 흔적 없음
+---
+통과 17 / 17
+PASS  부모가 실행 중 cgroup 소속 관측
+PASS  memory.max
+PASS  cpu.max
+PASS  pids.max
+PASS  정상 명령 종료
+PASS  정상 종료 cgroup 회수
+PASS  상한 아래 메모리
+PASS  OOM 종료
+PASS  OOM 안내
+PASS  CPU 제한과 throttling (usage=540451us, throttled=10)
+PASS  pids로 fork 차단
+PASS  잘못된 rootfs setup 실패
+PASS  실패 뒤 cgroup 누수 없음
+PASS  cgroupfs 전체 비노출
+통과 14 / 14
+PASS  range UID0
+PASS  range GID0
+PASS  range UID map
+PASS  range GID map
+PASS  range 보조 그룹 정리
+PASS  host-root 소유 fixture 실제 open 거부
+PASS  생성파일 host UID100000
+PASS  범위 초과 base 거부
+통과 8 / 8
+PASS  none은 새 net ns
+PASS  none은 lo만
+PASS  host는 부모 net ns
+PASS  bridge는 eth0와 lo
+PASS  bridge IP
+PASS  bridge 경로
+PASS  range bridge
+PASS  부모 bridge
+PASS  NAT 규칙
+PASS  local bridge HTTP
+PASS  local bridge DNS로 이름 접속
+PASS  none은 fixture망 접근 불가
+PASS  공유 rootfs resolver 내용 보존
+PASS  전용 resolver 읽기 전용
+PASS  veth 누수 없음
+PASS  선택 외부 HTTP(301)
+통과 16 / 16
+PASS  기본 bounding 14개
+PASS  기본 effective
+PASS  inheritable 비움
+PASS  setup hostname 유지
+PASS  [1] hostname changed-inside
+PASS  [2] ip link add vX type veth peer name vY
+PASS  [0] --cap-add NET_ADMIN ip link add vX type veth peer name vY
+PASS  [1] --cap-drop CHOWN sh -c f=$(mktemp); chown 1 "$f"; r=$?; rm -f "$f"; exit $r
+PASS  cap-drop ALL
+PASS  [1] --cap-add NO_SUCH_CAP true
+PASS  init도 기본 제한
+PASS  no_new_privs
+PASS  seccomp 필터
+PASS  [1] unshare -U true
+PASS  [0] --no-seccomp unshare -U true
+PASS  [1] --cap-add SYS_ADMIN unshare -m true
+PASS  [0] --cap-add SYS_ADMIN --no-seccomp unshare -m true
+PASS  [1] --no-seccomp unshare -m true
+PASS  권한제한뒤에도 cgroupfs 비노출
+통과 19 / 19
+PASS  Docker Hub pull
+PASS  images 목록
+PASS  blob 내용 주소 검증
+PASS  이미지 Alpine 루트
+PASS  이미지 Cmd 기본값
+PASS  이미지 PATH
+PASS  HOSTNAME 환경
+PASS  HOME 기본 환경
+PASS  이미지 proc PID1
+PASS  overlay 루트
+PASS  upper 쓰기와 실행 간 폐기
+PASS  이미지 hostname 파일
+PASS  이미지 hosts 파일
+PASS  이미지 DNS 읽기 전용
+PASS  이미지 local DNS/HTTP
+PASS  이미지 기본 capability
+PASS  이미지 init SIGTERM
+PASS  이미지 명령 탐색 실패
+PASS  root 선택 하나만 필수
+PASS  rootless image 다운로드 전 거부
+PASS  range image 다운로드 전 거부
+PASS  Entrypoint + Cmd/명령 override
+PASS  image Env·WorkingDir와 호스트 환경 차단
+PASS  실제 whiteout·opaque overlay 숨김
+PASS  이미지 작업 공간 회수
+통과 25 / 25

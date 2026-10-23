@@ -1,0 +1,1123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fork · exec · wait</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  /* 생애주기 스테퍼 */
+  #life-svg .proc { transition: opacity .35s; }
+  #life-svg .fade { opacity: .35; }
+  /* fork 트리 */
+  #ftree text { font-family: var(--mono); font-size: 11.5px; }
+  /* exec 상속 게임 */
+  .surv { width: 100%; }
+  .surv td:nth-child(2) { white-space: nowrap; }
+  .surv .btn { padding: 3px 10px; font-size: 13px; }
+  .surv tr.right td:first-child { box-shadow: inset 4px 0 var(--ok); }
+  .surv tr.wrong td:first-child { box-shadow: inset 4px 0 var(--bad); }
+  .surv .why { display: none; font-size: 13.5px; color: var(--muted); margin-top: 4px; }
+  .surv tr.revealed .why { display: block; }
+  .surv .ans { font-weight: 700; font-size: 13px; }
+  /* argv / PATH */
+  .argv { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 0; }
+  .argv .slot { font-family: var(--mono); font-size: 13px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 2px 8px; }
+  .argv .idx { font-size: 10.5px; color: var(--muted); display: block; line-height: 1.2; }
+  .argv .nul { border-style: dashed; border-color: var(--border); background: var(--surface-2); color: var(--muted); }
+  .tries { list-style: none; padding: 0; margin: 8px 0; font-family: var(--mono); font-size: 13px; }
+  .tries li { padding: 3px 8px; border-radius: 6px; margin: 2px 0; opacity: 0; transform: translateX(-6px); animation: tryin .3s forwards; }
+  .tries li.miss { background: var(--bad-soft); }
+  .tries li.hit { background: var(--ok-soft); }
+  .tries li.acc { background: var(--warn-soft); }
+  @keyframes tryin { to { opacity: 1; transform: none; } }
+  /* 종료 상태 비트 */
+  .bitrow { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px; margin: 6px 0 2px; }
+  .bitrow .b { height: 34px; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 13px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-2); transition: background .25s; }
+  .bitrow .b.hi { background: var(--accent-soft); border-color: var(--accent); }
+  .bitrow .b.core { background: var(--bad-soft); border-color: var(--bad); }
+  .bitrow .b.lo { background: var(--warn-soft); border-color: var(--warn); }
+  .bitlbl { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px; font-size: 10.5px; color: var(--muted); text-align: center; font-family: var(--mono); }
+  .bitlegend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; margin: 6px 0; }
+  .bitlegend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; border: 1px solid; }
+  .macros { font-family: var(--mono); font-size: 13px; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 14px; margin: 8px 0; }
+  .macros .t { color: var(--ok); font-weight: 700; } .macros .f { color: var(--muted); }
+  /* 좀비 시뮬레이터 */
+  .ps { font-family: var(--mono); font-size: 13px; }
+  .ps td, .ps th { padding: 4px 10px; }
+  .ps tr { transition: background .3s, opacity .3s; }
+  .ps tr.z { background: var(--bad-soft); }
+  .ps tr.w { background: var(--violet-soft); }
+  .ps tr.orphan { background: var(--warn-soft); }
+  .ps tr.gone { opacity: .3; text-decoration: line-through; }
+  /* strace */
+  .strace { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 0; overflow-x: auto; }
+  .strace div { padding: 2px 14px; white-space: pre; cursor: pointer; border-left: 3px solid transparent; }
+  .strace div:hover { background: var(--accent-soft); }
+  .strace div.on { background: var(--accent-soft); border-left-color: var(--accent); }
+  .strace div.skip { color: var(--muted); cursor: default; }
+  .strace div.skip:hover { background: none; }
+  .strace .c { color: var(--violet); }
+  .strace .k { color: var(--teal); }
+  .strace .e { color: var(--bad); }
+  #st-explain { min-height: 4.5em; }
+</style>
+</head>
+<body data-chapter="01">
+<main>
+  <header class="chapter-head">
+    <span class="label">프로세스와 격리 · Chapter 01</span>
+    <h1>프로세스 실행: fork · exec · wait</h1>
+    <p class="lead"><code>docker run alpine sh</code>를 아무리 쪼개도 결국 남는 것은 "커널에게 새 프로세스를 만들어 달라고 부탁하고, 그 프로세스가 끝나기를 기다린다"는 동작입니다. 이 장에서는 그 뼈대를 직접 만듭니다. 목표는 <code>myctr run &lt;명령&gt;</code>이 명령을 자식 프로세스로 실행하고, 자식의 종료 코드를 셸 관례 그대로 돌려주는 것입니다. 아직 격리는 없습니다. 하지만 2장부터 붙일 네임스페이스, pivot_root, cgroup은 모두 <b>fork와 exec 사이의 틈</b>에 끼워 넣는 코드입니다. 그 틈을 정확히 이해하는 것이 이 장의 핵심입니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>macOS에서 Linux VM을 준비하고 Rust 프로젝트(<code>nix</code>, <code>clap</code>, <code>anyhow</code>)를 세팅할 수 있다.</li>
+      <li>fork가 무엇을 복제하고 무엇을 복제하지 않는지, 왜 Rust에서 <code>unsafe</code>인지 설명할 수 있다.</li>
+      <li>exec가 무엇을 교체하고 무엇을 남기는지 알고, 그것이 컨테이너 런타임 설계의 출발점인 이유를 설명할 수 있다.</li>
+      <li>wait 종료 상태의 비트 인코딩을 해석하고 셸 관례(0, 126, 127, 128+n)로 변환할 수 있다.</li>
+      <li>좀비·고아 프로세스가 생기는 조건과 Ctrl+C가 프로세스 그룹에 전달되는 경로를 설명할 수 있다.</li>
+      <li><code>myctr run</code>을 직접 구현해 완료 기준 스크립트를 통과시킨다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">컨테이너는 결국 프로세스다</a></li>
+    <li><a href="#s2">개발 환경 준비</a></li>
+    <li><a href="#s3">fork · exec · wait 한눈에 보기</a></li>
+    <li><a href="#s4">fork: 프로세스 복제</a></li>
+    <li><a href="#s5">exec: 프로그램 이미지 교체</a></li>
+    <li><a href="#s6">wait: 종료 상태 읽기</a></li>
+    <li><a href="#s7">좀비와 고아</a></li>
+    <li><a href="#s8">Ctrl+C는 누구에게 가나</a></li>
+    <li><a href="#s9">구현 가이드: myctr run</a></li>
+    <li><a href="#s10">strace로 확인하기</a></li>
+    <li><a href="#s11">왜 std::process::Command를 쓰지 않나</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 컨테이너는 결국 프로세스다</h2>
+    <p>VM은 하드웨어를 흉내 내고 그 위에 커널을 하나 더 띄웁니다. 컨테이너는 그렇게 하지 않습니다. <b>호스트 커널 하나를 모든 컨테이너가 공유</b>하고, 커널이 프로세스마다 "보이는 세상"과 "쓸 수 있는 자원"을 다르게 보여 줄 뿐입니다. 그래서 컨테이너 안에서 <code>ps</code>를 치면 프로세스 몇 개만 보이지만, 호스트에서 <code>ps</code>를 치면 그 프로세스들이 평범하게 섞여 있습니다.</p>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 820 360" role="img" aria-label="컨테이너 해부도: 프로세스를 rootfs, 네임스페이스, cgroup, seccomp가 겹겹이 감싼다">
+        <!-- 컨테이너 겹 -->
+        <rect x="250" y="16" width="420" height="270" rx="16" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="266" y="38" font-size="12.5" font-weight="700" style="fill:var(--bad)">capabilities · seccomp: 무엇을 할 수 있나 (7장)</text>
+        <rect x="270" y="48" width="380" height="226" rx="14" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="286" y="70" font-size="12.5" font-weight="700" style="fill:var(--warn)">cgroups: 얼마나 쓸 수 있나 (4장)</text>
+        <rect x="290" y="80" width="340" height="182" rx="12" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="306" y="102" font-size="12.5" font-weight="700" style="fill:var(--violet)">네임스페이스: 무엇이 보이나 (2·3·5·6장)</text>
+        <rect x="310" y="112" width="300" height="138" rx="10" style="fill:var(--teal-soft);stroke:var(--teal)"/>
+        <text x="326" y="134" font-size="12.5" font-weight="700" style="fill:var(--teal)">rootfs: 어떤 파일이 있나 (3·8장)</text>
+        <rect x="350" y="150" width="220" height="80" rx="10" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:2"/>
+        <text x="460" y="182" text-anchor="middle" font-weight="700">평범한 프로세스</text>
+        <text x="460" y="204" text-anchor="middle" font-size="12" class="muted">fork · exec · wait (1장 ← 지금)</text>
+        <!-- 바깥 프로세스들 -->
+        <rect x="30" y="120" width="170" height="44" rx="8" class="box"/>
+        <text x="115" y="147" text-anchor="middle" font-family="var(--mono)" font-size="12.5">sshd (PID 812)</text>
+        <rect x="30" y="180" width="170" height="44" rx="8" class="box"/>
+        <text x="115" y="207" text-anchor="middle" font-family="var(--mono)" font-size="12.5">bash (PID 1503)</text>
+        <rect x="700" y="150" width="100" height="80" rx="8" class="box" style="stroke-dasharray:4 3"/>
+        <text x="750" y="186" text-anchor="middle" font-size="12" class="muted">다른</text>
+        <text x="750" y="204" text-anchor="middle" font-size="12" class="muted">컨테이너</text>
+        <!-- 커널 -->
+        <rect x="20" y="306" width="780" height="40" rx="8" style="fill:var(--surface-2);stroke:var(--text)"/>
+        <text x="410" y="331" text-anchor="middle" font-weight="700">Linux 커널 하나 (모두가 공유)</text>
+        <path d="M115 224 V306" class="line flow"/>
+        <path d="M460 286 V306" class="line flow"/>
+        <path d="M750 230 V306" class="line flow"/>
+      </svg>
+      </div>
+      <figcaption>컨테이너 = 프로세스 + 겹겹의 커널 기능. 이 코스의 각 장은 안쪽부터 한 겹씩 더합니다.</figcaption>
+    </figure>
+
+    <p>그러니 런타임을 만드는 첫걸음은 "프로세스를 하나 띄우고 끝날 때까지 지켜보는 프로그램"입니다. 오늘 장이 끝나면 아래처럼 동작해야 합니다.</p>
+<pre class="term"><code><span class="p">$ </span>myctr run /bin/sh -c 'echo "hi from $$"; exit 3'
+<span class="o">hi from 4242</span>
+<span class="p">$ </span>echo $?
+<span class="o">3</span>
+<span class="p">$ </span>myctr run no-such-command
+<span class="o">myctr: no-such-command: ENOENT: No such file or directory</span>
+<span class="p">$ </span>echo $?
+<span class="o">127</span></code></pre>
+    <div class="callout tip"><span class="title">Docker도 똑같은 일을 합니다</span>
+      <code>docker run</code> → <code>dockerd</code> → <code>containerd</code> → <code>containerd-shim</code> → <code>runc</code>로 이어지는 사슬의 맨 끝에서, runc는 결국 <code>clone</code>(fork의 일반형)과 <code>execve</code>를 호출합니다. 우리가 만드는 <code>myctr</code>는 그 맨 끝, <b>runc 자리</b>입니다. 9장에서는 실제로 Docker가 runc 대신 myctr를 부르게 만듭니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 개발 환경 준비</h2>
+    <p>네임스페이스와 cgroup은 Linux 커널 기능이라 macOS 커널(XNU)에는 없습니다. 이 장의 fork/exec/wait는 POSIX 표준이라 Mac에서도 그대로 돌지만, <code>strace</code>로 관찰하는 실습과 2장부터의 모든 내용은 Linux가 필요합니다. <b>지금 VM을 준비해 두세요.</b> Apple Silicon이면 VM도 aarch64(ARM64) Linux가 됩니다. 이 코스의 모든 코드는 aarch64와 x86_64 모두에서 동작합니다.</p>
+
+    <div class="tabs">
+      <div class="tab-bar"><button class="tab" data-tab="orb">OrbStack (권장)</button><button class="tab" data-tab="lima">Lima</button><button class="tab" data-tab="linux">이미 Linux라면</button></div>
+      <div class="tab-pane" data-tab="orb"><pre><code># Mac에서
+brew install orbstack
+orb create ubuntu ctr          # Ubuntu 머신 'ctr' 생성
+orb -m ctr                     # 머신 안 셸로 들어가기
+
+# Mac의 홈 디렉터리가 VM 안에도 같은 경로로 보입니다.
+# 에디터는 Mac에서, 빌드·실행은 VM 셸에서 하면 됩니다.</code></pre></div>
+      <div class="tab-pane" data-tab="lima"><pre><code># Mac에서
+brew install lima
+limactl start --name=ctr template://ubuntu-lts
+limactl shell ctr
+
+# 주의: Lima는 기본 설정에서 Mac 홈 디렉터리를 읽기 전용으로 마운트합니다.
+# VM 안의 디렉터리(예: ~/work)에서 프로젝트를 만들거나,
+# 인스턴스 설정의 mounts 항목에서 writable: true 로 바꾸세요.</code></pre></div>
+      <div class="tab-pane" data-tab="linux"><pre><code># 커널 5.x 이상 권장 (cgroup v2가 기본인 배포판: Ubuntu 22.04+, Fedora 31+, Debian 11+)
+uname -r
+stat -fc %T /sys/fs/cgroup     # cgroup2fs 가 나오면 cgroup v2</code></pre></div>
+    </div>
+
+    <h3>VM 안에서: 도구와 프로젝트</h3>
+<pre><code># 빌드 도구와 관찰 도구
+sudo apt update &amp;&amp; sudo apt install -y build-essential strace
+
+# Rust 설치 (rustup)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# 프로젝트 생성
+cargo new myctr &amp;&amp; cd myctr
+cargo add nix@0.29 --features process,signal
+cargo add clap@4 --features derive
+cargo add anyhow@1
+git init &amp;&amp; git add -A &amp;&amp; git commit -m "ch00: 빈 프로젝트"</code></pre>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>크레이트</th><th>역할</th><th>왜 이걸 쓰나</th></tr>
+      <tr><td><code>nix</code></td><td>Unix 시스템 콜의 안전한 Rust 래퍼</td><td><code>libc</code>를 직접 부르면 에러를 <code>errno</code>로 확인해야 하고 포인터를 손으로 다뤄야 합니다. nix는 <code>Result&lt;T, Errno&gt;</code>를 돌려주고 <code>Pid</code>, <code>Signal</code> 같은 타입을 줍니다. 기능별 feature 플래그로 필요한 모듈만 켭니다. 이 코스는 0.29 기준입니다.</td></tr>
+      <tr><td><code>clap</code></td><td>CLI 인자 파싱</td><td><code>myctr run ...</code>, 나중에는 <code>myctr create/start/kill/delete</code>(9장)까지 서브커맨드가 늘어납니다.</td></tr>
+      <tr><td><code>anyhow</code></td><td>에러 전파</td><td><code>.context("fork 실패")?</code>처럼 어느 단계에서 실패했는지 메시지를 붙이기 편합니다.</td></tr>
+    </table></div>
+
+    <div class="callout warn"><span class="title">왜 Docker Desktop 안에서 하면 안 되나요?</span>
+      Docker 컨테이너 안에서도 Linux이긴 하지만, 그 컨테이너 자체가 이미 네임스페이스·seccomp·capability 제한을 받고 있습니다. 2장 이후의 <code>unshare</code>, <code>mount</code>, <code>pivot_root</code>가 권한 부족으로 막히거나, <code>--privileged</code>를 줘도 동작이 미묘하게 달라집니다. "컨테이너 안에서 컨테이너 만들기"는 9장을 끝낸 뒤의 도전 과제로 남겨 두세요.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. fork · exec · wait 한눈에 보기</h2>
+    <p>Unix는 "새 프로그램을 새 프로세스로 실행하라"는 단일 호출 대신 두 단계로 나눕니다. <b>fork</b>는 지금 프로세스를 통째로 복제하고, <b>exec</b>는 지금 프로세스의 프로그램을 다른 프로그램으로 갈아 끼웁니다. 부모는 <b>wait</b>로 자식의 끝을 기다립니다. 처음 보면 번거로워 보이지만, 이 분리 덕분에 <b>fork와 exec 사이에서 자식 자신의 환경을 마음대로 고칠 수 있습니다</b>. 셸이 리다이렉션(<code>&gt; out.txt</code>)을 구현하는 방법도, 런타임이 컨테이너를 만드는 방법도 이 틈을 씁니다.</p>
+
+    <div class="widget">
+      <div class="w-title">myctr run의 생애주기</div>
+      <div class="w-desc"><code>myctr run /bin/sh -c 'exit 3'</code>을 실행했을 때 커널 안팎에서 일어나는 일을 한 단계씩 따라갑니다. PID가 언제 생기고, 언제 바뀌지 않는지에 주목하세요.</div>
+      <div class="stage"><svg class="diagram" id="life-svg" viewBox="0 0 720 300" role="img" aria-label="fork, exec, wait 생애주기 애니메이션"></svg></div>
+      <div id="life-ctl"></div>
+    </div>
+
+    <div class="callout deep"><span class="title">이 틈이 왜 중요한가: 런타임의 전체 구조 미리보기</span>
+      2장 이후 myctr의 자식 쪽 코드는 이렇게 자랍니다. <code>fork</code>(정확히는 플래그를 준 <code>clone</code>) → <b>hostname 설정 → 새 root로 pivot_root → /proc 마운트 → capability 제거 → seccomp 필터 설치</b> → <code>execve</code>. 굵게 쓴 부분이 전부 "fork와 exec 사이"입니다. exec 이후에는 사용자 프로그램이 돌기 때문에 런타임이 더는 끼어들 수 없습니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. fork: 프로세스 복제</h2>
+    <p><code>fork()</code>는 호출한 프로세스와 거의 똑같은 자식을 만듭니다. 그리고 <b>한 번 호출되어 두 번 반환합니다</b>. 부모에게는 자식의 PID를, 자식에게는 0을 돌려줍니다. 두 프로세스는 같은 코드의 같은 지점(fork 직후)에서 각자 실행을 이어 가고, 반환값으로 자기가 누구인지 구분합니다. nix에서는 이 반환값이 <code>ForkResult::Parent { child }</code>와 <code>ForkResult::Child</code>라는 enum입니다.</p>
+
+    <h3>무엇이 복제되고 무엇이 복제되지 않나</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>항목</th><th>자식에서</th><th>런타임 관점에서 의미</th></tr>
+      <tr><td>메모리 (코드·힙·스택)</td><td class="c-ok">복사 (Copy-on-Write)</td><td>fork 전에 만든 <code>Vec&lt;CString&gt;</code>을 자식이 그대로 쓸 수 있다</td></tr>
+      <tr><td>파일 디스크립터 테이블</td><td class="c-ok">복사 (같은 열린 파일을 가리킴)</td><td>stdin/stdout/stderr가 이어지므로 자식 출력이 그대로 터미널에 나온다. 파일 오프셋은 <b>공유</b>된다</td></tr>
+      <tr><td>cwd, umask, 환경 변수, rlimit</td><td class="c-ok">복사</td><td>컨테이너에서는 3장에서 cwd와 root를 바꾼다</td></tr>
+      <tr><td>시그널 처리 방식 · 시그널 마스크</td><td class="c-ok">복사</td><td>8절의 SIG_IGN 함정의 원인</td></tr>
+      <tr><td>네임스페이스 · cgroup 소속</td><td class="c-ok">같은 것을 공유</td><td>플래그 없는 fork로는 격리가 생기지 않는다. 2장에서 <code>clone</code> 플래그로 바꾼다</td></tr>
+      <tr><td>PID</td><td class="c-bad">새로 발급</td><td>PPID는 부모의 PID</td></tr>
+      <tr><td>스레드</td><td class="c-bad">fork를 호출한 스레드 하나만</td><td>아래 <code>unsafe</code> 설명 참고</td></tr>
+      <tr><td>대기 중인 시그널, 타이머, fcntl 레코드 락</td><td class="c-bad">비워짐 / 상속 안 됨</td><td>자식은 깨끗한 상태에서 시작</td></tr>
+    </table></div>
+
+    <h3>Copy-on-Write: 복제가 싼 이유</h3>
+    <p>수백 MB짜리 프로세스를 fork할 때마다 메모리를 다 복사하면 느릴 겁니다. 커널은 실제로 복사하지 않고 <b>페이지 테이블만 복사한 뒤 양쪽 페이지를 읽기 전용으로 표시</b>합니다. 누군가 쓰려고 하면 그때 페이지 폴트가 나고, 커널이 그 페이지 하나만 복사합니다. fork 직후 exec하는 런타임 패턴에서는 자식이 거의 아무것도 쓰지 않고 바로 이미지를 버리므로 복사가 거의 일어나지 않습니다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="Copy-on-Write: fork 직후와 자식이 쓴 뒤의 페이지 매핑">
+        <defs><marker id="ca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+        <marker id="cb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--bad)"/></marker></defs>
+        <text x="180" y="20" text-anchor="middle" font-weight="700">① fork 직후</text>
+        <text x="570" y="20" text-anchor="middle" font-weight="700">② 자식이 페이지 B에 쓴 뒤</text>
+        <!-- 왼쪽 -->
+        <rect x="20" y="40" width="90" height="100" rx="8" class="box"/><text x="65" y="58" text-anchor="middle" font-size="12">부모 PT</text>
+        <text x="65" y="84" text-anchor="middle" font-family="var(--mono)" font-size="12">A B C</text>
+        <rect x="20" y="150" width="90" height="80" rx="8" class="box"/><text x="65" y="168" text-anchor="middle" font-size="12">자식 PT</text>
+        <text x="65" y="194" text-anchor="middle" font-family="var(--mono)" font-size="12">A B C</text>
+        <g font-family="var(--mono)" font-size="12">
+          <rect x="250" y="60" width="90" height="40" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="295" y="85" text-anchor="middle">A (RO)</text>
+          <rect x="250" y="115" width="90" height="40" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="295" y="140" text-anchor="middle">B (RO)</text>
+          <rect x="250" y="170" width="90" height="40" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="295" y="195" text-anchor="middle">C (RO)</text>
+        </g>
+        <path d="M110 80 L250 80" class="line" marker-end="url(#ca)"/><path d="M110 90 L250 133" class="line" marker-end="url(#ca)"/><path d="M110 100 L250 186" class="line" marker-end="url(#ca)"/>
+        <path d="M110 185 L250 84" class="line" style="stroke-dasharray:4 3" marker-end="url(#ca)"/><path d="M110 192 L250 137" class="line" style="stroke-dasharray:4 3" marker-end="url(#ca)"/><path d="M110 200 L250 190" class="line" style="stroke-dasharray:4 3" marker-end="url(#ca)"/>
+        <text x="295" y="232" text-anchor="middle" font-size="11.5" class="muted">물리 페이지 3개, 양쪽이 공유</text>
+        <!-- 오른쪽 -->
+        <rect x="410" y="40" width="90" height="100" rx="8" class="box"/><text x="455" y="58" text-anchor="middle" font-size="12">부모 PT</text>
+        <text x="455" y="84" text-anchor="middle" font-family="var(--mono)" font-size="12">A B C</text>
+        <rect x="410" y="150" width="90" height="80" rx="8" class="box"/><text x="455" y="168" text-anchor="middle" font-size="12">자식 PT</text>
+        <text x="455" y="194" text-anchor="middle" font-family="var(--mono)" font-size="12">A B' C</text>
+        <g font-family="var(--mono)" font-size="12">
+          <rect x="620" y="40" width="90" height="36" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="665" y="63" text-anchor="middle">A (RO)</text>
+          <rect x="620" y="86" width="90" height="36" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="665" y="109" text-anchor="middle">B (RW)</text>
+          <rect x="620" y="132" width="90" height="36" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="665" y="155" text-anchor="middle">C (RO)</text>
+          <rect x="620" y="186" width="90" height="36" rx="6" style="fill:var(--bad-soft);stroke:var(--bad)"/><text x="665" y="209" text-anchor="middle">B' (RW)</text>
+        </g>
+        <path d="M500 80 L620 60" class="line" marker-end="url(#ca)"/><path d="M500 90 L620 104" class="line" marker-end="url(#ca)"/><path d="M500 100 L620 150" class="line" marker-end="url(#ca)"/>
+        <path d="M500 185 L620 64" class="line" style="stroke-dasharray:4 3" marker-end="url(#ca)"/><path d="M500 194 L620 204" class="line" style="stroke:var(--bad);stroke-width:2" marker-end="url(#cb)"/><path d="M500 200 L620 156" class="line" style="stroke-dasharray:4 3" marker-end="url(#ca)"/>
+        <text x="560" y="240" text-anchor="middle" font-size="11.5" style="fill:var(--bad)">쓰기 → 페이지 폴트 → 커널이 B만 복사</text>
+      </svg>
+      </div>
+      <figcaption>PT = 페이지 테이블. fork는 페이지 테이블만 복사하고, 실제 복사는 쓰기가 일어난 페이지에 한해 늦게 합니다.</figcaption>
+    </figure>
+
+    <div class="widget">
+      <div class="w-title">fork 분기 시뮬레이터</div>
+      <div class="w-desc">fork를 반복하면 프로세스가 어떻게 불어나는지 봅니다. "hi"가 몇 번 찍힐지 먼저 예측해 보세요. 가로축은 시간, 세로 연결선은 fork로 자식이 태어나는 순간입니다.</div>
+      <div class="controls">
+        <label>fork 횟수 <input type="range" id="ft-n" min="1" max="4" value="3"> <b id="ft-nv">3</b></label>
+        <label><input type="radio" name="ft-mode" value="all" checked> 모두가 계속 fork</label>
+        <label><input type="radio" name="ft-mode" value="brk"> 자식은 즉시 break</label>
+      </div>
+      <pre id="ft-code" style="font-size:13px"></pre>
+      <div class="stage"><svg class="diagram" id="ftree" viewBox="0 0 600 200"></svg></div>
+      <div class="stat-row"><div class="stat"><div class="k">프로세스 수</div><div class="v" id="ft-procs">-</div></div><div class="stat"><div class="k">"hi" 출력 횟수</div><div class="v" id="ft-hi">-</div></div></div>
+    </div>
+    <p>"모두가 계속 fork"하면 n번에 2<sup>n</sup>개가 됩니다. 셸의 fork 폭탄(<code>:(){ :|:&amp; };:</code>)이 시스템을 마비시키는 원리이고, 4장에서 <code>pids.max</code>로 막을 대상입니다. 런타임은 항상 오른쪽 패턴처럼 <b>자식이 곧바로 자기 갈 길(exec)로 빠지게</b> 짭니다.</p>
+
+    <h3>왜 nix의 fork는 <code>unsafe</code>인가</h3>
+    <p>fork는 호출한 스레드 하나만 자식에 복제합니다. 다른 스레드가 fork 순간에 malloc 내부 락이나 stdout 락을 잡고 있었다면, 자식에는 <b>락은 잠긴 채로 복사되고 그 락을 풀 스레드는 없는</b> 상태가 됩니다. 자식이 malloc을 부르면 영원히 멈춥니다. 그래서 POSIX는 멀티스레드 프로그램에서 fork한 자식은 exec 전까지 async-signal-safe 함수만 부르라고 규정하고, nix는 이 규칙을 컴파일러가 검증할 수 없으므로 <code>unsafe fn fork()</code>로 표시합니다.</p>
+    <ul class="checklist">
+      <li>myctr는 fork 시점에 단일 스레드입니다. 그래서 자식에서 <code>eprintln!</code> 정도는 괜찮습니다. 나중에 스레드를 쓰는 라이브러리(예: tokio 런타임)를 붙이면 이 가정이 깨진다는 것을 기억하세요.</li>
+      <li>그래도 습관적으로 <b>할당이 필요한 일은 fork 전에</b> 끝냅니다. <code>CString</code> 변환을 fork 전에 하는 이유입니다.</li>
+      <li>자식은 실패해도 <code>return</code>하지 말고 <code>libc::_exit</code>로 즉시 끝냅니다. 9절에서 이유를 봅니다.</li>
+    </ul>
+
+    <details class="deep"><summary>심화: print!가 두 번 찍히는 버그</summary><div>
+      <p>Rust의 stdout은 줄 단위 버퍼(LineWriter)를 씁니다. 줄바꿈 없는 <code>print!</code>의 내용은 메모리 버퍼에 머물러 있고, fork는 그 버퍼까지 복사합니다.</p>
+<pre><code>print!("a");                       // 버퍼에 "a"가 남아 있음
+match unsafe { fork() }.unwrap() {
+    ForkResult::Child =&gt; {}
+    ForkResult::Parent { child } =&gt; { waitpid(child, None).unwrap(); }
+}
+println!();                        // 출력: "a\na\n"  ← a가 두 번</code></pre>
+      <p>부모와 자식이 각자 자기 버퍼의 "a"를 내보내기 때문입니다. 그래서 fork 직전에 <code>std::io::stdout().flush()</code>를 하거나, 자식이 <code>_exit</code>로 끝나 버퍼를 비우지 않게 합니다. 자식에서 에러를 <code>eprintln!</code>(stderr)으로 찍는 것은 안전합니다. Rust의 stderr는 버퍼링하지 않습니다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. exec: 프로그램 이미지 교체</h2>
+    <p><code>execve(path, argv, envp)</code>는 현재 프로세스의 메모리(코드·데이터·힙·스택)를 버리고 <code>path</code>의 프로그램을 새로 적재해 그 진입점부터 실행합니다. <b>새 프로세스를 만들지 않습니다.</b> PID도 그대로입니다. 성공하면 호출한 코드가 메모리에서 사라졌으니 돌아올 곳이 없습니다. 그래서 exec는 <b>실패했을 때만 반환</b>합니다. nix의 <code>execvp</code> 반환 타입이 <code>Result&lt;Infallible&gt;</code>인 이유입니다. <code>Ok</code>는 만들 수 없는 타입이라 사실상 에러만 돌아옵니다.</p>
+
+    <h3>argv와 PATH 탐색</h3>
+    <p>셸에 <code>myctr run echo "hello world"</code>를 치면 따옴표 처리는 <b>셸이</b> 끝내고, myctr는 이미 쪼개진 문자열 배열을 받습니다. myctr는 그 배열을 그대로 자식의 <code>argv</code>로 넘기면 됩니다. 이름 끝의 <code>p</code>는 PATH를 뜻합니다. <code>execvp</code>는 프로그램 이름에 <code>/</code>가 없으면 PATH 환경 변수의 디렉터리를 앞에서부터 차례로 <code>execve</code>해 봅니다.</p>
+
+    <div class="widget">
+      <div class="w-title">argv 분해와 execvp의 PATH 탐색</div>
+      <div class="w-desc">명령줄을 바꿔 보세요. 셸이 만드는 argv 배열과, execvp가 실제로 시도하는 execve 호출 순서를 보여 줍니다. 가상 파일시스템은 Ubuntu 기본 배치(<code>/bin</code> → <code>/usr/bin</code> 심볼릭 링크)를 따릅니다.</div>
+      <div class="controls" style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px">
+        <span>명령줄</span><input type="text" id="pv-cmd" value='echo "hello world"' spellcheck="false">
+        <span>PATH</span><input type="text" id="pv-path" value="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" spellcheck="false">
+      </div>
+      <div class="controls" id="pv-presets"></div>
+      <div><b style="font-size:13px">myctr가 받는 cmd: Vec&lt;String&gt; → 자식의 argv</b><div class="argv" id="pv-argv"></div></div>
+      <b style="font-size:13px">execvp가 시도하는 execve</b>
+      <ul class="tries" id="pv-tries"></ul>
+      <div class="stepper-cap" id="pv-result"></div>
+    </div>
+
+    <div class="callout"><span class="title">argv[0]은 관례일 뿐</span>
+      <code>argv[0]</code>은 보통 프로그램 이름이지만 커널은 신경 쓰지 않습니다. 실제로 실행되는 파일은 첫 번째 인자 <code>path</code>가 정합니다. <code>busybox</code>는 이 점을 이용해 바이너리 하나가 <code>argv[0]</code>을 보고 <code>ls</code>, <code>sh</code>, <code>cat</code> 중 무엇으로 동작할지 정합니다. Alpine 이미지 안의 명령 대부분이 busybox로 가는 심볼릭 링크입니다(8장에서 직접 보게 됩니다).</div>
+
+    <h3>exec를 넘어 살아남는 것</h3>
+    <p>메모리는 전부 교체되지만 <b>프로세스의 커널 쪽 속성은 대부분 남습니다</b>. 이것이 컨테이너 런타임 설계의 출발점입니다. 런타임이 exec 직전에 바꿔 둔 속성이 사용자 프로그램에 그대로 물려지기 때문입니다.</p>
+
+    <div class="widget">
+      <div class="w-title">exec 상속 퀴즈</div>
+      <div class="w-desc">각 항목이 execve 뒤에 <b>유지</b>되는지, <b>사라지거나 초기화</b>되는지 고르세요. 고르면 정답과 이유가 나옵니다.</div>
+      <div class="tbl-wrap"><table class="surv" id="surv"></table></div>
+      <div class="controls"><span id="surv-score" style="font-weight:700"></span><button class="btn" id="surv-all">모두 공개</button><button class="btn" id="surv-reset">다시 풀기</button></div>
+    </div>
+
+    <div class="callout deep"><span class="title">핵심 연결고리</span>
+      네임스페이스, cgroup, root 디렉터리, capability, seccomp 필터, rlimit, uid/gid가 전부 <b>exec를 넘어 유지</b>됩니다. 그래서 런타임은 이렇게 동작할 수 있습니다. "자식 프로세스의 환경을 먼저 컨테이너 모양으로 바꿔 놓고, 마지막에 사용자 프로그램으로 exec한다." 사용자 프로그램은 처음부터 그 환경에서 태어난 것처럼 보입니다. 사용자 프로그램 입장에서는 자기가 컨테이너 안에 있다는 사실조차 모를 수 있습니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. wait: 종료 상태 읽기</h2>
+    <p>부모는 <code>waitpid(pid, flags)</code>로 자식의 상태 변화를 기다립니다. 커널은 상태를 <b>16비트 정수 하나</b>에 담아 돌려줍니다. C에서는 <code>WIFEXITED</code>, <code>WEXITSTATUS</code>, <code>WIFSIGNALED</code>, <code>WTERMSIG</code> 같은 매크로로 이 비트를 해석합니다. nix는 이 해석을 대신 해서 <code>WaitStatus</code> enum으로 줍니다. 그래도 원시 비트를 알아 두면 strace 출력이나 C 코드를 읽을 때 도움이 됩니다.</p>
+
+    <div class="widget">
+      <div class="w-title">종료 상태 디코더</div>
+      <div class="w-desc">자식이 어떻게 끝났는지 고르면 커널이 돌려주는 원시 status의 비트, C 매크로 값, nix의 <code>WaitStatus</code>, 그리고 myctr가 돌려줄 셸 종료 코드를 보여 줍니다. 원시 값을 직접 입력해 역으로 해석할 수도 있습니다.</div>
+      <div class="controls">
+        <select id="ws-kind">
+          <option value="exit">exit(code)로 정상 종료</option>
+          <option value="sig">시그널로 죽음</option>
+          <option value="stop">시그널로 정지 (WUNTRACED일 때만 보고)</option>
+        </select>
+        <label id="ws-code-l">code <input type="number" id="ws-code" value="3" min="0" max="1000" style="width:80px"></label>
+        <label id="ws-sig-l">시그널 <select id="ws-sig"></select></label>
+        <label id="ws-core-l"><input type="checkbox" id="ws-core"> 코어 덤프</label>
+        <label>원시 status <input type="text" id="ws-raw" style="width:90px" spellcheck="false"></label>
+      </div>
+      <div class="bitlbl" id="ws-bitlbl"></div>
+      <div class="bitrow" id="ws-bits"></div>
+      <div class="bitlegend"><span><i style="background:var(--accent-soft);border-color:var(--accent)"></i>비트 8–15: 종료 코드 / 정지 시그널</span><span><i style="background:var(--bad-soft);border-color:var(--bad)"></i>비트 7: 코어 덤프</span><span><i style="background:var(--warn-soft);border-color:var(--warn)"></i>비트 0–6: 종료 시그널 (0x7f = 정지)</span></div>
+      <div class="macros" id="ws-macros"></div>
+      <div class="stat-row">
+        <div class="stat" style="flex:2"><div class="k">nix WaitStatus</div><div class="v" id="ws-nix" style="font-size:15px;font-family:var(--mono)">-</div></div>
+        <div class="stat"><div class="k">myctr 종료 코드 ($?)</div><div class="v" id="ws-shell">-</div></div>
+      </div>
+      <div class="stepper-cap" id="ws-note"></div>
+    </div>
+
+    <h3>셸 종료 코드 관례</h3>
+    <p>myctr는 사용자가 셸에서 직접 실행한 것과 <b>똑같은 <code>$?</code></b>를 돌려줘야 합니다. 그래야 스크립트와 CI가 myctr를 투명하게 쓸 수 있습니다. bash와 Docker가 따르는 관례는 이렇습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>코드</th><th>의미</th><th>myctr에서 언제</th></tr>
+      <tr><td><code>0</code>–<code>125</code></td><td>프로그램이 <code>exit(n)</code>한 값 (하위 8비트)</td><td><code>WaitStatus::Exited(_, n)</code> → <code>n</code></td></tr>
+      <tr><td><code>126</code></td><td>찾았지만 실행할 수 없음 (권한 없음 등)</td><td>exec가 <code>EACCES</code>로 실패 (도전 과제)</td></tr>
+      <tr><td><code>127</code></td><td>명령을 찾을 수 없음</td><td>exec가 <code>ENOENT</code>로 실패</td></tr>
+      <tr><td><code>128 + n</code></td><td>시그널 n으로 죽음</td><td><code>WaitStatus::Signaled(_, sig, _)</code> → <code>128 + sig</code>. SIGINT(2)=130, SIGKILL(9)=137, SIGTERM(15)=143</td></tr>
+    </table></div>
+    <div class="callout warn"><span class="title">137을 보면 OOM부터 의심하세요</span>
+      Kubernetes에서 "Exit Code 137"은 SIGKILL로 죽었다는 뜻이고, 가장 흔한 원인은 cgroup 메모리 한계를 넘어 커널 OOM killer가 보낸 SIGKILL입니다. 4장에서 우리 컨테이너로 직접 137을 만들어 봅니다. 숫자 하나에 이 정보가 실리려면 런타임이 이 관례를 정확히 지켜야 합니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 좀비와 고아</h2>
+    <p>자식이 끝나도 커널은 그 프로세스를 바로 지우지 않습니다. 메모리와 파일은 해제하지만 <b>PID와 종료 상태는 남겨 둡니다</b>. 부모가 언젠가 wait로 물어볼 수 있게 하기 위해서입니다. 이 "죽었지만 아직 회수되지 않은" 상태가 <b>좀비</b>(<code>ps</code>의 STAT <code>Z</code>, <code>&lt;defunct&gt;</code>)입니다. 반대로 부모가 먼저 죽은 자식은 <b>고아</b>가 되고, 커널은 그 자식을 PID 1(또는 가장 가까운 subreaper)에게 입양시킵니다. 입양한 부모가 대신 wait해 줍니다.</p>
+
+    <div class="widget">
+      <div class="w-title">좀비 · 고아 시뮬레이터</div>
+      <div class="w-desc">버튼 순서를 바꿔 가며 눌러 보세요. 아래 표는 그 순간의 <code>ps -o pid,ppid,stat,cmd</code>입니다. 특히 "자식 종료 → (한참 뒤) 부모 wait" 순서와 "부모 종료 → 자식 종료" 순서를 비교해 보세요.</div>
+      <div class="controls">
+        <button class="btn" id="zs-cexit">자식(sh) 종료</button>
+        <button class="btn" id="zs-wait">부모(myctr) waitpid</button>
+        <button class="btn" id="zs-pexit">부모(myctr) 종료</button>
+        <button class="btn" id="zs-reset">처음으로</button>
+      </div>
+      <div class="tbl-wrap"><table class="ps" id="zs-ps"></table></div>
+      <div class="log" id="zs-log"></div>
+    </div>
+
+    <ul class="checklist">
+      <li><b>좀비는 메모리를 먹지 않지만 PID를 먹습니다.</b> 회수하지 않는 부모가 오래 돌면 좀비가 쌓이고, <code>pid_max</code>나 4장의 <code>pids.max</code>에 닿으면 새 프로세스를 못 만듭니다.</li>
+      <li><b>myctr는 반드시 wait합니다.</b> 우리 구조에서 myctr는 자식이 끝날 때까지 waitpid에 묶여 있으므로 좀비가 오래 남지 않습니다.</li>
+      <li><b>2장 예고:</b> PID 네임스페이스 안에서는 우리 자식이 <b>PID 1</b>이 됩니다. 컨테이너 안에서 생긴 고아는 그 PID 1에게 입양되는데, 사용자 프로그램(예: <code>sh</code>나 Node.js 서버)은 회수 코드를 갖고 있지 않은 경우가 많습니다. <code>docker run --init</code>과 <code>tini</code>가 존재하는 이유가 이것입니다.</li>
+    </ul>
+    <details class="deep"><summary>심화: SIGCHLD와 자동 회수</summary><div>
+      <p>자식이 끝나면 커널은 부모에게 <code>SIGCHLD</code>를 보냅니다. 기본 처리 방식은 "무시"라서 보통은 아무 일도 일어나지 않습니다. 그런데 부모가 <b>명시적으로</b> <code>SIGCHLD</code>를 <code>SIG_IGN</code>으로 설정하면 Linux는 자식을 좀비로 남기지 않고 즉시 회수합니다. 그 상태에서 waitpid를 부르면 <code>ECHILD</code>가 돌아옵니다. 종료 코드를 알아야 하는 런타임에서는 쓰면 안 되는 설정입니다.</p>
+      <p>subreaper: <code>prctl(PR_SET_CHILD_SUBREAPER)</code>를 설정한 프로세스는 자기 자손 중 고아가 된 프로세스를 PID 1 대신 입양합니다. systemd 사용자 세션이나 containerd-shim이 이 기능을 씁니다. 그래서 데스크톱 Linux에서 고아의 PPID가 1이 아닐 수 있습니다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. Ctrl+C는 누구에게 가나</h2>
+    <p>myctr로 <code>sleep 100</code>을 띄우고 Ctrl+C를 누르면 무슨 일이 생길까요? 터미널은 키 입력을 받아 <b>포그라운드 프로세스 그룹 전체</b>에 SIGINT를 보냅니다. 셸은 myctr를 새 프로세스 그룹으로 띄우고, fork된 sleep은 그 그룹을 물려받습니다. 그래서 <b>myctr와 sleep이 동시에 SIGINT를 받습니다.</b></p>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 230" role="img" aria-label="Ctrl+C 시그널이 포그라운드 프로세스 그룹 전체로 전달되는 경로">
+        <defs><marker id="sa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--bad)"/></marker></defs>
+        <rect x="20" y="80" width="110" height="56" rx="10" class="box"/>
+        <text x="75" y="104" text-anchor="middle" font-weight="700">키보드</text>
+        <text x="75" y="124" text-anchor="middle" font-family="var(--mono)" font-size="12">Ctrl+C</text>
+        <rect x="180" y="80" width="150" height="56" rx="10" class="box"/>
+        <text x="255" y="104" text-anchor="middle" font-weight="700">터미널 (tty)</text>
+        <text x="255" y="124" text-anchor="middle" font-size="11.5" class="muted">line discipline</text>
+        <path d="M130 108 H180" class="line flow"/>
+        <rect x="390" y="20" width="350" height="64" rx="10" class="box" style="stroke-dasharray:4 3"/>
+        <text x="405" y="42" font-size="12" class="muted">세션 리더 · 백그라운드</text>
+        <text x="405" y="66" font-family="var(--mono)" font-size="12.5">bash (PID 50, pgid 50)</text>
+        <text x="728" y="66" text-anchor="end" font-size="12" class="muted">받지 않음</text>
+        <rect x="390" y="104" width="350" height="110" rx="10" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="405" y="126" font-size="12" font-weight="700" style="fill:var(--bad)">포그라운드 프로세스 그룹 (pgid 100)</text>
+        <rect x="405" y="138" width="150" height="62" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+        <text x="480" y="164" text-anchor="middle" font-family="var(--mono)" font-size="12.5">myctr</text>
+        <text x="480" y="184" text-anchor="middle" font-family="var(--mono)" font-size="11.5" class="muted">PID 100</text>
+        <rect x="575" y="138" width="150" height="62" rx="8" style="fill:var(--surface);stroke:var(--ok)"/>
+        <text x="650" y="164" text-anchor="middle" font-family="var(--mono)" font-size="12.5">sleep 100</text>
+        <text x="650" y="184" text-anchor="middle" font-family="var(--mono)" font-size="11.5" class="muted">PID 101 (pgid 상속)</text>
+        <path d="M330 108 C 360 108, 360 165, 405 165" class="line flow" style="stroke:var(--bad)" marker-end="url(#sa)"/>
+        <path d="M330 116 C 380 220, 600 225, 640 200" class="line flow" style="stroke:var(--bad)" marker-end="url(#sa)"/>
+        <text x="345" y="200" font-family="var(--mono)" font-size="12" style="fill:var(--bad)">SIGINT</text>
+      </svg>
+      </div>
+      <figcaption>SIGINT는 특정 프로세스가 아니라 포그라운드 프로세스 그룹 전체로 갑니다. fork된 자식은 프로세스 그룹을 물려받습니다.</figcaption>
+    </figure>
+
+    <p>둘 다 기본 동작(종료)을 따르면 myctr는 자식을 wait하지 못한 채 먼저 죽을 수 있고, 셸은 <b>myctr가</b> SIGINT로 죽었다고 보고합니다(<code>$?</code> = 130). 이번에는 결과가 우연히 맞지만, 런타임이 자식의 결과를 보고하지 못하고 사라지는 구조입니다. 좋은 런타임은 <b>부모가 SIGINT를 무시</b>하고, 자식이 시그널로 죽는 것을 지켜본 뒤 그 결과(130)를 돌려줍니다.</p>
+
+    <div class="compare">
+      <div><div class="lbl bad">함정: fork 전에 무시</div><pre><code>// 부모가 SIGINT를 무시하도록 설정
+unsafe { signal(SIGINT, SigIgn) }?;
+match unsafe { fork() }? {
+    Child =&gt; execvp(..),   // ← SIG_IGN을 물려받고
+                            //   exec 후에도 유지!
+    Parent { child } =&gt; ..
+}
+// 결과: sleep 100이 Ctrl+C로 안 죽는다</code></pre></div>
+      <div><div class="lbl ok">올바름: fork 후 부모 쪽에서만</div><pre><code>match unsafe { fork() }? {
+    Child =&gt; execvp(..),    // 기본 처리 방식 그대로
+    Parent { child } =&gt; {
+        unsafe { signal(SIGINT, SigIgn) }?;
+        waitpid(child, None)?  // 자식이 죽는 걸 지켜봄
+    }
+}
+// 결과: sleep만 죽고 myctr는 130을 반환</code></pre></div>
+    </div>
+    <p>5절 퀴즈에서 본 규칙이 그대로 작동합니다. <b>직접 등록한 핸들러 함수는 exec 때 기본값으로 돌아가지만, SIG_IGN은 그대로 유지됩니다.</b> 실습 4에서 두 버전을 직접 비교합니다. 엄밀히는 fork와 부모의 <code>signal()</code> 호출 사이에 아주 짧은 틈이 있습니다. 이 틈을 없애는 방법(시그널 마스크로 막아 두기)과 SIGTERM을 자식에게 전달하는 방법은 2장에서 PID 1 문제와 함께 다룹니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. 구현 가이드: myctr run</h2>
+    <p>이제 직접 짤 차례입니다. 아래 순서로 진행하고, 각 단계에서 막히면 힌트를 하나씩 여세요. 참조 구현은 맨 마지막 상자에 있습니다.</p>
+
+    <h3>단계 A. CLI 뼈대</h3>
+    <p><code>myctr run &lt;프로그램&gt; [인자...]</code>를 받아 <code>Vec&lt;String&gt;</code>으로 만드는 것이 목표입니다. 함정이 하나 있습니다. <code>myctr run ls -la</code>에서 <code>-la</code>를 clap이 <b>myctr의 옵션으로 해석하려 한다</b>는 점입니다.</p>
+    <details class="deep"><summary>힌트 A</summary><div>
+      <p>clap derive에서 위치 인자에 <code>trailing_var_arg = true</code>와 <code>allow_hyphen_values = true</code>를 주면 첫 위치 인자 이후의 모든 것을 그대로 수집합니다. 명령이 없을 때 에러를 내려면 <code>required = true</code>도 추가합니다.</p>
+<pre><code>#[derive(Subcommand)]
+enum Command {
+    /// 명령을 자식 프로세스로 실행한다
+    Run {
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}</code></pre>
+    </div></details>
+
+    <h3>단계 B. fork → exec → wait</h3>
+    <p>아래 뼈대의 TODO를 채우세요. <code>main</code>은 <code>run</code>이 돌려준 코드로 <code>std::process::exit</code>합니다.</p>
+<pre><code>fn run(cmd: &amp;[String]) -&gt; Result&lt;i32&gt; {
+    // TODO 1: cmd를 Vec&lt;CString&gt;으로 변환한다 (fork 전에!)
+    // TODO 2: unsafe { fork() }
+    //   - Child: execvp(&amp;argv[0], &amp;argv). 돌아왔다면 실패한 것 → 메시지 출력 후 _exit(127)
+    //   - Parent: waitpid(child, None)
+    // TODO 3: WaitStatus를 셸 관례의 종료 코드로 바꿔 반환한다
+    todo!()
+}</code></pre>
+    <details class="deep"><summary>힌트 B-1: CString 변환</summary><div>
+      <p>C 문자열은 NUL(<code>\0</code>)로 끝나므로 중간에 NUL이 있으면 만들 수 없습니다. <code>CString::new</code>는 그 경우 에러를 냅니다. 이터레이터의 <code>collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()</code>로 "하나라도 실패하면 전체 실패"를 한 줄에 표현할 수 있습니다.</p>
+    </div></details>
+    <details class="deep"><summary>힌트 B-2: 자식이 exec에 실패하면 왜 return하면 안 되나</summary><div>
+      <p>자식은 부모의 코드를 복제한 것입니다. 자식이 <code>run</code>에서 <code>Err</code>를 반환하면 <b>자식이 부모의 <code>main</code>으로 돌아가</b> 부모가 할 일(에러 출력, exit 코드 계산, 나중에는 cgroup 정리까지)을 한 번 더 합니다. <code>std::process::exit</code>도 버퍼 비우기 같은 정리 작업을 하므로, fork된 자식에서는 정리 없이 즉시 끝내는 <code>nix::libc::_exit(127)</code>을 씁니다. <code>_exit</code>는 <code>unsafe</code> 블록 안에서 불러야 합니다.</p>
+    </div></details>
+    <details class="deep"><summary>힌트 B-3: WaitStatus 매칭</summary><div>
+      <p>플래그 없이(<code>None</code>) waitpid하면 돌아오는 경우는 <code>WaitStatus::Exited(pid, code)</code>와 <code>WaitStatus::Signaled(pid, signal, core_dumped)</code> 둘뿐입니다. <code>Signal</code>은 <code>sig as i32</code>로 번호를 얻습니다. 나머지 경우는 <code>bail!</code>로 처리하세요.</p>
+    </div></details>
+
+    <h3>단계 C. 완료 기준</h3>
+    <p>프로젝트 루트에 <code>check.sh</code>를 만들어 실행하세요. 8개가 모두 PASS여야 1장 완료입니다.</p>
+<pre><code>#!/usr/bin/env bash
+# 1장 완료 기준: myctr run 이 자식의 종료 코드를 셸 관례대로 돌려주는가
+B=${B:-./target/debug/myctr}
+pass=0 fail=0
+t() {
+  local want=$1; shift
+  "$B" run "$@" &gt;/dev/null 2&gt;&amp;1; local got=$?
+  if [ "$got" = "$want" ]; then echo "PASS  [$want] $*"; pass=$((pass+1))
+  else echo "FAIL  [$want] $*  (실제 $got)"; fail=$((fail+1)); fi
+}
+t 0   true
+t 1   false
+t 3   /bin/sh -c 'exit 3'
+t 0   ls -la /
+t 127 no-such-command
+t 143 /bin/sh -c 'kill -TERM $$'
+t 137 /bin/sh -c 'kill -KILL $$'
+out=$("$B" run echo hello world)
+[ "$out" = "hello world" ] &amp;&amp; { echo "PASS  stdout 전달"; pass=$((pass+1)); } || { echo "FAIL  stdout 전달: '$out'"; fail=$((fail+1)); }
+echo "---"; echo "통과 $pass / $((pass+fail))"
+[ $fail -eq 0 ]</code></pre>
+<pre class="term"><code><span class="p">$ </span>cargo build &amp;&amp; chmod +x check.sh &amp;&amp; ./check.sh
+<span class="o">PASS  [0] true
+PASS  [1] false
+PASS  [3] /bin/sh -c exit 3
+PASS  [0] ls -la /
+PASS  [127] no-such-command
+PASS  [143] /bin/sh -c kill -TERM $$
+PASS  [137] /bin/sh -c kill -KILL $$
+PASS  stdout 전달
+---
+통과 8 / 8</span>
+<span class="p">$ </span>git add -A &amp;&amp; git commit -m "ch01: fork/exec/wait" &amp;&amp; git tag ch01</code></pre>
+
+    <details class="deep"><summary>참조 구현 (막혔을 때만 여세요)</summary><div>
+      <p>이 코드는 nix 0.29, clap 4, Rust 2024 에디션에서 빌드하고 위 <code>check.sh</code> 8개 항목을 통과하는 것을 확인했습니다.</p>
+<pre><code>use std::ffi::CString;
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use nix::libc;
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, execvp, fork};
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 자식 프로세스로 실행한다
+    Run {
+        /// 실행할 프로그램과 인자 (예: /bin/sh -c "echo hi")
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { cmd } =&gt; {
+            let code = run(&amp;cmd)?;
+            std::process::exit(code);
+        }
+    }
+}
+
+fn run(cmd: &amp;[String]) -&gt; Result&lt;i32&gt; {
+    // fork 전에 CString을 전부 만들어 둔다. 자식에서는 할당을 최소화한다.
+    let argv: Vec&lt;CString&gt; = cmd
+        .iter()
+        .map(|s| CString::new(s.as_bytes()))
+        .collect::&lt;Result&lt;_, _&gt;&gt;()
+        .context("인자에 NUL 바이트가 있습니다")?;
+
+    match unsafe { fork() }.context("fork 실패")? {
+        ForkResult::Child =&gt; {
+            // 성공하면 돌아오지 않는다. 돌아왔다면 실패한 것.
+            let err = execvp(&amp;argv[0], &amp;argv).unwrap_err();
+            eprintln!("myctr: {}: {}", cmd[0], err);
+            // 부모의 main으로 돌아가면 안 된다. 즉시 종료.
+            unsafe { libc::_exit(127) }
+        }
+        ForkResult::Parent { child } =&gt; match waitpid(child, None).context("waitpid 실패")? {
+            WaitStatus::Exited(_, code) =&gt; Ok(code),
+            WaitStatus::Signaled(_, sig, _) =&gt; Ok(128 + sig as i32),
+            other =&gt; bail!("예상하지 못한 상태: {other:?}"),
+        },
+    }
+}</code></pre>
+    </div></details>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. strace로 확인하기</h2>
+    <p>코드가 정말 생각한 시스템 콜을 부르는지 눈으로 확인합시다. <code>strace -f</code>는 자식 프로세스까지 따라가며 시스템 콜을 출력합니다(Linux VM에서 실행). 출력이 길면 <code>-e trace=</code>로 관심 있는 것만 거릅니다.</p>
+<pre><code>strace -f -e trace=clone,clone3,execve,wait4,write,exit_group ./target/debug/myctr run echo hi</code></pre>
+
+    <div class="widget">
+      <div class="w-title">strace 출력 읽기</div>
+      <div class="w-desc">Ubuntu 24.04 aarch64에서의 대표적인 출력입니다(PID와 주소는 실행마다 다르고, 부모·자식 줄의 순서는 섞일 수 있습니다). 줄을 눌러 의미를 확인하세요.</div>
+      <div class="strace" id="st-lines"></div>
+      <div class="stepper-cap" id="st-explain">줄을 눌러 보세요.</div>
+    </div>
+
+    <div class="callout tip"><span class="title">fork를 불렀는데 clone이 보이는 이유</span>
+      glibc의 <code>fork()</code>는 커널의 <code>clone</code> 시스템 콜을 "새 네임스페이스 없음, 종료 시 SIGCHLD"라는 플래그로 부르는 래퍼입니다. aarch64 Linux에는 <code>fork</code> 시스템 콜 자체가 아예 없습니다. 2장에서는 이 <code>clone</code>에 <code>CLONE_NEWUTS | CLONE_NEWPID</code> 같은 플래그를 <b>직접</b> 넣습니다. 오늘 본 줄의 <code>flags=</code> 부분이 다음 장의 무대입니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s11">
+    <h2>11. 왜 std::process::Command를 쓰지 않나</h2>
+    <p>Rust 표준 라이브러리의 <code>Command::new("sh").status()</code>를 쓰면 이 장의 기능은 몇 줄로 끝납니다. 실제로 일반 애플리케이션에서는 Command가 정답입니다. 그래도 직접 fork를 쓰는 이유는 다음과 같습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th><code>std::process::Command</code></th><th>직접 <code>fork</code> / <code>clone</code></th></tr>
+      <tr><td>내부 동작</td><td>조건이 맞으면 <code>posix_spawn</code>, 아니면 fork + exec. 구현이 숨겨져 있음</td><td>무엇이 언제 불리는지 전부 보임</td></tr>
+      <tr><td>fork와 exec 사이 개입</td><td><code>CommandExt::pre_exec</code> 클로저로 가능 (역시 <code>unsafe</code>)</td><td>자유롭게 가능</td></tr>
+      <tr><td>clone 플래그 (네임스페이스)</td><td>지정할 방법이 없음. <code>pre_exec</code>에서 <code>unshare</code>를 부를 수는 있지만 PID 네임스페이스는 <code>unshare</code>한 프로세스 자신이 아니라 <b>그다음 자식</b>부터 적용되어 구조가 꼬임</td><td><code>clone(CLONE_NEWPID | ...)</code>로 자식을 처음부터 새 네임스페이스에 만들 수 있음</td></tr>
+      <tr><td>학습 가치</td><td>낮음</td><td>runc · youki · crun이 실제로 하는 일과 같음</td></tr>
+    </table></div>
+    <p>2장 첫 작업은 오늘의 <code>fork()</code>를 <code>nix::sched::clone()</code>으로 바꾸는 것입니다. 그 한 줄 교체로 자식이 자기만의 hostname과 PID 공간을 갖게 됩니다.</p>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>컨테이너는 호스트 커널을 공유하는 <b>평범한 프로세스</b>이고, 런타임의 뼈대는 fork → (환경 준비) → exec → wait입니다.</li>
+    <li><b>fork</b>는 한 번 불려 두 번 반환합니다. 메모리는 Copy-on-Write로 복제되고, fd·시그널 처리 방식·네임스페이스·cgroup은 그대로 물려받습니다. 호출 스레드만 복제되므로 Rust에서는 <code>unsafe</code>입니다.</li>
+    <li><b>exec</b>는 PID를 유지한 채 메모리만 교체하고 실패할 때만 반환합니다. 네임스페이스·cgroup·root·capability·seccomp·SIG_IGN은 exec를 넘어 유지됩니다. 이 성질이 "자식 환경을 먼저 바꾸고 마지막에 exec"하는 런타임 설계를 가능하게 합니다.</li>
+    <li><b>wait</b> 상태는 16비트에 인코딩됩니다. myctr는 셸 관례대로 정상 종료는 그 코드, 시그널 사망은 128+n, 실행 실패는 127(126)을 돌려줍니다.</li>
+    <li>회수되지 않은 자식은 <b>좀비</b>로 PID를 점유하고, 부모를 잃은 자식은 PID 1(또는 subreaper)에게 입양됩니다. PID 네임스페이스에서는 우리 자식이 그 PID 1이 됩니다(2장).</li>
+    <li>Ctrl+C는 포그라운드 프로세스 그룹 전체로 갑니다. SIGINT 무시는 fork 이후 부모에서만 설정해야 합니다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">fork 직후 자식 프로세스에서 fork()의 반환값(C 기준)은?</div>
+    <button class="opt">부모의 PID</button>
+    <button class="opt">0</button>
+    <button class="opt">자식 자신의 PID</button>
+    <button class="opt">-1</button>
+    <div class="explain">자식은 0, 부모는 자식의 PID를 받습니다. -1은 실패입니다. 자식이 자기 PID를 알고 싶으면 <code>getpid()</code>를 부릅니다. nix에서는 각각 <code>ForkResult::Child</code>, <code>ForkResult::Parent { child }</code>입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>execvp</code>가 성공하면 호출한 코드에서 무슨 일이 일어나나?</div>
+    <button class="opt">새 프로그램의 PID를 반환한다</button>
+    <button class="opt">0을 반환하고 다음 줄을 실행한다</button>
+    <button class="opt">반환하지 않는다. 호출한 코드가 메모리에서 사라졌다</button>
+    <button class="opt">새 자식 프로세스가 생기고 부모는 계속 실행된다</button>
+    <div class="explain">exec는 현재 프로세스의 이미지를 교체합니다. 성공하면 돌아갈 코드가 없으므로 반환하지 않고, 실패했을 때만 반환합니다. 그래서 nix의 반환 타입이 <code>Result&lt;Infallible&gt;</code>입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">컨테이너 안의 프로세스가 SIGKILL로 죽었다. myctr가 셸 관례를 따른다면 <code>$?</code>는?</div>
+    <button class="opt">9</button>
+    <button class="opt">1</button>
+    <button class="opt">127</button>
+    <button class="opt">137</button>
+    <div class="explain">128 + 시그널 번호(SIGKILL = 9) = 137입니다. Kubernetes의 "Exit Code 137"이 바로 이것이며, OOM killer가 가장 흔한 원인입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">자식에서 exec가 실패했을 때 <code>return Err(..)</code> 대신 <code>libc::_exit(127)</code>을 쓰는 가장 중요한 이유는?</div>
+    <button class="opt">자식이 부모의 main으로 돌아가 부모의 로직(정리, 출력, 종료 코드 계산)을 중복 실행하는 것을 막기 위해</button>
+    <button class="opt">_exit가 더 빠르기 때문에</button>
+    <button class="opt">Rust에서는 자식 프로세스가 return할 수 없기 때문에</button>
+    <button class="opt">127이라는 값은 _exit로만 전달할 수 있기 때문에</button>
+    <div class="explain">fork된 자식은 부모 코드의 복제본입니다. return하면 부모의 호출 스택을 그대로 거슬러 올라가 부모만 해야 할 일을 하게 됩니다. <code>_exit</code>는 atexit 핸들러나 stdio 버퍼 비우기 같은 정리 없이 즉시 종료합니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">부모가 fork <b>전에</b> SIGINT를 <code>SIG_IGN</code>으로 설정하고 fork + exec로 <code>sleep 100</code>을 실행했다. Ctrl+C를 누르면?</div>
+    <button class="opt">sleep만 죽는다</button>
+    <button class="opt">둘 다 죽는다</button>
+    <button class="opt">아무도 죽지 않는다. sleep도 SIG_IGN을 물려받았고 exec 후에도 유지된다</button>
+    <button class="opt">myctr만 죽는다</button>
+    <div class="explain">시그널 처리 방식은 fork로 복사되고, exec는 직접 등록한 <b>핸들러</b>만 기본값으로 되돌릴 뿐 <b>SIG_IGN은 유지</b>합니다. 그래서 무시 설정은 fork 이후 부모 쪽에서만 해야 합니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">좀비 프로세스가 계속 쌓일 때 실제로 고갈되는 자원은?</div>
+    <button class="opt">물리 메모리 (좀비의 힙과 스택)</button>
+    <button class="opt">PID (프로세스 테이블 항목)</button>
+    <button class="opt">열린 파일 디스크립터</button>
+    <button class="opt">CPU 시간</button>
+    <div class="explain">좀비는 메모리와 fd를 이미 해제했고 실행되지도 않습니다. 남은 것은 PID와 종료 상태를 담은 작은 커널 구조체입니다. 그래도 PID가 고갈되면 시스템이나 cgroup(<code>pids.max</code>)에서 새 프로세스를 만들 수 없습니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">aarch64 Linux에서 glibc의 <code>fork()</code>를 strace로 보면 어떤 시스템 콜이 보이나?</div>
+    <button class="opt">fork</button>
+    <button class="opt">vfork</button>
+    <button class="opt">posix_spawn</button>
+    <button class="opt">clone</button>
+    <div class="explain">aarch64에는 fork 시스템 콜이 없고, glibc는 <code>clone(flags=...|SIGCHLD)</code>로 fork를 구현합니다. <code>posix_spawn</code>은 라이브러리 함수이지 시스템 콜이 아닙니다. 2장에서는 clone에 네임스페이스 플래그를 직접 넣습니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>myctr run 완성.</b> 9절의 단계 A~C를 직접 구현하고 <code>check.sh</code>를 통과시킨 뒤 <code>git tag ch01</code>을 남기세요. 기대: <code>통과 8 / 8</code>.</li>
+    <li><b>strace로 PATH 탐색 보기.</b> VM에서 <code>strace -f -e trace=execve ./target/debug/myctr run echo hi</code>와 <code>... run /usr/bin/echo hi</code>를 비교하세요. 기대: 전자는 <code>/usr/local/sbin/echo</code> 등에서 <code>ENOENT</code>가 몇 번 난 뒤 <code>/usr/bin/echo</code>에서 성공하고, 후자는 execve가 한 번만 보입니다. 이어서 <code>PATH=/nowhere ./target/debug/myctr run echo hi</code>는 몇을 반환하는지 예측하고 확인하세요(기대: 127).</li>
+    <li><b>좀비 직접 만들기.</b> 부모 분기에서 waitpid 직전에 <code>std::thread::sleep(Duration::from_secs(20))</code>을 넣고 <code>myctr run true &amp;</code>로 실행한 뒤 바로 <code>ps -o pid,ppid,stat,cmd</code>를 보세요. 기대: <code>true</code>가 <code>Z</code> 상태, <code>[true] &lt;defunct&gt;</code>로 보이다가 20초 뒤 사라집니다. 확인 후 sleep은 지우세요.</li>
+    <li><b>Ctrl+C 실험.</b> (a) 지금 코드로 <code>myctr run sleep 100</code> → Ctrl+C → <code>echo $?</code>. (b) 8절 "올바름" 버전(부모 분기에서 <code>nix::sys::signal::signal(Signal::SIGINT, SigHandler::SigIgn)</code>)으로 바꿔 같은 실험. (c) "함정" 버전으로 바꿔 같은 실험. 기대: (a)(b) 모두 130이지만 (b)는 myctr가 자식의 결과를 보고한 것이고, (c)는 Ctrl+C가 먹지 않습니다(Ctrl+\ 로 빠져나오세요). (b) 버전을 남기세요.</li>
+    <li><b>도전: 126과 127 구분.</b> exec 에러가 <code>Errno::EACCES</code>면 126, 그 외(<code>ENOENT</code> 등)면 127을 반환하도록 고치세요. <code>touch notexec &amp;&amp; ./target/debug/myctr run ./notexec; echo $?</code>의 기대 결과: 126.</li>
+    <li><b>도전: 환경 변수 지정.</b> <code>myctr run -e FOO=bar -- /bin/sh -c 'echo $FOO'</code>가 <code>bar</code>를 출력하도록 <code>-e</code> 옵션을 추가하세요. 힌트: nix의 <code>execvpe</code>. 생각해 볼 점: 지정한 변수만 넘길지, 부모의 환경에 덧붙일지. Docker는 어떻게 하나요?</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = MM.esc;
+
+  // ===== 위젯 1: 생애주기 스테퍼 =====
+  (function () {
+    const svg = $("life-svg");
+    // 각 단계: 부모 p, 자식 c(null이면 없음), 커널 표시 k, 활성 화살표 a(p|c|pc|none), 셸 줄 sh
+    const IMG = { myctr: ["accent", "myctr 코드·힙·스택"], cow: ["accent", "myctr 복사본 (COW 공유)"], sh: ["ok", "/bin/sh 코드·힙·스택"], none: ["muted", "(메모리 해제됨)"] };
+    const S = [
+      { sh: "$ myctr run /bin/sh -c 'exit 3'", p: { st: "R", img: "myctr", note: "main() 시작" }, c: null, k: "", a: "none",
+        cap: "셸이 myctr를 실행했습니다. 아직 프로세스는 <b>PID 100 하나</b>입니다. 셸 자신도 fork + exec로 myctr를 띄웠습니다." },
+      { sh: "", p: { st: "R", img: "myctr", note: "argv → Vec<CString> 준비" }, c: null, k: "", a: "none",
+        cap: "fork <b>전에</b> 인자를 C 문자열로 바꿔 둡니다. 자식에서 할당을 피하기 위해서입니다(4절)." },
+      { sh: "", p: { st: "R", img: "myctr", note: "fork()" }, c: { pid: 101, st: "R", img: "cow", note: "" }, k: "clone(flags=SIGCHLD)", a: "pk", fork: true,
+        cap: "fork() → 커널의 <code>clone</code>. 커널이 PID 101을 발급하고 페이지 테이블을 복사합니다. 메모리 자체는 아직 공유(Copy-on-Write)입니다." },
+      { sh: "", p: { st: "R", img: "myctr", note: "← Parent { child: 101 }" }, c: { pid: 101, st: "R", img: "cow", note: "← Child (반환값 0)" }, k: "", a: "none",
+        cap: "<b>한 번 호출, 두 번 반환.</b> 두 프로세스가 같은 지점에서 깨어나고 반환값으로 갈 길을 정합니다." },
+      { sh: "", p: { st: "S", img: "myctr", note: "waitpid(101) 대기 중" }, c: { pid: 101, st: "R", img: "cow", note: "execvp(\"/bin/sh\", ..)" }, k: "wait4(101, ...) ← 부모 잠듦", a: "pk",
+        cap: "부모는 <code>waitpid</code>로 잠듭니다(STAT <code>S</code>). CPU를 쓰지 않고 자식의 상태 변화를 기다립니다." },
+      { sh: "", p: { st: "S", img: "myctr", note: "waitpid(101) 대기 중" }, c: { pid: 101, st: "R", img: "sh", note: "sh 실행 중 · PID 그대로 101" }, k: "execve(\"/bin/sh\", [\"/bin/sh\",\"-c\",\"exit 3\"], envp)", a: "ck",
+        cap: "자식이 <code>execve</code>합니다. 메모리가 <b>/bin/sh로 통째로 교체</b>됩니다. PID는 101 그대로이고, fd·네임스페이스·cgroup도 그대로입니다(5절)." },
+      { sh: "", p: { st: "S", img: "myctr", note: "waitpid(101) 대기 중" }, c: { pid: 101, st: "Z", img: "none", note: "종료 상태 0x0300 보관" }, k: "exit_group(3)", a: "ck", zombie: true,
+        cap: "sh가 <code>exit(3)</code>. 커널은 메모리를 해제하지만 PID와 상태값 <code>0x0300</code>(3 &lt;&lt; 8)을 남깁니다. 이 순간의 자식이 <b>좀비</b>입니다." },
+      { sh: "", p: { st: "R", img: "myctr", note: "WaitStatus::Exited(101, 3)" }, c: { pid: 101, st: "-", img: "none", note: "회수됨 · PID 101 반납" }, k: "SIGCHLD → 부모, wait4 반환", a: "kp", reaped: true,
+        cap: "커널이 부모를 깨우고 wait4가 상태를 돌려줍니다. 이제야 자식이 <b>완전히 사라지고</b> PID 101이 반납됩니다." },
+      { sh: "$ echo $?  →  3", p: { st: "-", img: "myctr", note: "std::process::exit(3)" }, c: null, k: "exit_group(3)", a: "pk", done: true,
+        cap: "myctr가 받은 코드 3으로 종료합니다. 셸의 <code>$?</code>는 3이 되고, 사용자 입장에서는 sh를 직접 실행한 것과 똑같습니다." },
+    ];
+    function proc(x, title, o, extra) {
+      const [col, label] = IMG[o.img];
+      const stCol = o.st === "Z" ? "bad" : o.st === "S" ? "violet" : o.st === "R" ? "ok" : "muted";
+      const stTxt = { R: "R 실행", S: "S 대기", Z: "Z 좀비", "-": "종료" }[o.st];
+      return `<g class="proc${extra || ""}">
+        <rect x="${x}" y="100" width="290" height="116" rx="12" style="fill:var(--surface);stroke:var(--${o.st === "Z" ? "bad" : "border"});stroke-width:${o.st === "Z" ? 2 : 1}${o.st === "Z" ? ";stroke-dasharray:6 4" : ""}"/>
+        <text x="${x + 14}" y="124" font-weight="700" font-family="var(--mono)" font-size="13">${title}</text>
+        <rect x="${x + 206}" y="110" width="72" height="22" rx="11" style="fill:var(--${stCol}-soft);stroke:var(--${stCol})"/>
+        <text x="${x + 242}" y="125" text-anchor="middle" font-size="11.5" style="fill:var(--${stCol})">${stTxt}</text>
+        <rect x="${x + 14}" y="140" width="262" height="30" rx="6" style="fill:var(--${col === "muted" ? "surface-2" : col + "-soft"});stroke:var(--${col === "muted" ? "border" : col})${col === "muted" ? ";stroke-dasharray:4 3" : ""}"/>
+        <text x="${x + 145}" y="160" text-anchor="middle" font-size="12">${label}</text>
+        <text x="${x + 14}" y="198" font-family="var(--mono)" font-size="12" class="muted">${esc(o.note)}</text>
+      </g>`;
+    }
+    MM.stepper($("life-ctl"), {
+      steps: S.length, interval: 2200,
+      render(i) {
+        const s = S[i];
+        let g = `<defs><marker id="la" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>`;
+        // 셸
+        g += `<rect x="20" y="16" width="400" height="44" rx="10" class="box"/><text x="34" y="36" font-size="11.5" class="muted">bash (PID 50)</text>
+              <text x="34" y="52" font-family="var(--mono)" font-size="12.5">${esc(S.slice(0, i + 1).map(x => x.sh).filter(Boolean).pop())}</text>
+              <path d="M120 60 V100" class="line"/>`;
+        g += proc(30, "PID 100 · myctr", s.p, s.done ? " fade" : "");
+        if (s.c) g += proc(400, `PID ${s.c.pid} · ${s.c.img === "sh" || s.zombie || s.reaped ? "sh" : "myctr"}`, s.c, s.reaped ? " fade" : "");
+        if (s.fork) g += `<path d="M320 158 H400" class="line flow accent" style="stroke-width:2" marker-end="url(#la)"/><text x="360" y="150" text-anchor="middle" font-size="11.5" style="fill:var(--accent)">fork</text>`;
+        // 커널 바
+        g += `<rect x="20" y="244" width="680" height="42" rx="8" style="fill:var(--surface-2);stroke:var(--text)"/>
+              <text x="36" y="270" font-weight="700" font-size="13">커널</text>
+              <text x="90" y="270" font-family="var(--mono)" font-size="12.5" style="fill:var(--${s.k ? "violet" : "muted"})">${s.k ? esc(s.k) : "—"}</text>`;
+        if (s.a === "pk") g += `<path d="M175 216 V244" class="line flow" style="stroke:var(--violet);stroke-width:2"/>`;
+        if (s.a === "ck") g += `<path d="M545 216 V244" class="line flow" style="stroke:var(--violet);stroke-width:2"/>`;
+        if (s.a === "kp") g += `<path d="M175 244 V216" class="line flow" style="stroke:var(--violet);stroke-width:2"/>`;
+        svg.innerHTML = g;
+        return s.cap;
+      }
+    });
+  })();
+
+  // ===== 위젯 2: fork 트리 =====
+  (function () {
+    const CODE = {
+      all: n => `for _ in 0..${n} {\n    unsafe { fork() }.unwrap();   // 부모·자식 모두 루프를 계속 돈다\n}\nprintln!("hi");`,
+      brk: n => `for _ in 0..${n} {\n    if let ForkResult::Child = unsafe { fork() }.unwrap() {\n        break;                       // 자식은 루프를 빠져나간다\n    }\n}\nprintln!("hi");`,
+    };
+    function build(n, mode) {
+      const procs = [{ pid: 100, born: 0, parent: null, kids: [] }];
+      let next = 101;
+      for (let k = 1; k <= n; k++) {
+        const alive = mode === "all" ? procs.slice() : [procs[0]];
+        for (const p of alive) { const c = { pid: next++, born: k, parent: p, kids: [] }; p.kids.push(c); procs.push(c); }
+      }
+      return procs;
+    }
+    function draw() {
+      const n = +$("ft-n").value, mode = document.querySelector('input[name="ft-mode"]:checked').value;
+      $("ft-nv").textContent = n;
+      $("ft-code").textContent = CODE[mode](n);
+      const procs = build(n, mode);
+      // DFS 순서: 늦게 태어난 자식을 부모 바로 아래에 두면 연결선이 교차하지 않는다
+      const order = [];
+      (function dfs(p) { order.push(p); p.kids.slice().sort((a, b) => b.born - a.born).forEach(dfs); })(procs[0]);
+      order.forEach((p, i) => p.row = i);
+      const RH = 24, top = 34, left = 70, colW = Math.min(110, 420 / n), endX = left + (n + 1) * colW;
+      const H = top + order.length * RH + 10, W = endX + 70;
+      const X = k => left + k * colW;
+      let g = "";
+      for (let k = 1; k <= n; k++) g += `<line x1="${X(k)}" y1="18" x2="${X(k)}" y2="${H - 6}" style="stroke:var(--border);stroke-dasharray:3 3"/><text x="${X(k)}" y="14" text-anchor="middle" class="muted" style="font-size:11px">fork #${k}</text>`;
+      order.forEach(p => {
+        const y = top + p.row * RH;
+        const col = p.born === 0 ? "accent" : "ok";
+        if (p.parent) g += `<path d="M${X(p.born)} ${top + p.parent.row * RH} V${y}" style="stroke:var(--ok);stroke-width:1.5;fill:none"/>`;
+        g += `<line x1="${X(p.born)}" y1="${y}" x2="${endX}" y2="${y}" style="stroke:var(--${col});stroke-width:2"/>`;
+        g += `<circle cx="${X(p.born)}" cy="${y}" r="3.5" style="fill:var(--${col})"/>`;
+        g += `<text x="${X(p.born) - 8}" y="${y + 4}" text-anchor="end" style="fill:var(--muted)">${p.pid}</text>`;
+        g += `<rect x="${endX + 6}" y="${y - 9}" width="30" height="18" rx="4" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="${endX + 21}" y="${y + 4}" text-anchor="middle">hi</text>`;
+      });
+      const svg = $("ftree");
+      svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+      svg.style.maxWidth = W + "px";
+      svg.innerHTML = g;
+      $("ft-procs").textContent = procs.length;
+      $("ft-hi").textContent = procs.length;
+    }
+    $("ft-n").oninput = draw;
+    document.querySelectorAll('input[name="ft-mode"]').forEach(r => r.onchange = draw);
+    draw();
+  })();
+
+  // ===== 위젯 3: argv / PATH 탐색 =====
+  (function () {
+    // 가상 파일시스템: 실행 파일(x) / 실행 권한 없는 파일(-)
+    const FS = {
+      "/usr/bin": { sh: "x", bash: "x", dash: "x", echo: "x", ls: "x", cat: "x", sleep: "x", true: "x", false: "x", env: "x", ps: "x", id: "x", hostname: "x", strace: "x", unshare: "x" },
+      "/usr/sbin": { ip: "x", nft: "x", chroot: "x" },
+      "/usr/local/bin": {}, "/usr/local/sbin": {},
+      "/home/me": { "notes.txt": "-", "run.sh": "x" },
+    };
+    const SYMLINK = { "/bin": "/usr/bin", "/sbin": "/usr/sbin" };
+    const CWD = "/home/me";
+    function resolve(path) {
+      if (!path.startsWith("/")) path = CWD + "/" + path.replace(/^\.\//, "");
+      const i = path.lastIndexOf("/");
+      let dir = path.slice(0, i) || "/", name = path.slice(i + 1);
+      dir = SYMLINK[dir] || dir;
+      const d = FS[dir];
+      if (!d || !(name in d)) return "ENOENT";
+      return d[name] === "x" ? "OK" : "EACCES";
+    }
+    // 셸 분해: 공백 구분, '...' 그대로, "..." 안에서는 \" \\ 만 이스케이프, 바깥 \ 는 다음 문자 그대로
+    function split(s) {
+      const out = []; let cur = "", has = false, i = 0;
+      while (i < s.length) {
+        const c = s[i];
+        if (c === "'") { const j = s.indexOf("'", i + 1); if (j < 0) return { err: "닫히지 않은 작은따옴표" }; cur += s.slice(i + 1, j); has = true; i = j + 1; }
+        else if (c === '"') {
+          i++; has = true;
+          while (i < s.length && s[i] !== '"') { if (s[i] === "\\" && (s[i + 1] === '"' || s[i + 1] === "\\")) i++; cur += s[i++]; }
+          if (i >= s.length) return { err: "닫히지 않은 큰따옴표" }; i++;
+        }
+        else if (c === "\\" && i + 1 < s.length) { cur += s[i + 1]; has = true; i += 2; }
+        else if (/\s/.test(c)) { if (has) out.push(cur); cur = ""; has = false; i++; }
+        else { cur += c; has = true; i++; }
+      }
+      if (has) out.push(cur);
+      return { argv: out };
+    }
+    const PRESETS = [['echo "hello world"', "따옴표"], ["ls -la /", "옵션"], ["/bin/sh -c 'exit 3'", "절대 경로"], ["ip addr", "sbin"], ["no-such-command", "없는 명령"], ["./notes.txt", "권한 없음"], ["./run.sh", "상대 경로"]];
+    PRESETS.forEach(([c, l]) => {
+      const b = MM.el("button", { class: "btn", type: "button" }, l);
+      b.onclick = () => { $("pv-cmd").value = c; draw(); };
+      $("pv-presets").append(b);
+    });
+    function draw() {
+      const r = split($("pv-cmd").value);
+      const argvEl = $("pv-argv"), tries = $("pv-tries"), res = $("pv-result");
+      tries.innerHTML = "";
+      if (r.err) { argvEl.innerHTML = ""; res.innerHTML = `<span class="c-bad">셸 문법 오류: ${r.err}</span>`; return; }
+      if (!r.argv.length) { argvEl.innerHTML = ""; res.innerHTML = "명령을 입력하세요."; return; }
+      argvEl.innerHTML = r.argv.map((a, i) => `<span class="slot"><span class="idx">argv[${i}]</span>${esc(a)}</span>`).join("") +
+        `<span class="slot nul"><span class="idx">argv[${r.argv.length}]</span>NULL</span>`;
+      const name = r.argv[0];
+      let cands;
+      if (name.includes("/")) cands = [name];
+      else cands = ($("pv-path").value || "/bin:/usr/bin").split(":").map(d => (d || ".").replace(/\/$/, "") + "/" + name);
+      let found = null, sawEacces = false, delay = 0;
+      for (const c of cands) {
+        const st = resolve(c);
+        const li = MM.el("li", { class: st === "OK" ? "hit" : st === "EACCES" ? "acc" : "miss", style: `animation-delay:${delay}ms` },
+          `execve("${esc(c)}", ...) = ${st === "OK" ? "0" : "-1 " + st}`);
+        delay += 120;
+        tries.append(li);
+        if (st === "OK") { found = c; break; }
+        if (st === "EACCES") sawEacces = true;
+      }
+      if (found) res.innerHTML = `<b class="c-ok">성공.</b> 프로세스 이미지가 <code>${esc(found)}</code>로 교체됩니다. 시도 횟수 ${tries.children.length}번. ` +
+        (name.includes("/") ? "이름에 <code>/</code>가 있어 PATH를 보지 않았습니다." : "이름에 <code>/</code>가 없어 PATH 디렉터리를 앞에서부터 시도했습니다.");
+      else if (sawEacces) res.innerHTML = `<b class="c-warn">EACCES</b>: 파일은 있지만 실행 권한이 없습니다. 셸 관례로는 <b>126</b>입니다. (참고: execvp는 EACCES를 만나도 PATH의 나머지를 계속 시도하고, 끝까지 못 찾으면 EACCES를 돌려줍니다.)`;
+      else res.innerHTML = `<b class="c-bad">ENOENT</b>: 어디에서도 찾지 못했습니다. 자식은 <code>_exit(127)</code>, myctr의 <code>$?</code>는 <b>127</b>입니다.`;
+    }
+    $("pv-cmd").oninput = draw; $("pv-path").oninput = draw;
+    draw();
+  })();
+
+  // ===== 위젯 4: exec 상속 퀴즈 =====
+  (function () {
+    // [항목, 정답(keep|reset), 이유]
+    const ITEMS = [
+      ["PID", "keep", "exec는 새 프로세스를 만들지 않습니다. 같은 프로세스가 다른 프로그램을 실행할 뿐입니다."],
+      ["코드 · 힙 · 스택 · mmap 영역", "reset", "메모리 이미지 전체가 새 프로그램으로 교체됩니다. 이것이 exec의 본래 목적입니다."],
+      ["열린 파일 디스크립터 (stdin/stdout/stderr 등)", "keep", "fd 테이블은 유지됩니다. 셸이 <code>&gt; out.txt</code>를 구현하는 방법이 바로 이것입니다. fork 후 fd 1을 파일로 바꾸고 exec합니다."],
+      ["O_CLOEXEC 플래그가 붙은 fd", "reset", "close-on-exec 플래그가 있는 fd는 exec 때 닫힙니다. Rust 표준 라이브러리는 자기가 여는 모든 fd에 O_CLOEXEC를 붙이므로, myctr가 연 파일이 컨테이너로 새어 들어가지 않습니다."],
+      ["직접 등록한 시그널 핸들러 함수", "reset", "핸들러 함수의 코드는 교체된 메모리에 있었으므로 의미가 없어집니다. 처리 방식은 기본값(SIG_DFL)으로 돌아갑니다."],
+      ["SIG_IGN으로 설정한 시그널", "keep", "무시 설정은 코드 주소가 아니라 플래그라서 유지됩니다. 8절 Ctrl+C 함정의 원인입니다."],
+      ["시그널 마스크 (블록된 시그널)", "keep", "블록 상태와 대기 중인 시그널은 exec를 넘어 유지됩니다."],
+      ["네임스페이스 (UTS, PID, mount, net, user ...)", "keep", "컨테이너 런타임의 핵심 전제입니다. exec 직전에 들어간 네임스페이스에서 사용자 프로그램이 실행됩니다."],
+      ["cgroup 소속", "keep", "자원 제한도 그대로 이어집니다. 4장에서 자식을 cgroup에 넣은 뒤 exec합니다."],
+      ["현재 작업 디렉터리, root 디렉터리", "keep", "3장에서 pivot_root로 root를 바꾼 뒤 exec하면 사용자 프로그램은 컨테이너 파일시스템만 봅니다."],
+      ["uid / gid", "keep", "그대로 유지됩니다. 예외는 set-user-ID 비트가 붙은 실행 파일(예: sudo)인데, 7장의 no_new_privs로 이 예외를 막습니다."],
+      ["capability (권한 집합)", "keep", "규칙이 다소 복잡하지만, 런타임이 bounding set에서 뺀 capability는 exec 후에도 다시 얻을 수 없습니다(7장)."],
+      ["main 외의 다른 스레드", "reset", "exec 시 호출 스레드를 제외한 모든 스레드가 종료됩니다."],
+      ["환경 변수", "keep", "엄밀히는 execve의 envp 인자로 새로 전달됩니다. execvp는 현재 environ을 그대로 넘기므로 결과적으로 유지됩니다. 6번 도전 과제에서 직접 바꿔 봅니다."],
+    ];
+    const tbl = $("surv");
+    let answered = 0, correct = 0;
+    function score() { $("surv-score").textContent = `${correct} / ${answered} 정답 (전체 ${ITEMS.length})`; }
+    function build() {
+      answered = 0; correct = 0;
+      tbl.innerHTML = "<tr><th>속성</th><th>exec 후</th></tr>";
+      ITEMS.forEach(([name, ans, why]) => {
+        const tr = MM.el("tr", null, `<td>${name}<div class="why"></div></td><td><button class="btn" data-v="keep">유지</button> <button class="btn" data-v="reset">사라짐·초기화</button></td>`);
+        tr.querySelectorAll("button").forEach(b => b.onclick = () => reveal(tr, b.dataset.v));
+        tr.dataset.ans = ans; tr.dataset.why = why;
+        tbl.append(tr);
+      });
+      score();
+    }
+    function reveal(tr, v) {
+      if (tr.classList.contains("revealed")) return;
+      const ans = tr.dataset.ans;
+      if (v) { answered++; if (v === ans) correct++; tr.classList.add(v === ans ? "right" : "wrong"); }
+      tr.classList.add("revealed");
+      tr.querySelector(".why").innerHTML = `<span class="ans ${ans === "keep" ? "c-ok" : "c-bad"}">${ans === "keep" ? "유지" : "사라짐·초기화"}</span> · ${tr.dataset.why}`;
+      tr.cells[1].innerHTML = v ? (v === ans ? '<span class="c-ok">✓ 정답</span>' : '<span class="c-bad">✗ 오답</span>') : '<span class="muted">공개됨</span>';
+      score();
+    }
+    $("surv-all").onclick = () => tbl.querySelectorAll("tr[data-ans]").forEach(tr => reveal(tr, null));
+    $("surv-reset").onclick = build;
+    build();
+  })();
+
+  // ===== 위젯 5: 종료 상태 디코더 =====
+  (function () {
+    // Linux x86_64 / aarch64 공통 시그널 번호
+    const SIGS = [[1, "SIGHUP"], [2, "SIGINT"], [3, "SIGQUIT"], [4, "SIGILL"], [6, "SIGABRT"], [8, "SIGFPE"], [9, "SIGKILL"], [11, "SIGSEGV"], [13, "SIGPIPE"], [15, "SIGTERM"], [19, "SIGSTOP"], [20, "SIGTSTP"]];
+    const CORE = new Set([3, 4, 6, 8, 11]);   // 기본 동작이 코어 덤프인 시그널
+    const name = n => (SIGS.find(s => s[0] === n) || [n, "SIG" + n])[1];
+    const sel = $("ws-sig");
+    SIGS.forEach(([n, s]) => sel.append(MM.el("option", { value: n }, `${s} (${n})`)));
+    sel.value = 9;
+    let lock = false;
+    function encode() {
+      const kind = $("ws-kind").value;
+      if (kind === "exit") return ((+$("ws-code").value || 0) & 0xff) << 8;
+      const sig = +sel.value;
+      if (kind === "stop") return (sig << 8) | 0x7f;
+      return sig | ($("ws-core").checked ? 0x80 : 0);
+    }
+    function decode(st) {
+      const exited = (st & 0x7f) === 0, stopped = (st & 0xff) === 0x7f, signaled = !exited && !stopped && st !== 0xffff;
+      return { exited, stopped, signaled, code: (st >> 8) & 0xff, term: st & 0x7f, core: !!(st & 0x80), stop: (st >> 8) & 0xff };
+    }
+    function show(st) {
+      const d = decode(st);
+      const bits = $("ws-bits"); bits.innerHTML = "";
+      for (let b = 15; b >= 0; b--) {
+        const on = (st >> b) & 1;
+        const cls = b >= 8 ? "hi" : b === 7 ? "core" : "lo";
+        bits.append(MM.el("div", { class: "b" + (on ? " " + cls : "") }, on));
+      }
+      const M = [["WIFEXITED", d.exited], ["WEXITSTATUS", d.exited ? d.code : "-"], ["WIFSIGNALED", d.signaled], ["WTERMSIG", d.signaled ? d.term : "-"], ["WCOREDUMP", d.signaled ? d.core : "-"], ["WIFSTOPPED", d.stopped], ["WSTOPSIG", d.stopped ? d.stop : "-"]];
+      $("ws-macros").innerHTML = M.map(([k, v]) => `<span>${k} = <span class="${v === true ? "t" : "f"}">${v === true ? "true" : v === false ? "false" : v}</span></span>`).join("");
+      let nix = "?", shell = "-", note = "";
+      if (d.exited) {
+        nix = `Exited(Pid(101), ${d.code})`; shell = d.code;
+        const raw = +$("ws-code").value;
+        note = $("ws-kind").value === "exit" && raw > 255 ? `<b class="c-warn">주의:</b> exit(${raw})는 하위 8비트만 남아 <b>${raw & 0xff}</b>가 됩니다. 종료 코드는 0–255 범위입니다.` :
+          d.code === 0 ? "정상 종료. 관례상 0은 성공입니다." : `프로그램이 직접 반환한 코드입니다. 비트 8–15에 들어 있습니다(${d.code} &lt;&lt; 8 = ${d.code << 8}).`;
+      } else if (d.signaled) {
+        nix = `Signaled(Pid(101), ${name(d.term)}, ${d.core})`; shell = 128 + d.term;
+        note = `시그널 ${d.term}(${name(d.term)})로 죽었습니다. 하위 7비트가 시그널 번호, 비트 7이 코어 덤프 플래그입니다. 셸은 128 + ${d.term} = <b>${128 + d.term}</b>을 보고합니다.` +
+          (d.core ? " 실제로 코어 파일이 남는지는 <code>ulimit -c</code>와 <code>/proc/sys/kernel/core_pattern</code>에 달려 있습니다." : CORE.has(d.term) ? ` ${name(d.term)}의 기본 동작은 코어 덤프입니다. 코어 크기 제한이 0이면 플래그가 꺼진 채로 보고됩니다.` : "");
+      } else if (d.stopped) {
+        nix = `Stopped(Pid(101), ${name(d.stop)})`; shell = 128 + d.stop;
+        note = `하위 바이트가 <code>0x7f</code>면 "정지" 표시이고, 정지 시그널은 비트 8–15에 들어 있습니다. <code>waitpid</code>에 <code>WUNTRACED</code>를 줬을 때만 보고됩니다. 우리 myctr는 플래그 없이 기다리므로 이 경우를 만나지 않습니다. bash는 Ctrl+Z로 정지한 작업의 <code>$?</code>를 128 + n으로 보고합니다.`;
+      } else note = "0xffff는 WIFCONTINUED(SIGCONT로 재개)입니다. WCONTINUED 플래그를 줬을 때만 보고됩니다.";
+      $("ws-nix").textContent = nix; $("ws-shell").textContent = shell; $("ws-note").innerHTML = note;
+      lock = true; $("ws-raw").value = MM.hex(st, 4); lock = false;
+    }
+    function fromInputs() {
+      const kind = $("ws-kind").value;
+      $("ws-code-l").style.display = kind === "exit" ? "" : "none";
+      $("ws-sig-l").style.display = kind === "exit" ? "none" : "";
+      $("ws-core-l").style.display = kind === "sig" ? "" : "none";
+      show(encode());
+    }
+    ["ws-kind", "ws-sig", "ws-core", "ws-code"].forEach(id => { $(id).oninput = fromInputs; $(id).onchange = fromInputs; });
+    $("ws-raw").oninput = () => {
+      if (lock) return;
+      const v = parseInt($("ws-raw").value, $("ws-raw").value.trim().toLowerCase().startsWith("0x") ? 16 : 10);
+      if (!isNaN(v) && v >= 0 && v <= 0xffff) show(v);
+    };
+    const lbl = $("ws-bitlbl");
+    for (let b = 15; b >= 0; b--) lbl.append(MM.el("span", null, b));
+    fromInputs();
+  })();
+
+  // ===== 위젯 6: 좀비 · 고아 =====
+  (function () {
+    let P, C, logs;
+    function reset() { P = "run"; C = "run"; C_ppid = 100; logs = ["myctr(100)가 sh(101)을 fork + exec했습니다."]; render(); }
+    let C_ppid = 100;
+    function log(s) { logs.push(s); }
+    function render() {
+      const rows = [["PID", "PPID", "STAT", "CMD"], ["1", "0", "Ss", "/sbin/init"], ["50", "1", P === "dead" ? "Ss" : "Ss", "bash"]];
+      const cls = ["", "", ""];
+      if (P !== "dead") { rows.push(["100", "50", P === "wait" ? "S+" : "R+", "myctr run sh -c ..." + (P === "wait" ? "   ← wait4 대기" : "")]); cls.push(P === "wait" ? "w" : ""); }
+      else { rows.push(["100", "50", "", "myctr (종료됨)"]); cls.push("gone"); }
+      if (C === "run") { rows.push(["101", String(C_ppid), "S+", "sh -c ..." + (C_ppid === 1 ? "   ← 고아, init에게 입양" : "")]); cls.push(C_ppid === 1 ? "orphan" : ""); }
+      else if (C === "zombie") { rows.push(["101", String(C_ppid), "Z+", "[sh] <defunct>"]); cls.push("z"); }
+      else { rows.push(["101", "", "", "sh (회수됨)"]); cls.push("gone"); }
+      $("zs-ps").innerHTML = rows.map((r, i) => `<tr class="${cls[i]}">${r.map(c => i ? `<td>${esc(c)}</td>` : `<th>${c}</th>`).join("")}</tr>`).join("");
+      $("zs-log").textContent = logs.map((l, i) => `${String(i + 1).padStart(2)}. ${l}`).join("\n");
+      $("zs-log").scrollTop = 1e9;
+      $("zs-cexit").disabled = C !== "run";
+      $("zs-wait").disabled = P !== "run";
+      $("zs-pexit").disabled = P === "dead";
+    }
+    $("zs-cexit").onclick = () => {
+      if (C_ppid === 1) { C = "gone"; log("sh가 exit(0). 부모는 이미 init(1)이고, init이 SIGCHLD를 받아 곧바로 wait → 즉시 회수."); }
+      else if (P === "wait") { C = "gone"; P = "run"; log("sh가 exit(0). 커널이 wait4 중인 myctr를 깨움 → 상태 수거, PID 101 반납. 좀비 상태는 거의 순간적."); }
+      else { C = "zombie"; log("sh가 exit(0). myctr는 아직 wait하지 않음 → sh는 좀비(Z). 메모리는 해제됐지만 PID 101과 상태값은 남음. myctr에게 SIGCHLD(기본 동작: 무시)."); }
+      render();
+    };
+    $("zs-wait").onclick = () => {
+      if (C === "zombie") { C = "gone"; log("myctr가 waitpid(101) → 좀비의 상태 Exited(0)를 즉시 받음. 좀비가 사라지고 PID 101 반납."); }
+      else if (C === "run") { P = "wait"; log("myctr가 waitpid(101) → 자식이 살아 있으므로 잠듦(S). 자식이 끝나면 커널이 깨운다."); }
+      else log("myctr가 waitpid(101) → 더 기다릴 자식이 없음: ECHILD.");
+      render();
+    };
+    $("zs-pexit").onclick = () => {
+      P = "dead";
+      if (C === "run") { C_ppid = 1; log("myctr가 먼저 종료. sh는 고아가 되어 PID 1(init)에게 입양됨(PPID 100 → 1). sh는 계속 실행 중."); }
+      else if (C === "zombie") { C = "gone"; log("myctr가 종료. 좀비 sh도 init에게 입양되고, init이 곧바로 회수. 좀비 누적의 단골 해결책이 '부모를 죽이는 것'인 이유."); }
+      else log("myctr가 종료. bash가 myctr를 wait해서 $?를 얻음.");
+      render();
+    };
+    $("zs-reset").onclick = reset;
+    reset();
+  })();
+
+  // ===== 위젯 7: strace =====
+  (function () {
+    // [출력 줄, 설명] — 설명이 null이면 생략 표시 줄
+    const L = [
+      ['<span class="c">execve</span>("./target/debug/myctr", ["./target/debug/myctr", "run", "echo", "hi"], 0xffffe0d8 /* 24 vars */) = 0',
+        "셸이 myctr를 실행한 순간입니다(셸 쪽에서 fork 후 exec). 이 줄부터 PID가 myctr의 것입니다. 마지막 인자는 환경 변수 배열의 주소이고 strace가 개수만 요약합니다."],
+      ["... Rust 런타임·동적 링커 초기화 (mmap, openat, mprotect 등, -e 필터로 숨김)", null],
+      ['<span class="c">clone</span>(child_stack=NULL, flags=<span class="k">CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD</span>, child_tidptr=0xffff9d4e0f10) = 4242',
+        "<code>fork()</code>의 실체입니다. <code>child_stack=NULL</code>은 부모의 스택을 COW로 복제한다는 뜻이고, <code>SIGCHLD</code>는 자식이 죽으면 부모에게 보낼 시그널입니다. CLONE_NEW* 플래그가 하나도 없으므로 모든 네임스페이스를 공유합니다. 반환값 4242가 자식 PID입니다. 2장에서는 이 flags에 CLONE_NEWUTS, CLONE_NEWPID를 넣습니다."],
+      ['[pid  4242] <span class="c">execve</span>("/usr/local/sbin/echo", ["echo", "hi"], 0xffffe100 /* 24 vars */) = <span class="e">-1 ENOENT</span> (No such file or directory)',
+        "<code>[pid 4242]</code>는 자식이 낸 시스템 콜입니다. <code>execvp</code>가 PATH의 첫 디렉터리부터 시도하고 있습니다. 파일이 없으니 ENOENT."],
+      ['[pid  4242] <span class="c">execve</span>("/usr/local/bin/echo", ["echo", "hi"], 0xffffe100 /* 24 vars */) = <span class="e">-1 ENOENT</span> (No such file or directory)',
+        "PATH의 두 번째 디렉터리. 역시 없음."],
+      ['[pid  4242] <span class="c">execve</span>("/usr/sbin/echo", ["echo", "hi"], 0xffffe100 /* 24 vars */) = <span class="e">-1 ENOENT</span> (No such file or directory)',
+        "세 번째도 없음. 명령 이름에 <code>/</code>를 넣으면(<code>/usr/bin/echo</code>) 이 탐색이 사라집니다. 3장 이후 컨테이너 안에서는 컨테이너의 PATH와 파일시스템 기준으로 탐색한다는 점도 기억해 두세요."],
+      ['[pid  4242] <span class="c">execve</span>("/usr/bin/echo", ["echo", "hi"], 0xffffe100 /* 24 vars */) = 0',
+        "성공. 이 순간 PID 4242의 메모리는 myctr 복사본에서 echo로 교체됩니다. 이 줄 이후 4242의 시스템 콜은 echo가 내는 것입니다."],
+      ['[pid  4241] <span class="c">wait4</span>(4242,  &lt;unfinished ...&gt;',
+        "부모(4241)가 <code>waitpid</code> → 커널의 <code>wait4</code>로 잠듭니다. <code>&lt;unfinished ...&gt;</code>는 이 호출이 아직 반환되지 않았다는 strace 표기입니다. 이 줄은 자식의 execve보다 먼저 찍힐 수도 있습니다. 두 프로세스는 동시에 실행됩니다."],
+      ['[pid  4242] <span class="c">write</span>(1, "hi\\n", 3)              = 3',
+        "echo가 fd 1(stdout)에 씁니다. fd 1은 fork로 복사되고 exec로 유지된, myctr가 셸에게서 물려받은 바로 그 터미널입니다."],
+      ['[pid  4242] <span class="c">exit_group</span>(0)                    = ?',
+        "echo가 종료합니다. <code>exit_group</code>은 프로세스의 모든 스레드를 끝냅니다. 반환하지 않으므로 결과가 <code>?</code>입니다."],
+      ["[pid  4242] +++ exited with 0 +++", "strace가 자식의 종료를 알려 줍니다. 이 시점부터 자식은 좀비이고, 부모의 wait4가 깨어납니다."],
+      ['&lt;... <span class="c">wait4</span> resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = 4242',
+        "부모의 wait4가 반환됐습니다. strace가 status 비트를 6절의 C 매크로로 풀어서 보여 줍니다. nix에서는 <code>WaitStatus::Exited(Pid(4242), 0)</code>입니다. 이 반환으로 좀비가 회수됩니다."],
+      ['--- <span class="k">SIGCHLD</span> {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=4242, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---',
+        "clone 때 지정한 SIGCHLD가 부모에게 도착했습니다. 기본 동작이 무시라서 아무 일도 일어나지 않습니다. wait4와의 순서는 바뀔 수 있습니다."],
+      ['<span class="c">exit_group</span>(0)                           = ?', "myctr가 자식의 코드(0)로 종료합니다."],
+      ["+++ exited with 0 +++", "셸의 <code>$?</code>는 0이 됩니다."],
+    ];
+    const box = $("st-lines");
+    L.forEach(([html, ex], i) => {
+      const d = MM.el("div", { class: ex ? "" : "skip" }, html);
+      if (ex) d.onclick = () => {
+        box.querySelectorAll(".on").forEach(x => x.classList.remove("on"));
+        d.classList.add("on");
+        $("st-explain").innerHTML = ex;
+      };
+      box.append(d);
+    });
+  })();
+})();
+</script>
+</body>
+</html>

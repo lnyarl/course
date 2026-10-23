@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>컨테이너 런타임 만들기</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .hero { padding: 24px 0 8px; }
+  .hero h1 { font-size: clamp(32px, 6vw, 48px); }
+  .hero .lead { max-width: 720px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; font-size: 14px; }
+  .meta span { background: var(--surface-2); border-radius: 999px; padding: 4px 12px; }
+  .map { margin: 28px 0; }
+  .progress-wrap { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }
+  .progress-wrap .bar { flex: 1; height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+  .progress-wrap .bar > div { height: 100%; background: var(--ok); width: 0; transition: width .4s; }
+  .howto { font-size: 15px; }
+  #road .stage-node { cursor: pointer; }
+  #road .stage-node rect { transition: stroke-width .2s; }
+  #road .stage-node:hover rect { stroke-width: 3; }
+  #road .soon { opacity: .45; }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <span class="label" style="display:inline-block;font-size:13px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:2px 10px;border-radius:999px">만들면서 배우기 · 9 챕터</span>
+    <h1>컨테이너 런타임 만들기<br><small style="font-size:.55em;color:var(--muted);font-weight:500">Rust로 한 단계씩 쌓아 올리는 나만의 <code>myctr</code></small></h1>
+    <p class="lead">컨테이너는 마법이 아니라 <b>평범한 Linux 프로세스에 커널 기능 몇 가지를 덧씌운 것</b>입니다. 이 코스는 <code>fork</code> 한 번에서 출발해 네임스페이스, cgroup, 네트워크, seccomp, OCI 이미지까지 직접 구현하며 Docker 아래에서 무슨 일이 일어나는지 손으로 확인합니다. 코드는 여러분이 짭니다. 각 장은 개념 · 도식 · 시뮬레이터 · 구현 가이드 · 완료 기준을 제공합니다.</p>
+    <div class="meta">
+      <span>🦀 Rust 2024 · nix 크레이트</span><span>🐧 Linux (macOS는 VM)</span><span>🧪 인터랙티브 시뮬레이터</span><span>📐 SVG 도식</span><span>✅ 장마다 완료 기준</span><span>🌓 다크 모드</span>
+    </div>
+    <div class="progress-wrap"><span>학습 진도</span><div class="bar"><div id="pbar"></div></div><span id="ptext">0 / 9</span><button class="btn" id="preset" style="font-size:12px;padding:3px 8px">초기화</button></div>
+  </header>
+
+  <figure class="map">
+    <div class="stage">
+      <svg class="diagram" id="road" viewBox="0 0 900 350" role="img" aria-label="코스 로드맵: 9단계가 계단처럼 쌓이는 구조"></svg>
+    </div>
+    <figcaption>아래에서 위로 쌓입니다. 각 단계는 이전 단계의 <code>myctr</code> 코드에 기능을 하나씩 더합니다. 단계를 누르면 해당 장으로 이동합니다.</figcaption>
+  </figure>
+
+  <div class="callout tip"><span class="title">한 프로젝트를 끝까지 확장합니다</span>1→2장은 프로세스와 UTS·PID, 3장은 rootfs·mount·proc/dev, 4장은 cgroup, 5장은 ID 매핑, 6장은 네트워크, 7장은 보안 정책, 8장은 이미지·overlay 루트를 누적합니다. 3~7장은 <code>--rootfs</code>가 필수이고 8장은 <code>--rootfs</code> 또는 <code>--image</code>를 반드시 지정합니다. rootless에서는 호출자 소유 rootfs를 씁니다. 각 장의 참조 소스와 누적 검사는 <a href="examples/README.md">실행 예제 묶음</a>에서 함께 받을 수 있습니다.</div>
+  <div id="chapters"></div>
+
+  <h2>이 코스를 보는 법</h2>
+  <div class="howto">
+    <ul>
+      <li><b>코드는 직접 짜세요.</b> 각 장의 "구현 가이드"는 뼈대와 단계별 힌트를 주고, 참조 구현은 접힌 상자 안에 있습니다. 막혔을 때만 여세요.</li>
+      <li><b>완료 기준을 통과하면 다음 장으로.</b> 장마다 셸 스크립트로 확인할 수 있는 기준을 둡니다. 통과하면 <code>git tag ch01</code>처럼 태그를 남겨 성장 과정을 기록하세요.</li>
+      <li><b>위젯은 예측한 뒤 조작하세요.</b> 시뮬레이터는 Linux의 실제 규칙(종료 상태 인코딩, exec 시 상속 규칙 등)을 그대로 구현했습니다.</li>
+      <li><b>막히면</b> <code>man 2 clone</code>, <code>man 7 namespaces</code>, 그리고 Rust로 작성된 OCI 런타임 <a href="https://github.com/youki-dev/youki">youki</a>의 소스를 참고하세요.</li>
+      <li>진도(✓)는 이 브라우저에만 저장됩니다.</li>
+    </ul>
+  </div>
+</main>
+<script>
+(function () {
+  const parts = [...new Set(MM.CHAPTERS.map(c => c.part))];
+  const visited = MM.visited();
+
+  // 로드맵 계단 그리기
+  const colors = ["accent", "violet", "ok"];
+  const road = document.getElementById("road");
+  let svg = `<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>`;
+  const SHORT = ["fork · exec", "UTS · PID ns", "pivot_root", "cgroups v2", "user ns", "네트워크", "seccomp", "OCI 이미지", "OCI 스펙"];
+  const W = 92, H = 34, gapX = 98, baseY = 280, stepY = 28;
+  MM.CHAPTERS.forEach((c, i) => {
+    const x = 14 + i * gapX, y = baseY - i * stepY, col = colors[parts.indexOf(c.part)];
+    if (i > 0) svg += `<path d="M${x - gapX + W} ${y + stepY + H / 2} L${x} ${y + H / 2}" class="line" marker-end="url(#arr)"/>`;
+    svg += `<g class="stage-node${c.ready ? "" : " soon"}" data-file="${c.ready ? c.file : ""}">
+      <rect x="${x}" y="${y}" width="${W}" height="${H}" rx="8" style="fill:var(--${col}-soft);stroke:var(--${col})"/>
+      <text x="${x + W / 2}" y="${y + 14}" text-anchor="middle" font-size="11" style="fill:var(--${col})" font-family="var(--mono)">${c.id}${visited.has(c.id) ? " ✓" : ""}</text>
+      <text x="${x + W / 2}" y="${y + 28}" text-anchor="middle" font-size="11.5" font-weight="700">${SHORT[i]}</text>
+      <rect x="${x}" y="${y + H + 4}" width="${W}" height="${Math.max(0, baseY - y - 4)}" rx="4" style="fill:var(--${col}-soft);opacity:.35"/>
+    </g>`;
+  });
+  svg += `<text x="14" y="342" font-size="12" class="muted">평범한 프로세스</text><text x="886" y="20" text-anchor="end" font-size="12" class="muted">docker run --runtime=myctr</text>`;
+  road.innerHTML = svg;
+  road.querySelectorAll(".stage-node").forEach(g => g.onclick = () => { if (g.dataset.file) location.href = g.dataset.file; });
+
+  // 챕터 카드
+  const root = document.getElementById("chapters");
+  parts.forEach((p, pi) => {
+    root.append(MM.el("div", { class: "part-title" }, `Part ${pi + 1} · ${p}`));
+    const grid = MM.el("div", { class: "card-grid" });
+    MM.CHAPTERS.filter(c => c.part === p).forEach(c => {
+      const cls = "card" + (c.ready ? "" : " soon") + (visited.has(c.id) ? " visited" : "");
+      grid.append(MM.el("a", c.ready ? { class: cls, href: c.file } : { class: cls, "aria-disabled": "true" },
+        `<div class="num">Chapter ${c.id}</div><div class="t">${c.title}</div><div class="d">${c.desc}</div>`));
+    });
+    root.append(grid);
+  });
+  const n = MM.CHAPTERS.filter(c => visited.has(c.id)).length;
+  document.getElementById("pbar").style.width = (n / MM.CHAPTERS.length * 100) + "%";
+  document.getElementById("ptext").textContent = `${n} / ${MM.CHAPTERS.length}`;
+  document.getElementById("preset").onclick = () => { MM.resetVisited(); location.reload(); };
+})();
+</script>
+</body>
+</html>

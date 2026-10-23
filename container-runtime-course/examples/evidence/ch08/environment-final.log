@@ -1,0 +1,12 @@
+Linux 22d549fdc435 7.0.12-linuxkit #1 SMP PREEMPT Thu Aug 27 14:02:21 UTC 2026 aarch64 GNU/Linux
+rustc 1.86.0 (05f9846f8 2025-03-31)
+binary: rustc
+commit-hash: 05f9846f893b09a1be1fc8560e33fc3c815cfecb
+commit-date: 2025-03-31
+host: aarch64-unknown-linux-gnu
+release: 1.86.0
+LLVM version: 19.1.7
+cargo 1.86.0 (adf9b6ad1 2025-02-28)
+store fs=tmpfs
+sha256:e311ae748be7f56ae5cba304bc488f0786df68ee507513f654a5cc8597cffb42
+subtree_control=

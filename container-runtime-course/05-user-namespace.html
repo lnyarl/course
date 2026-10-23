@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>user namespace · rootless</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .user-pair { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:14px 0; }
+  .user-panel { min-width:0; padding:14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
+  .user-panel h4 { margin:0 0 8px; font-size:14px; }
+  .user-panel pre { font-size:12.5px; margin:0; }
+  .compare > div { min-width:0; }
+  .map-fields { display:flex; flex-wrap:wrap; gap:8px 14px; font-size:14px; }
+  .map-fields label { display:flex; flex-direction:column; gap:4px; }
+  .map-fields input { width:145px; }
+  .readout { padding:10px 12px; background:var(--surface-2); border-radius:8px; font-size:14px; overflow-wrap:anywhere; }
+  .readout.good { background:var(--ok-soft); }
+  .readout.bad { background:var(--bad-soft); }
+  .phase-list { display:flex; flex-wrap:wrap; gap:6px; padding:0; list-style:none; }
+  .phase-list li { padding:4px 10px; border:1px solid var(--border); border-radius:7px; font:12px var(--mono); background:var(--surface-2); }
+  .phase-list li.done { border-color:var(--ok); background:var(--ok-soft); }
+  .trace { font:12.5px/1.7 var(--mono); overflow-x:auto; border:1px solid var(--border); border-radius:10px; padding:6px 0; background:var(--code-bg); }
+  .trace button { display:block; width:100%; padding:5px 12px; text-align:left; border:0; border-left:3px solid var(--border); background:var(--code-bg); color:var(--text); font:inherit; white-space:pre; cursor:pointer; }
+  .trace button:hover,.trace button.on { border-left-color:var(--accent); background:var(--accent-soft); }
+  #trace-explain { min-height:5em; margin-top:10px; }
+  .diagram-wide { min-width:640px; }
+  .lab-note,.sources { color:var(--muted); font-size:13.5px; }
+  main { overflow-wrap:anywhere; }
+  pre,.trace { overflow-wrap:normal; }
+  @media(max-width:600px) { .user-pair { grid-template-columns:1fr; } .controls label { flex-wrap:wrap; } }
+</style>
+</head>
+<body data-chapter="05">
+<main>
+<header class="chapter-head">
+  <span class="label adv">자원 · 권한 · 네트워크 · Chapter 05</span>
+  <h1>user 네임스페이스와 rootless</h1>
+  <p class="lead">지금까지 myctr를 실행할 때마다 sudo가 필요했습니다. 이번에는 <b>호스트의 일반 사용자로 실행하면서 안에서는 UID 0</b>이 되게 만듭니다. 핵심은 <b>UID/GID 번호의 대응표와 권한의 적용 범위</b>입니다. 부모가 매핑을 쓰는 동안 자식은 파이프에서 기다리고, 준비가 끝나야 hostname 설정과 exec를 시작합니다.</p>
+  <div class="objectives"><h4>학습 목표</h4><ul>
+    <li>컨테이너 안의 UID 0과 바깥의 UID 1000이 같은 프로세스를 가리키는 구조를 설명한다.</li>
+    <li><code>uid_map</code>·<code>gid_map</code>의 세 열을 읽고, 단일 ID와 범위 매핑을 계산한다.</li>
+    <li><code>setgroups=deny</code>를 gid_map보다 먼저 쓰는 이유를 이해한다.</li>
+    <li>부모의 매핑·cgroup 배치와 자식의 실행 사이에 파이프 장벽을 구현한다.</li>
+    <li>3·4장의 파일시스템 격리를 유지한 채 일반 사용자로 실행하고 누적 rootless 완료 기준을 통과한다.</li>
+  </ul></div>
+</header>
+<div class="callout"><span class="title">4장의 rootfs와 cgroup을 유지합니다</span>3~4장의 mount namespace·pivot_root·새 /proc·/dev에 user namespace를 더합니다. 부모가 매핑과 cgroup 배치를 마치면 자식은 ID 0을 선택하고 rootfs를 준비합니다. 따라서 <code>id -u</code>는 0, <code>ls /</code>는 Alpine, <code>ps</code>는 컨테이너 PID 공간을 봅니다. rootless에서는 호출자가 소유한 별도 rootfs를 사용합니다.</div>
+<nav class="toc"><b>목차</b><ol>
+<li><a href="#s1">rootless: 어느 쪽의 root인가</a></li>
+<li><a href="#s2">uid_map·gid_map 읽기</a></li>
+<li><a href="#s3">단일 ID와 subordinate ID 범위</a></li>
+<li><a href="#s4">setgroups를 먼저 막는 이유</a></li>
+<li><a href="#s5">부모와 자식 사이의 파이프 장벽</a></li>
+<li><a href="#s6">user namespace의 capability 경계</a></li>
+<li><a href="#s7">4장의 cgroup과 연결하기</a></li>
+<li><a href="#s8">구현 가이드</a></li>
+<li><a href="#s9">완료 기준과 참조 구현</a></li>
+<li><a href="#s10">strace와 실패 진단</a></li>
+<li><a href="#s11">누적 구현과 다음 단계</a></li>
+</ol></nav>
+
+<section id="s1">
+<h2>1. rootless: 어느 쪽의 root인가</h2>
+<p>UID 0이라는 숫자는 그것을 해석하는 user namespace와 함께 봐야 합니다. 호스트에서 UID 1000인 프로세스를 새 user namespace 안의 UID 0에 대응시키면, <code>id -u</code>는 안에서 0, 바깥에서 본 소유자는 1000이 됩니다. 번호를 다르게 표시하는 것과 바깥 시스템을 관리할 권한을 얻는 것은 다릅니다.</p>
+<figure><div class="stage"><svg class="diagram diagram-wide" viewBox="0 0 820 260" role="img" aria-label="호스트의 UID 1000과 자식 user namespace의 UID 0이 같은 프로세스로 매핑되는 구조">
+<rect x="12" y="20" width="365" height="225" rx="14" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="32" y="52" font-weight="700">바깥 user namespace</text><text x="32" y="92" font-family="var(--mono)">myctr: EUID = 1000</text><text x="32" y="126" font-family="var(--mono)">자식: 호스트 관점 UID = 1000</text><text x="32" y="164">호스트 root의 파일은 보호됨</text><text x="32" y="212" class="muted">sudo 없이 실행</text>
+<rect x="443" y="20" width="365" height="225" rx="14" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="463" y="52" font-weight="700">새 user namespace</text><text x="463" y="92" font-family="var(--mono)">자식: UID = 0, GID = 0</text><text x="463" y="126" font-family="var(--mono)">uid_map: 0 1000 1</text><text x="463" y="164">새 UTS의 hostname 변경 가능</text><text x="463" y="212" class="muted">부모 namespace의 관리자는 아님</text>
+<path d="M382 119H436 M426 112L436 119L426 126" class="line"/><text x="409" y="101" text-anchor="middle" font-size="11">매핑</text>
+</svg></div><figcaption>같은 커널 자격 증명을 namespace마다 다른 번호로 봅니다. CPU와 메모리가 별도인 VM은 아닙니다.</figcaption></figure>
+<p><code>CLONE_NEWUSER</code>와 <code>CLONE_NEWUTS | CLONE_NEWPID</code>를 함께 주면 user namespace를 먼저 만들고 나머지 namespace를 그 권한 범위 아래 생성할 수 있습니다. 그래서 호스트의 일반 사용자도 새 UTS·PID 공간을 만들 수 있습니다. 다만 커널·보안 정책에서 비특권 user namespace를 허용해야 합니다. <a href="https://man7.org/linux/man-pages/man2/clone.2.html">clone(2)</a></p>
+<div class="tbl-wrap"><table><tr><th>상태</th><th>호스트 EUID</th><th>안의 UID</th><th>이 장의 실행</th></tr>
+<tr><td>기존 root 실행</td><td>0</td><td>0</td><td>user namespace를 새로 만들지 않고 4장 동작 유지</td></tr>
+<tr><td>일반 사용자 실행</td><td>1000 예시</td><td>0</td><td>자기 UID/GID 하나씩 매핑하는 rootless 모드</td></tr>
+<tr><td>root + 범위 옵션</td><td>0</td><td>0으로 명시 전환</td><td><code>--userns-base 100000</code>으로 넓은 매핑 실험</td></tr></table></div>
+<p>rootless 모드는 옵션 이름이 아니라 <b>실행자의 effective UID</b>로 고릅니다. <code>sudo myctr run --rootfs ./rootfs id</code>는 rootless 검사가 아닙니다. 일반 사용자 셸에서 <code>./target/debug/myctr run --rootfs ./rootfs-user id</code>를 실행해야 합니다.</p>
+</section>
+
+<section id="s2">
+<h2>2. uid_map·gid_map 읽기</h2>
+<p>부모는 자식의 호스트 PID로 <code>/proc/&lt;pid&gt;/uid_map</code>과 <code>gid_map</code>을 엽니다. 이 예제의 부모가 쓰는 한 줄은 <b>안쪽 시작 ID · 바깥쪽 시작 ID · 길이</b>입니다. 두 매핑은 별도이며 UID를 썼다고 GID가 함께 바뀌지 않습니다. 아래의 바깥은 이 장에서 직접 부모인 user namespace를 뜻합니다. 중첩 user namespace에서는 물리 머신의 초기 namespace와 다를 수 있습니다.</p>
+<pre><code># 부모 namespace에서 자식 PID가 4201이라면
+# 안쪽 시작   바깥쪽 시작   길이
+# 0           1000         1
+printf '0 1000 1' &gt; /proc/4201/uid_map
+# gid_map도 별도 설정한다. rootless 순서는 4절에서 다룬다.</code></pre>
+<p>한 범위 안에서는 <code>바깥 ID = 바깥 시작 + (안쪽 ID − 안쪽 시작)</code>으로 계산합니다. 길이에 끝점이 포함되는지 주의하세요. <code>0 100000 65536</code>은 안쪽 0..65535를 바깥 100000..165535에 대응시킵니다. <code>0 1000 1</code>에는 안쪽 UID 1이 없습니다.</p>
+<div class="widget" id="map-lab"><div class="w-title">UID 매핑 계산기</div><div class="w-desc">왼쪽의 ID 범위를 바꾸고 안쪽 UID가 바깥에서 누구인지 계산하세요. 하나의 extent만 다루는 모형입니다.</div>
+<div class="controls"><button type="button" class="btn" id="map-single">rootless: 0 → 1000 하나</button><button type="button" class="btn" id="map-range">범위: 0..65535 → 100000부터</button></div>
+<div class="map-fields"><label>안쪽 시작<input id="map-in" type="number" value="0" min="0" max="4294967294"></label><label>바깥 시작<input id="map-out" type="number" value="1000" min="0" max="4294967294"></label><label>길이<input id="map-count" type="number" value="1" min="1" max="4294967295"></label><label>찾을 안쪽 UID<input id="map-probe" type="number" value="0" min="0" max="4294967294"></label></div>
+<div class="log" id="map-text"></div><div class="readout" id="map-result" role="status" aria-live="polite"></div>
+<p class="lab-note">번호 계산만 보여 줍니다. 계산 가능한 범위라는 사실이 그 매핑을 쓸 권한을 뜻하지는 않습니다.</p></div>
+<details class="deep"><summary>65534가 보이면 매핑 실패인가?</summary><div>
+<p>매핑되지 않은 ID는 여러 사용자 공간 인터페이스에서 overflow ID로 표시되며 기본값은 65534입니다. 설정에 따라 값은 달라질 수 있습니다. 이는 여러 ID가 실제로 같은 사용자로 합쳐졌다는 뜻이 아니라 현재 namespace에서 표현할 매핑이 없다는 뜻입니다.</p>
+<p>특히 root가 <code>0 100000 65536</code>을 쓰더라도, 자식이 원래 물려받은 호스트 UID 0은 그 범위에 없습니다. 따라서 매핑 후 자식이 <code>setgid(0)</code>·<code>setuid(0)</code>으로 안쪽 ID 0을 선택해야 합니다. 참조 구현은 이 전환을 파이프에서 깨어난 뒤 수행합니다. 매핑만 쓰고 exec하면 의도와 다른 ID로 실행할 수 있습니다.</p>
+</div></details>
+<p>매핑은 해당 namespace에서 한 번 설정하는 초기화 작업입니다. 실행 중 임의로 덮어쓰는 설정 파일처럼 다루면 안 됩니다. 전체 매핑 규칙과 쓰기 권한 조건은 <a href="https://man7.org/linux/man-pages/man7/user_namespaces.7.html">user_namespaces(7)</a>에서 확인할 수 있습니다.</p>
+</section>
+
+<section id="s3">
+<h2>3. 단일 ID와 subordinate ID 범위</h2>
+<p>이번 rootless 기본 모드는 자신의 effective UID/GID 하나만 안의 0에 대응시킵니다. helper나 subordinate ID 설정 없이 이해할 수 있는 최소 단위입니다. 안에서 UID 1·1000 같은 다른 계정으로 전환하거나 다양한 소유권의 이미지를 표현할 수 있는 구현은 아닙니다.</p>
+<div class="compare"><div><div class="lbl ok">일반 사용자: 자기 ID 한 개</div><pre><code># 일반 사용자 (예: UID/GID 1000)
+./target/debug/myctr run --rootfs ./rootfs-user id
+# 기대: uid=0(root) gid=0(root) ...
+# 바깥 관점의 자식 소유자는 여전히 1000</code></pre></div><div><div class="lbl ok">root의 범위 실험</div><pre><code># root + 쓰기 가능한 cgroup v2 실습 환경
+sudo ./target/debug/myctr run --rootfs ./rootfs-range --userns-base 100000 id
+# 안쪽 0..65535 → 바깥 100000..165535
+# 안쪽 ID 0은 부모 매핑 뒤 자식이 명시적으로 선택</code></pre></div></div>
+<p><code>--userns-base</code>는 root 전용 학습 옵션입니다. root가 직접 매핑을 쓰며 길이는 65536으로 고정합니다. 일반 사용자가 이 옵션으로 남의 ID를 임의로 얻을 수는 없습니다. base와 범위의 합이 유효 ID 영역을 벗어나는 입력도 거부합니다.</p>
+<h3>실제 rootless 런타임의 여러 ID는 어디서 오나</h3>
+<p><code>/etc/subuid</code>·<code>/etc/subgid</code>는 사용자에게 할당한 subordinate ID 범위의 자료입니다. 예를 들어 <code>alice:100000:65536</code>은 alice에게 그 시작점과 길이의 범위를 위임하는 항목입니다. 파일을 읽었다고 커널 매핑이 자동 생성되지는 않습니다. <a href="https://man7.org/linux/man-pages/man5/subuid.5.html">subuid(5)</a></p>
+<p>일반 사용자의 넓은 매핑은 <code>newuidmap</code>·<code>newgidmap</code> 같은 권한 있는 helper가 위임 범위를 검사한 뒤 설정하는 방식으로 구성할 수 있습니다. root조차 이 helper를 쓸 때는 helper가 요구하는 위임 조건을 따라야 합니다. 이 장의 root 전용 직접 쓰기 옵션과 helper 호출을 구분하세요. <a href="https://man7.org/linux/man-pages/man1/newuidmap.1.html">newuidmap(1)</a>, <a href="https://man7.org/linux/man-pages/man1/newgidmap.1.html">newgidmap(1)</a></p>
+<details class="deep"><summary>단일 매핑의 제한: chown과 setuid</summary><div>
+<p>0만 매핑한 namespace에서 UID 123으로 바꾸거나 파일 소유자를 123으로 설정하려면 대응할 바깥 ID가 없습니다. 해당 연산이 실패할 수 있습니다. 이미지의 소유권을 보존하려면 여러 ID 범위와 저장소 소유권 전략까지 함께 설계해야 합니다. 이번 참조 구현은 subuid를 읽거나 helper를 자동 실행하지 않습니다.</p>
+</div></details>
+</section>
+
+<section id="s4">
+<h2>4. setgroups를 먼저 막는 이유</h2>
+<p>비특권 부모가 단일 GID 매핑을 쓰려면 먼저 자식의 <code>/proc/&lt;pid&gt;/setgroups</code>에 <code>deny</code>를 씁니다. 이 namespace에서 <code>setgroups(2)</code>를 못 하게 한 뒤 <code>gid_map</code>을 허용하는 조건입니다. uid_map과 혼동하지 마세요.</p>
+<pre><code># 일반 사용자 UID/GID가 모두 1000인 예시. 쓰는 주체는 부모.
+printf deny       &gt; /proc/4201/setgroups
+printf '0 1000 1' &gt; /proc/4201/uid_map
+printf '0 1000 1' &gt; /proc/4201/gid_map
+# 중요: gid_map 전에 deny. uid_map/gid_map은 각각 한 번 설정.</code></pre>
+<p>deny는 보조 그룹 목록을 비우는 호출이 아닙니다. 목록을 바꾸는 <code>setgroups()</code> 자체를 막는 정책이며, 이 namespace에서 다시 allow로 되돌릴 수 없습니다. 상속한 보조 그룹까지 없어졌다고 가정해서는 안 됩니다. 보조 그룹 목록과 effective GID도 다른 값입니다. <a href="https://man7.org/linux/man-pages/man2/setgroups.2.html">setgroups(2)</a></p>
+<p>참조 구현의 root 범위 매핑 모드는 이와 달리 매핑 뒤 <code>setgroups(&amp;[])</code>로 상속한 보조 그룹을 비우고, 기본 GID와 UID를 안의 0으로 옮깁니다. rootless 경로에서는 deny 때문에 같은 호출을 할 수 없으므로 기존 보조 그룹을 유지합니다.</p>
+<details class="deep"><summary>실험: deny여도 기존 그룹의 파일은 읽을 수 있다</summary><div><p>별도 fixture에서 바깥 UID/GID 1000에 보조 그룹 2000을 준 뒤 rootless로 실행했습니다. 안에서는 <code>id</code>의 보조 그룹에 매핑 없는 overflow 값이 나타났고, <code>setgroups</code>는 deny였습니다. 그런데 바깥 그룹 2000에 읽기를 허용한 fixture는 계속 읽혔습니다. 매핑되지 않은 번호가 보이지 않는 것과 커널의 기존 그룹 자격 증명이 없어지는 것은 다릅니다.</p></div></details>
+<details class="deep"><summary>보조 그룹을 버리면 왜 권한이 늘 수 있나?</summary><div>
+<p>파일의 group 권한이 other보다 좁은 경우가 있습니다. 그 그룹 소속을 버리면 오히려 other 권한을 적용받아 이전에는 못 읽던 파일을 읽을 수 있습니다. 새 namespace의 capability가 이 우회로를 열지 않도록 비특권 gid_map 경로에 setgroups 제한이 있습니다.</p>
+<p>이번 코드의 rootless 경로는 deny를 씁니다. 부모가 충분한 권한으로 범위 매핑을 직접 쓰는 경로는 같은 제한 경로를 사용하지 않습니다. 두 경우를 무조건 같은 셸 명령 목록으로 처리하지 않습니다.</p>
+</div></details>
+</section>
+
+<section id="s5">
+<h2>5. 부모와 자식 사이의 파이프 장벽</h2>
+<p>clone은 부모와 자식을 동시에 실행 가능하게 만듭니다. 부모가 매핑 파일을 쓰기도 전에 자식이 id·setuid·exec를 시작하면 준비 전 상태를 관찰합니다. 4장의 자식이 스스로 cgroup에 들어가는 방식도 바꿉니다. <b>부모가 자식의 호스트 PID로 배치·매핑을 완료하고 1바이트를 보낼 때까지 자식이 기다리게</b> 만듭니다.</p>
+<figure><div class="stage"><svg class="diagram diagram-wide" viewBox="0 0 820 355" role="img" aria-label="부모가 cgroup과 UID GID 매핑을 준비하는 동안 자식은 파이프 읽기로 기다린 뒤 실행하는 순서">
+<rect x="14" y="12" width="340" height="330" rx="12" class="box"/><rect x="466" y="12" width="340" height="330" rx="12" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+<text x="34" y="45" font-weight="700">부모 · 바깥 PID를 알고 있음</text><text x="486" y="45" font-weight="700">자식 · 새 namespace</text>
+<text x="34" y="84" font-family="var(--mono)">pipe2(O_CLOEXEC) → clone</text><text x="486" y="84" font-family="var(--mono)">자신의 쓰기 끝 닫기</text>
+<text x="34" y="124">부모의 읽기 끝 닫기</text><text x="486" y="124" font-family="var(--mono)">read(읽기 끝, 1바이트)</text>
+<text x="34" y="164">cgroup 배치 (root 실행만)</text><text x="486" y="164" class="muted">매핑 전에는 실행하지 않고 대기</text>
+<text x="34" y="204">setgroups / uid_map / gid_map</text><path d="M360 230H460 M450 223L460 230L450 237" class="line"/>
+<text x="34" y="244" font-family="var(--mono)">write(1) → 쓰기 끝 닫기</text><text x="486" y="242" font-size="12">ID 0 선택 → hostname</text><text x="486" y="264" font-size="12">rootfs · proc · dev → exec</text>
+<text x="34" y="289">실패 시: 쓰기 끝 닫기 → wait</text><text x="486" y="289">EOF면 사용자 명령 없이 종료</text>
+<text x="486" y="321" font-size="12" class="muted">O_CLOEXEC + 명시적인 fd 닫기</text>
+</svg></div><figcaption>rootless에서는 cgroup 준비를 건너뜁니다. 준비 실패 경로에서도 자식을 회수한 뒤 정리합니다.</figcaption></figure>
+<div class="widget" id="sync-lab"><div class="w-title">매핑 장벽 실험실</div><div class="w-desc">clone 뒤에 부모의 준비 순서를 진행하세요. 일부러 gid_map을 먼저 쓰거나 일찍 깨워 결과를 비교할 수 있습니다.</div>
+<div class="controls"><label>모드 <select id="sync-mode"><option value="rootless">일반 사용자 · 단일 ID</option><option value="range">root · 범위 ID + cgroup</option></select></label><button type="button" class="btn" id="sync-reset">초기화</button></div>
+<div class="controls" id="sync-actions"><button type="button" class="btn primary" data-action="clone">clone</button><button type="button" class="btn" data-action="deny">setgroups deny</button><button type="button" class="btn" data-action="uid">uid_map</button><button type="button" class="btn" data-action="gid">gid_map</button><button type="button" class="btn" data-action="cg">cgroup 배치</button><button type="button" class="btn" data-action="release">1바이트 보내기</button><button type="button" class="btn" data-action="abort">준비 실패 · EOF</button></div>
+<ul class="phase-list" id="sync-flags"></ul><div class="user-pair"><div class="user-panel"><h4>부모</h4><div id="sync-parent"></div></div><div class="user-panel"><h4>자식</h4><div id="sync-child"></div></div></div><div class="log" id="sync-log" role="status" aria-live="polite"></div>
+<p class="lab-note">부모·자식의 준비 상태를 설명하는 모형입니다. 실제 커널의 모든 매핑 권한 조건·errno를 구현하지 않습니다. 실제 참조 코드는 준비 오류가 나면 1바이트를 보내지 않습니다.</p></div>
+<h3>자식의 쓰기 끝도 닫아야 한다</h3>
+<p>파이프는 복제된 FD를 통해 부모와 자식 양쪽에 남습니다. 자식이 자기 쓰기 끝을 닫지 않으면 부모가 실패해 writer를 닫아도 아직 writer가 하나 있으므로 read가 EOF를 받지 못합니다. <code>O_CLOEXEC</code>는 성공한 exec 시점의 누출을 막지만, exec 전 대기 중의 EOF 문제를 대신 해결하지는 않습니다.</p>
+<h3>실패 시에도 wait가 필요하다</h3>
+<p>부모에서 <code>map.write(child)?</code>만 쓰고 바로 반환하면, 자식이 EOF를 받고 종료하기 전에 cgroup 정리가 먼저 실행될 수 있습니다. 참조 구현은 준비 결과를 보관하고 writer를 닫은 뒤, 실패한 경우에도 <b>waitpid로 자식을 회수하고 나서</b> 오류를 반환합니다. 기다리던 시스템 콜이 EINTR로 끊기면 재시도합니다.</p>
+</section>
+
+<section id="s6">
+<h2>6. user namespace의 capability 경계</h2>
+<p>새 user namespace의 자식은 그 namespace 안에서 capability를 가집니다. 그렇다고 부모 user namespace에 속한 자원을 마음대로 바꾸지는 못합니다. UTS·PID 등 자원을 소유한 namespace와 그 namespace의 소유 user namespace가 권한 판정의 기준이 됩니다. <a href="https://man7.org/linux/man-pages/man7/capabilities.7.html">capabilities(7)</a></p>
+<p>이 구현의 새 UTS는 자식 user namespace의 권한 범위에 있습니다. 그래서 hostname 설정은 가능합니다. 반면 바깥 UID 0 소유의 mode 600 파일은 자기 UID로 읽을 수 없으며, 새 namespace의 root라는 이유로 이를 우회하지 못합니다. 호출자의 UID가 소유한 파일에는 접근할 수 있습니다. 다만 3장의 rootfs가 적용되어 그 파일은 rootfs 안에 있어야 합니다. 호스트 경로를 그대로 넘겨도 컨테이너에서 같은 파일을 찾을 수는 없습니다.</p>
+<div class="widget" id="cap-lab"><div class="w-title">안의 root는 어디까지 할 수 있나</div><div class="w-desc">UID 1000 → 안의 0 단일 매핑을 사용합니다. 표준 입출력을 상속하고 파일 경로는 rootfs 안에서 해석하는 모델입니다.</div>
+<div class="controls"><label>시도할 작업 <select id="cap-case"><option value="hostname">새 UTS의 hostname 변경</option><option value="rootfile">rootfs 안의 바깥 root 소유 mode 600 파일 읽기</option><option value="ownfile">rootfs 안의 UID 1000 소유 파일 수정</option><option value="setuid">매핑 없는 안쪽 UID 123으로 전환</option><option value="groups">deny 뒤 setgroups 호출</option><option value="cgroup">위임받지 않은 cgroup 제어 파일 쓰기</option></select></label></div><div class="readout" id="cap-result" role="status" aria-live="polite"></div>
+<p class="lab-note">DAC·ID 매핑·위임 관계를 설명합니다. 실제 결과에는 ACL, LSM, seccomp, 마운트 속성 같은 다른 제한도 영향을 줍니다.</p></div>
+<div class="callout warn"><span class="title">경로 격리와 ID 권한을 함께 확인하세요</span>rootfs는 접근할 경로를 나누고 user namespace는 ID와 권한의 범위를 바꿉니다. rootfs 안의 호출자 소유 파일은 수정할 수 있으며 변경은 다음 실행에도 남습니다. 환경·FD 허용 목록은 아직 없고, 네트워크 격리와 seccomp는 6·7장에서 추가합니다.</div>
+</section>
+
+<section id="s7">
+<h2>7. 4장의 cgroup과 연결하기</h2>
+<p>4장에서는 자식이 <code>cgroup.procs</code>에 0을 썼습니다. 이제 준비 중인 부모가 <b>자식의 호스트 PID</b>를 씁니다. 자식의 user namespace capability로 바깥 cgroup을 관리할 수 있다고 가정하지 않기 위한 구조입니다. root 실행에서는 4장 제한을 유지하고, rootless에서는 cgroup을 만들지 않습니다.</p>
+<div class="widget" id="mode-lab"><div class="w-title">실행 모드별 준비 계획</div><div class="w-desc">같은 run 명령도 실행자와 범위 옵션에 따라 준비할 자원이 달라집니다.</div>
+<div class="controls"><label>실행자 <select id="mode-user"><option value="user">일반 사용자</option><option value="root">root</option></select></label><label><input id="mode-range" type="checkbox">--userns-base 100000</label><label><input id="mode-limit" type="checkbox">--memory 64M</label></div><div class="log" id="mode-log" aria-live="polite"></div></div>
+<p>rootless에서 <code>--memory</code>·<code>--cpus</code>·<code>--pids</code>를 주면, 무시하거나 적용한 척하지 않고 오류를 냅니다. cgroup v2의 권한 위임은 user namespace 생성과 별도입니다. systemd 환경에서는 위임받은 subtree에서 작업하는 방식으로 확장할 수 있지만 이번 코드에는 그 경로 탐색·권한 처리를 넣지 않습니다. <a href="https://docs.kernel.org/admin-guide/cgroup-v2.html">cgroup v2 문서</a>, <a href="https://systemd.io/CGROUP_DELEGATION/">systemd cgroup delegation</a></p>
+<details class="deep"><summary>cgroup을 생략하면 자원 제한이 전부 사라지나?</summary><div><p>프로세스는 부모의 cgroup을 상속합니다. rootless 모드에서 새 cgroup을 만들지 않는다는 것은 myctr가 컨테이너별 제한을 추가하지 않는다는 뜻입니다. 바깥 로그인 세션·서비스·Docker 컨테이너의 상위 cgroup 제한이 있다면 계속 적용됩니다.</p></div></details>
+</section>
+
+<section id="s8">
+<h2>8. 구현 가이드</h2>
+<p>4장의 참조 구현에서 출발합니다. 새 명령 사용법은 다음과 같습니다. rootless 기본 실행에 sudo를 붙이지 않는 것이 핵심입니다.</p>
+<pre><code># 일반 사용자 셸에서
+./target/debug/myctr run --rootfs ./rootfs-user id
+./target/debug/myctr run --rootfs ./rootfs-user --hostname box /bin/hostname
+./target/debug/myctr run --rootfs ./rootfs-user --init /bin/sh -c 'echo $$'
+
+# 이 장의 rootless 경로는 자원 제한 옵션을 거부한다.
+./target/debug/myctr run --rootfs ./rootfs-user --memory 64M true
+
+# root의 범위·cgroup 회귀는 별도 환경에서
+sudo ./target/debug/myctr run --rootfs ./rootfs-range --userns-base 100000 --memory 64M id</code></pre>
+<h3>단계 A. 의존성과 모드 결정</h3>
+<pre><code>cargo add nix@0.29 --features process,signal,sched,hostname,mount,fs,user
+# Rust 2024, clap 4 (derive), anyhow 1은 유지한다.</code></pre>
+<p><code>Uid::effective().is_root()</code>로 모드를 정하고, 일반 사용자면 단일 ID 매핑·cgroup 생략을 선택합니다. root에서 범위 옵션을 주었을 때만 새 user namespace를 추가합니다. 일반 사용자의 범위 옵션과 자원 제한 옵션은 clone 전에 거부합니다.</p>
+<pre><code>let rootless = !Uid::effective().is_root();
+// TODO 1: 일반 사용자면 자기 UID/GID 단일 매핑, cgroup 생략.
+// TODO 2: 일반 사용자의 범위 옵션·자원 제한은 clone 전에 오류.
+// TODO 3: root + --userns-base면 범위 검증 후 IdMap 생성.
+// TODO 4: 3장의 CLONE_NEWNS·rootfs 설정을 유지하고,
+//         매핑을 만들 때만 CLONE_NEWUSER를 추가한다.</code></pre>
+<details class="deep"><summary>힌트 A: namespace 생성과 ID 선택을 구분</summary><div><p><code>CLONE_NEWUSER</code>를 넣는 것은 새 대응표를 만들 공간을 생성하는 단계입니다. 매핑을 쓰는 것은 부모, 매핑 뒤 안의 0을 선택하는 것은 자식입니다. root의 범위 실험에서는 원래 host UID 0이 매핑 밖에 있으므로 이 세 단계를 합쳐 생각하면 안 됩니다.</p></div></details>
+<h3>단계 B. IdMap</h3>
+<pre><code>struct IdMap {
+    uid_map: String,
+    gid_map: String,
+    deny_setgroups: bool,
+}
+impl IdMap {
+    fn rootless() -&gt; Self { /* TODO 5: 0 &lt;euid&gt; 1, 0 &lt;egid&gt; 1 */ todo!() }
+    fn range(base: u32) -&gt; Self { /* TODO 6: 고정 길이 65536 */ todo!() }
+    fn write(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        // TODO 7: 필요하면 setgroups deny, 그다음 uid_map/gid_map.
+        todo!()
+    }
+}</code></pre>
+<details class="deep"><summary>힌트 B: 쓰기는 부모의 /proc 경로로</summary><div><p><code>PathBuf::from(format!("/proc/{pid}"))</code>로 자식 디렉터리를 만듭니다. rootless는 setgroups에 deny를 쓰고 uid_map·gid_map을 설정합니다. 한 파일에 쓸 매핑은 한 번의 쓰기로 구성하고, 실패한 단계와 매핑 내용을 context에 남기세요. 부모는 기존 namespace에 머무릅니다.</p></div></details>
+<h3>단계 C. 파이프와 부모의 준비</h3>
+<pre><code>let (rd, wr) = pipe2(OFlag::O_CLOEXEC)?;
+// cfg에 RawFd 번호와 user namespace 사용 여부를 넣고 clone한다.
+// 부모에서는 rd를 닫는다.
+let prepared: Result&lt;()&gt; = (|| {
+    // TODO 8: root 경로면 cg.add(child)로 cgroup에 배치한다.
+    // TODO 9: ID 매핑이 있으면 부모가 설정한다.
+    // TODO 10: wr로 1바이트를 보낸다.
+    Ok(())
+})();
+drop(wr); // 성공/실패 모두 닫는다.
+// TODO 11: 실패도 waitpid로 자식 회수 후 prepared 오류를 반환한다.
+// 정상 경로는 기존처럼 자식의 종료 코드를 돌려준다.</code></pre>
+<details class="deep"><summary>힌트 C: OwnedFd와 자식의 RawFd</summary><div><p>부모 쪽은 <code>pipe2</code>가 돌려준 OwnedFd를 소유하고 <code>drop</code>으로 닫습니다. 자식은 복제된 RawFd 번호로 사용하지 않는 쓰기 끝을 닫고 read합니다. 이 clone은 <code>CLONE_FILES</code>를 쓰지 않으므로 자식이 닫아도 부모의 writer는 살아 있습니다. exec 전에 자식 reader도 닫습니다.</p></div></details>
+<h3>단계 D. 자식의 gate 이후</h3>
+<pre><code>fn container_main(cfg: &amp;Config) -&gt; isize {
+    // TODO 12: 자식 writer를 닫고 read로 부모의 1바이트를 기다린다.
+    //          EOF/오류면 사용자 명령 없이 1 반환. EINTR은 재시도.
+    // TODO 13: reader를 닫는다.
+    // TODO 14: user namespace를 쓰면 setgid(0), setuid(0).
+    // TODO 15: hostname → 3장 setup_rootfs → init 또는 exec.
+    todo!()
+}</code></pre>
+<details class="deep"><summary>힌트 D: 기본 회귀를 유지</summary><div><p>2·3·4장의 rootfs·새 procfs·최소 /dev·hostname·mini init·종료 코드·SIGPIPE 복원은 그대로 유지합니다. mapping 성공 후 ID를 선택한 뒤 setup과 exec에 진입하세요. 실패하면 사용자 프로그램을 실행하지 않고 1로 끝납니다. 자식의 read와 부모의 wait는 EINTR를 재시도합니다.</p></div></details>
+</section>
+
+<section id="s9">
+<h2>9. 완료 기준과 참조 구현</h2>
+<p>검사를 앞 장부터 누적합니다. 실행 가능한 전체 프로젝트는 <a href="examples/ch05/src/main.rs">src/main.rs</a>와 <a href="examples/ch05/Cargo.toml">Cargo.toml</a>에 있고, <a href="examples/README.md">준비·실행 안내</a>와 <a href="examples/ch05/check.sh">check.sh</a>를 함께 제공합니다. 아래 명령은 <code>examples/ch05</code>에서 실행합니다.</p>
+<div class="callout"><span class="title">rootfs를 모드별로 준비하세요</span><code>../rootfs</code>는 root 소유, <code>../rootfs-user</code>는 실행하는 일반 사용자 소유, <code>../rootfs-range</code>는 바깥 UID/GID 100000 소유입니다. <a href="examples/prepare-rootfs.sh">prepare-rootfs.sh</a>가 Alpine과 후속 장의 실험 도구를 설치합니다. rootless 권한 검사용 <code>/root-only</code>는 root 소유·0600인 예외 파일로 만들고 실제 open 실패를 검사합니다.</div>
+<h4>root 검사</h4>
+<p>3장 기본·파일시스템 17개 + 4장 cgroup 14개 + 5장 범위 매핑 8개입니다. cgroup 설정과 통계는 부모의 호스트 경로에서 관측합니다. 컨테이너에 cgroupfs 전체를 노출하지 않습니다.</p>
+<pre><code>cargo build --locked
+sudo env ROOTFS="$PWD/../rootfs" RANGE_ROOTFS="$PWD/../rootfs-range" bash check.sh rootful</code></pre>
+<h4>일반 사용자 검사: 33 / 33</h4>
+<p><code>sudo</code> 없이 실행합니다. 자기 소유의 별도 rootfs를 쓰며, 3장 17개 + 5장 단일 매핑 16개를 실행합니다. root 전용 cgroup·범위 매핑·bridge 검사는 여기에 합산하지 않습니다.</p>
+<pre><code>ROOTFS="$PWD/../rootfs-user" bash check.sh rootless</code></pre>
+<div class="callout tip" id="runtime-proof"><span class="title">통합본 실제 실행 결과</span>Linux aarch64, Debian 12 기반 전용 privileged 컨테이너, 커널 <code>7.0.12-linuxkit</code>, Rust/Cargo <code>1.86.0</code>, Alpine <code>3.22.2</code>에서 root <b>39 / 39</b> 및 일반 사용자 <b>33 / 33</b>를 통과했습니다. 일반 사용자 launcher는 UID/GID 1000, <code>CapPrm·CapEff·CapAmb=0</code>입니다. <a href="examples/VALIDATION.md">검사 모듈·소스 해시·실행 기록</a>을 확인할 수 있습니다. x86_64는 실행하지 않았습니다.</div>
+<details class="deep" id="reference"><summary>참조 구현 (뼈대와 힌트를 먼저 사용하세요)</summary><div>
+<p>Rust 2024, nix 0.29, clap 4, anyhow 1 기준입니다. rootless에서는 단일 UID/GID만 매핑하고, root 실행의 cgroup 제한은 4장에서 이어받습니다. 준비 실패 시 자식을 먼저 회수하는 정리 경로까지 포함합니다.</p>
+<h4 data-integrated-cargo>Cargo.toml</h4><pre><code>[package]
+name="myctr"
+version="0.1.0"
+edition="2024"
+[dependencies]
+anyhow="1"
+clap={version="4",features=["derive"]}
+nix={version="0.29",features=["process", "signal", "sched", "hostname", "mount", "fs", "user"]}</code></pre>
+<h4>src/main.rs</h4>
+<pre><code>use std::ffi::CString;
+use std::fs::{self, File};
+use std::os::unix::fs::symlink;
+use std::os::fd::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::libc;
+use nix::mount::{MntFlags, MsFlags, mount, umount2};
+use nix::unistd::{chdir, pivot_root};
+use nix::sched::{CloneFlags, clone};
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{
+    ForkResult, Gid, Pid, Uid, close, execvp, fork, pipe2, read, setgid, setgroups, sethostname, setuid, write,
+};
+
+const OLD_ROOT: &amp;str = ".oldroot";
+const DEVICES: [&amp;str; 6] = ["null", "zero", "full", "random", "urandom", "tty"];
+
+const STACK_SIZE: usize = 1024 * 1024;
+const CGROUP_ROOT: &amp;str = "/sys/fs/cgroup";
+/// myctr가 만드는 모든 컨테이너 cgroup의 부모
+const CGROUP_PARENT: &amp;str = "myctr";
+const CPU_PERIOD_US: u64 = 100_000;
+/// --userns-base 로 매핑할 ID 개수
+const USERNS_RANGE: u32 = 65536;
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 새 네임스페이스와 cgroup 안에서 실행한다
+    Run {
+        /// 컨테이너의 루트가 될 디렉터리
+        #[arg(long)]
+        rootfs: PathBuf,
+        /// 컨테이너 안에서 보일 hostname
+        #[arg(long, default_value = "myctr")]
+        hostname: String,
+        /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+        #[arg(long)]
+        init: bool,
+        /// 메모리 상한 (예: 64M, 1G, 바이트 수)
+        #[arg(long, value_parser = parse_bytes)]
+        memory: Option&lt;u64&gt;,
+        /// CPU 상한 (코어 수, 예: 0.5)
+        #[arg(long)]
+        cpus: Option&lt;f64&gt;,
+        /// 최대 프로세스(스레드) 수
+        #[arg(long)]
+        pids: Option&lt;u64&gt;,
+        /// (root 전용) 컨테이너의 UID/GID 0..65535 를 이 호스트 ID부터 매핑한다
+        #[arg(long)]
+        userns_base: Option&lt;u32&gt;,
+        /// 실행할 프로그램과 인자
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+struct Limits {
+    memory: Option&lt;u64&gt;,
+    cpus: Option&lt;f64&gt;,
+    pids: Option&lt;u64&gt;,
+}
+
+impl Limits {
+    fn any(&amp;self) -&gt; bool {
+        self.memory.is_some() || self.cpus.is_some() || self.pids.is_some()
+    }
+}
+
+/// clone된 자식에게 넘길 설정
+struct Config {
+    rootfs: PathBuf,
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    /// 부모가 준비를 마쳤다고 알려 주는 파이프 (읽는 쪽, 쓰는 쪽)
+    sync: (RawFd, RawFd),
+    userns: bool,
+    clear_groups: bool,
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { rootfs, hostname, init, memory, cpus, pids, userns_base, cmd } =&gt; {
+            let argv = cmd
+                .iter()
+                .map(|s| CString::new(s.as_bytes()))
+                .collect::&lt;Result&lt;_, _&gt;&gt;()
+                .context("인자에 NUL 바이트가 있습니다")?;
+            let rootfs = fs::canonicalize(&amp;rootfs).context("rootfs 경로 확인")?;
+            validate_rootfs(&amp;rootfs)?;
+            let code = run(rootfs, hostname, init, argv, &amp;Limits { memory, cpus, pids }, userns_base)?;
+            std::process::exit(code);
+        }
+    }
+}
+
+/// "64M", "1G", "512K", "1048576" 을 바이트 수로
+fn parse_bytes(s: &amp;str) -&gt; Result&lt;u64, String&gt; {
+    let (num, mul) = match s.chars().last() {
+        Some('K' | 'k') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 10),
+        Some('M' | 'm') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 20),
+        Some('G' | 'g') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 30),
+        _ =&gt; (s, 1),
+    };
+    num.parse::&lt;u64&gt;().map(|n| n * mul).map_err(|e| format!("{s}: {e}"))
+}
+
+fn run(rootfs: PathBuf, 
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    limits: &amp;Limits,
+    userns_base: Option&lt;u32&gt;,
+) -&gt; Result&lt;i32&gt; {
+    let rootless = !Uid::effective().is_root();
+    let idmap = match (rootless, userns_base) {
+        (true, Some(_)) =&gt; bail!("--userns-base는 root로 실행할 때만 쓸 수 있습니다"),
+        (true, None) =&gt; Some(IdMap::rootless()),
+        (false, Some(base)) =&gt; {
+            if base.checked_add(USERNS_RANGE - 1).is_none_or(|last| last == u32::MAX) {
+                bail!("--userns-base는 0..4294901759 범위여야 합니다 (65536개 ID, UID/GID -1 제외)");
+            }
+            Some(IdMap::range(base))
+        },
+        (false, None) =&gt; None,
+    };
+    let cgroup = if rootless {
+        if limits.any() {
+            bail!("rootless 모드에서는 --memory/--cpus/--pids를 쓸 수 없습니다 (cgroup 위임이 필요합니다)");
+        }
+        None
+    } else {
+        Some(Cgroup::create(&amp;format!("ctr-{}", std::process::id()), limits)?)
+    };
+
+    // O_CLOEXEC: 사용자 프로그램으로 새지 않게
+    let (sync_rd, sync_wr) = pipe2(OFlag::O_CLOEXEC).context("pipe")?;
+    let cfg = Config { rootfs,
+        hostname, init, argv,
+        sync: (sync_rd.as_raw_fd(), sync_wr.as_raw_fd()),
+        userns: idmap.is_some(),
+        // 특권 range 모드에서는 상속한 호스트 보조 그룹을 남기지 않는다.
+        // rootless는 setgroups=deny이므로 변경할 수 없다.
+        clear_groups: idmap.as_ref().is_some_and(|map| !map.deny_setgroups),
+    };
+
+    let mut flags = CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
+    if idmap.is_some() {
+        flags |= CloneFlags::CLONE_NEWUSER;
+    }
+    let mut stack = vec![0u8; STACK_SIZE];
+    let cb = Box::new(|| container_main(&amp;cfg));
+    let child = unsafe { clone(cb, &amp;mut stack, flags, Some(Signal::SIGCHLD as i32)) }
+        .context("clone 실패")?;
+    drop(sync_rd);
+
+    // 준비 실패 시 먼저 파이프를 닫는다. 자식은 EOF를 받고 종료하며,
+    // 부모는 반드시 wait로 회수한 뒤 cgroup을 정리한다.
+    let prepared = (|| -&gt; Result&lt;()&gt; {
+        if let Some(cg) = &amp;cgroup {
+            cg.add(child)?;
+        }
+        if let Some(map) = &amp;idmap {
+            map.write(child)?;
+        }
+        unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }
+            .context("signal 설정 실패")?;
+        write(&amp;sync_wr, &amp;[1]).context("자식 깨우기")?;
+        Ok(())
+    })();
+    drop(sync_wr);
+    if let Err(error) = prepared {
+        // EOF로 종료한 PID 1을 회수하기 전에 Cgroup::drop이 실행되면
+        // cgroup.procs가 비어 있지 않아 정리가 실패할 수 있다.
+        wait_exit_code(child).context("준비 실패한 자식 회수")?;
+        return Err(error);
+    }
+    let code = wait_exit_code(child)?;
+    if cgroup.as_ref().is_some_and(|cg| cg.oom_kills() &gt; 0) {
+        eprintln!("myctr: 메모리 상한을 넘어 OOM killer가 프로세스를 종료했습니다");
+    }
+    Ok(code)
+}
+
+fn wait_exit_code(child: Pid) -&gt; Result&lt;i32&gt; {
+    loop {
+        match waitpid(child, None) {
+            Ok(WaitStatus::Exited(_, code)) =&gt; return Ok(code),
+            Ok(WaitStatus::Signaled(_, sig, _)) =&gt; return Ok(128 + sig as i32),
+            Ok(other) =&gt; bail!("예상하지 못한 상태: {other:?}"),
+            Err(Errno::EINTR) =&gt; continue,
+            Err(error) =&gt; return Err(error).context("waitpid 실패"),
+        }
+    }
+}
+
+/// user 네임스페이스의 UID/GID 매핑
+struct IdMap {
+    uid_map: String,
+    gid_map: String,
+    /// 비특권 프로세스가 gid_map을 쓰려면 먼저 setgroups를 막아야 한다
+    deny_setgroups: bool,
+}
+
+impl IdMap {
+    /// 컨테이너 root(0) 하나를 나 자신에게
+    fn rootless() -&gt; Self {
+        IdMap {
+            uid_map: format!("0 {} 1", Uid::effective()),
+            gid_map: format!("0 {} 1", Gid::effective()),
+            deny_setgroups: true,
+        }
+    }
+
+    /// 컨테이너의 0..65535 를 호스트의 base..base+65535 로
+    fn range(base: u32) -&gt; Self {
+        IdMap {
+            uid_map: format!("0 {base} {USERNS_RANGE}"),
+            gid_map: format!("0 {base} {USERNS_RANGE}"),
+            deny_setgroups: false,
+        }
+    }
+
+    fn write(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        if self.deny_setgroups {
+            fs::write(proc.join("setgroups"), "deny").context("setgroups 막기")?;
+        }
+        fs::write(proc.join("uid_map"), &amp;self.uid_map)
+            .with_context(|| format!("uid_map 쓰기 ({})", self.uid_map))?;
+        fs::write(proc.join("gid_map"), &amp;self.gid_map)
+            .with_context(|| format!("gid_map 쓰기 ({})", self.gid_map))?;
+        Ok(())
+    }
+}
+
+struct Cgroup {
+    path: PathBuf,
+}
+
+impl Cgroup {
+    fn create(name: &amp;str, limits: &amp;Limits) -&gt; Result&lt;Self&gt; {
+        let parent = Path::new(CGROUP_ROOT).join(CGROUP_PARENT);
+        fs::create_dir_all(&amp;parent).with_context(|| format!("{} 만들기", parent.display()))?;
+        // 부모에서 컨트롤러를 켜야 자식 cgroup에 memory.max 같은 파일이 생긴다
+        fs::write(parent.join("cgroup.subtree_control"), "+memory +cpu +pids")
+            .context("컨트롤러 활성화 (상위 cgroup의 cgroup.subtree_control에 memory cpu pids가 켜져 있나요?)")?;
+
+        let path = parent.join(name);
+        fs::create_dir(&amp;path).with_context(|| format!("{} 만들기", path.display()))?;
+        let cg = Cgroup { path };
+        if let Some(bytes) = limits.memory {
+            cg.write("memory.max", &amp;bytes.to_string())?;
+            // 스왑으로 도망가지 못하게. 스왑 계정이 꺼진 커널에는 파일이 없다
+            if cg.path.join("memory.swap.max").exists() {
+                cg.write("memory.swap.max", "0")?;
+            }
+        }
+        if let Some(cpus) = limits.cpus {
+            let quota = (cpus * CPU_PERIOD_US as f64) as u64;
+            cg.write("cpu.max", &amp;format!("{quota} {CPU_PERIOD_US}"))?;
+        }
+        if let Some(n) = limits.pids {
+            cg.write("pids.max", &amp;n.to_string())?;
+        }
+        Ok(cg)
+    }
+
+    fn write(&amp;self, file: &amp;str, value: &amp;str) -&gt; Result&lt;()&gt; {
+        fs::write(self.path.join(file), value)
+            .with_context(|| format!("{}/{file} 에 {value} 쓰기", self.path.display()))
+    }
+
+    /// 프로세스를 이 cgroup으로 옮긴다 (호스트 PID)
+    fn add(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        self.write("cgroup.procs", &amp;pid.to_string())
+    }
+
+    /// memory.events 의 oom_kill 카운터
+    fn oom_kills(&amp;self) -&gt; u64 {
+        fs::read_to_string(self.path.join("memory.events"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("oom_kill ").and_then(|n| n.parse().ok()))
+            })
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for Cgroup {
+    fn drop(&amp;mut self) {
+        // 프로세스가 남아 있으면 EBUSY. PID 1이 끝나면 네임스페이스 전체가 정리되므로 비어 있다
+        if let Err(e) = fs::remove_dir(&amp;self.path) {
+            eprintln!("myctr: cgroup 정리 실패 {}: {e}", self.path.display());
+        }
+    }
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다.
+fn container_main(cfg: &amp;Config) -&gt; isize {
+    // 부모가 cgroup과 ID 매핑을 끝낼 때까지 기다린다.
+    // 쓰는 쪽을 닫아 두어야 부모가 죽었을 때 read가 EOF(0)로 깨어난다
+    let _ = close(cfg.sync.1);
+    let mut buf = [0u8; 1];
+    loop {
+        match read(cfg.sync.0, &amp;mut buf) {
+            Ok(1) =&gt; break,
+            Err(Errno::EINTR) =&gt; continue,
+            _ =&gt; {
+                eprintln!("myctr: 부모가 준비를 마치지 못했습니다");
+                return 1;
+            }
+        }
+    }
+    let _ = close(cfg.sync.0);
+
+    if let Err(e) = setup(cfg) {
+        eprintln!("myctr: {e:#}");
+        return 1;
+    }
+    if cfg.init { mini_init(&amp;cfg.argv) } else { exec(&amp;cfg.argv) }
+}
+
+/// fork와 exec 사이에서 컨테이너의 모양을 만든다
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    if cfg.userns {
+        // 매핑은 ID의 대응표만 만든다. 특히 range 모드에서 host UID 0은
+        // 매핑 밖이므로, 새 namespace의 ID 0으로 자격 증명을 옮긴다.
+        if cfg.clear_groups {
+            setgroups(&amp;[]).context("보조 그룹 비우기")?;
+        }
+        setgid(Gid::from_raw(0)).context("컨테이너 GID 0으로 전환")?;
+        setuid(Uid::from_raw(0)).context("컨테이너 UID 0으로 전환")?;
+    }
+    sethostname(&amp;cfg.hostname).context("sethostname")?;
+    setup_rootfs(&amp;cfg.rootfs)?;
+    Ok(())
+}
+
+/// 실습 중 호스트 /를 rootfs로 지정하거나 준비를 빠뜨리는 실수를 막는다.
+/// 신뢰하는 Alpine 입력을 전제로 하며 악성 rootfs 검증기는 아니다.
+fn validate_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    if rootfs == Path::new("/") || !rootfs.is_dir() {
+        bail!("rootfs는 호스트 /가 아닌 디렉터리여야 합니다");
+    }
+    if !fs::symlink_metadata(rootfs.join("bin/sh")).is_ok_and(|meta| meta.is_file() || meta.file_type().is_symlink())
+        || !rootfs.join("proc").is_dir() || !rootfs.join("dev").is_dir() {
+        bail!("rootfs에 bin/sh와 proc·dev 디렉터리를 준비하세요");
+    }
+    Ok(())
+}
+
+fn setup_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    // 1. 이후의 마운트가 호스트로 전파되지 않도록 모든 마운트를 private으로
+    mount(None::&lt;&amp;str&gt;, "/", None::&lt;&amp;str&gt;, MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::&lt;&amp;str&gt;)
+        .context("/ 를 rprivate으로 바꾸기")?;
+
+    // 2. pivot_root의 new_root는 마운트 지점이어야 하므로 자기 자신에게 bind
+    mount(Some(rootfs), rootfs, None::&lt;&amp;str&gt;, MsFlags::MS_BIND | MsFlags::MS_REC, None::&lt;&amp;str&gt;)
+        .context("rootfs bind mount")?;
+
+    // 3. 루트를 바꾼다. 이전 루트는 /.oldroot 에 걸린다
+    let old_root = rootfs.join(OLD_ROOT);
+    fs::create_dir_all(&amp;old_root).context(".oldroot 만들기")?;
+    pivot_root(rootfs, &amp;old_root).context("pivot_root")?;
+    chdir("/").context("chdir /")?;
+
+    // 4. 이 PID 네임스페이스 기준의 procfs
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None::&lt;&amp;str&gt;,
+    )
+    .context("/proc 마운트")?;
+
+    // 5. 최소한의 /dev. 장치 파일은 아직 붙어 있는 이전 루트에서 bind로 빌려 온다
+    setup_dev().context("/dev 구성")?;
+
+    // 6. 이전 루트를 떼어 내고 흔적을 지운다
+    let old = format!("/{OLD_ROOT}");
+    umount2(old.as_str(), MntFlags::MNT_DETACH).context("이전 루트 분리")?;
+    fs::remove_dir(&amp;old).context(".oldroot 지우기")?;
+    Ok(())
+}
+
+fn setup_dev() -&gt; Result&lt;()&gt; {
+    mount(
+        Some("tmpfs"),
+        "/dev",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+        Some("mode=755,size=65536k"),
+    )?;
+    for dev in DEVICES {
+        let target = format!("/dev/{dev}");
+        File::create(&amp;target).with_context(|| format!("{target} 만들기"))?;
+        let source = format!("/{OLD_ROOT}/dev/{dev}");
+        mount(Some(source.as_str()), target.as_str(), None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+            .with_context(|| format!("{target} bind"))?;
+    }
+    for (link, to) in [
+        ("/dev/fd", "/proc/self/fd"),
+        ("/dev/stdin", "/proc/self/fd/0"),
+        ("/dev/stdout", "/proc/self/fd/1"),
+        ("/dev/stderr", "/proc/self/fd/2"),
+    ] {
+        symlink(to, link).with_context(|| format!("{link} 링크"))?;
+    }
+    Ok(())
+}
+
+/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) } {
+        eprintln!("myctr: SIGPIPE 복원 실패: {e}");
+        return 1;
+    }
+    let err = execvp(&amp;argv[0], argv).unwrap_err();
+    eprintln!("myctr: {}: {err}", argv[0].to_string_lossy());
+    127
+}
+
+/// PID 1로 남아 명령을 PID 2로 띄우고, 입양된 고아까지 거두다가
+/// 명령이 끝나면 그 종료 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    let main_child = match unsafe { fork() } {
+        Ok(ForkResult::Child) =&gt; unsafe { libc::_exit(exec(argv) as i32) },
+        Ok(ForkResult::Parent { child }) =&gt; child,
+        Err(e) =&gt; {
+            eprintln!("myctr-init: fork: {e}");
+            return 1;
+        }
+    };
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, code)) if pid == main_child =&gt; return code as isize,
+            Ok(WaitStatus::Signaled(pid, sig, _)) if pid == main_child =&gt; return 128 + sig as isize,
+            Ok(_) =&gt; continue,
+            Err(Errno::EINTR) =&gt; continue,
+            Err(e) =&gt; {
+                eprintln!("myctr-init: waitpid: {e}");
+                return 1;
+            }
+        }
+    }
+}</code></pre>
+</div></details>
+</section>
+
+<section id="s10">
+<h2>10. strace와 실패 진단</h2>
+<p>rootless 추적도 일반 사용자로 실행합니다. 줄 앞의 PID는 관찰하는 쪽의 번호입니다. <code>uid_map</code>의 0과 자식의 호스트 PID를 혼동하지 마세요. 아래 trace는 핵심 순서를 읽기 위한 설명용이며 실제 FD·PID 숫자는 실행마다 달라집니다.</p>
+<pre><code>strace -f -e trace=clone,pipe2,read,write,close,setuid,setgid,sethostname,execve,wait4 \
+  ./target/debug/myctr run --rootfs ./rootfs-user --hostname box id</code></pre>
+<div class="widget"><div class="w-title">매핑과 파이프의 시스템 콜 읽기</div><div class="w-desc">부모가 수행하는 호출과 자식이 수행하는 호출을 나눠 확인하세요.</div><div class="trace" id="trace-lines"></div><div class="readout" id="trace-explain" aria-live="polite"></div></div>
+<div class="tbl-wrap"><table><tr><th>증상</th><th>확인할 증거</th><th>해석</th></tr>
+<tr><td>clone EPERM</td><td>실행 EUID, userns 허용 정책, LSM/seccomp, 외부 컨테이너 정책</td><td>플래그 오타만의 문제가 아니다</td></tr>
+<tr><td>gid_map EPERM</td><td>rootless 경로의 setgroups deny 선행 여부</td><td>비특권 GID 쓰기 조건과 이미 설정된 매핑을 확인</td></tr>
+<tr><td>안의 ID가 overflow 값</td><td>uid_map/gid_map 내용, gate 뒤 setuid/setgid</td><td>대응표가 없거나 현재 ID가 범위 밖일 수 있다</td></tr>
+<tr><td>새 hostname 설정 실패</td><td>CLONE_NEWUTS와 CLONE_NEWUSER 조합, ID 선택, 실제 오류 단계</td><td>새 UTS 소유 범위의 권한을 확인</td></tr>
+<tr><td>cgroup 접근 거부</td><td>모드·위임 경로·mount가 읽기 전용인지</td><td>안의 root로 바깥 cgroup 권한을 얻지는 못한다</td></tr>
+<tr><td>준비 실패 뒤 멈춤</td><td>파이프의 writer가 자식에도 남았는지</td><td>writer가 모두 닫혀야 read가 EOF를 받는다</td></tr></table></div>
+</section>
+
+<section id="s11">
+<h2>11. 누적된 격리와 다음 단계</h2>
+<p>이번 참조 구현은 3장의 rootfs와 새 procfs를 유지합니다. rootless용 rootfs는 일반 사용자 소유로 준비하고, root의 범위 매핑용 rootfs는 지정한 바깥 UID/GID가 소유하도록 별도로 준비합니다. 매핑 방식에 맞는 파일 소유권은 rootfs 격리와 함께 필요한 실행 조건입니다.</p>
+<ul><li><b>마운트:</b> user namespace와 함께 새 mount namespace를 만들고 rprivate·self-bind·pivot_root를 수행합니다.</li><li><b>rootfs 소유권:</b> 안의 0이 바깥의 누구인지 기준으로 준비합니다. 단일 ID 매핑은 이미지의 여러 계정을 표현하지 못합니다.</li><li><b>/dev:</b> 이전 루트에서 필요한 장치를 개별 bind한 뒤 oldroot를 분리합니다. 비특권 실행에서도 같은 경로를 검사합니다.</li><li><b>cgroup:</b> root 모드는 부모가 배치하고 호스트에서 관찰합니다. rootless의 컨테이너별 제한은 위임 기능이 필요하므로 아직 거부합니다.</li></ul>
+<p>rootless는 권한 범위를 좁힌 실행 방식입니다. 현재는 rootfs 격리와 ID 매핑이 연결되었고, rootless의 개별 cgroup 위임·네트워크 연결·시스템 콜 정책은 각각 별도 단계입니다. 다음 6장에서는 <b>net namespace와 veth</b>로 네트워크 연결을 구성합니다. 누가 새 network namespace를 소유하고 바깥 링크를 설정할 권한이 있는지가 다시 중요해집니다.</p>
+</section>
+
+<div class="summary"><h3>핵심 요약</h3><ul>
+<li>user namespace의 root는 바깥 root와 다릅니다. 매핑은 ID의 대응표입니다.</li>
+<li>부모가 uid_map·gid_map을 쓰고, rootless에서는 gid_map 전에 setgroups deny를 설정합니다.</li>
+<li>파이프 장벽 뒤에 ID 0 선택·hostname·rootfs 준비·exec가 옵니다. 실패 경로도 writer 닫기와 자식 회수가 필요합니다.</li>
+<li>rootless 기본 경로는 cgroup을 만들지 않고 제한 옵션을 거부합니다. 파일시스템 격리는 3장에서 이어받습니다.</li>
+</ul></div>
+<h2>확인 문제</h2>
+<div class="quiz" data-answer="1"><div class="q">rootless에서 안쪽 UID 0, 바깥 UID 1000인 프로세스는?</div><button class="opt">호스트 root 권한을 얻었다</button><button class="opt">동일한 자격 증명을 namespace에 따라 다른 ID로 본다</button><button class="opt">새 VM의 커널을 사용한다</button><button class="opt">파일 소유자가 전부 0으로 바뀐다</button><div class="explain">UID 매핑은 번호의 대응표이며 부모 namespace의 root 권한을 부여하지 않습니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">uid_map의 0 100000 65536에서 안쪽 UID 65535는?</div><button class="opt">100000</button><button class="opt">65536</button><button class="opt">165535</button><button class="opt">165536</button><div class="explain">100000 + (65535 - 0) = 165535입니다. 길이는 65536개입니다.</div></div>
+<div class="quiz" data-answer="3"><div class="q">비특권 gid_map 설정 전에 필요한 동작은?</div><button class="opt">호스트의 /etc/group 삭제</button><button class="opt">새 네트워크 생성</button><button class="opt">SIGPIPE 무시</button><button class="opt">자식 setgroups 파일에 deny 쓰기</button><div class="explain">비특권 GID 매핑 경로에서는 setgroups를 먼저 제한합니다. 보조 그룹 목록을 비우는 호출은 아닙니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">자식이 파이프의 쓰기 끝을 닫지 않으면?</div><button class="opt">부모가 writer를 닫아도 자식 read가 EOF를 못 받을 수 있다</button><button class="opt">uid_map이 자동 생성된다</button><button class="opt">파이프가 읽기 전용 파일로 바뀐다</button><button class="opt">부모의 writer도 즉시 사라진다</button><div class="explain">자식 자신도 writer를 가지고 있으면 아직 열린 쓰기 끝이 있습니다.</div></div>
+<div class="quiz" data-answer="1"><div class="q">rootless에서 --memory 64M을 지정한 이번 구현은?</div><button class="opt">상위 cgroup에 자동 위임한다</button><button class="opt">별도 위임이 필요하다는 오류를 낸다</button><button class="opt">제한 없이 실행하면서 성공을 반환한다</button><button class="opt">호스트 전체 메모리를 64M으로 바꾼다</button><div class="explain">이번 구현은 컨테이너별 cgroup을 생략하고 제한 옵션을 명시적으로 거부합니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">root의 범위 매핑 뒤 자식이 ID 0을 명시적으로 선택하는 이유는?</div><button class="opt">항상 호스트 root로 돌아가기 위해</button><button class="opt">cgroup 파일을 지우기 위해</button><button class="opt">원래 호스트 UID 0이 지정한 바깥 범위에 없을 수 있어서</button><button class="opt">PID를 0으로 바꾸기 위해</button><div class="explain">매핑 파일 작성과 현재 프로세스 ID 선택은 다른 단계입니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">이번 누적 구현에서 rootless로 실행하면 /와 UID는 어떻게 보이나?</div><button class="opt">id는 0, /는 3장에서 유지한 Alpine rootfs다</button><button class="opt">id는 0이고 /는 호스트 파일시스템이다</button><button class="opt">id는 1000이고 /는 Alpine rootfs다</button><button class="opt">id는 1000이고 /는 호스트 파일시스템이다</button><div class="explain">3장의 rootfs·새 procfs와 5장의 ID 매핑을 함께 사용합니다. user namespace가 rootfs를 자동 생성하는 것은 아닙니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">부모의 매핑 쓰기가 실패했을 때 올바른 정리는?</div><button class="opt">writer를 닫고 자식 종료를 회수한 뒤 오류 반환</button><button class="opt">즉시 exec를 진행시킨다</button><button class="opt">writer를 자식에 남기고 부모만 종료</button><button class="opt">성공 코드 0 반환</button><div class="explain">실패한 자식이 EOF로 종료할 수 있게 하고 wait로 회수해야 정리 순서도 맞습니다.</div></div>
+
+<h2>실습 과제</h2>
+<ol>
+<li><b>rootless 실행 완성.</b> 단계 A~D를 구현하고 일반 사용자로 기본 검사를 실행하세요. 기대: <code>통과 33 / 33</code>. root로 실행한 결과와 구분해 기록하고 <code>git tag ch05</code>를 남기세요.</li>
+<li><b>--print-map 옵션 추가.</b> 부모가 사용할 uid_map·gid_map과 cgroup 생략 여부를 stderr에 출력하는 옵션을 구현하세요. 기대: 일반 사용자 실행에서 <code>0 &lt;현재 EUID&gt; 1</code> 매핑을 확인하고 stdout의 자식 출력은 그대로입니다. 기본 검사는 계속 통과해야 합니다.</li>
+<li><b>실패 뒤 자식 회수 확인.</b> 전용 실험 브랜치에서 매핑 쓰기 실패를 주입하고, 사용자 명령의 표식 파일이 생성되지 않는지·myctr가 종료되는지·자식이 남지 않는지 확인하세요. 기대: 명령은 미실행, 부모 오류, 자식 회수. 커널이나 시스템 전체 매핑 정책은 변경하지 않습니다.</li>
+<li><b>호출자 파일 소유권 관찰.</b> 본인이 소유한 rootfs의 <code>/tmp</code> 안에 파일을 생성하고, 바깥에서 <code>rootfs-user/tmp</code>의 소유권을 확인하세요. 기대: 안에서는 UID 0, 바깥에서는 호출자의 UID로 보입니다. root가 소유한 mode 600 파일 읽기 성공과 혼동하지 마세요.</li>
+</ol>
+<details class="deep"><summary>참고 자료</summary><div><ul class="sources">
+<li><a href="https://man7.org/linux/man-pages/man7/user_namespaces.7.html">user_namespaces(7)</a> · 매핑 쓰기 조건과 overflow ID</li>
+<li><a href="https://man7.org/linux/man-pages/man2/clone.2.html">clone(2)</a> · user namespace와 다른 namespace 생성</li>
+<li><a href="https://man7.org/linux/man-pages/man2/setgroups.2.html">setgroups(2)</a> · 보조 그룹과 deny 정책</li>
+<li><a href="https://man7.org/linux/man-pages/man7/capabilities.7.html">capabilities(7)</a> · 권한의 범위</li>
+<li><a href="https://man7.org/linux/man-pages/man1/newuidmap.1.html">newuidmap(1)</a> · helper가 검사하는 매핑 범위</li>
+<li><a href="https://man7.org/linux/man-pages/man5/subuid.5.html">subuid(5)</a> · subordinate ID 위임</li>
+<li><a href="https://docs.kernel.org/admin-guide/cgroup-v2.html">Linux cgroup v2</a> · cgroup 권한과 자원 제한</li>
+<li><a href="https://systemd.io/CGROUP_DELEGATION/">systemd cgroup delegation</a> · 위임받은 subtree 관리</li>
+</ul></div></details>
+</main>
+<script>
+(function () {
+  const $=id=>document.getElementById(id);
+  // 단일 extent의 번호 계산. 유효 범위와 매핑 쓰기 권한은 별개이다.
+  (function () {
+    const ids=["map-in","map-out","map-count","map-probe"], MAX=4294967294;
+    function render(){
+      const values=ids.map(id=>$(id).value), [inside,outside,count,probe]=values.map(Number);
+      const valid=values.every(v=>v.trim()!=="") && [inside,outside,count,probe].every(Number.isSafeInteger) && inside>=0 && outside>=0 && probe>=0 && count>0 && probe<=MAX && inside+count-1<=MAX && outside+count-1<=MAX;
+      if(!valid){$("map-text").textContent="유효하지 않은 ID 범위";$("map-result").textContent="음수·빈 값·소수·길이 0 또는 유효 ID 최댓값을 넘는 범위는 사용할 수 없습니다.";$("map-result").className="readout bad";return;}
+      $("map-text").textContent=`uid_map: ${inside} ${outside} ${count}\n안쪽: ${inside}..${inside+count-1}\n바깥: ${outside}..${outside+count-1}`;
+      const mapped=probe>=inside && probe<inside+count;
+      $("map-result").textContent=mapped ? `안쪽 UID ${probe} → 바깥 UID ${outside+(probe-inside)}` : `안쪽 UID ${probe}는 매핑 밖입니다. 이 ID로 전환하거나 소유권을 표현할 수 있다고 가정하면 안 됩니다.`;
+      $("map-result").className="readout "+(mapped?"good":"bad");
+    }
+    ids.forEach(id=>$(id).oninput=render);
+    $("map-single").onclick=()=>{[0,1000,1,0].forEach((v,i)=>$(ids[i]).value=v);render();};
+    $("map-range").onclick=()=>{[0,100000,65536,65535].forEach((v,i)=>$(ids[i]).value=v);render();};render();
+  })();
+  (function () {
+    let s,logs;
+    function reset(){s={cloned:false,deny:false,uid:false,gid:false,cg:false,ended:false,parent:"clone 전",child:"아직 없음"};logs=["새 실험. clone으로 시작하세요."];render();}
+    function add(message){logs.push(message);logs=logs.slice(-10);}
+    function render(){
+      $("sync-parent").textContent=s.parent;$("sync-child").textContent=s.child;$("sync-log").textContent=logs.join("\n");
+      $("sync-flags").innerHTML=[["clone",s.cloned],["deny",s.deny],["uid_map",s.uid],["gid_map",s.gid],["cgroup",s.cg]].map(([n,on])=>`<li class="${on?"done":""}">${n}: ${on?"완료":"대기"}</li>`).join("");
+    }
+    $("sync-actions").onclick=e=>{
+      const a=e.target.dataset.action;if(!a)return;
+      const rootless=$("sync-mode").value==="rootless";
+      if(s.ended){add("종료된 실험입니다. 초기화하세요.");return render();}
+      if(a==="clone"){if(s.cloned)add("자식은 이미 있습니다.");else{s.cloned=true;s.parent="매핑 준비 중";s.child="writer 닫음 → read 대기";add("clone 완료. 자식은 파이프에서 기다립니다.");}return render();}
+      if(!s.cloned){add("자식을 먼저 만들어야 /proc/<pid> 매핑과 배치가 가능합니다.");return render();}
+      if(a==="deny"){if(s.gid)add("gid_map 이후에는 deny로 바꿀 수 없습니다.");else{s.deny=true;add("setgroups deny: 보조 그룹 목록을 비우는 호출은 아닙니다.");}}
+      if(a==="uid"){if(s.uid)add("uid_map은 이미 설정되었습니다.");else{s.uid=true;add("uid_map 설정 완료.");}}
+      if(a==="gid"){if(s.gid)add("gid_map은 이미 설정되었습니다.");else if(rootless&&!s.deny)add("실패: 비특권 gid_map 경로는 setgroups deny가 먼저 필요합니다.");else{s.gid=true;add("gid_map 설정 완료.");}}
+      if(a==="cg"){if(rootless)add("rootless 경로는 cgroup을 만들지 않습니다. 위임이 별도 필요합니다.");else{s.cg=true;add("부모가 자식의 호스트 PID를 cgroup.procs에 썼습니다.");}}
+      if(a==="abort"){s.parent="writer 닫음 → wait → 오류 반환";s.child="read EOF → 사용자 명령 없이 종료";s.ended=true;add("준비 실패. 부모는 자식 회수를 마친 뒤 정리합니다.");}
+      if(a==="release"){
+        s.ended=true;
+        if(s.uid&&s.gid&&(rootless||s.cg)){s.parent="준비 완료 → write 1 → wait";s.child="ID 0 선택 → hostname → rootfs/proc/dev → exec";add("정상 순서. 필요한 준비 뒤에만 자식을 깨웠습니다.");}
+        else{s.parent="준비 전 release를 보낸 잘못된 부모";s.child="준비되지 않은 상태에서 실행을 시도함";add("경쟁 조건: 매핑·배치가 끝나기 전에 깨웠습니다. 참조 구현은 이 순서로 진행하지 않습니다.");}
+      }
+      render();
+    };
+    $("sync-mode").onchange=reset;$("sync-reset").onclick=reset;reset();
+  })();
+  (function () {
+    const cases={
+      hostname:[true,"가능: 새 UTS는 이 user namespace의 권한 범위에 속합니다. 호스트 UTS를 바꾸는 호출과 다릅니다."],
+      rootfile:[false,"거부: rootfs 안에 있어도 바깥 UID 0의 mode 600 파일은 호출자 UID 1000에게 허용되지 않습니다."],
+      ownfile:[true,"가능: rootfs 안의 바깥 UID 1000 소유 파일은 안의 UID 0에 대응합니다. 호스트 경로 전체가 보인다는 뜻은 아닙니다."],
+      setuid:[false,"거부: 단일 매핑에는 안쪽 UID 123에 대응할 바깥 ID가 없습니다."],
+      groups:[false,"거부: setgroups=deny 뒤에는 해당 호출을 다시 허용할 수 없습니다. 기존 보조 그룹이 지워진 것은 아닙니다."],
+      cgroup:[false,"거부: 바깥 cgroup 관리 권한을 위임받지 않았습니다. 새 namespace의 root와 cgroup 위임은 별개입니다."]
+    };
+    function render(){const [ok,msg]=cases[$("cap-case").value];$("cap-result").textContent=msg;$("cap-result").className="readout "+(ok?"good":"bad");}
+    $("cap-case").onchange=render;render();
+  })();
+  (function () {
+    function render(){
+      const root=$("mode-user").value==="root",range=$("mode-range").checked,limit=$("mode-limit").checked;
+      let logs=[];
+      if(!root&&range)logs=["사전 거부: --userns-base는 root 전용입니다.","clone 전에 오류를 반환합니다."];
+      else if(!root&&limit)logs=["사전 거부: rootless 제한 옵션에는 cgroup 위임이 필요합니다.","제한을 적용한 것처럼 실행하지 않습니다."];
+      else{
+        logs.push(root?"부모: EUID 0":"부모: 일반 사용자 (예시 EUID 1000)");
+        logs.push(range||!root?"clone: NEWUSER | NEWUTS | NEWPID | NEWNS":"clone: NEWUTS | NEWPID | NEWNS (user namespace는 그대로)");
+        logs.push(root?"부모: cgroup 생성 → 자식의 호스트 PID로 배치":"부모: cgroup 생성 생략, 상위 cgroup은 상속");
+        if(!root)logs.push("부모: setgroups deny → uid_map 0 1000 1 → gid_map 0 1000 1");
+        if(range)logs.push("부모: UID/GID 범위 0 100000 65536");
+        logs.push("부모: pipe write(1) → 자식: gate 통과");
+        if(range||!root)logs.push("자식: setgid(0) → setuid(0)");
+        logs.push("자식: hostname → rootfs/proc/dev → init 또는 exec");
+        if(limit)logs.push("root cgroup: memory.max = 67108864");
+      }
+      $("mode-log").textContent=logs.join("\n");
+    }
+    ["mode-user","mode-range","mode-limit"].forEach(id=>$(id).onchange=render);render();
+  })();
+  (function () {
+    const lines=[
+      ['부모: pipe2([3, 4], O_CLOEXEC)',"동기화용 파이프를 만듭니다. reader와 writer를 부모·자식이 복제하므로 각자 불필요한 끝을 닫아야 합니다."],
+      ['부모: clone(... CLONE_NEWUSER|CLONE_NEWUTS|CLONE_NEWPID|CLONE_NEWNS|SIGCHLD) = 4201',"자식의 바깥 PID는 4201입니다. 부모는 /proc/4201 경로와 cgroup 배치에 이 번호를 사용합니다."],
+      ['자식: close(4); read(3, ...)  <대기>',"자식도 writer를 닫습니다. 그래야 부모가 실패해서 writer를 닫을 때 EOF를 받을 수 있습니다."],
+      ['부모: write(setgroups_fd, "deny", 4)',"rootless GID 매핑의 조건을 먼저 준비합니다. supplementary group 목록을 직접 비우는 호출은 아닙니다."],
+      ['부모: write(uid_map_fd, "0 1000 1", 8)',"안의 UID 0 하나를 부모 namespace의 UID 1000에 대응시킵니다."],
+      ['부모: write(gid_map_fd, "0 1000 1", 8)',"GID도 별도로 설정합니다. 예시는 UID와 GID가 모두 1000인 실행자입니다."],
+      ['부모: write(4, "\\1", 1); close(4)',"준비가 끝난 뒤에만 1바이트를 보냅니다. 자식의 read가 완료됩니다."],
+      ['자식: setgid(0); setuid(0)',"자식이 새 namespace의 ID 0을 선택합니다. 특히 root의 범위 매핑 경로에서 중요합니다."],
+      ['자식: sethostname → pivot_root·proc/dev → execve',"ID를 선택하고 hostname을 설정한 뒤, exec 전에 3장의 pivot_root·proc/dev 준비를 수행합니다. 환경 변수 문자열은 상속되지만 파일 경로는 새 rootfs 기준입니다."],
+      ['부모: wait4(4201, ...)',"종료 코드를 전달하고 root 경로의 cgroup을 정리합니다. 준비 실패 경로도 자식 회수를 빠뜨리지 않습니다."]
+    ];
+    lines.forEach(([line,explain],i)=>{const b=MM.el("button",{type:"button"});b.textContent=line;b.onclick=()=>{$("trace-lines").querySelectorAll("button").forEach(x=>x.classList.remove("on"));b.classList.add("on");$("trace-explain").textContent=explain;};$("trace-lines").append(b);if(i===0)b.click();});
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
++ cg=/sys/fs/cgroup
++ mkdir /sys/fs/cgroup/course-runner
++ printf '1\n'
++ printf '%s\n' 10015
+++ cat /tmp/network-fixture.pid
+++ true
++ fixture_pid=
++ '[' -n '' ']'
++ trap cleanup EXIT
++ printf '%s\n' '+memory +cpu +pids'
++ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
++ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
++ bash /input/failure-fixtures.sh
+PASS CH06 parent network helper failure → EOF/wait/cgroup+veth cleanup
+PASS CH07 parent network helper failure → EOF/wait/cgroup+veth cleanup
++ cleanup
++ rmdir /sys/fs/cgroup/myctr
++ printf '%s\n' '-memory -cpu -pids'
++ '[' -n '' ']'
++ printf '1\n'
++ printf '%s\n' 10015
++ rmdir /sys/fs/cgroup/course-runner

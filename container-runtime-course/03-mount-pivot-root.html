@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>파일시스템 격리 · pivot_root</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  /* 공통 UI는 assets에서, 이 장의 실험판만 여기에서 정의한다. */
+  .fs-pair { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0; }
+  .fs-panel { min-width:0; border:1px solid var(--border); border-radius:10px; padding:12px; background:var(--surface-2); }
+  .fs-panel h4 { font-size:14px; margin:0 0 8px; }
+  .fs-panel pre { margin:0; font-size:12px; }
+  .mount-badge { padding:6px 10px; border:1px dashed var(--border); border-radius:6px; font:13px var(--mono); margin-top:8px; overflow-wrap:anywhere; }
+  .mount-badge.active { border-color:var(--ok); background:var(--ok-soft); }
+  .result { padding:10px 12px; border-radius:8px; background:var(--surface-2); font-size:14px; overflow-wrap:anywhere; }
+  .result.good { background:var(--ok-soft); }
+  .result.bad { background:var(--bad-soft); }
+  .flags { display:flex; flex-wrap:wrap; gap:8px 16px; font-size:14px; }
+  .flags label { display:inline-flex; align-items:center; gap:6px; }
+  .trace { font:12.5px/1.7 var(--mono); overflow-x:auto; border:1px solid var(--border); border-radius:10px; background:var(--code-bg); padding:6px 0; }
+  .trace button { display:block; width:100%; text-align:left; border:0; border-left:3px solid var(--border); padding:5px 12px; color:var(--text); background:var(--code-bg); font:inherit; white-space:pre; cursor:pointer; }
+  .trace button:hover,.trace button.on { border-left-color:var(--accent); background:var(--accent-soft); }
+  #trace-explain { min-height:5em; margin-top:10px; }
+  .diagram-wide { min-width:620px; }
+  .lab-note { color:var(--muted); font-size:13px; }
+  .source-list { font-size:14px; overflow-wrap:anywhere; }
+  main { overflow-wrap:anywhere; }
+  pre,.trace { overflow-wrap:normal; }
+  @media(max-width:600px) { .fs-pair { grid-template-columns:1fr; } .controls label { flex-wrap:wrap; } }
+</style>
+</head>
+<body data-chapter="03">
+<main>
+<header class="chapter-head">
+  <span class="label">프로세스와 격리 · Chapter 03</span>
+  <h1>파일시스템 격리:<br>mount ns와 pivot_root</h1>
+  <p class="lead">2장의 myctr는 자기 hostname과 PID를 가졌지만, <code>ls /</code>는 여전히 호스트의 파일을 보여 줍니다. 이번에는 Alpine의 작은 루트 파일시스템을 준비하고 <b>프로세스가 바라보는 /를 교체</b>합니다. 마운트 목록을 나누고, 전파를 끊고, 루트를 바꾸고, 새 PID 공간에 맞는 <code>/proc</code>와 최소한의 <code>/dev</code>를 붙입니다. 끝나면 <code>ls /</code>에는 Alpine이, <code>ps</code>에는 컨테이너 프로세스만 나옵니다.</p>
+  <div class="objectives"><h4>학습 목표</h4><ul>
+    <li>마운트 목록·프로세스의 루트·현재 디렉터리가 서로 다른 상태임을 설명한다.</li>
+    <li><code>CLONE_NEWNS</code>만으로 마운트 전파가 끊기지 않는 이유와 <code>MS_REC | MS_PRIVATE</code>의 역할을 이해한다.</li>
+    <li>Alpine minirootfs를 준비하고 <code>pivot_root → chdir → oldroot 분리</code>를 구현한다.</li>
+    <li>새 procfs와 장치 bind mount로 <code>ps</code>, <code>/dev/null</code>, <code>/dev/zero</code>를 동작시킨다.</li>
+    <li><code>myctr run --rootfs ./rootfs --init /bin/sh</code>을 구현하고 완료 기준 17개를 통과시킨다.</li>
+  </ul></div>
+</header>
+<nav class="toc"><b>목차</b><ol>
+  <li><a href="#s1">/를 바꾸려면 무엇을 나눠야 하나</a></li>
+  <li><a href="#s2">mount namespace와 마운트 전파</a></li>
+  <li><a href="#s3">Alpine minirootfs 준비</a></li>
+  <li><a href="#s4">chroot와 pivot_root의 차이</a></li>
+  <li><a href="#s5">루트 교체의 순서와 실패 조건</a></li>
+  <li><a href="#s6">새 PID 공간에 맞는 /proc</a></li>
+  <li><a href="#s7">최소한의 /dev 구성</a></li>
+  <li><a href="#s8">루트가 바뀌어도 남는 것: 환경 변수와 FD</a></li>
+  <li><a href="#s9">구현 가이드와 완료 기준 17개</a></li>
+  <li><a href="#s10">strace로 순서 확인하기</a></li>
+  <li><a href="#s11">이번 장의 경계와 다음 단계</a></li>
+</ol></nav>
+
+<section id="s1">
+<h2>1. /를 바꾸려면 무엇을 나눠야 하나</h2>
+<p>Linux에서 <code>/</code>는 모든 프로세스에 고정된 문자열 하나가 아닙니다. 프로세스는 경로 탐색을 시작할 <b>루트 디렉터리</b>와 상대 경로의 기준인 <b>현재 디렉터리(cwd)</b>를 가지고 있습니다. 그 경로에 어떤 파일시스템이 붙어 있는지는 <b>mount namespace의 마운트 트리</b>가 정합니다. 세 가지를 구분해야 루트를 바꾼 뒤에도 호스트가 보이는 실수를 피할 수 있습니다.</p>
+<figure><div class="stage"><svg class="diagram diagram-wide" viewBox="0 0 800 280" role="img" aria-label="부모와 자식의 mount namespace가 분리된 뒤 자식의 루트를 Alpine으로 교체하는 구조">
+  <rect x="12" y="20" width="350" height="246" rx="14" class="box"/>
+  <rect x="438" y="20" width="350" height="246" rx="14" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+  <text x="32" y="48" font-weight="700">호스트 mount namespace</text><text x="458" y="48" font-weight="700">컨테이너 mount namespace</text>
+  <text x="32" y="86" font-family="var(--mono)">/  → 호스트 rootfs</text>
+  <text x="32" y="119" font-family="var(--mono)">/work/rootfs → Alpine 디렉터리</text>
+  <text x="32" y="152" font-family="var(--mono)">/proc → 호스트 PID 공간</text>
+  <text x="458" y="86" font-family="var(--mono)">/  → Alpine rootfs</text>
+  <text x="458" y="119" font-family="var(--mono)">/proc → 컨테이너 PID 공간</text>
+  <text x="458" y="152" font-family="var(--mono)">/dev → tmpfs + 장치 bind</text>
+  <path d="M365 120H430 M420 113L430 120L420 127" class="line"/>
+  <text x="400" y="101" text-anchor="middle" font-size="11">pivot_root</text>
+  <text x="32" y="204" class="muted">부모의 루트와 마운트는 그대로</text>
+  <text x="458" y="204" class="muted">cwd = /, /.oldroot 분리 완료</text>
+  <text x="400" y="250" text-anchor="middle" font-size="12">Alpine 디렉터리의 실제 파일 데이터는 복제되지 않는다</text>
+</svg></div><figcaption>목표 상태. CLONE_NEWNS는 목록을 나누고, pivot_root는 그 안의 루트를 교체합니다.</figcaption></figure>
+<div class="tbl-wrap"><table><tr><th>동작</th><th>바뀌는 것</th><th>그대로인 것</th></tr>
+<tr><td><code>clone(CLONE_NEWNS)</code></td><td>자식이 별도 마운트 목록을 갖는다</td><td>처음에는 부모와 같은 마운트·파일이 보인다</td></tr>
+<tr><td><code>mount(..., MS_PRIVATE | MS_REC, ...)</code></td><td>자식의 트리에서 마운트 이벤트 전파를 끊는다</td><td>같은 파일에 대한 읽기·쓰기는 여전히 공유될 수 있다</td></tr>
+<tr><td><code>pivot_root(new, old)</code></td><td>루트 마운트를 교체하고 이전 루트를 old 아래에 둔다</td><td>old를 떼기 전까지는 이전 트리가 남아 있다</td></tr>
+<tr><td><code>execvp</code></td><td>프로그램 이미지를 바꾼다</td><td>준비한 루트·마운트 namespace·cwd가 유지된다</td></tr></table></div>
+<p>위 순서는 모두 <b>clone으로 만든 자식에서, exec 전에</b> 수행합니다. 부모가 루트를 바꾸면 컨테이너를 관리하는 myctr 자신도 호스트의 파일 경로를 잃습니다. 이 장은 자식의 <code>setup()</code>에 파일시스템 준비 단계를 추가하는 작업입니다.</p>
+</section>
+
+<section id="s2">
+<h2>2. mount namespace와 마운트 전파</h2>
+<p>플래그 이름은 <code>CLONE_NEWNS</code>입니다. 새 namespace의 마운트 목록은 부모 목록에서 시작합니다. 여기서 놓치기 쉬운 것이 <b>전파 속성</b>입니다. 부모와 자식의 마운트가 같은 shared peer group에 속하면, 그 아래의 mount·umount 이벤트가 서로 전달됩니다. namespace가 다르다는 사실만으로 이 연결이 끊기지는 않습니다. <a href="https://man7.org/linux/man-pages/man7/mount_namespaces.7.html">mount_namespaces(7)</a></p>
+<div class="tbl-wrap"><table><tr><th>속성</th><th>이벤트 방향</th><th>이 장에서의 선택</th></tr>
+<tr><td>shared</td><td>같은 peer group과 양방향 전파</td><td>자식의 마운트가 부모에 나타날 수 있다</td></tr>
+<tr><td>private</td><td>전파를 보내지도 받지도 않는다</td><td><code>MS_PRIVATE | MS_REC</code>로 전체 트리를 변경</td></tr>
+<tr><td>slave</td><td>master에서 받지만 역방향으로 보내지 않는다</td><td>여기서는 사용하지 않는다</td></tr></table></div>
+<div class="widget" id="prop-lab">
+  <div class="w-title">마운트 전파 실험실</div>
+  <div class="w-desc">자식이 /mnt/demo에 tmpfs를 마운트합니다. 호스트에도 나타날지 먼저 예상하세요.</div>
+  <div class="controls"><label>마운트 관계 <select id="prop-mode"><option value="shared">새 namespace · shared peer</option><option value="private">새 namespace · rprivate 적용</option><option value="same">namespace 분리 안 함</option></select></label><button type="button" class="btn primary" id="prop-mount">자식에서 mount</button><button type="button" class="btn" id="prop-reset">초기화</button></div>
+  <div class="fs-pair"><div class="fs-panel"><h4>호스트</h4><div class="mount-badge" id="prop-host">/mnt/demo: 빈 디렉터리</div></div><div class="fs-panel"><h4>자식</h4><div class="mount-badge" id="prop-child">/mnt/demo: 빈 디렉터리</div></div></div>
+  <div class="result" id="prop-result" role="status" aria-live="polite"></div>
+  <p class="lab-note">모델의 전제: 복제 시 /mnt의 마운트가 shared peer 관계에 있고, 그 바로 아래에 새 마운트를 만듭니다. 파일 내용의 동기화 실험은 아닙니다.</p>
+</div>
+<h3>첫 mount 호출은 전파 차단</h3>
+<pre><code>mount(
+    None::&lt;&amp;str&gt;, "/", None::&lt;&amp;str&gt;,
+    MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::&lt;&amp;str&gt;,
+)?;</code></pre>
+<p><code>MS_PRIVATE</code>는 마운트의 전파 속성을 바꾸고, <code>MS_REC</code>는 하위 마운트에도 재귀 적용합니다. <code>/</code>만 private으로 바꾸고 이미 존재하는 하위 shared 마운트를 남기지 않도록 둘을 함께 씁니다. 이것은 파일을 복사하거나 읽기 전용으로 만드는 호출이 아닙니다. <a href="https://docs.kernel.org/filesystems/sharedsubtree.html">커널 Shared Subtrees 문서</a></p>
+<details class="deep"><summary>관찰: shared 누수와 pivot_root의 EINVAL</summary><div>
+<p>privileged Linux 컨테이너에서 재검증한 결과, shared peer 관계를 남긴 별도 namespace의 마운트가 부모 namespace에도 나타났고, private으로 바꾸면 나타나지 않았습니다. 새 루트의 부모 마운트 등을 shared로 남긴 경우에는 <code>pivot_root</code>도 <code>EINVAL</code>로 거절되었습니다. 따라서 rprivate은 누수 차단과 루트 교체의 전제 조건을 함께 해결합니다.</p>
+<p>이 실험에서 바깥 또는 호스트는 일회용 Linux 컨테이너의 부모 mount namespace를 뜻합니다. 물리 macOS에 Linux 마운트가 나타났다는 의미가 아닙니다.</p>
+<p>직접 재현할 때는 일회용 Linux VM 또는 전용 privileged 컨테이너 안에서만 수행하세요. <code>unshare -m</code>은 util-linux에서 기본적으로 전파를 private으로 바꿉니다. shared를 관찰하려면 <code>--propagation unchanged</code> 등으로 그 동작을 명시해야 합니다. 명령 하나만 보고 커널 기본 동작으로 해석하면 안 됩니다.</p>
+</div></details>
+</section>
+
+<section id="s3">
+<h2>3. Alpine minirootfs 준비</h2>
+<p>rootfs는 컨테이너 안에서 <code>/</code>로 보일 디렉터리입니다. 커널 이미지는 들어 있지 않습니다. 컨테이너는 호스트 Linux 커널을 공유하고, Alpine의 <code>/bin</code>·<code>/lib</code>·<code>/etc</code> 같은 사용자 공간 파일을 사용합니다. 작은 BusyBox와 musl을 포함한 <a href="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/">공식 Alpine minirootfs</a>로 시작합니다.</p>
+<p>아래 명령은 <b>Linux VM 안의 로컬 파일시스템</b>에서 실행하세요. Mac의 공유 폴더는 권한·마운트 동작이 다를 수 있으므로 <code>myctr</code> 프로젝트와 rootfs를 VM 내부 작업 디렉터리에 두는 편이 재현하기 쉽습니다. 다운로드는 일반 사용자로, 압축 해제와 실행은 root 권한으로 합니다.</p>
+<pre><code># Linux의 myctr 프로젝트 루트에서 실행
+case "$(uname -m)" in
+  aarch64|arm64) arch=aarch64 ;;
+  x86_64)       arch=x86_64 ;;
+  *) echo "이 예제는 aarch64/x86_64용입니다"; exit 1 ;;
+esac
+ver=3.22.2
+archive="alpine-minirootfs-${ver}-${arch}.tar.gz"
+url="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/${arch}"
+curl -fLO "$url/$archive"
+curl -fLO "$url/$archive.sha256"
+sha256sum -c "$archive.sha256"
+
+# 비어 있는 새 디렉터리에 추출한다. 기존 rootfs에 덮어쓰지 않는다.
+mkdir rootfs
+sudo tar --numeric-owner -xzf "$archive" -C rootfs
+sudo mkdir -p rootfs/proc rootfs/dev
+ls rootfs
+file rootfs/bin/busybox</code></pre>
+<p>버전은 재현을 위해 3.22.2로 고정했습니다. aarch64 Linux에는 aarch64 rootfs를, x86_64에는 x86_64 rootfs를 사용합니다. tar에는 실행 파일·심볼릭 링크·공유 라이브러리가 함께 들어 있습니다. 호스트의 <code>/bin/ls</code> 하나만 복사하면 동적 로더와 라이브러리가 없어 실행되지 않을 수 있습니다.</p>
+<div class="callout tip"><span class="title">Alpine 안의 프로그램을 실행한다</span><code>myctr</code> 바이너리는 호스트에서 실행합니다. 루트 교체 뒤에는 Alpine의 <code>/bin/sh</code> 등을 exec하므로, myctr 자체를 rootfs 안에 복사할 필요가 없습니다. 뒤의 chroot 비교용 Rust 프로그램은 예외입니다. Alpine 안에서 별도로 실행하므로 musl 정적 빌드가 필요합니다.</div>
+<details class="deep"><summary>오류를 구분하기: 파일은 있는데 No such file?</summary><div>
+<ul><li><code>ENOEXEC</code>: CPU 아키텍처가 다르거나 실행 형식이 맞지 않는 경우를 확인하세요.</li>
+<li><code>ENOENT</code>: 실행 파일 경로뿐 아니라 ELF 인터프리터(<code>/lib/ld-…</code>) 또는 스크립트의 shebang 인터프리터가 없는 경우에도 나올 수 있습니다.</li>
+<li><code>EACCES</code>: 실행 권한, 경로 탐색 권한, <code>noexec</code> 마운트 여부를 확인하세요.</li></ul>
+<p>호스트에서 <code>file rootfs/bin/busybox</code>, <code>readelf -l rootfs/bin/busybox</code>로 형식과 인터프리터를 확인할 수 있습니다. rootfs를 완성하기 전까지는 성공한 경로와 실패 원인을 나눠서 보세요.</p>
+</div></details>
+</section>
+
+<section id="s4">
+<h2>4. chroot와 pivot_root의 차이</h2>
+<p><code>chroot</code>는 프로세스의 경로 탐색 기준을 바꿉니다. <code>pivot_root</code>는 mount namespace 안에서 새 루트를 올리고 기존 루트를 지정한 하위 디렉터리로 옮깁니다. 이 장은 후자에 이어 <b>기존 루트를 떼어 내는 것</b>까지 수행합니다.</p>
+<div class="compare"><div><div class="lbl bad">chroot: 보이는 기준만 변경</div><pre><code>chroot("rootfs")
+chdir("/")
+# 기존 마운트 트리는 남아 있다.
+# 열린 FD도 닫히지 않는다.</code></pre></div><div><div class="lbl ok">pivot_root: 이전 루트까지 분리</div><pre><code>pivot_root(rootfs, rootfs/.oldroot)
+chdir("/")
+# /proc, /dev 준비 뒤
+umount2("/.oldroot", MNT_DETACH)
+rmdir("/.oldroot")</code></pre></div></div>
+<p>chroot는 cwd를 자동으로 옮기지 않습니다. 권한이 남은 프로세스가 내부 디렉터리로 다시 chroot하면서 cwd를 밖에 남기면, <code>..</code>를 따라 기존 트리를 올라갈 수 있습니다. chroot가 보안 격리 장치 자체는 아니라는 경고가 매뉴얼에 명시되어 있습니다. <a href="https://man7.org/linux/man-pages/man2/chroot.2.html">chroot(2)</a></p>
+<details class="deep"><summary>실험: 같은 탈출 시도를 두 환경에 넣어 보기</summary><div>
+<p>scratchpad의 비교 프로그램은 먼저 현재 OS 정보를 읽고, <code>/tmp/esc</code>로 다시 chroot한 뒤 cwd를 바꾸지 않은 채 상위로 이동합니다. 마지막으로 도달한 디렉터리를 루트로 정하고 OS 정보를 다시 읽습니다.</p>
+<pre><code>// 의도적으로 cwd를 새 루트 밖에 남기는 비교 실험
+std::fs::create_dir_all("/tmp/esc")?;
+chroot("/tmp/esc")?;
+for _ in 0..64 { let _ = chdir(".."); }
+chroot(".")?;
+// 여기에서 /etc/os-release 를 다시 읽어 비교한다.</code></pre>
+<p>Linux aarch64 재검증에서 단순 chroot 환경은 Alpine에서 바깥 Debian으로 돌아왔습니다. myctr의 pivot_root·oldroot 분리 뒤에는 <b>같은 방법으로는</b> 바깥 루트에 도달하지 못했고 Alpine에 머물렀습니다. 두 비교 모두 <code>CAP_SYS_CHROOT</code> 권한을 가진 프로세스에서 수행했습니다. 이 관찰은 특정 경로 탈출을 비교한 결과입니다. 권한과 열린 FD까지 모두 제한된 샌드박스를 증명하지는 않습니다.</p>
+</div></details>
+</section>
+
+<section id="s5">
+<h2>5. 루트 교체의 순서와 실패 조건</h2>
+<p><code>pivot_root(new_root, put_old)</code>는 새 루트로 쓸 <b>마운트 지점</b>과 이전 루트를 둘 하위 디렉터리를 받습니다. 그냥 압축을 푼 디렉터리는 마운트 지점이 아닐 수 있습니다. 자기 자신에게 bind mount해 조건을 맞춥니다. 호출 뒤에는 명시적으로 <code>chdir("/")</code>하여 cwd도 새 루트로 정합니다. <a href="https://man7.org/linux/man-pages/man2/pivot_root.2.html">pivot_root(2)</a></p>
+<div class="widget" id="pivot-lab">
+  <div class="w-title">루트 교체를 한 단계씩</div>
+  <div class="w-desc">/work/rootfs가 /가 되는 과정입니다. 이전 루트가 언제까지 보이는지 확인하세요.</div>
+  <div class="stage"><svg class="diagram diagram-wide" id="pivot-svg" viewBox="0 0 800 275" role="img" aria-label="루트 교체 단계별 마운트 트리"></svg></div>
+  <div class="log" id="pivot-call"></div>
+</div>
+<h3>실패를 먼저 읽는 체크리스트</h3>
+<div class="tbl-wrap"><table><tr><th>준비 상태</th><th>확인할 점</th><th>빠뜨리면</th></tr>
+<tr><td>권한</td><td>이 장은 root와 mount 권한을 전제로 한다</td><td>clone/mount/pivot_root가 <code>EPERM</code>으로 막힐 수 있다</td></tr>
+<tr><td>전파 차단</td><td>새 루트·부모 마운트 등 관련 shared 조건 제거</td><td><code>EINVAL</code>, 또는 앞선 mount 이벤트 누수</td></tr>
+<tr><td>새 루트 self-bind</td><td><code>MS_BIND | MS_REC</code>로 마운트 지점 생성</td><td>new_root가 마운트 지점이 아니면 <code>EINVAL</code></td></tr>
+<tr><td>put_old</td><td><code>rootfs/.oldroot</code> 디렉터리를 먼저 만든다</td><td>없으면 실패, 새 루트 바깥이면 <code>EINVAL</code></td></tr>
+<tr><td>cwd 정리</td><td>pivot 뒤 <code>chdir("/")</code></td><td>기존 cwd 위치에 따라 이전 트리를 붙잡을 수 있다</td></tr>
+<tr><td>이전 루트 분리</td><td>장치를 빌린 후 <code>MNT_DETACH</code>와 rmdir</td><td><code>/.oldroot</code>로 기존 트리에 접근 가능</td></tr></table></div>
+<details class="deep"><summary>왜 장치를 먼저 준비하고 oldroot를 나중에 떼나?</summary><div>
+<p>pivot 직후 기존 <code>/dev/null</code>은 <code>/.oldroot/dev/null</code>에 있습니다. 7절에서 이 장치를 새 <code>/dev/null</code>에 bind합니다. 그다음 oldroot를 떼어도 새 위치의 bind mount는 살아 있습니다. 먼저 떼면 빌려 올 원본 경로를 잃습니다.</p>
+<p><code>MNT_DETACH</code>는 마운트를 경로 트리에서 즉시 분리하고 참조가 없어질 때 정리하는 lazy unmount입니다. 열린 FD를 강제로 닫는 연산은 아닙니다. 따라서 cwd를 새 루트로 옮기는 것과 불필요한 FD를 남기지 않는 것은 별도 책임입니다.</p>
+</div></details>
+</section>
+
+<section id="s6">
+<h2>6. 새 PID 공간에 맞는 /proc</h2>
+<p>2장에서 <code>echo $$</code>는 1인데 <code>ps</code>에는 호스트 프로세스가 나오는 현상을 봤습니다. PID namespace를 바꿔도 이미 마운트된 procfs의 기준은 바뀌지 않기 때문입니다. 이번에는 새 PID namespace의 자식 안에서 <code>/proc</code>를 새로 마운트합니다. procfs의 프로세스 목록은 그 마운트가 속한 PID namespace를 기준으로 보입니다. <a href="https://man7.org/linux/man-pages/man7/pid_namespaces.7.html">pid_namespaces(7)</a></p>
+<figure><div class="stage"><svg class="diagram diagram-wide" viewBox="0 0 800 205" role="img" aria-label="같은 PID 1 프로세스라도 procfs 마운트의 기준에 따라 ps 출력이 달라지는 구조">
+<rect x="12" y="28" width="222" height="148" rx="12" class="box"/><text x="28" y="58" font-weight="700">새 PID namespace</text><text x="28" y="94" font-family="var(--mono)">getpid() → 1</text><text x="28" y="126">현재 프로세스는 동일</text>
+<path d="M240 96H328 M318 89L328 96L318 103" class="line"/>
+<rect x="338" y="12" width="448" height="80" rx="10" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="354" y="42">호스트 procfs를 재사용</text><text x="354" y="70" font-family="var(--mono)">ps → 호스트 PID 목록</text>
+<rect x="338" y="112" width="448" height="80" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="354" y="142">자식에서 새 procfs 마운트</text><text x="354" y="170" font-family="var(--mono)">ps → 컨테이너 PID 목록</text>
+</svg></div><figcaption>PID 번호를 정하는 namespace와 /proc의 관찰 기준을 함께 맞춥니다.</figcaption></figure>
+<pre><code>mount(
+    Some("proc"), "/proc", Some("proc"),
+    MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+    None::&lt;&amp;str&gt;,
+)?;</code></pre>
+<p>mount 대상인 <code>/proc</code> 디렉터리가 rootfs에 있어야 합니다. <code>nosuid,nodev,noexec</code>는 procfs에서 setuid·장치 노드·직접 실행의 의미를 제한합니다. <code>/proc</code>를 전부 읽기 전용으로 만드는 옵션은 아닙니다.</p>
+<div class="widget" id="proc-lab">
+<div class="w-title">getpid와 ps의 관찰 기준</div><div class="w-desc">명령은 새 PID namespace에서 실행됩니다. procfs와 --init을 바꿔 PID와 관찰 목록을 비교하세요.</div>
+<div class="controls"><label>/proc <select id="proc-mode"><option value="fresh">자식에서 새로 마운트</option><option value="host">기존 호스트 procfs 사용</option><option value="none">빈 디렉터리만 존재</option></select></label><label><input type="checkbox" id="proc-init">--init 사용</label></div>
+<div class="fs-pair"><div class="fs-panel"><h4>명령의 getpid()</h4><pre id="proc-pid"></pre></div><div class="fs-panel"><h4>ps가 읽는 목록 (모형)</h4><pre id="proc-output"></pre></div></div>
+<div class="result" id="proc-result" aria-live="polite"></div><p class="lab-note">호스트 모드의 PID와 명령명은 설명용입니다. 실제 ps에는 ps 자신이나 셸 등 실행 방법에 따른 프로세스가 추가됩니다.</p>
+</div>
+<p>완료 기준의 <code>run ps -o pid</code>는 셸을 거치지 않고 ps를 PID 1로 직접 exec합니다. 그래서 출력의 유일한 PID가 1인지를 검사할 수 있습니다. 반면 대화형 셸에서 실행하는 ps에 여러 프로세스가 보이는 것은 정상입니다.</p>
+</section>
+
+<section id="s7">
+<h2>7. 최소한의 /dev 구성</h2>
+<p>Alpine tar를 푸는 것만으로 실행 환경 전체가 생기지는 않습니다. <code>/dev/null</code>은 이름이 null인 빈 파일이 아니라 커널 장치에 연결된 특수 파일입니다. 이번 구현은 새 tmpfs에 빈 마운트 대상을 만들고, 아직 남아 있는 이전 루트의 장치 여섯 개를 파일 단위로 bind합니다.</p>
+<div class="tbl-wrap"><table><tr><th>장치</th><th>용도</th></tr><tr><td><code>null</code></td><td>쓰기를 버리고 읽으면 EOF</td></tr><tr><td><code>zero</code></td><td>0 바이트 공급</td></tr><tr><td><code>full</code></td><td>쓰기에 ENOSPC를 돌려주는 테스트 장치</td></tr><tr><td><code>random</code>, <code>urandom</code></td><td>커널 난수 장치</td></tr><tr><td><code>tty</code></td><td>프로세스의 제어 터미널에 접근. 제어 터미널이 없으면 사용 불가</td></tr></table></div>
+<pre><code>mount(Some("tmpfs"), "/dev", Some("tmpfs"),
+      MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+      Some("mode=755,size=65536k"))?;
+// 각 장치에 대해: 마운트 대상 파일을 만들고 이전 루트의 장치를 bind
+File::create("/dev/null")?;
+mount(Some("/.oldroot/dev/null"), "/dev/null", None::&lt;&amp;str&gt;,
+      MsFlags::MS_BIND, None::&lt;&amp;str&gt;)?;
+// 같은 방법으로 나머지 5개도 구성한다.</code></pre>
+<div class="callout warn"><span class="title">/dev tmpfs에는 MS_NODEV를 붙이지 않는다</span>이 마운트에서는 장치를 사용해야 합니다. <code>MS_NOSUID</code>와 <code>MS_NODEV</code>는 다른 제한입니다. 장치 bind mount도 자체 마운트 속성을 갖기 때문에 실제 적용 옵션은 <code>/proc/self/mountinfo</code>에서 각각 확인해야 합니다. 64 MiB size는 tmpfs의 상한이지 즉시 예약하는 메모리 양은 아닙니다.</div>
+<p>추가로 <code>/dev/fd → /proc/self/fd</code>, <code>/dev/stdin → /proc/self/fd/0</code>, stdout·stderr 링크를 만듭니다. 이 링크는 새 procfs가 있어야 의미가 있습니다. 파일 이름만 만들어서는 터미널이나 스트림이 생기지 않습니다.</p>
+<details class="deep"><summary>왜 /dev 전체 bind나 devtmpfs 대신 일부만 빌리나?</summary><div>
+<p>호스트의 <code>/dev</code> 전체를 붙이면 불필요한 장치까지 노출됩니다. 이번에는 셸과 기본 명령에 필요한 항목만 선택합니다. 다만 이 코드는 capability나 장치 접근 정책까지 완성한 구현은 아닙니다.</p>
+<p><code>/dev/pts</code>·<code>/dev/ptmx</code>를 위한 새 devpts, pseudo-terminal 할당, 별도 세션 설정은 구현하지 않습니다. <code>--init /bin/sh</code>는 호출자의 표준 입출력을 물려받아 동작하며, Docker의 <code>-it</code>와 같은 터미널 기능은 아닙니다. <code>/sys</code>도 이 장에서는 마운트하지 않습니다.</p>
+</div></details>
+</section>
+
+<section id="s8">
+<h2>8. 루트가 바뀌어도 남는 것: 환경 변수와 FD</h2>
+<p>검증 중 드러난 연결고리가 하나 있습니다. 호스트가 myctr에 넘긴 <b>환경 변수는 clone·pivot_root·execvp를 지나 그대로 전달</b>됩니다. execvp는 상속한 <code>PATH</code>로 프로그램을 찾지만, 그 경로는 이제 새 루트 안에서 해석합니다. 호스트의 <code>/opt/homebrew/bin</code>은 컨테이너 안에도 같은 디렉터리가 있을 때만 의미가 있습니다.</p>
+<div class="widget" id="env-lab"><div class="w-title">같은 PATH, 다른 /</div><div class="w-desc">모형 rootfs에는 /bin/ls와 /bin/sh만 있습니다. PATH에 /bin이 있는지와 절대 경로 실행의 차이를 보세요.</div>
+<div class="controls"><label>환경 <select id="env-path"><option value="mixed">호스트 PATH: /opt/tools/bin:/usr/bin:/bin</option><option value="hostonly">호스트 전용 PATH: /opt/tools/bin</option><option value="clean">최소 PATH: /usr/sbin:/usr/bin:/sbin:/bin</option></select></label><label>명령 <select id="env-cmd"><option value="ls">ls</option><option value="/bin/ls">/bin/ls</option><option value="no-such-command">no-such-command</option></select></label></div>
+<div class="log" id="env-log" aria-live="polite"></div><p class="lab-note">실제 execvp의 모든 오류 처리·기본 PATH 규칙을 구현한 모형은 아닙니다. 선택한 PATH와 파일 존재 여부를 비교합니다.</p></div>
+<p>이번 참조 구현은 환경을 자동 정리하지 않습니다. 결과를 재현하려면 아래처럼 myctr 바깥에서 최소 환경을 지정할 수 있습니다. sudo가 환경을 바꿀 수 있으므로 <code>sudo</code> 뒤에서 <code>env -i</code>를 실행합니다.</p>
+<pre><code>sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root   ./target/debug/myctr run --rootfs ./rootfs /bin/sh -c 'echo "$PATH"; ls /'
+
+# PATH와 무관하게 셸 자체를 찾으려면 절대 경로를 사용한다.
+sudo ./target/debug/myctr run --rootfs ./rootfs /bin/sh</code></pre>
+<p>표준 입출력 FD 0·1·2도 물려받습니다. 열린 파일·디렉터리 FD가 있다면 루트 교체만으로 접근이 취소되지 않습니다. 이후 런타임을 강화할 때는 환경 변수 허용 목록과 불필요한 FD 닫기를 별도로 설계해야 합니다. 여기서는 발견한 동작을 숨기지 않고 완료 범위를 분명히 둡니다.</p>
+</section>
+
+<section id="s9">
+<h2>9. 구현 가이드: myctr에 rootfs 붙이기</h2>
+<p>2장 코드를 이어서 고칩니다. <code>--rootfs</code>는 필수 옵션이며, myctr의 옵션은 실행할 프로그램 앞에 둡니다. 프로그램 뒤의 인자는 기존 trailing argument 규칙에 따라 프로그램에 전달됩니다.</p>
+<h3>단계 A. 의존성과 설정</h3>
+<pre><code># Linux 프로젝트 안에서
+cargo add nix@0.29 --features process,signal,sched,hostname,mount,fs
+# Cargo.toml: edition = "2024" 유지
+# clap 4 (derive), anyhow 1은 1·2장과 같다.</code></pre>
+<pre><code>Run {
+    #[arg(long)]
+    rootfs: PathBuf,
+    #[arg(long, default_value = "myctr")]
+    hostname: String,
+    #[arg(long)]
+    init: bool,
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    cmd: Vec&lt;String&gt;,
+}
+
+struct Config {
+    rootfs: PathBuf,
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+}</code></pre>
+<details class="deep"><summary>힌트 A: 경로는 부모에서 먼저 확정</summary><div><p>CLI에서 받은 경로는 <code>fs::canonicalize</code>로 절대 경로로 바꿉니다. 자식이 cwd와 루트를 바꾼 뒤에는 같은 상대 경로를 다시 해석할 수 없습니다. CString 변환도 1·2장처럼 clone 전에 끝냅니다. <code>Config</code>를 빌리는 클로저를 clone에 전달하세요.</p></div></details>
+<h3>단계 B. 자식 생성과 setup 연결</h3>
+<pre><code>// run(): 2장의 두 플래그에 하나를 더한다.
+let flags = CloneFlags::CLONE_NEWUTS
+    | CloneFlags::CLONE_NEWPID
+    | CloneFlags::CLONE_NEWNS;
+// clone의 자식 콜백 → container_main(cfg)
+
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    sethostname(&amp;cfg.hostname)?;
+    setup_rootfs(&amp;cfg.rootfs)
+}
+// container_main: setup 성공 뒤 --init이면 mini_init, 아니면 exec
+// 부모의 SIGINT 처리, SIGPIPE 복원, 종료 코드 전달은 유지한다.</code></pre>
+<h3>단계 C. 파일시스템 뼈대</h3>
+<pre><code>fn setup_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    // TODO 1: /와 하위 마운트를 rprivate으로 바꾼다.
+    // TODO 2: rootfs를 자기 자신에게 recursive bind한다.
+    // TODO 3: rootfs/.oldroot 디렉터리를 만든다.
+    // TODO 4: pivot_root(rootfs, rootfs/.oldroot), chdir("/")
+    // TODO 5: 새 /proc에 procfs를 마운트한다.
+    // TODO 6: setup_dev()로 최소 장치를 준비한다.
+    // TODO 7: /.oldroot를 MNT_DETACH로 분리하고 디렉터리를 지운다.
+    todo!()
+}
+
+fn setup_dev() -&gt; Result&lt;()&gt; {
+    // TODO 8: /dev에 tmpfs (nosuid, mode=755)를 마운트한다.
+    // TODO 9: 장치 6개를 /.oldroot/dev에서 /dev로 개별 bind한다.
+    // TODO 10: fd, stdin, stdout, stderr 심볼릭 링크를 만든다.
+    todo!()
+}</code></pre>
+<details class="deep"><summary>힌트 C-1: None의 타입과 마운트 플래그</summary><div><p>nix의 mount는 경로 인자에 제네릭 타입을 사용합니다. 생략하는 인자도 <code>None::&lt;&amp;str&gt;</code>처럼 타입을 지정하면 추론 오류를 피할 수 있습니다. 첫 호출은 <code>MS_REC | MS_PRIVATE</code>, self-bind는 <code>MS_BIND | MS_REC</code>입니다. 두 호출은 역할이 다릅니다.</p></div></details>
+<details class="deep"><summary>힌트 C-2: pivot 전후의 경로</summary><div><p>pivot 전의 put_old는 <code>rootfs.join(".oldroot")</code>, pivot 후의 분리 대상은 <code>"/.oldroot"</code>입니다. 새 루트에 들어온 뒤 호스트의 절대 경로를 재사용하지 마세요. <code>.context("pivot_root")?</code>처럼 단계 이름을 붙이면 실패 위치를 바로 알 수 있습니다.</p></div></details>
+<details class="deep"><summary>힌트 C-3: 디렉터리와 마운트의 수명</summary><div><p>마운트 대상 파일은 <code>File::create</code>로 만들고, 링크는 <code>std::os::unix::fs::symlink</code>로 만듭니다. /dev의 빈 대상은 tmpfs에 있으므로 컨테이너 종료 후 rootfs에 남지 않습니다. 반면 .oldroot는 원래 rootfs의 디렉터리이므로 정상 경로에서 명시적으로 지웁니다. 신뢰하는 새 rootfs로 한 번에 하나씩 실행하는 학습용 구현입니다.</p></div></details>
+<h3>단계 D. 실행해서 눈으로 확인</h3>
+<pre><code>cargo build
+sudo ./target/debug/myctr run --rootfs ./rootfs /bin/ls /
+sudo ./target/debug/myctr run --rootfs ./rootfs /bin/cat /etc/os-release
+sudo ./target/debug/myctr run --rootfs ./rootfs /bin/ps -o pid,comm
+sudo ./target/debug/myctr run --rootfs ./rootfs --init /bin/sh</code></pre>
+<p>첫 명령은 Alpine 디렉터리만 보여야 합니다. 세 번째 명령은 ps 자신이 PID 1로 실행됩니다. 마지막 셸에서는 <code>echo $$</code>가 2이고 init은 PID 1입니다. 이 장에는 새 네트워크 namespace를 추가하지 않았으므로 hostname을 바꿔도 네트워크는 아직 호스트와 공유합니다.</p>
+<h3>단계 E. 완료 기준 17개</h3>
+<p>동일한 참조 소스와 누적 검사 모듈을 <a href="examples/README.md">examples</a>에서도 제공합니다. 다음 장부터는 이 파일시스템 검사 17개를 유지하고 새 기능 검사를 더합니다.</p>
+<p>아래를 프로젝트의 <code>check.sh</code>로 저장합니다. 1·2장의 핵심 동작 9개와 파일시스템 검사 8개를 묶었습니다. rootfs 옵션과 Alpine 환경에 맞춰 이전 기준을 이어받은 검사이며, 앞 장의 모든 행을 그대로 복사한 목록은 아닙니다.</p>
+<!-- CHECK_SCRIPT -->
+<pre><code>#!/usr/bin/env bash
+# 3장 완료 기준: sudo ./check.sh  (rootfs 위치는 ROOTFS로 바꿀 수 있다)
+[ "$(id -u)" = 0 ] || { echo "sudo ./check.sh 로 실행하세요"; exit 1; }
+B=${B:-./target/debug/myctr}
+R=${ROOTFS:-./rootfs}
+[ -x "$R/bin/busybox" ] || { echo "$R 에 Alpine rootfs가 없습니다"; exit 1; }
+pass=0 fail=0
+ok() { echo "PASS  $1"; pass=$((pass+1)); }
+ng() { echo "FAIL  $1"; fail=$((fail+1)); }
+run() { "$B" run --rootfs "$R" "$@"; }
+t()  { local want=$1; shift; run "$@" &gt;/dev/null 2&gt;&amp;1; local got=$?
+       [ "$got" = "$want" ] &amp;&amp; ok "[$want] $*" || ng "[$want] $*  (실제 $got)"; }
+eq() { [ "$2" = "$3" ] &amp;&amp; ok "$1" || ng "$1: '$2' (기대 '$3')"; }
+mounts_before=$(wc -l &lt; /proc/self/mounts)
+
+# 1·2장 기준 (이제 rootfs 안의 busybox로 실행된다)
+t 0   true
+t 1   false
+t 3   /bin/sh -c 'exit 3'
+t 127 no-such-command
+eq "stdout 전달" "$(run echo hello world)" "hello world"
+eq "hostname 격리" "$(run --hostname box hostname)" "box"
+eq "명령이 PID 1" "$(run /bin/sh -c 'echo $$')" "1"
+t 143 --init /bin/sh -c 'kill -TERM $$'
+eq "SIGPIPE 기본값" "$(run /bin/sh -c 'yes | head -1' 2&gt;&amp;1)" "y"
+
+# 3장: 파일시스템 격리
+eq "루트가 Alpine" "$(run /bin/sh -c '. /etc/os-release; echo $ID')" "alpine"
+eq "이전 루트가 보이지 않음" "$(run /bin/sh -c 'ls -a / | grep -c oldroot')" "0"
+eq "/proc/self가 컨테이너 PID" "$(run readlink /proc/self)" "1"
+eq "ps에는 컨테이너 프로세스만" "$(run ps -o pid | tail -n +2 | tr -d ' ')" "1"
+eq "/dev/null 동작" "$(run /bin/sh -c 'echo x &gt; /dev/null &amp;&amp; echo ok')" "ok"
+eq "/dev/zero 동작" "$(run /bin/sh -c 'head -c 4 /dev/zero | od -An -tx1 | tr -d " "')" "00000000"
+eq "호스트 마운트 개수 그대로" "$(wc -l &lt; /proc/self/mounts)" "$mounts_before"
+[ ! -e "$R/.oldroot" ] &amp;&amp; ok "rootfs에 .oldroot 흔적 없음" || ng "rootfs에 .oldroot 흔적 없음"
+
+echo "---"; echo "통과 $pass / $((pass+fail))"
+[ $fail -eq 0 ]</code></pre>
+<pre><code>cargo build
+chmod +x check.sh
+sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root ./check.sh
+# rootfs나 바이너리 위치를 바꿀 때:
+# sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root ROOTFS=/absolute/rootfs B=/absolute/myctr ./check.sh</code></pre>
+<pre class="term"><code><span class="p">$ </span>sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root ./check.sh
+<span class="o">PASS  [0] true
+PASS  [1] false
+PASS  [3] /bin/sh -c exit 3
+PASS  [127] no-such-command
+PASS  stdout 전달
+PASS  hostname 격리
+PASS  명령이 PID 1
+PASS  [143] --init /bin/sh -c kill -TERM $$
+PASS  SIGPIPE 기본값
+PASS  루트가 Alpine
+PASS  이전 루트가 보이지 않음
+PASS  /proc/self가 컨테이너 PID
+PASS  ps에는 컨테이너 프로세스만
+PASS  /dev/null 동작
+PASS  /dev/zero 동작
+PASS  호스트 마운트 개수 그대로
+PASS  rootfs에 .oldroot 흔적 없음
+---
+통과 17 / 17</span></code></pre>
+<div class="callout"><span class="title">17 / 17이 확인하는 범위</span>종료 코드·UTS·PID·SIGPIPE의 회귀와 Alpine 루트·procfs·일부 장치·정상 종료 후 정리를 검사합니다. 호스트 마운트 개수가 같다는 항목은 최종 상태 확인입니다. 실행 도중 전파가 한 번도 없었다는 증명은 아니므로, 2절의 별도 전파 실험과 구분합니다. <code>/dev</code> 여섯 장치 전체나 모든 공격 경로를 검사하는 스위트도 아닙니다.</div>
+<details class="deep" id="reference"><summary>참조 구현 (힌트를 다 사용한 뒤 여세요)</summary><div>
+<p>제공된 scratchpad의 3장 구현과 검사 스크립트를 옮겼습니다. mount·fs feature가 추가된 nix 0.29, clap 4, anyhow 1, Rust 2024를 사용합니다. 원본 구현의 필수 <code>--rootfs</code>, 환경 상속, 최소 /dev 범위를 그대로 유지합니다.</p>
+<h4>Cargo.toml</h4>
+<pre><code>[package]
+name = "myctr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+nix = { version = "0.29", features = ["process", "signal", "sched", "hostname", "mount", "fs"] }</code></pre>
+<h4>src/main.rs</h4>
+<!-- REFERENCE_RUST -->
+<pre><code>use std::ffi::CString;
+use std::fs::{self, File};
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use nix::errno::Errno;
+use nix::libc;
+use nix::mount::{MntFlags, MsFlags, mount, umount2};
+use nix::sched::{CloneFlags, clone};
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, chdir, execvp, fork, pivot_root, sethostname};
+
+const STACK_SIZE: usize = 1024 * 1024;
+const OLD_ROOT: &amp;str = ".oldroot";
+/// 호스트에서 빌려 올 장치 파일
+const DEVICES: [&amp;str; 6] = ["null", "zero", "full", "random", "urandom", "tty"];
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 새 네임스페이스와 rootfs 안에서 실행한다
+    Run {
+        /// 컨테이너의 루트가 될 디렉터리
+        #[arg(long)]
+        rootfs: PathBuf,
+        /// 컨테이너 안에서 보일 hostname
+        #[arg(long, default_value = "myctr")]
+        hostname: String,
+        /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+        #[arg(long)]
+        init: bool,
+        /// 실행할 프로그램과 인자
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+/// clone된 자식에게 넘길 설정
+struct Config {
+    rootfs: PathBuf,
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { rootfs, hostname, init, cmd } =&gt; {
+            let argv = cmd
+                .iter()
+                .map(|s| CString::new(s.as_bytes()))
+                .collect::&lt;Result&lt;_, _&gt;&gt;()
+                .context("인자에 NUL 바이트가 있습니다")?;
+            // 자식은 cwd가 바뀌기 전에 경로를 해석해야 하므로 절대 경로로 만든다
+            let rootfs = fs::canonicalize(&amp;rootfs)
+                .with_context(|| format!("rootfs를 찾을 수 없습니다: {}", rootfs.display()))?;
+            let code = run(&amp;Config { rootfs, hostname, init, argv })?;
+            std::process::exit(code);
+        }
+    }
+}
+
+fn run(cfg: &amp;Config) -&gt; Result&lt;i32&gt; {
+    let mut stack = vec![0u8; STACK_SIZE];
+    let flags = CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
+    let cb = Box::new(|| container_main(cfg));
+    let child = unsafe { clone(cb, &amp;mut stack, flags, Some(Signal::SIGCHLD as i32)) }
+        .context("clone 실패 (root 권한으로 실행했나요?)")?;
+
+    unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }.context("signal 설정 실패")?;
+    wait_exit_code(child)
+}
+
+fn wait_exit_code(child: Pid) -&gt; Result&lt;i32&gt; {
+    match waitpid(child, None).context("waitpid 실패")? {
+        WaitStatus::Exited(_, code) =&gt; Ok(code),
+        WaitStatus::Signaled(_, sig, _) =&gt; Ok(128 + sig as i32),
+        other =&gt; bail!("예상하지 못한 상태: {other:?}"),
+    }
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다.
+fn container_main(cfg: &amp;Config) -&gt; isize {
+    if let Err(e) = setup(cfg) {
+        eprintln!("myctr: {e:#}");
+        return 1;
+    }
+    if cfg.init { mini_init(&amp;cfg.argv) } else { exec(&amp;cfg.argv) }
+}
+
+/// fork와 exec 사이에서 컨테이너의 모양을 만든다
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    sethostname(&amp;cfg.hostname).context("sethostname")?;
+    setup_rootfs(&amp;cfg.rootfs)
+}
+
+fn setup_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    // 1. 이후의 마운트가 호스트로 전파되지 않도록 모든 마운트를 private으로
+    mount(None::&lt;&amp;str&gt;, "/", None::&lt;&amp;str&gt;, MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::&lt;&amp;str&gt;)
+        .context("/ 를 rprivate으로 바꾸기")?;
+
+    // 2. pivot_root의 new_root는 마운트 지점이어야 하므로 자기 자신에게 bind
+    mount(Some(rootfs), rootfs, None::&lt;&amp;str&gt;, MsFlags::MS_BIND | MsFlags::MS_REC, None::&lt;&amp;str&gt;)
+        .context("rootfs bind mount")?;
+
+    // 3. 루트를 바꾼다. 이전 루트는 /.oldroot 에 걸린다
+    let old_root = rootfs.join(OLD_ROOT);
+    fs::create_dir_all(&amp;old_root).context(".oldroot 만들기")?;
+    pivot_root(rootfs, &amp;old_root).context("pivot_root")?;
+    chdir("/").context("chdir /")?;
+
+    // 4. 이 PID 네임스페이스 기준의 procfs
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None::&lt;&amp;str&gt;,
+    )
+    .context("/proc 마운트")?;
+
+    // 5. 최소한의 /dev. 장치 파일은 아직 붙어 있는 이전 루트에서 bind로 빌려 온다
+    setup_dev().context("/dev 구성")?;
+
+    // 6. 이전 루트를 떼어 내고 흔적을 지운다
+    let old = format!("/{OLD_ROOT}");
+    umount2(old.as_str(), MntFlags::MNT_DETACH).context("이전 루트 분리")?;
+    fs::remove_dir(&amp;old).context(".oldroot 지우기")?;
+    Ok(())
+}
+
+fn setup_dev() -&gt; Result&lt;()&gt; {
+    mount(
+        Some("tmpfs"),
+        "/dev",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+        Some("mode=755,size=65536k"),
+    )?;
+    for dev in DEVICES {
+        let target = format!("/dev/{dev}");
+        File::create(&amp;target).with_context(|| format!("{target} 만들기"))?;
+        let source = format!("/{OLD_ROOT}/dev/{dev}");
+        mount(Some(source.as_str()), target.as_str(), None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+            .with_context(|| format!("{target} bind"))?;
+    }
+    for (link, to) in [
+        ("/dev/fd", "/proc/self/fd"),
+        ("/dev/stdin", "/proc/self/fd/0"),
+        ("/dev/stdout", "/proc/self/fd/1"),
+        ("/dev/stderr", "/proc/self/fd/2"),
+    ] {
+        symlink(to, link).with_context(|| format!("{link} 링크"))?;
+    }
+    Ok(())
+}
+
+/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) } {
+        eprintln!("myctr: SIGPIPE 복원 실패: {e}");
+        return 1;
+    }
+    let err = execvp(&amp;argv[0], argv).unwrap_err();
+    eprintln!("myctr: {}: {err}", argv[0].to_string_lossy());
+    127
+}
+
+/// PID 1로 남아 명령을 PID 2로 띄우고, 입양된 고아까지 거두다가
+/// 명령이 끝나면 그 종료 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    let main_child = match unsafe { fork() } {
+        Ok(ForkResult::Child) =&gt; unsafe { libc::_exit(exec(argv) as i32) },
+        Ok(ForkResult::Parent { child }) =&gt; child,
+        Err(e) =&gt; {
+            eprintln!("myctr-init: fork: {e}");
+            return 1;
+        }
+    };
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, code)) if pid == main_child =&gt; return code as isize,
+            Ok(WaitStatus::Signaled(pid, sig, _)) if pid == main_child =&gt; return 128 + sig as isize,
+            Ok(_) =&gt; continue,
+            Err(Errno::EINTR) =&gt; continue,
+            Err(e) =&gt; {
+                eprintln!("myctr-init: waitpid: {e}");
+                return 1;
+            }
+        }
+    }
+}</code></pre>
+<p id="runtime-proof"><b>실행 검증:</b> Linux aarch64, Debian 12 기반 privileged 컨테이너, 커널 <code>7.0.12-linuxkit</code>, Rust/Cargo <code>1.86.0</code>, Alpine minirootfs <code>3.22.2 aarch64</code>에서 원본 코드 빌드와 <code>check.sh</code> 17개를 모두 통과했습니다. 환경을 정리한 <code>env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin</code> 실행에서도 17 / 17을 확인했습니다. x86_64는 이 검증에서 실행하지 않았습니다.</p>
+</div></details>
+</section>
+
+<section id="s10">
+<h2>10. strace로 순서 확인하기</h2>
+<pre><code>sudo strace -f   -e trace=clone,mount,pivot_root,chdir,umount2,execve,wait4   ./target/debug/myctr run --rootfs ./rootfs /bin/ps -o pid,comm</code></pre>
+<p>strace의 줄 앞 PID는 관찰하는 쪽의 번호이므로 컨테이너 안에서 보는 PID와 다를 수 있습니다. <code>/proc/self/mountinfo</code>는 mount ID·부모 ID·마운트 위치·전파 태그를 보여 줍니다. <code>shared:N</code>이 같은 peer group 연결을 찾는 단서입니다. <a href="https://man7.org/linux/man-pages/man5/proc_pid_mountinfo.5.html">proc_pid_mountinfo(5)</a></p>
+<div class="widget"><div class="w-title">시스템 콜 한 줄씩 읽기</div><div class="w-desc">핵심 호출만 추린 설명용 trace입니다. 줄을 눌러 어느 준비 단계인지 확인하세요.</div><div class="trace" id="trace-lines"></div><div class="result" id="trace-explain" aria-live="polite"></div></div>
+<details class="deep"><summary>마운트가 성공했는데 exec가 127인 경우</summary><div><p>루트 교체와 프로그램 실행은 다른 단계입니다. <code>mount</code>·<code>pivot_root</code>가 성공했다면 PATH, 실행 파일 경로, CPU 아키텍처, 동적 로더를 먼저 확인하세요. mount 실패가 아니라 exec 실패일 수 있습니다. 참조 구현은 setup 실패를 1, execvp 실패를 127로 돌려줍니다. 126/127을 오류 종류별로 나누는 셸의 세부 관례까지 구현하지는 않습니다.</p></div></details>
+</section>
+
+<section id="s11">
+<h2>11. 이번 장의 경계와 다음 단계</h2>
+<p>이제 컨테이너는 별도 UTS·PID·mount namespace와 자기 rootfs를 가집니다. rootfs는 공유 파일시스템에 있는 실제 디렉터리이므로 <code>/etc</code>에 쓰면 다음 실행에서도 남습니다. tmpfs /dev와 procfs는 자식의 마운트 환경에만 붙습니다. 실패 경로·동시 실행까지 다루는 rootfs 수명 관리는 아직 추가하지 않았습니다.</p>
+<ul><li><b>신뢰하는 입력:</b> 본인의 실습용 Alpine rootfs를 사용합니다. 임의 rootfs의 심볼릭 링크·중첩 마운트·장치 파일을 검증하는 로더는 아닙니다.</li><li><b>권한:</b> root·capability를 유지합니다. user namespace와 rootless는 5장, capability·seccomp 제한은 7장에서 다룹니다.</li><li><b>자원:</b> CPU·메모리·프로세스 수를 제한하지 않습니다. 루트를 바꿔도 메모리 폭주를 막을 수 없습니다.</li><li><b>연결:</b> 네트워크는 공유하고 DNS 설정은 별도로 구성하지 않았습니다. minirootfs만으로 패키지 다운로드까지 보장하지 않습니다.</li></ul>
+<p>다음 4장에서는 이 rootfs·mount namespace·새 /proc·/dev를 유지한 채 <code>cgroups v2</code>를 추가합니다. 4장의 자식은 <b>pivot_root 전에</b> cgroup에 들어갑니다. 5장에서는 이를 부모의 PID 배치와 파이프 장벽으로 바꾸고, 6장의 네트워크와 7장의 보안 정책까지 같은 코드에 쌓습니다. <code>--rootfs</code>는 이후 장에서도 필수입니다.</p>
+</section>
+
+<div class="summary"><h3>핵심 요약</h3><ul>
+<li><code>CLONE_NEWNS</code>는 마운트 목록을 나눕니다. shared 전파와 파일 데이터 공유는 별도 문제입니다.</li>
+<li><code>rprivate → self-bind → pivot_root → chdir → proc/dev → oldroot 분리</code> 순서를 유지합니다.</li>
+<li><code>/proc</code>는 새 PID namespace 안에서 마운트해야 ps의 관찰 기준이 맞습니다.</li>
+<li><code>/dev</code>는 tmpfs에 필요한 장치만 bind합니다. 환경 변수와 열린 FD는 자동 정리되지 않습니다.</li>
+</ul></div>
+<h2>확인 문제</h2>
+<div class="quiz" data-answer="1"><div class="q">CLONE_NEWNS만 추가한 직후 자식의 파일시스템은?</div><button class="opt">빈 파일시스템이다</button><button class="opt">부모 마운트 목록에서 시작하며 같은 파일이 보일 수 있다</button><button class="opt">자동으로 Alpine이 내려받아진다</button><button class="opt">모든 파일이 복사된다</button><div class="explain">새 목록은 부모 목록의 복사에서 시작합니다. rootfs 준비와 루트 교체는 별도 작업입니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">마운트 전파를 전체 트리에서 끊는 플래그 조합은?</div><button class="opt">MS_BIND | MS_REC</button><button class="opt">MS_NOSUID | MS_NODEV</button><button class="opt">MS_PRIVATE | MS_REC</button><button class="opt">CLONE_NEWPID</button><div class="explain">PRIVATE은 전파 속성, REC는 하위 마운트까지 재귀 적용하는 범위입니다.</div></div>
+<div class="quiz" data-answer="3"><div class="q">pivot_root 전에 rootfs를 자기 자신에게 bind하는 이유는?</div><button class="opt">프로그램을 정적으로 바꾸기 위해</button><button class="opt">rootfs를 읽기 전용으로 만들기 위해</button><button class="opt">PID 1을 만들기 위해</button><button class="opt">new_root가 마운트 지점이어야 하기 때문에</button><div class="explain">압축을 푼 일반 디렉터리만으로는 pivot_root의 마운트 조건을 충족하지 못할 수 있습니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">루트 교체 뒤 /proc를 자식에서 새로 마운트하는 이유는?</div><button class="opt">ps가 현재 PID namespace 기준의 procfs를 읽게 하려고</button><button class="opt">호스트 프로세스를 종료하려고</button><button class="opt">모든 프로세스를 PID 1로 바꾸려고</button><button class="opt">PATH를 초기화하려고</button><div class="explain">getpid의 번호표와 procfs가 보여 주는 PID 공간을 맞춰야 합니다.</div></div>
+<div class="quiz" data-answer="1"><div class="q">이 구현이 oldroot를 떼는 시점은?</div><button class="opt">clone 전</button><button class="opt">/dev 장치를 이전 루트에서 bind한 뒤</button><button class="opt">exec 성공 뒤 같은 프로세스로 돌아와서</button><button class="opt">rootfs를 다운로드하기 전</button><div class="explain">장치 원본 경로를 사용한 뒤 이전 루트를 분리합니다. 성공한 exec는 돌아오지 않습니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">pivot_root가 환경 변수에 미치는 영향은?</div><button class="opt">PATH를 Alpine 기본값으로 바꾼다</button><button class="opt">모든 환경 변수를 지운다</button><button class="opt">환경을 자동 정리하지 않는다</button><button class="opt">HOME만 남긴다</button><div class="explain">환경 변수는 별도 정책이 필요합니다. PATH의 문자열은 같아도 경로 탐색은 새 루트 기준입니다.</div></div>
+<div class="quiz" data-answer="3"><div class="q">17개 완료 기준을 통과했다는 의미는?</div><button class="opt">어떤 입력도 안전한 운영용 런타임이 완성됐다</button><button class="opt">모든 장치와 모든 시그널을 검증했다</button><button class="opt">rootfs가 실행마다 자동 초기화된다</button><button class="opt">정해진 회귀·파일시스템 동작과 정상 경로 정리를 확인했다</button><div class="explain">권한 제한, FD 정리, 악성 rootfs 검증, 동시 실행과 실패 복구는 이 스위트의 범위 밖입니다.</div></div>
+
+<h2>실습 과제</h2>
+<ol>
+<li><b>파일시스템 격리 완성.</b> 단계 A~E를 구현하고 <code>check.sh</code>를 실행하세요. 기대: <code>통과 17 / 17</code>. 성공하면 <code>git tag ch03</code>으로 기록하세요.</li>
+<li><b>작업 디렉터리 옵션 추가.</b> <code>--workdir</code>(기본값 <code>/</code>)를 myctr에 더하세요. 컨테이너 기준 절대 경로만 받고, rootfs 준비가 끝난 자식에서 init 또는 exec 전에 chdir합니다. 기대: <code>run --rootfs ./rootfs --workdir /tmp /bin/pwd</code>는 <code>/tmp</code>, 존재하지 않는 경로는 오류 메시지와 종료 코드 1입니다. 기본 옵션의 17개 검사도 계속 통과해야 합니다. 이 확장은 위 참조 구현에 포함되어 있지 않습니다.</li>
+<li><b>파일 쓰기와 마운트 격리 구분.</b> 컨테이너에서 <code>/tmp/ch03-marker</code>를 만들고 호스트의 <code>rootfs/tmp/ch03-marker</code>를 확인하세요. 기대: 파일은 남고, 컨테이너의 /dev tmpfs는 호스트 마운트 목록에 남지 않습니다. 확인한 표식만 지우세요.</li>
+<li><b>환경 상속 관찰.</b> 고유한 실험 변수 <code>CH03_MARK=from-launcher</code>를 env로 myctr에 전달하고 <code>/bin/sh -c 'echo "$CH03_MARK"'</code>를 실행하세요. 기대: 루트 교체 뒤에도 <code>from-launcher</code>가 출력됩니다. <code>env -i</code>에서 변수를 생략하면 빈 줄입니다.</li>
+<li><b>PID와 procfs 설명.</b> 직접 ps 실행과 <code>--init /bin/sh</code> 안의 ps 출력을 비교하세요. 기대: 직접 실행은 ps가 PID 1, init 모드는 init이 1·셸이 2이고 ps는 추가 PID입니다. 각 결과를 2장의 /proc 착시와 연결해 설명하세요.</li>
+</ol>
+<details class="deep"><summary>참고 자료 · 커널 규칙 확인</summary><div><ul class="source-list">
+<li><a href="https://man7.org/linux/man-pages/man7/mount_namespaces.7.html">mount_namespaces(7)</a> · 목록 분리와 shared peer 전파</li>
+<li><a href="https://docs.kernel.org/filesystems/sharedsubtree.html">Linux Kernel: Shared Subtrees</a> · 전파 속성과 재귀 변경</li>
+<li><a href="https://man7.org/linux/man-pages/man2/pivot_root.2.html">pivot_root(2)</a> · 루트 교체 조건과 오류</li>
+<li><a href="https://man7.org/linux/man-pages/man2/chroot.2.html">chroot(2)</a> · cwd와 열린 FD의 한계</li>
+<li><a href="https://man7.org/linux/man-pages/man7/pid_namespaces.7.html">pid_namespaces(7)</a> · procfs가 보는 PID namespace</li>
+<li><a href="https://man7.org/linux/man-pages/man5/proc_pid_mountinfo.5.html">proc_pid_mountinfo(5)</a> · mount ID와 전파 필드</li>
+<li><a href="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/">Alpine v3.22 공식 다운로드</a> · 아키텍처별 minirootfs</li>
+</ul></div></details>
+</main>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  // 마운트 이벤트 모형. 새 namespace가 shared peer를 그대로 물려받았다고 가정한다.
+  (function () {
+    let mounted = false;
+    function render() {
+      const mode = $("prop-mode").value;
+      const host = mounted && mode !== "private";
+      $("prop-host").textContent = host ? "/mnt/demo: tmpfs가 보임" : "/mnt/demo: 빈 디렉터리";
+      $("prop-child").textContent = mounted ? "/mnt/demo: tmpfs가 보임" : "/mnt/demo: 빈 디렉터리";
+      $("prop-host").classList.toggle("active",host);
+      $("prop-child").classList.toggle("active",mounted);
+      const message = mode === "same" ? "같은 마운트 목록을 보고 있습니다. 자식의 mount가 호스트에도 바로 보입니다." : mode === "shared" ? "목록은 나뉘었지만 shared peer 연결이 남았습니다. mount 이벤트가 호스트에도 전파됩니다." : "목록을 나누고 rprivate으로 전파를 끊었습니다. 자식의 mount는 호스트에 나타나지 않습니다.";
+      $("prop-result").textContent = (mounted ? "실행 결과: " : "예상 규칙: ") + message;
+      $("prop-result").className = "result " + (mode === "private" ? "good" : "bad");
+      $("prop-mount").disabled = mounted;
+    }
+    $("prop-mode").onchange = () => { mounted = false; render(); };
+    $("prop-mount").onclick = () => { mounted = true; render(); };
+    $("prop-reset").onclick = () => { mounted = false; render(); };
+    render();
+  })();
+  (function () {
+    const steps = [
+      ["clone(... | CLONE_NEWNS)","자식이 부모의 마운트 트리 복사본을 갖습니다. 아직 루트와 cwd는 호스트 쪽입니다."],
+      ["mount(NULL, /, NULL, MS_REC | MS_PRIVATE)","자식의 전체 트리에서 전파를 끊습니다. 루트 교체 전에 수행합니다."],
+      ["mount(rootfs, rootfs, NULL, MS_BIND | MS_REC)","Alpine 디렉터리를 자기 자신에게 bind하여 독립된 마운트 지점으로 만듭니다."],
+      ["mkdir(rootfs/.oldroot); pivot_root(rootfs, rootfs/.oldroot)","Alpine이 /가 되고 이전 루트가 /.oldroot 아래로 이동합니다. 아직 이전 루트에 접근할 수 있습니다."],
+      ["chdir(/)","cwd를 새 /로 명시적으로 옮깁니다. pivot_root가 임의의 cwd를 모두 자동 정리한다고 가정하지 않습니다."],
+      ["mount(proc, /proc, proc); setup_dev()","현재 PID namespace의 procfs와 tmpfs /dev를 붙입니다. 이전 루트에서 필요한 장치를 bind합니다."],
+      ["umount2(/.oldroot, MNT_DETACH); rmdir(/.oldroot)","이전 루트를 경로 트리에서 분리합니다. 이제 준비된 환경에서 init 또는 프로그램을 실행합니다."]
+    ];
+    MM.stepper($("pivot-lab"), {steps:steps.length, render(i) {
+      const pivoted = i >= 3, detached = i >= 6;
+      function box(x,y,w,h,title,lines,col) { return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" style="fill:var(--${col}-soft);stroke:var(--${col})"/><text x="${x+14}" y="${y+27}" font-weight="700">${title}</text>${lines.map((s,n)=>`<text x="${x+14}" y="${y+56+n*25}" font-family="var(--mono)" font-size="12">${MM.esc(s)}</text>`).join("")}`; }
+      let svg = box(12,20,370,220,"호스트 (변화 없음)",["/ → 호스트 rootfs","/work/rootfs → Alpine","cwd: 호출자의 작업 디렉터리"],"violet");
+      const lines = pivoted ? ["/ → Alpine",detached ? "/.oldroot: 없음" : "/.oldroot → 호스트 rootfs",i >= 4 ? "cwd: / (명시적으로 정리)" : "cwd: 기존 위치에 따라 달라짐",i>=5 ? "/proc + /dev: 준비됨" : "/proc + /dev: 준비 전"] : ["/ → 호스트 rootfs",i>=2 ? "/work/rootfs: bind mount" : "/work/rootfs: 일반 디렉터리","전파: " + (i>=1 ? "rprivate" : "상속 상태")];
+      svg += box(418,20,370,220,"자식 · 단계 " + (i+1),lines,"accent");
+      $("pivot-svg").innerHTML = svg;
+      $("pivot-call").textContent = steps[i][0];
+      return steps[i][1];
+    }});
+  })();
+  (function () {
+    function render() {
+      const mode = $("proc-mode").value, init = $("proc-init").checked;
+      $("proc-pid").textContent = String(init ? 2 : 1);
+      $("proc-output").textContent = mode === "none" ? "ps: /proc를 읽을 수 없음" : mode === "host" ? "PID  COMMAND\n  1  host-init\n210  myctr\n211  " + (init ? "myctr-init\n212  ps" : "ps") : "PID  COMMAND\n" + (init ? "  1  myctr-init\n  2  ps" : "  1  ps");
+      $("proc-result").textContent = mode === "none" ? "빈 디렉터리는 procfs가 아닙니다. 프로세스 정보를 제공하지 않습니다." : mode === "host" ? "getpid는 새 PID 공간, ps는 기존 procfs의 PID 공간을 보고 있습니다." : "getpid와 procfs의 기준이 맞았습니다. --init이면 명령은 PID 2입니다.";
+      $("proc-result").className = "result " + (mode === "fresh" ? "good" : "bad");
+    }
+    $("proc-mode").onchange = render; $("proc-init").onchange = render; render();
+  })();
+  (function () {
+    const paths = {mixed:"/opt/tools/bin:/usr/bin:/bin",hostonly:"/opt/tools/bin",clean:"/usr/sbin:/usr/bin:/sbin:/bin"};
+    const files = new Set(["/bin/ls","/bin/sh"]);
+    function render() {
+      const path = paths[$("env-path").value], cmd = $("env-cmd").value;
+      const candidates = cmd.includes("/") ? [cmd] : path.split(":").map(p=>p+"/"+cmd);
+      const logs = ["새 / = Alpine","PATH="+path]; let hit = false;
+      for(const p of candidates) { const exists = files.has(p); logs.push(p + " → " + (exists ? "발견, exec 성공" : "없음")); if(exists) { hit=true; break; } }
+      if(!hit) logs.push("탐색 실패: 참조 구현은 127 반환");
+      if(cmd.includes("/")) logs.push("슬래시가 있는 명령은 PATH를 탐색하지 않습니다.");
+      $("env-log").textContent = logs.join("\n");
+    }
+    $("env-path").onchange = render; $("env-cmd").onchange = render; render();
+  })();
+  (function () {
+    const trace = [
+      ["clone(... CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | SIGCHLD)","자식을 세 namespace에 생성합니다. 아래 mount 호출은 이 자식에서 수행합니다."],
+      ['mount(NULL, "/", NULL, MS_REC|MS_PRIVATE, NULL)',"shared 전파를 재귀적으로 끊습니다. 부모의 트리를 바꾸지 않도록 namespace 생성 뒤 실행합니다."],
+      ['mount("/work/rootfs", "/work/rootfs", NULL, MS_BIND|MS_REC, NULL)',"new_root를 마운트 지점으로 만듭니다. 데이터 복사가 아니라 같은 트리를 다시 붙이는 동작입니다."],
+      ['pivot_root("/work/rootfs", "/work/rootfs/.oldroot")',"새 루트를 올리고 이전 루트는 /.oldroot로 옮깁니다. 성공 직후에도 oldroot는 아직 남아 있습니다."],
+      ['chdir("/")',"현재 디렉터리를 새 루트로 정리합니다."],
+      ['mount("proc", "/proc", "proc", MS_NOSUID|MS_NODEV|MS_NOEXEC, NULL)',"새 PID 공간 기준의 procfs입니다. ps가 보는 목록을 바로잡습니다."],
+      ['mount("tmpfs", "/dev", "tmpfs", MS_NOSUID|MS_STRICTATIME, ...)',"/dev를 위한 새 메모리 파일시스템을 만듭니다. 이후 장치 6개와 스트림 링크를 준비합니다."],
+      ['mount("/.oldroot/dev/null", "/dev/null", NULL, MS_BIND, NULL)',"기존 루트의 장치 하나만 선택해 새 위치에 붙입니다. 나머지 장치도 같은 방법입니다."],
+      ['umount2("/.oldroot", MNT_DETACH)',"이전 루트를 경로 트리에서 분리합니다. 이 호출은 열린 FD를 닫는 동작은 아닙니다."],
+      ['execve("/bin/ps", ["/bin/ps", "-o", "pid,comm"], envp)',"Alpine의 프로그램을 실행합니다. 준비한 격리는 유지되며 envp는 상속됩니다."]
+    ];
+    trace.forEach(([line,explain],i)=>{
+      const b=MM.el("button",{type:"button"}); b.textContent=line;
+      b.onclick=()=>{ $("trace-lines").querySelectorAll("button").forEach(x=>x.classList.remove("on")); b.classList.add("on"); $("trace-explain").textContent=explain; };
+      $("trace-lines").append(b); if(i===0) b.click();
+    });
+  })();
+})();
+</script>
+</body>
+</html>

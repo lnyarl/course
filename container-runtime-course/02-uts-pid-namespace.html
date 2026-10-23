@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UTS · PID 네임스페이스</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  /* 플래그 실험실 */
+  .flags { display: flex; flex-wrap: wrap; gap: 6px 14px; font-family: var(--mono); font-size: 13px; }
+  .flags label { display: inline-flex; gap: 5px; align-items: center; }
+  .nstbl { font-family: var(--mono); font-size: 12.5px; }
+  .nstbl td.same { color: var(--muted); }
+  .nstbl td.diff { color: var(--violet); font-weight: 700; }
+  .outs { display: grid; gap: 4px; margin-top: 10px; }
+  .outs .row { display: grid; grid-template-columns: minmax(0, 210px) minmax(0, 1fr); gap: 10px; font-family: var(--mono); font-size: 12.5px; padding: 5px 8px; border-radius: 6px; background: var(--surface-2); transition: background .3s; }
+  .outs .row.chg { background: var(--violet-soft); }
+  .outs .row.warn { background: var(--warn-soft); }
+  .outs .row .o { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .outs .row .n { grid-column: 1 / -1; font-family: var(--sans); font-size: 12.5px; color: var(--muted); }
+  /* PID 트리 */
+  .nsv { border: 2px solid var(--border); border-radius: 12px; padding: 8px 10px 10px; margin-top: 8px; transition: border-color .25s, background .25s; }
+  .nsv.viewing { border-color: var(--accent); background: var(--accent-soft); }
+  .nsv > .h { font-size: 12.5px; font-weight: 700; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nsv > .h .btn { font-size: 12px; padding: 1px 8px; }
+  .nsv .kids { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+  .chip { font-family: var(--mono); font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--accent); background: var(--surface); cursor: pointer; transition: opacity .25s, border-color .2s; }
+  .chip b { color: var(--accent); }
+  .chip.hidden { opacity: .3; border-style: dashed; border-color: var(--border); }
+  .chip.sel { box-shadow: 0 0 0 3px var(--violet-soft); border-color: var(--violet); }
+  .chip.new { animation: pop .4s; }
+  @keyframes pop { from { transform: scale(.6); opacity: 0; } }
+  /* 시그널 */
+  .verdict { font-size: 18px; font-weight: 700; }
+  /* strace */
+  .strace { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 0; overflow-x: auto; }
+  .strace div { padding: 2px 14px; white-space: pre; cursor: pointer; border-left: 3px solid transparent; }
+  .strace div:hover { background: var(--accent-soft); }
+  .strace div.on { background: var(--accent-soft); border-left-color: var(--accent); }
+  .strace div.skip { color: var(--muted); cursor: default; }
+  .strace div.skip:hover { background: none; }
+  .strace div.sep { color: var(--accent); font-weight: 700; cursor: default; margin-top: 6px; }
+  .strace div.sep:hover { background: none; }
+  .strace .c { color: var(--violet); }
+  .strace .k { color: var(--teal); }
+  .strace .e { color: var(--bad); }
+  #st-explain { min-height: 4.5em; }
+</style>
+</head>
+<body data-chapter="02">
+<main>
+  <header class="chapter-head">
+    <span class="label">프로세스와 격리 · Chapter 02</span>
+    <h1>UTS · PID 네임스페이스</h1>
+    <p class="lead">1장의 myctr는 자식을 띄우기만 했습니다. 이제 처음으로 <b>격리</b>를 붙입니다. 바꿀 것은 딱 한 줄입니다. <code>fork()</code>를 <code>clone(CLONE_NEWUTS | CLONE_NEWPID)</code>로 바꾸면 자식은 자기만의 hostname을 갖고, 자기가 PID 1이라고 믿게 됩니다. 그런데 PID 1이 되는 순간 커널은 그 프로세스를 특별하게 대합니다. Ctrl+C가 먹지 않고, <code>kill</code>도 무시되고, PID 1이 죽으면 함께 있던 프로세스가 전부 죽습니다. 이 장에서는 그 이유를 이해하고, Docker의 <code>--init</code>과 같은 작은 init을 직접 만듭니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>Linux의 8가지 네임스페이스와 이를 다루는 세 API(<code>clone</code>, <code>unshare</code>, <code>setns</code>)를 구분할 수 있다.</li>
+      <li>nix의 <code>clone</code>으로 자식을 새 UTS·PID 네임스페이스에 만들고, 스택과 종료 시그널 인자의 의미를 설명할 수 있다.</li>
+      <li>한 프로세스가 네임스페이스마다 다른 PID를 갖는 구조(<code>NSpid</code>)를 읽을 수 있다.</li>
+      <li>PID 1이 받는 세 가지 특별 대우를 설명하고, 미니 init으로 해결할 수 있다.</li>
+      <li>Rust 런타임이 자식에게 흘리는 SIGPIPE 설정을 찾아 고칠 수 있다.</li>
+      <li><code>myctr run --hostname box --init ...</code>을 구현해 완료 기준 15개를 통과시킨다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">네임스페이스: 커널이 보여 주는 다른 세계</a></li>
+    <li><a href="#s2">clone · unshare · setns</a></li>
+    <li><a href="#s3">UTS 네임스페이스</a></li>
+    <li><a href="#s4">fork에서 clone으로</a></li>
+    <li><a href="#s5">PID 네임스페이스</a></li>
+    <li><a href="#s6">/proc의 착시</a></li>
+    <li><a href="#s7">PID 1의 특별 대우</a></li>
+    <li><a href="#s8">미니 init 만들기</a></li>
+    <li><a href="#s9">Rust가 흘리는 것: SIGPIPE</a></li>
+    <li><a href="#s10">strace와 관찰 도구</a></li>
+    <li><a href="#s11">구현 가이드: 격리 붙이기</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 네임스페이스: 커널이 보여 주는 다른 세계</h2>
+    <p>네임스페이스는 커널의 전역 자원 하나(hostname, PID 번호표, 마운트 목록, 네트워크 스택 ...)를 <b>여러 벌</b>로 만들고, 프로세스마다 어느 벌을 볼지 정해 주는 기능입니다. 모든 프로세스는 종류별로 정확히 하나의 네임스페이스에 속합니다. 아무것도 하지 않으면 부모의 것을 그대로 물려받습니다. 1장에서 본 대로 fork는 네임스페이스를 공유하고, exec는 유지합니다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>종류</th><th>clone 플래그</th><th>격리하는 것</th><th>도입 (커널)</th><th>이 코스</th></tr>
+      <tr><td>Mount</td><td><code>CLONE_NEWNS</code></td><td>마운트 목록 (어떤 파일시스템이 어디에 붙어 있나)</td><td>2.4.19</td><td>3장</td></tr>
+      <tr><td><b>UTS</b></td><td><code>CLONE_NEWUTS</code></td><td>hostname, NIS domainname</td><td>2.6.19</td><td><b>2장</b></td></tr>
+      <tr><td>IPC</td><td><code>CLONE_NEWIPC</code></td><td>System V IPC, POSIX 메시지 큐</td><td>2.6.19</td><td>2장 도전</td></tr>
+      <tr><td><b>PID</b></td><td><code>CLONE_NEWPID</code></td><td>프로세스 ID 번호 공간</td><td>2.6.24</td><td><b>2장</b></td></tr>
+      <tr><td>Network</td><td><code>CLONE_NEWNET</code></td><td>네트워크 장치, IP, 라우팅, 포트, 방화벽</td><td>2.6.24</td><td>6장</td></tr>
+      <tr><td>User</td><td><code>CLONE_NEWUSER</code></td><td>UID/GID 번호와 capability</td><td>3.8</td><td>5장</td></tr>
+      <tr><td>Cgroup</td><td><code>CLONE_NEWCGROUP</code></td><td>cgroup 경로가 보이는 방식</td><td>4.6</td><td>4장</td></tr>
+      <tr><td>Time</td><td><code>CLONE_NEWTIME</code></td><td>부팅 후 경과 시간(monotonic, boottime) 오프셋</td><td>5.6</td><td>다루지 않음</td></tr>
+    </table></div>
+
+    <p>프로세스가 어느 네임스페이스에 속하는지는 <code>/proc/&lt;pid&gt;/ns/</code>의 심볼릭 링크로 볼 수 있습니다. 링크가 가리키는 <code>uts:[4026531838]</code>의 숫자는 네임스페이스 객체의 inode 번호입니다. <b>두 프로세스의 숫자가 같으면 같은 네임스페이스</b>입니다.</p>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="/proc/pid/ns 링크가 네임스페이스 객체를 가리키는 구조">
+        <defs><marker id="na" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+        <marker id="nb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker></defs>
+        <rect x="20" y="20" width="230" height="96" rx="10" class="box"/>
+        <text x="34" y="42" font-weight="700" font-family="var(--mono)" font-size="12.5">bash (PID 1503)</text>
+        <text x="34" y="68" font-family="var(--mono)" font-size="12">ns/uts → uts:[4026531838]</text>
+        <text x="34" y="92" font-family="var(--mono)" font-size="12">ns/pid → pid:[4026531836]</text>
+        <rect x="20" y="136" width="230" height="96" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="34" y="158" font-weight="700" font-family="var(--mono)" font-size="12.5">sh (myctr 자식)</text>
+        <text x="34" y="184" font-family="var(--mono)" font-size="12">ns/uts → uts:[4026533111]</text>
+        <text x="34" y="208" font-family="var(--mono)" font-size="12">ns/pid → pid:[4026533117]</text>
+        <rect x="470" y="20" width="270" height="56" rx="10" class="box"/>
+        <text x="484" y="42" font-family="var(--mono)" font-size="12">UTS 4026531838</text>
+        <text x="484" y="62" font-size="12" class="muted">nodename = "labhost"</text>
+        <rect x="470" y="86" width="270" height="44" rx="10" class="box"/>
+        <text x="484" y="113" font-family="var(--mono)" font-size="12">PID 4026531836 (최상위)</text>
+        <rect x="470" y="140" width="270" height="56" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="484" y="162" font-family="var(--mono)" font-size="12">UTS 4026533111</text>
+        <text x="484" y="182" font-size="12" class="muted">nodename = "box"</text>
+        <rect x="470" y="206" width="270" height="36" rx="10" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="484" y="229" font-family="var(--mono)" font-size="12">PID 4026533117 (부모: 최상위)</text>
+        <path d="M250 64 L470 48" class="line" marker-end="url(#na)"/>
+        <path d="M250 88 L470 108" class="line" marker-end="url(#na)"/>
+        <path d="M250 180 L470 168" class="line" style="stroke:var(--violet)" marker-end="url(#nb)"/>
+        <path d="M250 204 L470 224" class="line" style="stroke:var(--violet)" marker-end="url(#nb)"/>
+        <path d="M605 206 C 760 200, 760 110, 740 108" class="line" style="stroke-dasharray:4 3"/>
+        <text x="360" y="246" text-anchor="middle" font-size="11.5" class="muted">숫자는 실제 실행 예시 (환경마다 다름)</text>
+      </svg>
+      </div>
+      <figcaption>프로세스는 종류별로 네임스페이스 객체 하나를 가리킵니다. PID 네임스페이스만은 부모-자식 계층을 이룹니다(점선).</figcaption>
+    </figure>
+
+    <div class="widget">
+      <div class="w-title">clone 플래그 실험실</div>
+      <div class="w-desc">myctr가 clone에 줄 플래그를 골라 보세요. 왼쪽은 각 네임스페이스의 inode가 호스트와 같은지, 아래는 그 상태에서 컨테이너 안에서 명령을 쳤을 때의 결과입니다. 자식은 <code>sethostname("box")</code>를 부른 뒤 exec한다고 가정합니다.</div>
+      <div class="flags" id="lab-flags"></div>
+      <div class="tbl-wrap"><table class="nstbl" id="lab-ns"></table></div>
+      <div class="outs" id="lab-out"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. clone · unshare · setns</h2>
+    <p>네임스페이스를 다루는 시스템 콜은 세 개뿐이고, 각각 "언제" 네임스페이스에 들어가느냐가 다릅니다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 780 230" role="img" aria-label="clone, unshare, setns의 차이">
+        <defs><marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker></defs>
+        <!-- clone -->
+        <text x="130" y="22" text-anchor="middle" font-weight="700" font-family="var(--mono)">clone(flags)</text>
+        <rect x="30" y="36" width="90" height="40" rx="8" class="box"/><text x="75" y="61" text-anchor="middle" font-size="12">부모</text>
+        <rect x="20" y="110" width="220" height="80" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/>
+        <text x="30" y="128" font-size="11" style="fill:var(--violet)">새 네임스페이스</text>
+        <rect x="140" y="136" width="90" height="40" rx="8" style="fill:var(--surface);stroke:var(--violet)"/><text x="185" y="161" text-anchor="middle" font-size="12">자식</text>
+        <path d="M120 56 C 185 56, 185 90, 185 134" class="line" style="stroke:var(--violet)" marker-end="url(#aa)"/>
+        <text x="130" y="214" text-anchor="middle" font-size="12" class="muted">자식이 처음부터 새 ns에서 태어남</text>
+        <!-- unshare -->
+        <text x="390" y="22" text-anchor="middle" font-weight="700" font-family="var(--mono)">unshare(flags)</text>
+        <rect x="280" y="110" width="220" height="80" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/>
+        <text x="290" y="128" font-size="11" style="fill:var(--violet)">새 네임스페이스</text>
+        <rect x="290" y="36" width="90" height="40" rx="8" class="box"/><text x="335" y="61" text-anchor="middle" font-size="12">나</text>
+        <rect x="290" y="136" width="90" height="40" rx="8" style="fill:var(--surface);stroke:var(--violet)"/><text x="335" y="161" text-anchor="middle" font-size="12">나</text>
+        <path d="M335 76 V134" class="line" style="stroke:var(--violet)" marker-end="url(#aa)"/>
+        <text x="390" y="214" text-anchor="middle" font-size="12" class="muted">호출한 자신이 옮겨 감 (PID는 예외)</text>
+        <!-- setns -->
+        <text x="650" y="22" text-anchor="middle" font-weight="700" font-family="var(--mono)">setns(fd)</text>
+        <rect x="540" y="110" width="220" height="80" rx="12" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+        <text x="550" y="128" font-size="11" style="fill:var(--ok)">이미 있는 ns (컨테이너)</text>
+        <rect x="640" y="136" width="110" height="40" rx="8" style="fill:var(--surface);stroke:var(--ok)"/><text x="695" y="161" text-anchor="middle" font-size="12">컨테이너 sh</text>
+        <rect x="550" y="36" width="90" height="40" rx="8" class="box"/><text x="595" y="61" text-anchor="middle" font-size="12">나</text>
+        <rect x="550" y="136" width="80" height="40" rx="8" style="fill:var(--surface);stroke:var(--ok);stroke-dasharray:4 3"/><text x="590" y="161" text-anchor="middle" font-size="12">나</text>
+        <path d="M595 76 V134" class="line" style="stroke:var(--ok)" marker-end="url(#aa)"/>
+        <text x="650" y="214" text-anchor="middle" font-size="12" class="muted">기존 ns에 합류 (docker exec, 9장)</text>
+      </svg>
+      </div>
+      <figcaption>clone은 "새 자식을 새 세계에", unshare는 "나를 새 세계로", setns는 "나를 남의 세계로".</figcaption>
+    </figure>
+
+    <div class="tbl-wrap"><table>
+      <tr><th>API</th><th>누가 옮겨 가나</th><th>쓰는 곳</th></tr>
+      <tr><td><code>clone(fn, stack, flags)</code></td><td>새로 만든 자식</td><td>이 장의 myctr, runc의 초기 단계</td></tr>
+      <tr><td><code>unshare(flags)</code></td><td>호출한 프로세스 자신. 단 <b>PID</b>(와 Time)은 자신이 아니라 <b>이후에 만드는 자식</b>부터</td><td><code>unshare</code> 명령, 3장의 mount ns</td></tr>
+      <tr><td><code>setns(fd, type)</code></td><td>호출한 프로세스 자신이 기존 네임스페이스로 합류. fd는 <code>/proc/&lt;pid&gt;/ns/*</code>를 연 것</td><td><code>nsenter</code>, <code>docker exec</code>, 9장의 <code>myctr exec</code></td></tr>
+    </table></div>
+
+    <div class="callout deep"><span class="title">PID만 예외인 이유</span>
+      프로세스의 PID는 태어날 때 정해지고 평생 바뀌지 않는다는 것이 Unix의 대전제입니다. glibc는 <code>getpid()</code> 결과를 캐시하기도 했고, 많은 프로그램이 자기 PID를 파일에 적어 둡니다. 그래서 <code>unshare(CLONE_NEWPID)</code>는 호출자를 옮기지 않고 "다음에 만드는 자식은 새 PID 네임스페이스에 넣어라"라고 표시만 합니다. 실제로 확인한 결과입니다.
+<pre class="term"><code><span class="o">before unshare: getpid=93
+after unshare:  getpid=93     ← 그대로
+forked child:   getpid=1      ← 자식부터 새 번호표</span></code></pre>
+      이때 <code>/proc/self/ns/pid</code>는 그대로이고, <code>/proc/self/ns/pid_for_children</code>만 새 네임스페이스를 가리킵니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. UTS 네임스페이스</h2>
+    <p>가장 단순한 네임스페이스입니다. UTS는 "UNIX Time-sharing System"의 약자로, <code>uname()</code>이 돌려주는 <code>struct utsname</code>에서 이름을 따왔습니다. 그중 바꿀 수 있는 필드인 <b>nodename(hostname)</b>과 <b>domainname</b>을 격리합니다. 커널 버전(<code>release</code>)은 격리 대상이 아닙니다. 커널이 하나이기 때문입니다. 컨테이너 안에서 <code>uname -r</code>을 치면 호스트 커널 버전이 나오는 이유입니다.</p>
+    <ul class="checklist">
+      <li><code>sethostname</code>은 <code>CAP_SYS_ADMIN</code>이 필요합니다. 그래서 이 장부터 myctr는 <code>sudo</code>로 실행합니다(5장에서 user 네임스페이스로 이 제약을 풉니다).</li>
+      <li>이름은 최대 64바이트(<code>HOST_NAME_MAX</code>)입니다. 70자를 주면 <code>EINVAL</code>이 납니다.</li>
+      <li><b>위험:</b> <code>CLONE_NEWUTS</code> 없이 sethostname을 부르면 <b>호스트의 hostname이 바뀝니다</b>. 위 실험실에서 UTS 플래그를 끄고 결과를 보세요. 플래그를 잘못 다루는 실수는 대부분 이렇게 호스트를 망가뜨리는 형태로 나타납니다. VM에서 실험해야 하는 이유입니다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. fork에서 clone으로</h2>
+    <p>glibc의 <code>fork()</code>가 내부적으로 <code>clone</code>을 부른다는 것을 1장 strace에서 봤습니다. 이제 그 clone을 직접 부릅니다. nix의 시그니처는 이렇습니다.</p>
+<pre><code>pub unsafe fn clone(
+    cb: Box&lt;dyn FnMut() -&gt; isize + '_&gt;,   // 자식이 실행할 함수
+    stack: &amp;mut [u8],                       // 자식이 쓸 스택
+    flags: CloneFlags,                      // CLONE_NEWUTS | CLONE_NEWPID ...
+    signal: Option&lt;c_int&gt;,                  // 자식이 죽을 때 부모에게 보낼 시그널
+) -&gt; Result&lt;Pid&gt;</code></pre>
+
+    <div class="compare">
+      <div><div class="lbl">1장: fork</div><pre><code>match unsafe { fork() }? {
+    ForkResult::Child =&gt; {
+        // 자식: fork 다음 줄부터 이어서 실행
+        let err = execvp(..).unwrap_err();
+        unsafe { libc::_exit(127) }
+    }
+    ForkResult::Parent { child } =&gt; {
+        waitpid(child, None)?
+    }
+}</code></pre></div>
+      <div><div class="lbl ok">2장: clone</div><pre><code>let mut stack = vec![0u8; 1024 * 1024];
+let flags = CloneFlags::CLONE_NEWUTS
+          | CloneFlags::CLONE_NEWPID;
+// 자식: 이 클로저만 실행하고, 반환값으로 종료
+let cb = Box::new(|| container_main(..));
+let child = unsafe {
+    clone(cb, &amp;mut stack, flags,
+          Some(Signal::SIGCHLD as i32))
+}?;
+waitpid(child, None)?</code></pre></div>
+    </div>
+
+    <h3>달라진 점 세 가지</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>fork</th><th>clone</th><th>왜</th></tr>
+      <tr><td>자식이 실행하는 코드</td><td>fork 다음 줄부터, 부모와 같은 흐름</td><td>넘겨준 클로저 하나</td><td>clone은 원래 스레드를 만드는 데도 쓰는 범용 호출이라, 자식의 시작점을 함수로 받습니다.</td></tr>
+      <tr><td>클로저가 반환하면</td><td>(해당 없음)</td><td><b>그 값으로 자식이 종료</b></td><td>glibc의 clone 래퍼가 반환값으로 <code>exit</code> 시스템 콜을 부릅니다. 1장에서 걱정했던 "자식이 부모의 main으로 돌아가는" 일이 구조적으로 불가능해집니다. 그래서 exec 실패 시 <code>_exit(127)</code> 대신 <code>127</code>을 반환하면 됩니다.</td></tr>
+      <tr><td>스택</td><td>부모 스택을 COW로 복제</td><td>호출자가 메모리를 넘김</td><td>스레드처럼 메모리를 공유(<code>CLONE_VM</code>)하는 경우 스택을 같이 쓸 수 없으므로 API가 스택을 요구합니다. 우리는 <code>CLONE_VM</code>을 주지 않으므로 자식은 이 Vec의 복사본 위에서 돕니다. nix가 끝 주소 계산과 16바이트 정렬을 해 줍니다.</td></tr>
+    </table></div>
+
+    <div class="callout danger"><span class="title">함정 1: signal 인자를 None으로 주면</span>
+      네 번째 인자는 자식이 죽을 때 부모에게 보낼 시그널입니다. fork는 항상 <code>SIGCHLD</code>를 씁니다. 여기에 <code>None</code>을 주면 clone은 성공하지만, 부모의 평범한 <code>waitpid</code>가 그 자식을 못 찾습니다. Linux는 종료 시그널이 SIGCHLD가 아닌 자식을 "clone 자식"으로 분류하고, <code>__WCLONE</code>이나 <code>__WALL</code> 플래그 없이는 기다리지 않기 때문입니다. 실제로 실행하면 이렇게 됩니다.
+<pre class="term"><code><span class="o">clone ok pid=92
+waitpid -&gt; Err(ECHILD)</span></code></pre>
+      그러면 자식은 좀비로 남고 myctr는 종료 코드를 잃습니다. 항상 <code>Some(Signal::SIGCHLD as i32)</code>를 넘기세요.</div>
+    <div class="callout warn"><span class="title">함정 2: 스택 크기</span>
+      넘긴 스택에는 가드 페이지가 없습니다. 자식이 깊은 재귀나 큰 지역 배열로 스택을 넘치면 segfault가 아니라 <b>조용한 메모리 오염</b>이 날 수 있습니다. 그래서 nix의 clone이 <code>unsafe</code>입니다. 자식은 몇 가지 시스템 콜 후 곧바로 exec하므로 1 MiB면 충분합니다. exec하면 커널이 새 프로그램에 새 스택을 만들어 주므로 이 크기는 사용자 프로그램과 무관합니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. PID 네임스페이스</h2>
+    <p>PID 네임스페이스는 <b>트리</b>를 이룹니다. 새 PID 네임스페이스는 만든 프로세스의 네임스페이스를 부모로 갖습니다. 그리고 한 프로세스는 <b>자기가 속한 네임스페이스와 그 모든 조상 네임스페이스에서 각각 PID를 하나씩</b> 갖습니다. 컨테이너 안의 sh는 컨테이너 안에서는 1번이고, 호스트에서는 4242번입니다. 둘 다 진짜 PID입니다. 보는 위치에 따라 번호가 다를 뿐입니다.</p>
+    <p>규칙은 단순합니다. <b>프로세스는 자기 네임스페이스와 그 자손 네임스페이스의 프로세스만 볼 수 있습니다.</b> 호스트는 모든 컨테이너를 보지만, 컨테이너는 호스트도 옆 컨테이너도 보지 못합니다. 커널은 <code>/proc/&lt;pid&gt;/status</code>의 <code>NSpid</code> 줄에 바깥부터 안쪽 순서로 모든 PID를 보여 줍니다.</p>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run grep NSpid /proc/self/status
+<span class="o">NSpid:	96	1        ← 호스트에서 96, 컨테이너에서 1</span></code></pre>
+
+    <div class="widget">
+      <div class="w-title">PID 네임스페이스 탐색기</div>
+      <div class="w-desc">"여기서 보기"를 누르면 그 네임스페이스에서 보이는 PID로 모든 칩이 바뀝니다. 보이지 않는 프로세스는 흐려집니다. 칩을 누르면 그 프로세스의 <code>NSpid</code>가 나옵니다. "+ 프로세스"로 새 프로세스를 만들어 각 네임스페이스의 번호표가 따로 증가하는 것을 확인하세요.</div>
+      <div id="pt-root"></div>
+      <div class="stepper-cap" id="pt-info">칩을 눌러 보세요.</div>
+    </div>
+
+    <ul class="checklist">
+      <li>새 PID 네임스페이스의 <b>첫 프로세스가 PID 1</b>이 됩니다. myctr의 clone 자식이 바로 그 프로세스이고, 그 자식이 exec하면 사용자 프로그램이 PID 1이 됩니다.</li>
+      <li>PID 네임스페이스는 최대 32단계까지 중첩할 수 있습니다. "컨테이너 안의 컨테이너"가 가능한 이유입니다.</li>
+      <li>프로세스는 평생 같은 PID 네임스페이스에 머뭅니다. <code>setns</code>로 PID 네임스페이스에 들어가도(<code>nsenter -p</code>) 호출자 자신은 그대로이고, 이후 fork한 자식부터 그 안에서 태어납니다. <code>nsenter</code>가 <code>-p</code>를 주면 자동으로 fork하는 이유입니다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. /proc의 착시</h2>
+    <p>지금 만든 컨테이너 안에서 실제로 실행한 결과입니다.</p>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run /bin/sh -c 'echo $$'
+<span class="o">1</span>
+<span class="p">$ </span>sudo myctr run /bin/sh -c 'readlink /proc/self'
+<span class="o">466                        ← 1이 아니다!</span>
+<span class="p">$ </span>sudo myctr run ps -e -o pid,comm
+<span class="o">    PID COMMAND
+      1 bash               ← 호스트의 프로세스들이 보인다
+    499 myctr
+    500 head
+    501 ps</span></code></pre>
+    <p><code>echo $$</code>는 <code>getpid()</code> 시스템 콜을 부르고, 커널은 호출자의 네임스페이스 기준으로 답하므로 1이 나옵니다. 하지만 <code>/proc</code>는 <b>파일시스템</b>이고, 이 <code>/proc</code>는 호스트가 부팅할 때 <b>호스트 PID 네임스페이스 기준으로</b> 마운트한 것입니다. procfs는 마운트될 때의 PID 네임스페이스를 기준으로 내용을 보여 줍니다. 그래서 <code>/proc/self</code>는 호스트 PID로 풀리고, <code>/proc</code>를 읽는 <code>ps</code>와 <code>top</code>은 호스트 프로세스를 보여 주거나, 자기 자신을 찾지 못해 <code>fatal library error, lookup self</code> 같은 에러를 냅니다.</p>
+
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 210" role="img" aria-label="getpid와 /proc이 서로 다른 PID 네임스페이스 기준으로 답하는 구조">
+        <rect x="20" y="20" width="250" height="170" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/>
+        <text x="34" y="42" font-size="12" style="fill:var(--violet)" font-weight="700">컨테이너 PID ns</text>
+        <rect x="40" y="62" width="210" height="44" rx="8" style="fill:var(--surface);stroke:var(--violet)"/>
+        <text x="145" y="89" text-anchor="middle" font-family="var(--mono)" font-size="12.5">sh (ns PID 1 / 호스트 466)</text>
+        <text x="40" y="136" font-family="var(--mono)" font-size="12">getpid()</text>
+        <text x="40" y="170" font-family="var(--mono)" font-size="12">open("/proc/self")</text>
+        <rect x="330" y="112" width="160" height="40" rx="8" class="box"/>
+        <text x="410" y="137" text-anchor="middle" font-size="12">커널: 호출자 ns 기준</text>
+        <path d="M110 132 H330" class="line flow" style="stroke:var(--ok)"/>
+        <text x="610" y="137" text-anchor="middle" font-size="13" font-weight="700" style="fill:var(--ok)">→ 1</text>
+        <path d="M490 132 H560" class="line" style="stroke:var(--ok)"/>
+        <rect x="330" y="160" width="160" height="40" rx="8" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="410" y="185" text-anchor="middle" font-size="12">procfs: 마운트 시 ns 기준</text>
+        <path d="M180 166 H330" class="line flow" style="stroke:var(--warn)"/>
+        <path d="M490 180 H560" class="line" style="stroke:var(--warn)"/>
+        <text x="610" y="185" text-anchor="middle" font-size="13" font-weight="700" style="fill:var(--warn)">→ 466</text>
+        <rect x="540" y="20" width="200" height="60" rx="10" class="box"/>
+        <text x="640" y="44" text-anchor="middle" font-size="12">/proc는 호스트가 부팅 때</text>
+        <text x="640" y="64" text-anchor="middle" font-size="12">호스트 ns 기준으로 마운트</text>
+      </svg>
+      </div>
+      <figcaption>같은 질문("내 PID는?")에 시스템 콜과 파일시스템이 서로 다른 네임스페이스 기준으로 답합니다.</figcaption>
+    </figure>
+    <div class="callout tip"><span class="title">3장 예고</span>
+      해결책은 컨테이너 안에서 <b>새로</b> <code>mount -t proc proc /proc</code>를 하는 것입니다. 그러면 새 procfs가 컨테이너의 PID 네임스페이스 기준으로 만들어집니다. 그런데 그냥 마운트하면 <b>호스트의 /proc 위에</b> 덮여서 호스트의 ps까지 망가집니다. 그래서 마운트 네임스페이스(<code>CLONE_NEWNS</code>)가 먼저 필요하고, 이것이 3장의 출발점입니다. 그전까지는 <b>절대 컨테이너 안에서 /proc를 다시 마운트하지 마세요.</b></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. PID 1의 특별 대우</h2>
+    <p>호스트에서 PID 1은 init(systemd)이고, init이 죽으면 커널 패닉입니다. 그래서 커널은 PID 1을 보호합니다. PID 네임스페이스의 PID 1도 같은 대우를 받습니다(커널 패닉 대신 네임스페이스가 끝납니다). <code>man 7 pid_namespaces</code>에 정리된 규칙은 세 가지입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>규칙</th><th>내용</th><th>컨테이너에서 나타나는 증상</th></tr>
+      <tr><td>① 시그널 보호</td><td>PID 1은 <b>자기가 핸들러를 등록한 시그널만</b> 받는다. 핸들러가 없는(기본 동작인) 시그널은 같은 네임스페이스에서 오든, 터미널에서 오든 무시된다. 예외: <b>조상 네임스페이스</b>에서 보낸 <code>SIGKILL</code>과 <code>SIGSTOP</code>은 강제로 전달된다</td><td><code>docker run ubuntu sleep 100</code>에 Ctrl+C가 안 먹고, <code>docker stop</code>이 10초를 기다린 뒤 SIGKILL로 끝난다</td></tr>
+      <tr><td>② 고아 입양</td><td>네임스페이스 안에서 부모를 잃은 프로세스는 그 네임스페이스의 PID 1에게 입양된다</td><td>PID 1이 wait하지 않는 프로그램(대부분의 앱)이면 좀비가 쌓인다</td></tr>
+      <tr><td>③ 동반 종료</td><td>PID 1이 끝나면 커널이 네임스페이스의 나머지 모든 프로세스에 <code>SIGKILL</code>을 보낸다. 이후 그 네임스페이스에서 fork는 <code>ENOMEM</code>으로 실패한다</td><td>메인 프로세스가 끝나면 백그라운드 작업이 정리 없이 즉사한다</td></tr>
+    </table></div>
+
+    <p>myctr로 직접 확인한 결과입니다. 1장의 완료 기준 중 두 개(<code>kill -TERM $$</code> → 143, <code>kill -KILL $$</code> → 137)가 <b>더는 성립하지 않습니다</b>.</p>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run /bin/sh -c 'kill -TERM $$; echo survived TERM'; echo $?
+<span class="o">survived TERM
+0                                    ← PID 1이라 자기 자신에게 보낸 TERM도 무시</span>
+<span class="p">$ </span>sudo myctr run /bin/sh -c 'kill -KILL $$; echo survived KILL'; echo $?
+<span class="o">survived KILL
+0                                    ← 같은 ns에서 보낸 KILL조차 무시</span>
+<span class="p">$ </span>sudo myctr run /bin/sh -c 'sleep 300 &amp; echo bg=$!'; pgrep sleep || echo "no sleep left"
+<span class="o">bg=2
+no sleep left                        ← sh(PID 1)가 끝나자 sleep도 SIGKILL</span></code></pre>
+
+    <div class="widget">
+      <div class="w-title">PID 1 시그널 판정기</div>
+      <div class="w-desc">누가, 어떤 시그널을, 어떤 상태의 PID 1에게 보내는지 고르세요. 커널의 판정과 그 근거를 보여 줍니다. 오른쪽에는 같은 시그널이 <code>--init</code> 모드의 PID 2(평범한 프로세스)에게 갔을 때를 비교합니다.</div>
+      <div class="controls">
+        <label>보낸 쪽 <select id="sg-from">
+          <option value="self">PID 1 자기 자신 (kill $$)</option>
+          <option value="inside">같은 ns의 다른 프로세스</option>
+          <option value="tty">터미널 키 입력</option>
+          <option value="host" selected>호스트 (조상 ns)</option>
+        </select></label>
+        <label>시그널 <select id="sg-sig"></select></label>
+        <label><input type="checkbox" id="sg-handler"> PID 1이 이 시그널의 핸들러를 등록함</label>
+      </div>
+      <div class="compare">
+        <div><div class="lbl">PID 1 (예: sleep, 핸들러 없음)</div><div class="stepper-cap"><div class="verdict" id="sg-v1"></div><div id="sg-e1"></div></div></div>
+        <div><div class="lbl">--init 모드의 PID 2 (평범한 프로세스)</div><div class="stepper-cap"><div class="verdict" id="sg-v2"></div><div id="sg-e2"></div></div></div>
+      </div>
+    </div>
+    <details class="deep"><summary>심화: 커널은 어디서 이 판정을 하나</summary><div>
+      <p>시그널을 보낼 때 커널(<code>kernel/signal.c</code>)은 대상이 "죽일 수 없는 프로세스"(<code>SIGNAL_UNKILLABLE</code> 플래그. 네임스페이스의 init이 이 플래그를 받습니다)인지 확인합니다. 그렇다면 처리 방식이 기본값(<code>SIG_DFL</code>)인 시그널은 버립니다. 예외는 "강제 전달" 표시가 붙은 <code>SIGKILL</code>/<code>SIGSTOP</code>뿐이고, 송신자가 대상의 PID 네임스페이스 안에서 보이지 않을 때(즉 조상 네임스페이스에서 보냈을 때) 그 표시가 붙습니다.</p>
+      <p>bash나 Node.js처럼 SIGTERM 핸들러를 직접 등록하는 프로그램은 PID 1이어도 정상 종료할 수 있습니다. 문제는 <code>sleep</code>, 많은 Go/Python 스크립트, 셸 스크립트처럼 "기본 동작으로 죽는 것"에 기대는 프로그램입니다.</p>
+    </div></details>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 미니 init 만들기</h2>
+    <p>해결책은 사용자 프로그램을 PID 1에 두지 않는 것입니다. clone된 자식(PID 1)이 exec하지 않고 <b>작은 init으로 남아</b> 사용자 프로그램을 PID 2로 fork + exec합니다. init이 할 일은 둘입니다.</p>
+    <ol>
+      <li><b>모든 자식을 거둔다.</b> <code>waitpid(-1)</code>(nix에서는 <code>waitpid(None, None)</code>)을 반복해 입양된 고아까지 회수합니다.</li>
+      <li><b>메인 자식의 결과를 자기 결과로 삼는다.</b> PID 2가 끝나면 그 종료 코드(또는 128 + 시그널)를 반환합니다. PID 1이 끝나면 규칙 ③에 따라 남은 프로세스는 커널이 정리합니다.</li>
+    </ol>
+    <p>Docker의 <code>--init</code>(tini), Kubernetes의 pause 컨테이너, <code>dumb-init</code>이 모두 이 일을 합니다. 실제 tini는 여기에 더해 받은 시그널을 자식에게 전달합니다(도전 과제).</p>
+
+    <div class="widget">
+      <div class="w-title">--init 모드에서 Ctrl+C가 처리되는 과정</div>
+      <div class="w-desc"><code>sudo myctr run --init sleep 100</code>을 실행하고 Ctrl+C를 누릅니다. 각 프로세스 옆의 두 숫자는 <b>호스트 PID / 컨테이너 PID</b>입니다.</div>
+      <div class="stage"><svg class="diagram" id="init-svg" viewBox="0 0 740 300" role="img" aria-label="미니 init 동작 애니메이션"></svg></div>
+      <div id="init-ctl"></div>
+    </div>
+
+    <p>init이 있을 때와 없을 때를 실제로 비교한 결과입니다. 프로세스 그룹에 SIGINT를 보내 Ctrl+C를 재현했습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>실험</th><th>init 없음 (sleep = PID 1)</th><th><code>--init</code> (sleep = PID 2)</th></tr>
+      <tr><td>Ctrl+C</td><td class="c-bad">아무 일도 없음. 다른 터미널에서 <code>kill -9</code>해야 끝남 → 137</td><td class="c-ok">sleep만 죽고 init이 보고 → 130</td></tr>
+      <tr><td>호스트에서 sleep에 <code>kill -TERM</code></td><td class="c-bad">무시됨</td><td class="c-ok">죽음 → 143</td></tr>
+      <tr><td>호스트에서 sleep에 <code>kill -KILL</code></td><td>죽음 → 137</td><td>죽음 → 137</td></tr>
+      <tr><td>호스트에서 init에 <code>kill -TERM</code></td><td>(해당 없음)</td><td>무시됨 (init도 PID 1이므로 같은 규칙)</td></tr>
+      <tr><td>호스트에서 init에 <code>kill -KILL</code></td><td>(해당 없음)</td><td>init이 죽고 sleep도 동반 종료 → 137</td></tr>
+    </table></div>
+    <div class="callout warn"><span class="title">init 없이 실험할 때는 탈출구를 준비하세요</span>
+      <code>sudo myctr run sleep 100</code>(init 없음)에서는 Ctrl+C도 Ctrl+\도 먹지 않습니다. myctr는 SIGINT를 무시하고, sleep은 PID 1이라 보호받기 때문입니다. 다른 터미널에서 <code>sudo pkill -9 -x sleep</code>으로 끝내거나, 처음부터 <code>timeout 5 sudo myctr run sleep 100</code>처럼 실행하세요.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. Rust가 흘리는 것: SIGPIPE</h2>
+    <p>컨테이너 안의 프로세스 상태를 보다가 이상한 값을 발견했습니다.</p>
+<pre class="term"><code><span class="p">$ </span>grep SigIgn /proc/self/status
+<span class="o">SigIgn:	0000000000000000</span>
+<span class="p">$ </span>sudo myctr run /bin/sh -c 'grep SigIgn /proc/self/status'
+<span class="o">SigIgn:	0000000000001000         ← 비트 12 = 시그널 13 = SIGPIPE가 무시됨</span>
+<span class="p">$ </span>sudo myctr run /bin/sh -c 'yes | head -1'
+<span class="o">y
+yes: standard output: Broken pipe  ← 호스트에서는 나지 않는 에러</span></code></pre>
+    <p>원인은 Rust 표준 라이브러리입니다. Rust 프로그램은 <code>main</code> 전에 <code>SIGPIPE</code>를 <code>SIG_IGN</code>으로 바꿉니다. 닫힌 파이프에 쓸 때 프로세스가 조용히 죽는 대신 <code>EPIPE</code> 에러를 받게 하려는 설계입니다. 그리고 1장에서 배운 대로 <b>SIG_IGN은 fork와 exec를 넘어 유지됩니다.</b> 결국 myctr가 실행하는 모든 컨테이너 프로세스가 SIGPIPE를 무시한 채로 태어납니다. <code>yes | head</code>에서 <code>head</code>가 먼저 끝나면 원래 <code>yes</code>는 SIGPIPE로 조용히 죽어야 하는데, 무시하고 있으니 에러를 찍고 1로 끝납니다. 셸 스크립트의 파이프라인 동작이 호스트와 달라지는 미묘한 버그입니다.</p>
+    <p>이 버그는 <b>1장 코드에도 있었습니다.</b> <code>std::process::Command</code>는 exec 직전에 SIGPIPE를 기본값으로 되돌려 주지만, 우리는 fork/clone을 직접 쓰므로 그 처리도 직접 해야 합니다. exec 직전에 한 줄이면 됩니다.</p>
+<pre><code>unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) }?;   // exec 직전, 자식 쪽에서</code></pre>
+    <div class="callout deep"><span class="title">일반화: "런타임이 가진 것"은 전부 의심하라</span>
+      런타임 프로세스의 모든 속성(시그널 처리 방식, 시그널 마스크, 열린 fd, 환경 변수, rlimit, umask)은 기본적으로 컨테이너로 흘러 들어갑니다. 실제 런타임은 exec 직전에 이것들을 명시적으로 정리합니다. runc는 시그널 마스크를 초기화하고, 넘길 fd 외에는 전부 닫는 데 공을 들입니다. 앞으로 장마다 "이번에 추가한 것이 컨테이너로 새지 않는가"를 확인하는 습관을 들이세요.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. strace와 관찰 도구</h2>
+    <p>아래는 이 장의 참조 구현을 Linux(aarch64)에서 <code>strace -f</code>로 실제로 추적한 출력입니다. strace의 프로세스 연결 메시지와 일부 긴 인자(<code>...</code>)만 정리했습니다. 줄을 눌러 의미를 확인하세요.</p>
+<pre><code>sudo strace -f -e trace=clone,execve,sethostname,wait4,rt_sigaction,exit_group,exit \
+    ./target/debug/myctr run --hostname box hostname</code></pre>
+    <div class="widget">
+      <div class="w-title">strace 출력 읽기: clone 플래그와 두 개의 PID</div>
+      <div class="w-desc">위쪽은 init 없는 실행, 아래쪽은 <code>--init true</code> 실행입니다. 특히 아래쪽에서 strace가 표시하는 PID와 시스템 콜이 돌려주는 PID가 다른 부분을 찾아보세요.</div>
+      <div class="strace" id="st-lines"></div>
+      <div class="stepper-cap" id="st-explain">줄을 눌러 보세요.</div>
+    </div>
+
+    <h3>네임스페이스를 들여다보는 명령</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>명령</th><th>보여 주는 것</th></tr>
+      <tr><td><code>ls -l /proc/&lt;pid&gt;/ns/</code></td><td>그 프로세스가 속한 모든 네임스페이스와 inode</td></tr>
+      <tr><td><code>grep NSpid /proc/&lt;pid&gt;/status</code></td><td>바깥부터 안쪽까지 각 PID 네임스페이스에서의 PID</td></tr>
+      <tr><td><code>lsns -t uts -t pid</code></td><td>시스템의 모든 UTS·PID 네임스페이스와 소속 프로세스 수, 대표 명령 (util-linux)</td></tr>
+      <tr><td><code>sudo nsenter -t &lt;pid&gt; -u hostname</code></td><td>그 프로세스의 UTS 네임스페이스에 들어가서(setns) 명령 실행</td></tr>
+      <tr><td><code>sudo unshare -u -p -f --mount-proc sh</code></td><td>myctr 없이 같은 격리를 만들어 보는 기준 도구. <code>--mount-proc</code>가 3장에서 할 일을 미리 해 줌</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s11">
+    <h2>11. 구현 가이드: 격리 붙이기</h2>
+    <p>1장 코드에서 출발합니다. 목표 사용법은 <code>myctr run [--hostname 이름] [--init] &lt;명령&gt; [인자...]</code>입니다.</p>
+
+    <h3>단계 A. 의존성과 CLI</h3>
+<pre><code>cargo add nix@0.29 --features process,signal,sched,hostname</code></pre>
+    <p><code>sched</code>는 <code>clone</code>/<code>unshare</code>/<code>setns</code>를, <code>hostname</code>은 <code>sethostname</code>을 켭니다. CLI에는 <code>--hostname</code>(기본값 <code>myctr</code>)과 <code>--init</code> 플래그를 추가하세요. 옵션은 명령보다 앞에 와야 합니다(<code>trailing_var_arg</code> 때문에 명령 뒤의 것은 전부 명령의 인자가 됩니다).</p>
+    <details class="deep"><summary>힌트 A</summary><div>
+<pre><code>Run {
+    /// 컨테이너 안에서 보일 hostname
+    #[arg(long, default_value = "myctr")]
+    hostname: String,
+    /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+    #[arg(long)]
+    init: bool,
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    cmd: Vec&lt;String&gt;,
+},</code></pre>
+    </div></details>
+
+    <h3>단계 B. fork를 clone으로</h3>
+    <p>부모 쪽 코드는 거의 그대로입니다. fork 대신 clone을 부르고, 자식 쪽 코드는 <code>container_main</code> 함수로 옮깁니다. 1장 실습 4의 SIGINT 무시도 clone 이후 부모 쪽에 둡니다.</p>
+<pre><code>fn run(hostname: &amp;str, init: bool, cmd: &amp;[String]) -&gt; Result&lt;i32&gt; {
+    let argv: Vec&lt;CString&gt; = /* 1장과 같음 */;
+    // TODO 1: 1 MiB 스택 Vec을 만든다
+    // TODO 2: CLONE_NEWUTS | CLONE_NEWPID 로 clone. 클로저는 container_main(hostname, init, &amp;argv)
+    //         네 번째 인자를 잊지 말 것 (4절 함정 1)
+    // TODO 3: 부모 쪽에서 SIGINT 무시, 그리고 1장처럼 waitpid → 종료 코드
+    todo!()
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다. 반환값이 곧 종료 코드.
+fn container_main(hostname: &amp;str, init: bool, argv: &amp;[CString]) -&gt; isize {
+    // TODO 4: sethostname. 실패하면 메시지 후 1 반환
+    // TODO 5: init이면 mini_init(argv), 아니면 exec(argv)
+    todo!()
+}</code></pre>
+    <details class="deep"><summary>힌트 B: 클로저와 빌림</summary><div>
+      <p><code>CloneCb</code>의 타입은 <code>Box&lt;dyn FnMut() -&gt; isize + 'a&gt;</code>라서 지역 변수를 빌리는 클로저도 넘길 수 있습니다. <code>Box::new(|| container_main(hostname, init, &amp;argv))</code>. 자식은 부모 메모리의 복사본에서 돌기 때문에, 부모가 나중에 <code>argv</code>를 해제해도 자식에게는 영향이 없습니다. clone 실패의 가장 흔한 원인은 root가 아닌 것(<code>EPERM</code>)이므로 <code>.context("clone 실패 (root 권한으로 실행했나요?)")</code>를 붙여 두면 좋습니다.</p>
+    </div></details>
+
+    <h3>단계 C. exec 함수 (SIGPIPE 포함)</h3>
+<pre><code>/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    // TODO 6: SIGPIPE를 SigDfl로 되돌린다 (9절)
+    // TODO 7: execvp. 실패하면 메시지 후 127 반환 (_exit 필요 없음. 4절)
+    todo!()
+}</code></pre>
+
+    <h3>단계 D. 미니 init</h3>
+<pre><code>/// PID 1로 남아 명령을 PID 2로 띄우고, 고아까지 거두다가 명령이 끝나면 그 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    // TODO 8: fork. 자식은 exec(argv)의 반환값으로 _exit (여기는 fork라서 _exit가 필요!)
+    // TODO 9: loop { waitpid(None, None) }
+    //   - 메인 자식이 Exited(code) → code 반환
+    //   - 메인 자식이 Signaled(sig) → 128 + sig 반환
+    //   - 다른 pid → 입양된 고아. 계속
+    //   - Err(EINTR) → 계속
+    todo!()
+}</code></pre>
+    <details class="deep"><summary>힌트 D: 왜 여기서는 다시 _exit인가</summary><div>
+      <p>mini_init 안의 fork는 평범한 fork입니다. 자식은 fork 다음 줄부터 init의 코드를 이어서 실행하므로, exec가 실패했을 때 <code>return</code>하면 자식이 init의 waitpid 루프로 들어가 버립니다. clone 클로저와 달리 여기서는 반드시 <code>unsafe { libc::_exit(exec(argv) as i32) }</code>로 끝내야 합니다.</p>
+    </div></details>
+
+    <h3>단계 E. 완료 기준</h3>
+    <p>2장의 <code>check.sh</code>입니다. 네임스페이스를 만들려면 root가 필요하므로 빌드는 일반 사용자로, 검사는 sudo로 합니다. 1장 기준 중 PID 1 규칙 때문에 기대값이 바뀐 항목(<code>kill -TERM $$</code> → 0)이 있다는 점에 주의하세요.</p>
+<pre><code>#!/usr/bin/env bash
+# 2장 완료 기준. 네임스페이스를 만들려면 root가 필요하다: sudo ./check.sh
+[ "$(id -u)" = 0 ] || { echo "sudo ./check.sh 로 실행하세요"; exit 1; }
+B=${B:-./target/debug/myctr}
+pass=0 fail=0
+ok() { echo "PASS  $1"; pass=$((pass+1)); }
+ng() { echo "FAIL  $1"; fail=$((fail+1)); }
+t()  { local want=$1; shift; "$B" run "$@" &gt;/dev/null 2&gt;&amp;1; local got=$?
+       [ "$got" = "$want" ] &amp;&amp; ok "[$want] $*" || ng "[$want] $*  (실제 $got)"; }
+eq() { [ "$2" = "$3" ] &amp;&amp; ok "$1" || ng "$1: '$2' (기대 '$3')"; }
+host_before=$(hostname)
+
+# 1장 기준 중 PID 1이 된 뒤에도 그대로여야 하는 것
+t 0   true
+t 1   false
+t 3   /bin/sh -c 'exit 3'
+t 127 no-such-command
+eq "stdout 전달" "$("$B" run echo hello world)" "hello world"
+
+# UTS 네임스페이스
+eq "hostname 격리" "$("$B" run --hostname box hostname)" "box"
+eq "호스트 hostname 그대로" "$(hostname)" "$host_before"
+[ "$("$B" run readlink /proc/self/ns/uts)" != "$(readlink /proc/self/ns/uts)" ] &amp;&amp; ok "uts ns 분리" || ng "uts ns 분리"
+
+# PID 네임스페이스
+eq "명령이 PID 1" "$("$B" run /bin/sh -c 'echo $$')" "1"
+[ "$("$B" run readlink /proc/self/ns/pid)" != "$(readlink /proc/self/ns/pid)" ] &amp;&amp; ok "pid ns 분리" || ng "pid ns 분리"
+t 0   /bin/sh -c 'kill -TERM $$'          # PID 1은 핸들러 없는 시그널을 무시한다
+
+# --init
+eq "--init: 명령이 PID 2" "$("$B" run --init /bin/sh -c 'echo $$')" "2"
+t 143 --init /bin/sh -c 'kill -TERM $$'
+t 137 --init /bin/sh -c 'kill -KILL $$'
+
+# SIGPIPE 누수
+eq "SIGPIPE 기본값 복원" "$("$B" run /bin/sh -c 'yes | head -1' 2&gt;&amp;1)" "y"
+
+echo "---"; echo "통과 $pass / $((pass+fail))"
+[ $fail -eq 0 ]</code></pre>
+<pre class="term"><code><span class="p">$ </span>cargo build &amp;&amp; sudo ./check.sh
+<span class="o">PASS  [0] true
+PASS  [1] false
+PASS  [3] /bin/sh -c exit 3
+PASS  [127] no-such-command
+PASS  stdout 전달
+PASS  hostname 격리
+PASS  호스트 hostname 그대로
+PASS  uts ns 분리
+PASS  명령이 PID 1
+PASS  pid ns 분리
+PASS  [0] /bin/sh -c kill -TERM $$
+PASS  --init: 명령이 PID 2
+PASS  [143] --init /bin/sh -c kill -TERM $$
+PASS  [137] --init /bin/sh -c kill -KILL $$
+PASS  SIGPIPE 기본값 복원
+---
+통과 15 / 15</span>
+<span class="p">$ </span>git add -A &amp;&amp; git commit -m "ch02: UTS/PID namespace, mini init" &amp;&amp; git tag ch02</code></pre>
+
+    <details class="deep"><summary>참조 구현 (막혔을 때만 여세요)</summary><div>
+      <p>Linux aarch64(커널 7.0, Debian bookworm, Rust 1.86)에서 빌드하고 위 <code>check.sh</code> 15개 항목을 통과하는 것을 확인한 코드입니다.</p>
+<pre><code>use std::ffi::CString;
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use nix::errno::Errno;
+use nix::libc;
+use nix::sched::{CloneFlags, clone};
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, execvp, fork, sethostname};
+
+const STACK_SIZE: usize = 1024 * 1024;
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 새 UTS·PID 네임스페이스에서 실행한다
+    Run {
+        /// 컨테이너 안에서 보일 hostname
+        #[arg(long, default_value = "myctr")]
+        hostname: String,
+        /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+        #[arg(long)]
+        init: bool,
+        /// 실행할 프로그램과 인자
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { hostname, init, cmd } =&gt; {
+            let code = run(&amp;hostname, init, &amp;cmd)?;
+            std::process::exit(code);
+        }
+    }
+}
+
+fn run(hostname: &amp;str, init: bool, cmd: &amp;[String]) -&gt; Result&lt;i32&gt; {
+    let argv: Vec&lt;CString&gt; = cmd
+        .iter()
+        .map(|s| CString::new(s.as_bytes()))
+        .collect::&lt;Result&lt;_, _&gt;&gt;()
+        .context("인자에 NUL 바이트가 있습니다")?;
+
+    // 자식이 쓸 스택. clone은 fork와 달리 스택을 직접 넘겨야 한다.
+    let mut stack = vec![0u8; STACK_SIZE];
+    let flags = CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWPID;
+    let cb = Box::new(|| container_main(hostname, init, &amp;argv));
+    // SIGCHLD를 넘겨야 부모가 평범한 waitpid로 자식을 기다릴 수 있다.
+    let child = unsafe { clone(cb, &amp;mut stack, flags, Some(Signal::SIGCHLD as i32)) }
+        .context("clone 실패 (root 권한으로 실행했나요?)")?;
+
+    // 1장 8절: SIGINT 무시는 자식이 생긴 뒤 부모 쪽에서만
+    unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }.context("signal 설정 실패")?;
+    wait_exit_code(child)
+}
+
+fn wait_exit_code(child: Pid) -&gt; Result&lt;i32&gt; {
+    match waitpid(child, None).context("waitpid 실패")? {
+        WaitStatus::Exited(_, code) =&gt; Ok(code),
+        WaitStatus::Signaled(_, sig, _) =&gt; Ok(128 + sig as i32),
+        other =&gt; bail!("예상하지 못한 상태: {other:?}"),
+    }
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다.
+/// 반환값이 곧 이 프로세스의 종료 코드가 된다.
+fn container_main(hostname: &amp;str, init: bool, argv: &amp;[CString]) -&gt; isize {
+    if let Err(e) = sethostname(hostname) {
+        eprintln!("myctr: sethostname: {e}");
+        return 1;
+    }
+    if init { mini_init(argv) } else { exec(argv) }
+}
+
+/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    // Rust 런타임은 시작할 때 SIGPIPE를 SIG_IGN으로 바꾼다. SIG_IGN은 exec를 넘어
+    // 유지되므로, 사용자 프로그램에 넘기기 전에 기본값으로 되돌린다.
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) } {
+        eprintln!("myctr: SIGPIPE 복원 실패: {e}");
+        return 1;
+    }
+    let err = execvp(&amp;argv[0], argv).unwrap_err();
+    eprintln!("myctr: {}: {err}", argv[0].to_string_lossy());
+    127
+}
+
+/// PID 1로 남아 명령을 PID 2로 띄우고, 입양된 고아까지 거두다가
+/// 명령이 끝나면 그 종료 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    let main_child = match unsafe { fork() } {
+        Ok(ForkResult::Child) =&gt; unsafe { libc::_exit(exec(argv) as i32) },
+        Ok(ForkResult::Parent { child }) =&gt; child,
+        Err(e) =&gt; {
+            eprintln!("myctr-init: fork: {e}");
+            return 1;
+        }
+    };
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, code)) if pid == main_child =&gt; return code as isize,
+            Ok(WaitStatus::Signaled(pid, sig, _)) if pid == main_child =&gt; return 128 + sig as isize,
+            Ok(_) =&gt; continue, // 입양된 고아를 거뒀다
+            Err(Errno::EINTR) =&gt; continue,
+            Err(e) =&gt; {
+                eprintln!("myctr-init: waitpid: {e}");
+                return 1;
+            }
+        }
+    }
+}</code></pre>
+    </div></details>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>네임스페이스는 커널 전역 자원을 여러 벌로 만들어 프로세스마다 다른 벌을 보여 주는 기능입니다. 8종류가 있고, <code>/proc/&lt;pid&gt;/ns/*</code>의 inode가 같으면 같은 네임스페이스입니다.</li>
+    <li><b>clone</b>은 자식을 새 네임스페이스에 만들고, <b>unshare</b>는 자신을 옮기며(PID는 이후 자식부터), <b>setns</b>는 기존 네임스페이스에 합류합니다.</li>
+    <li>nix의 clone은 클로저, 스택, 플래그, 종료 시그널을 받습니다. 클로저의 반환값이 종료 코드이고, 종료 시그널로 <b>SIGCHLD</b>를 주지 않으면 waitpid가 ECHILD를 냅니다.</li>
+    <li>PID 네임스페이스는 트리이고, 프로세스는 조상 네임스페이스마다 PID를 하나씩 갖습니다(<code>NSpid</code>). 하지만 /proc는 마운트 시점의 네임스페이스 기준이라 아직 호스트를 보여 줍니다(3장에서 해결).</li>
+    <li>PID 1은 ① 핸들러 없는 시그널을 무시하고(조상 ns의 SIGKILL/SIGSTOP만 예외) ② 고아를 입양하며 ③ 죽으면 네임스페이스 전체를 끝냅니다. 미니 init이 이 문제를 해결합니다.</li>
+    <li>Rust 런타임의 SIGPIPE=SIG_IGN은 exec를 넘어 컨테이너로 샙니다. exec 직전에 기본값으로 되돌립니다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">두 프로세스가 같은 UTS 네임스페이스에 있는지 가장 확실하게 확인하는 방법은?</div>
+    <button class="opt"><code>hostname</code> 출력이 같은지 본다</button>
+    <button class="opt">PID가 연속인지 본다</button>
+    <button class="opt"><code>readlink /proc/&lt;pid&gt;/ns/uts</code>의 inode 번호가 같은지 본다</button>
+    <button class="opt"><code>uname -r</code>이 같은지 본다</button>
+    <div class="explain">hostname은 우연히 같을 수 있고, 커널 버전은 모든 컨테이너가 같습니다. 네임스페이스 객체의 inode 번호가 같아야 같은 네임스페이스입니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q"><code>unshare(CLONE_NEWPID)</code>를 호출한 직후 호출자의 <code>getpid()</code>는?</div>
+    <button class="opt">1</button>
+    <button class="opt">호출 전과 같은 값</button>
+    <button class="opt">0</button>
+    <button class="opt">ENOMEM 에러</button>
+    <div class="explain">PID는 평생 바뀌지 않으므로 unshare는 호출자를 옮기지 않습니다. 이후에 fork하는 첫 자식이 새 네임스페이스의 PID 1이 됩니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">nix의 clone에 signal 인자로 <code>None</code>을 주고 부모가 <code>waitpid(child, None)</code>을 부르면?</div>
+    <button class="opt">자식이 끝날 때까지 정상적으로 기다린다</button>
+    <button class="opt">즉시 Exited(0)를 돌려준다</button>
+    <button class="opt">clone 자체가 EINVAL로 실패한다</button>
+    <button class="opt">ECHILD로 실패하고, 자식은 회수되지 않는다</button>
+    <div class="explain">종료 시그널이 SIGCHLD가 아닌 자식은 "clone 자식"으로 분류되어 <code>__WCLONE</code>/<code>__WALL</code> 없이는 기다릴 수 없습니다. 실제 실행 결과도 <code>Err(ECHILD)</code>였습니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">컨테이너 안에서 <code>echo $$</code>는 1인데 <code>readlink /proc/self</code>는 466이 나왔다. 이유는?</div>
+    <button class="opt">/proc가 호스트 PID 네임스페이스 기준으로 마운트된 procfs이기 때문</button>
+    <button class="opt">sh가 PID를 캐시하기 때문</button>
+    <button class="opt">PID 네임스페이스가 제대로 만들어지지 않았기 때문</button>
+    <button class="opt">readlink가 호스트 쪽에서 실행되기 때문</button>
+    <div class="explain">getpid()는 호출자의 네임스페이스 기준으로 답하지만, procfs는 마운트할 때의 PID 네임스페이스 기준으로 내용을 보여 줍니다. 컨테이너 기준 /proc를 새로 마운트하는 것은 마운트 네임스페이스가 생기는 3장의 일입니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">init 없이 <code>sudo myctr run sleep 100</code>을 실행했다. 호스트에서 sleep에게 보냈을 때 sleep을 죽일 수 있는 시그널은?</div>
+    <button class="opt">SIGTERM</button>
+    <button class="opt">SIGINT</button>
+    <button class="opt">SIGKILL</button>
+    <button class="opt">SIGHUP</button>
+    <div class="explain">sleep은 PID 1이고 어떤 핸들러도 등록하지 않았습니다. 기본 동작인 시그널은 모두 무시되고, 조상 네임스페이스(호스트)에서 보낸 SIGKILL과 SIGSTOP만 강제로 전달됩니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">PID 1이 종료되면 같은 PID 네임스페이스의 백그라운드 프로세스는?</div>
+    <button class="opt">호스트의 init에게 입양되어 계속 실행된다</button>
+    <button class="opt">커널이 SIGKILL로 모두 종료시킨다</button>
+    <button class="opt">새 PID 1로 승격된다</button>
+    <button class="opt">SIGHUP을 받는다</button>
+    <div class="explain">PID 네임스페이스의 init이 끝나면 커널이 나머지 모든 프로세스에 SIGKILL을 보냅니다. <code>sh -c 'sleep 300 &amp; ...'</code> 실험에서 sleep이 남지 않았던 이유입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">myctr 컨테이너 안에서 <code>yes | head -1</code>이 "Broken pipe" 에러를 낸 근본 원인은?</div>
+    <button class="opt">컨테이너 안의 파이프 버퍼가 작아서</button>
+    <button class="opt">PID 1은 SIGPIPE를 받지 못해서</button>
+    <button class="opt">UTS 네임스페이스가 파이프를 격리해서</button>
+    <button class="opt">Rust 런타임이 SIGPIPE를 SIG_IGN으로 바꾸고, 그 설정이 fork/exec를 넘어 상속되어서</button>
+    <div class="explain"><code>yes</code>는 PID 1이 아니라 sh의 자식입니다. Rust가 main 전에 SIGPIPE를 무시로 설정하고, SIG_IGN은 exec 후에도 유지되므로 컨테이너 프로세스 전체가 SIGPIPE를 무시합니다. exec 직전에 SigDfl로 되돌려 고칩니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>격리 완성.</b> 11절 단계 A~E를 구현하고 <code>sudo ./check.sh</code>를 통과시킨 뒤 <code>git tag ch02</code>를 남기세요. 기대: <code>통과 15 / 15</code>.</li>
+    <li><b>밖에서 들여다보기.</b> 터미널 1에서 <code>sudo ./target/debug/myctr run --hostname box sleep 1000</code>. 터미널 2에서 <code>pgrep -x sleep</code>으로 호스트 PID를 찾은 뒤 다음을 실행하세요. <code>grep NSpid /proc/&lt;pid&gt;/status</code>(기대: <code>&lt;pid&gt; 1</code>), <code>sudo ls -l /proc/&lt;pid&gt;/ns/</code>와 <code>ls -l /proc/self/ns/</code>를 비교(기대: uts, pid, pid_for_children만 다름), <code>sudo nsenter -t &lt;pid&gt; -u hostname</code>(기대: <code>box</code>), <code>lsns -t uts</code>. 끝나면 <code>sudo kill -9 &lt;pid&gt;</code>. 이 sleep은 PID 1이라 <code>kill</code>(TERM)로는 끝나지 않습니다.</li>
+    <li><b>Ctrl+C 비교.</b> <code>sudo ./target/debug/myctr run sleep 100</code>과 <code>sudo ./target/debug/myctr run --init sleep 100</code>에서 각각 Ctrl+C를 누르고 <code>echo $?</code>를 확인하세요. 기대: 전자는 반응이 없어 다른 터미널에서 <code>sudo pkill -9 -x sleep</code> 후 137, 후자는 즉시 130.</li>
+    <li><b>동반 종료 관찰.</b> <code>sudo ./target/debug/myctr run /bin/sh -c 'sleep 300 &amp; echo bg=$!'; pgrep -x sleep || echo gone</code>. 기대: <code>bg=2</code> 뒤 <code>gone</code>. 같은 명령에 <code>--init</code>을 붙이면 어떻게 될지 예측하고 확인하세요(힌트: sh가 끝나면 init은 무엇을 하나?).</li>
+    <li><b>unshare 체험.</b> myctr 없이 <code>sudo unshare -u -p -f --mount-proc /bin/sh</code>를 실행하고 <code>hostname x; hostname; echo $$; ps</code>를 해 보세요. ps가 깔끔하게 두 줄만 나오는 것은 <code>--mount-proc</code> 덕분입니다. 3장에서 이것을 직접 만듭니다.</li>
+    <li><b>도전: IPC 네임스페이스.</b> 플래그에 <code>CLONE_NEWIPC</code>를 추가하고, 호스트에서 <code>ipcmk -Q</code>로 만든 메시지 큐가 컨테이너 안의 <code>ipcs -q</code>에는 보이지 않는지 확인하세요.</li>
+    <li><b>도전: 시그널 전달.</b> 지금은 호스트에서 <b>myctr</b>에게 <code>kill -TERM</code>을 보내면 myctr만 죽고 컨테이너는 고아로 남습니다. myctr가 SIGTERM을 받으면 자식(PID 1)에게 전달하고, init은 받은 SIGTERM을 PID 2에게 전달하도록 만드세요. 힌트: init은 SIGTERM <b>핸들러를 등록해야</b> 규칙 ①을 통과해 시그널을 받을 수 있습니다. 핸들러에서는 <code>kill()</code>만 부르고(async-signal-safe), 대상 PID는 <code>AtomicI32</code>에 넣어 두세요. 기대: <code>sudo myctr run --init sleep 100 &amp;</code> 후 <code>sudo kill -TERM %1</code> → 143.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = MM.esc;
+
+  // ===== 위젯 1: clone 플래그 실험실 =====
+  (function () {
+    const NS = [
+      ["UTS", "CLONE_NEWUTS", 4026531838, true],
+      ["PID", "CLONE_NEWPID", 4026531836, true],
+      ["Mount", "CLONE_NEWNS", 4026531841, false],
+      ["Network", "CLONE_NEWNET", 4026531840, false],
+      ["IPC", "CLONE_NEWIPC", 4026531839, false],
+      ["User", "CLONE_NEWUSER", 4026531837, false],
+      ["Cgroup", "CLONE_NEWCGROUP", 4026531835, false],
+    ];
+    const box = $("lab-flags");
+    NS.forEach(([n, f, , on]) => {
+      const l = MM.el("label", null, `<input type="checkbox" data-ns="${n}" ${on ? "checked" : ""}> ${f}`);
+      box.append(l);
+    });
+    function render() {
+      const on = new Set([...box.querySelectorAll("input:checked")].map(i => i.dataset.ns));
+      $("lab-ns").innerHTML = "<tr><th>ns</th><th>호스트 bash</th><th>컨테이너 sh</th></tr>" + NS.map(([n, , ino], i) => {
+        const child = on.has(n) ? 4026533100 + i * 3 + 11 : ino;
+        return `<tr><td>${n.toLowerCase()}</td><td>${n.toLowerCase()}:[${ino}]</td><td class="${on.has(n) ? "diff" : "same"}">${n.toLowerCase()}:[${child}]${on.has(n) ? " 새것" : " 같음"}</td></tr>`;
+      }).join("");
+      const U = on.has("UTS"), P = on.has("PID"), M = on.has("Mount"), N = on.has("Network"), I = on.has("IPC"), Us = on.has("User"), C = on.has("Cgroup");
+      const rows = [
+        ["hostname", "box", U ? "chg" : "warn",
+          U ? "자기 UTS ns의 hostname만 바뀌었습니다. 호스트는 그대로 labhost." : "UTS ns가 없으니 sethostname이 <b>호스트의 hostname을 box로 바꿔 버렸습니다.</b> 호스트에서 hostname을 쳐도 box가 나옵니다."],
+        ["echo $$", P ? "1" : "4242", P ? "chg" : "", P ? "새 PID ns의 첫 프로세스 = PID 1" : "호스트와 같은 번호표"],
+        ["readlink /proc/self", "4242", P ? "warn" : "", P ? "/proc는 아직 호스트 기준 procfs라 호스트 PID가 나옵니다(6절)." + (M ? " Mount ns가 있어도 /proc를 새로 마운트하기 전까지는 그대로입니다(3장)." : "") : "호스트와 같음"],
+        ["ip -br link", N ? "lo  DOWN" : "lo  UNKNOWN\neth0  UP", N ? "chg" : "", N ? "새 net ns에는 꺼진 loopback 하나만 있습니다. 외부와 통신하려면 veth를 연결해야 합니다(6장)." : "호스트의 네트워크 장치가 그대로 보입니다."],
+        ["ipcs -q", I ? "(비어 있음)" : "0x1c0a2b3d  32768  root  644  0  0", I ? "chg" : "", I ? "System V IPC 객체가 격리되었습니다." : "호스트의 메시지 큐가 보입니다."],
+        ["id", Us ? "uid=65534(nobody) gid=65534(nogroup)" : "uid=0(root) gid=0(root)", Us ? "chg" : "", Us ? "새 user ns에 uid 매핑을 쓰지 않으면 모두 overflow uid(65534)로 보입니다. 5장에서 uid_map을 씁니다. 또 user ns를 함께 만들면 sudo 없이도 나머지 ns를 만들 수 있습니다." : "sudo로 실행했으므로 root."],
+        ["cat /proc/self/cgroup", C ? "0::/" : "0::/user.slice/user-1000.slice/session-3.scope", C ? "chg" : "", C ? "cgroup ns의 루트가 현재 cgroup이 되어 경로가 /로 보입니다(4장)." : "호스트 기준 cgroup 경로가 그대로 보입니다."],
+        ["mount", M ? "(처음엔 호스트와 같은 목록의 복사본)" : "(호스트와 같은 목록)", M ? "chg" : "", M ? "마운트 목록은 복사본이라 처음엔 같아 보이지만, 이제 안에서 마운트해도 호스트에 영향이 없습니다(전파 설정에 따라 다름, 3장)." : "안에서 마운트하면 호스트에 그대로 반영됩니다. 위험!"],
+      ];
+      $("lab-out").innerHTML = rows.map(([c, o, cls, n]) => `<div class="row ${cls}"><span>$ ${esc(c)}</span><span class="o">${esc(o)}</span><span class="n">${n}</span></div>`).join("");
+    }
+    box.onchange = render;
+    render();
+  })();
+
+  // ===== 위젯 2: PID 네임스페이스 탐색기 =====
+  (function () {
+    // ns: {id, name, parent, counter}
+    const NSS = [
+      { id: "host", name: "호스트 PID ns", parent: null },
+      { id: "A", name: "컨테이너 A", parent: "host" },
+      { id: "A2", name: "A 안의 컨테이너", parent: "A" },
+      { id: "B", name: "컨테이너 B", parent: "host" },
+    ];
+    let procs, counters, view, selected, lastNew;
+    const chain = id => { const out = []; let n = NSS.find(x => x.id === id); while (n) { out.unshift(n.id); n = NSS.find(x => x.id === n.parent); } return out; };
+    function spawn(ns, name) {
+      const pids = {};
+      chain(ns).forEach(id => { counters[id] = (counters[id] || 0) + 1; pids[id] = counters[id]; });
+      const p = { ns, name, pids }; procs.push(p); lastNew = p; return p;
+    }
+    function reset() {
+      procs = []; counters = { host: 0, A: 0, A2: 0, B: 0 }; view = "host"; selected = null; lastNew = null;
+      counters.host = 0;
+      spawn("host", "systemd"); counters.host = 811; spawn("host", "sshd"); counters.host = 1502; spawn("host", "bash");
+      counters.host = 4240; spawn("host", "myctr"); spawn("A", "init"); spawn("A", "sh");
+      spawn("A", "myctr"); spawn("A2", "sh");
+      spawn("host", "myctr"); spawn("B", "nginx"); spawn("B", "nginx");
+      lastNew = null;
+      render();
+    }
+    const visible = (p, from) => chain(p.ns).includes(from);
+    function render() {
+      const root = $("pt-root"); root.innerHTML = "";
+      function box(ns) {
+        const d = MM.el("div", { class: "nsv" + (view === ns.id ? " viewing" : "") });
+        const h = MM.el("div", { class: "h" }, `<span>${ns.name}</span>`);
+        const vb = MM.el("button", { class: "btn", type: "button" }, view === ns.id ? "👁 보는 중" : "여기서 보기");
+        vb.onclick = () => { view = ns.id; render(); };
+        const ab = MM.el("button", { class: "btn", type: "button" }, "+ 프로세스");
+        ab.onclick = () => { selected = spawn(ns.id, "sleep"); render(); showInfo(); };
+        h.append(vb, ab); d.append(h);
+        const chips = MM.el("div", { class: "chips" });
+        procs.filter(p => p.ns === ns.id).forEach(p => {
+          const vis = visible(p, view);
+          const c = MM.el("span", { class: "chip" + (vis ? "" : " hidden") + (p === selected ? " sel" : "") + (p === lastNew ? " new" : "") },
+            vis ? `<b>${p.pids[view]}</b> ${esc(p.name)}` : `? ${esc(p.name)}`);
+          c.onclick = () => { selected = p; render(); showInfo(); };
+          chips.append(c);
+        });
+        d.append(chips);
+        const kids = NSS.filter(x => x.parent === ns.id);
+        if (kids.length) { const k = MM.el("div", { class: "kids" }); kids.forEach(x => k.append(box(x))); d.append(k); }
+        return d;
+      }
+      root.append(box(NSS[0]));
+      lastNew = null;
+    }
+    function showInfo() {
+      const p = selected; if (!p) return;
+      const ch = chain(p.ns);
+      const vis = visible(p, view);
+      $("pt-info").innerHTML = `<code>NSpid:\t${ch.map(id => p.pids[id]).join("\t")}</code> &nbsp;(${ch.map(id => NSS.find(x => x.id === id).name).join(" → ")})<br>` +
+        (vis ? `지금 보는 곳(${NSS.find(x => x.id === view).name})에서는 <b>PID ${p.pids[view]}</b>입니다.` :
+          `지금 보는 곳(${NSS.find(x => x.id === view).name})에서는 <b>보이지 않습니다.</b> 이 프로세스는 그 네임스페이스의 자손이 아닌 곳에 있습니다.`) +
+        (p.pids[p.ns] === 1 ? " 자기 네임스페이스의 <b>PID 1</b>이므로 7절의 특별 대우를 받습니다." : "");
+    }
+    reset();
+  })();
+
+  // ===== 위젯 3: PID 1 시그널 판정기 =====
+  (function () {
+    const SIG = [["SIGTERM", 15, "종료"], ["SIGINT", 2, "종료"], ["SIGHUP", 1, "종료"], ["SIGQUIT", 3, "종료 + 코어"], ["SIGUSR1", 10, "종료"], ["SIGKILL", 9, "종료 (잡을 수 없음)"], ["SIGSTOP", 19, "정지 (잡을 수 없음)"]];
+    const TTY = { SIGINT: "Ctrl+C", SIGQUIT: "Ctrl+\\" };
+    const sel = $("sg-sig");
+    function fillSigs() {
+      const from = $("sg-from").value, cur = sel.value;
+      sel.innerHTML = "";
+      SIG.filter(s => from !== "tty" || TTY[s[0]]).forEach(([n, num]) => sel.append(MM.el("option", { value: n }, `${n} (${num})${from === "tty" ? " · " + TTY[n] : ""}`)));
+      if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+    }
+    function judge() {
+      const from = $("sg-from").value, s = SIG.find(x => x[0] === sel.value), name = s[0], num = s[1];
+      const uncatchable = name === "SIGKILL" || name === "SIGSTOP";
+      const hb = $("sg-handler"); hb.disabled = uncatchable; if (uncatchable) hb.checked = false;
+      const handler = hb.checked;
+      const fromAncestor = from === "host";
+      let v1, e1;
+      if (handler) { v1 = '<span class="c-ok">전달됨 → 핸들러 실행</span>'; e1 = "PID 1이 직접 핸들러를 등록한 시그널은 누가 보내든 받습니다. 종료할지는 핸들러가 결정합니다. bash, Node.js, tini가 PID 1로 문제없는 이유입니다."; }
+      else if (uncatchable && fromAncestor) { v1 = `<span class="c-bad">강제 전달 → ${name === "SIGKILL" ? "죽음 (myctr $? = 137)" : "정지"}</span>`; e1 = `조상 네임스페이스에서 보낸 ${name}는 예외적으로 강제 전달됩니다. 바깥에서 컨테이너를 반드시 멈출 수 있게 하는 안전장치이며, <code>docker kill</code>이 결국 기대는 경로입니다.`; }
+      else if (uncatchable) { v1 = '<span class="c-warn">무시됨</span>'; e1 = `${name}조차 같은 네임스페이스 안에서 보내면 무시됩니다. 컨테이너 안의 어떤 프로세스도 PID 1을 죽일 수 없습니다. 실제로 <code>kill -KILL $$</code>를 한 sh가 살아남았습니다.`; }
+      else { v1 = '<span class="c-warn">무시됨</span>'; e1 = `처리 방식이 기본값(SIG_DFL)인 시그널은 PID 1에게 버려집니다. ${fromAncestor ? "호스트에서 보내도 마찬가지입니다. 강제 전달은 SIGKILL/SIGSTOP뿐입니다. <code>docker stop</code>이 SIGTERM 후 10초를 기다리다 SIGKILL을 보내는 장면이 이것입니다." : from === "tty" ? "터미널이 보낸 시그널도 예외가 아닙니다. init 없는 컨테이너에서 " + TTY[name] + "가 먹지 않는 이유입니다." : "같은 네임스페이스 안에서 보내도 마찬가지입니다."}`; }
+      let v2, e2;
+      if (handler) { v2 = '<span class="c-ok">전달됨 → 핸들러 실행</span>'; e2 = "평범한 프로세스도 핸들러가 있으면 핸들러가 실행됩니다."; }
+      else if (name === "SIGSTOP") { v2 = '<span class="c-warn">정지됨</span>'; e2 = "평범한 프로세스는 SIGSTOP으로 정지합니다. init은 WUNTRACED 없이 기다리므로 계속 기다립니다."; }
+      else { v2 = `<span class="c-bad">죽음 → init이 보고, myctr $? = ${128 + num}</span>`; e2 = `PID 2는 평범한 프로세스라 기본 동작(${s[2]})이 그대로 적용됩니다. init의 waitpid가 <code>Signaled(2, ${name})</code>를 받아 ${128 + num}을 반환합니다.` + (from === "self" ? " (여기서 '자기 자신'은 PID 2 자신이 kill $$한 경우입니다.)" : ""); }
+      $("sg-v1").innerHTML = v1; $("sg-e1").innerHTML = e1; $("sg-v2").innerHTML = v2; $("sg-e2").innerHTML = e2;
+    }
+    $("sg-from").onchange = () => { fillSigs(); judge(); };
+    sel.onchange = judge; $("sg-handler").onchange = judge;
+    fillSigs(); judge();
+  })();
+
+  // ===== 위젯 4: 미니 init 스테퍼 =====
+  (function () {
+    const svg = $("init-svg");
+    // 각 프로세스: [label, hostPid, nsPid, state, note]
+    const S = [
+      { m: ["R", "run --init sleep 100"], i: null, s: null, k: "", cap: "myctr(호스트 PID 4241)가 시작합니다. 아직 네임스페이스는 하나입니다." },
+      { m: ["R", "clone(NEWUTS|NEWPID|SIGCHLD)"], i: ["R", "myctr 복사본 · container_main"], s: null, k: "clone → 4242", ns: true, cap: "clone으로 자식이 <b>새 PID 네임스페이스</b>에서 태어납니다. 호스트에서는 4242, 안에서는 <b>1</b>입니다." },
+      { m: ["S", "SIGINT=SIG_IGN · wait4(4242)"], i: ["R", "sethostname(\"box\")"], s: null, k: "sethostname", ns: true, host: "labhost", inner: "box", cap: "부모는 SIGINT를 무시로 설정하고 잠듭니다. 자식은 자기 UTS ns의 hostname을 box로 바꿉니다. 호스트는 여전히 labhost." },
+      { m: ["S", "wait4(4242)"], i: ["R", "fork()"], s: ["R", "myctr 복사본"], k: "clone(SIGCHLD) → 2", ns: true, cap: "init(PID 1)이 fork합니다. 새 자식은 같은 네임스페이스의 <b>PID 2</b>(호스트 4243). init 쪽에서 fork()가 돌려준 값은 2입니다. 호출자 기준 번호이기 때문입니다." },
+      { m: ["S", "wait4(4242)"], i: ["S", "wait4(-1) · 모든 자식 대기"], s: ["R", "SIGPIPE=SIG_DFL → execve(sleep)"], k: "execve(\"/usr/bin/sleep\")", ns: true, sleep: true, cap: "PID 2는 SIGPIPE를 기본값으로 돌린 뒤 sleep으로 exec합니다. init은 <code>waitpid(None)</code>으로 어떤 자식이든 기다립니다." },
+      { m: ["S", "SIGINT 무시 (SIG_IGN)"], i: ["S", "SIGINT 무시 (PID 1 보호)"], s: ["R", "SIGINT → 기본 동작: 종료"], k: "Ctrl+C → 포그라운드 그룹에 SIGINT", ns: true, sleep: true, sig: true, cap: "Ctrl+C! 세 프로세스 모두 같은 프로세스 그룹이라 모두 SIGINT를 받습니다. myctr는 SIG_IGN, init은 PID 1이라 보호, <b>sleep(PID 2)만 기본 동작으로 죽습니다.</b>" },
+      { m: ["S", "wait4(4242)"], i: ["R", "Signaled(2, SIGINT) → return 130"], s: ["-", "회수됨"], k: "wait4 → PID 2", ns: true, sleep: true, gone: true, cap: "init의 waitpid가 <code>Signaled(Pid(2), SIGINT)</code>를 받습니다. 메인 자식이므로 128 + 2 = 130을 반환합니다. 클로저 반환 = <code>exit(130)</code>." },
+      { m: ["R", "Exited(4242, 130)"], i: ["-", "exit(130) · ns 종료"], s: null, k: "exit(130) → SIGCHLD → wait4 반환", ns: true, idead: true, cap: "PID 1이 끝나면서 PID 네임스페이스도 끝납니다(남은 프로세스가 있었다면 커널이 SIGKILL). myctr의 wait4가 <code>Exited(4242, 130)</code>을 받습니다." },
+      { m: ["-", "exit(130)"], i: null, s: null, k: "exit_group(130)", done: true, shell: "$? = 130", cap: "myctr가 130으로 끝납니다. 사용자는 sleep을 직접 실행하고 Ctrl+C를 누른 것과 똑같은 결과를 봅니다." },
+    ];
+    function proc(x, y, w, title, pids, o, extra) {
+      const col = o[0] === "R" ? "ok" : o[0] === "S" ? "violet" : "muted";
+      const st = { R: "R 실행", S: "S 대기", "-": "종료" }[o[0]];
+      return `<g style="opacity:${extra && extra.fade ? .35 : 1};transition:opacity .3s">
+        <rect x="${x}" y="${y}" width="${w}" height="70" rx="10" style="fill:var(--surface);stroke:var(--${extra && extra.sig ? "bad" : "border"});stroke-width:${extra && extra.sig ? 2 : 1}"/>
+        <text x="${x + 12}" y="${y + 22}" font-weight="700" font-family="var(--mono)" font-size="12.5">${title}</text>
+        <text x="${x + 12}" y="${y + 40}" font-family="var(--mono)" font-size="11.5" style="fill:var(--accent)">${pids}</text>
+        <rect x="${x + w - 74}" y="${y + 8}" width="64" height="20" rx="10" style="fill:var(--${col === "muted" ? "surface-2" : col + "-soft"});stroke:var(--${col === "muted" ? "border" : col})"/>
+        <text x="${x + w - 42}" y="${y + 22}" text-anchor="middle" font-size="11" style="fill:var(--${col})">${st}</text>
+        <text x="${x + 12}" y="${y + 60}" font-family="var(--mono)" font-size="11.5" class="muted">${esc(o[1])}</text>
+      </g>`;
+    }
+    MM.stepper($("init-ctl"), {
+      steps: S.length, interval: 2400,
+      render(i) {
+        const s = S[i];
+        let g = "";
+        g += `<rect x="20" y="10" width="300" height="36" rx="8" class="box"/><text x="32" y="33" font-family="var(--mono)" font-size="12">bash $ ${s.shell ? esc(s.shell) : "sudo myctr run --init sleep 100"}</text>`;
+        g += `<text x="720" y="33" text-anchor="end" font-size="12" class="muted">호스트 hostname: <tspan font-family="var(--mono)">labhost</tspan></text>`;
+        g += proc(20, 62, 290, "myctr", "4241 / -", s.m, { fade: s.done });
+        if (s.ns) {
+          g += `<rect x="340" y="56" width="390" height="226" rx="14" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:6 4"/>
+                <text x="354" y="76" font-size="12" font-weight="700" style="fill:var(--violet)">새 PID ns + UTS ns</text>
+                <text x="716" y="76" text-anchor="end" font-size="12" class="muted">hostname: <tspan font-family="var(--mono)">${i >= 2 ? "box" : "labhost"}</tspan></text>`;
+          if (s.i) g += proc(356, 88, 360, i >= 3 ? "init (container_main)" : "자식 (container_main)", "4242 / <tspan font-weight=\"700\">1</tspan>", s.i, { fade: s.idead });
+          if (s.s) g += proc(356, 196, 360, s.sleep ? "sleep 100" : "myctr 복사본", "4243 / <tspan font-weight=\"700\">2</tspan>", s.s, { fade: s.gone, sig: s.sig });
+          if (s.i && s.s) g += `<path d="M420 158 V196" class="line${i === 3 ? " flow" : ""}" style="stroke:var(--violet)"/>`;
+        }
+        if (s.i && i === 1) g += `<path d="M310 97 H356" class="line flow" style="stroke:var(--accent);stroke-width:2"/>`;
+        if (s.sig) g += `<text x="165" y="160" text-anchor="middle" font-size="12" style="fill:var(--bad)">⚡ SIGINT ×3</text>`;
+        g += `<rect x="20" y="236" width="300" height="46" rx="8" style="fill:var(--surface-2);stroke:var(--text)"/><text x="32" y="256" font-size="12" font-weight="700">커널</text>
+              <text x="32" y="273" font-family="var(--mono)" font-size="11.5" style="fill:var(--${s.k ? "violet" : "muted"})">${s.k ? esc(s.k) : "—"}</text>`;
+        svg.innerHTML = g;
+        return s.cap;
+      }
+    });
+  })();
+
+  // ===== 위젯 5: strace =====
+  (function () {
+    const L = [
+      ["sep", "=== myctr run --hostname box hostname"],
+      ['<span class="c">execve</span>("./target-linux/debug/myctr", ["./target-linux/debug/myctr", "run", "--hostname", "box", "hostname"], 0xfffff9797a68 /* 9 vars */) = 0',
+        "셸이 myctr를 실행했습니다. 이 출력은 root로 실행해 sudo 단계가 없습니다."],
+      ['<span class="c">rt_sigaction</span>(<span class="k">SIGPIPE</span>, {sa_handler=<span class="e">SIG_IGN</span>, sa_mask=[PIPE], sa_flags=SA_RESTART}, {sa_handler=SIG_DFL, ...}, 8) = 0',
+        "우리 코드가 아니라 <b>Rust 표준 라이브러리</b>가 main 전에 SIGPIPE를 무시로 바꾸는 장면입니다. 9절 버그의 원인입니다."],
+      ['<span class="c">clone</span>(child_stack=0xffff8cfaf010, flags=<span class="k">CLONE_NEWUTS|CLONE_NEWPID|SIGCHLD</span>) = 12',
+        "1장의 fork와 비교해 보세요. <code>child_stack</code>이 NULL이 아니라 우리가 넘긴 Vec의 끝 주소이고, flags에 <b>CLONE_NEWUTS|CLONE_NEWPID</b>가 들어갔으며, 끝의 SIGCHLD가 종료 시그널입니다. 반환값 12는 <b>부모 기준</b> 자식 PID입니다."],
+      ['[pid    12] <span class="c">sethostname</span>("box", 3) = 0',
+        "자식이 새 UTS ns에서 hostname을 바꿉니다. 이 줄과 아래 부모의 줄은 동시에 실행되어 strace 출력이 섞입니다."],
+      ['[pid    11] <span class="c">rt_sigaction</span>(<span class="k">SIGINT</span>, {sa_handler=SIG_IGN, sa_mask=[INT], sa_flags=SA_RESTART}, {sa_handler=SIG_DFL, ...}, 8) = 0',
+        "부모(11)가 clone <b>이후에</b> SIGINT를 무시로 설정합니다. 자식은 이미 태어났으므로 영향을 받지 않습니다(1장 8절)."],
+      ['[pid    12] <span class="c">rt_sigaction</span>(<span class="k">SIGPIPE</span>, {sa_handler=<span class="c">SIG_DFL</span>, ...}, {sa_handler=SIG_IGN, ...}, 8) = 0',
+        "자식이 exec 직전에 SIGPIPE를 기본값으로 되돌립니다. 마지막 인자가 이전 값이 SIG_IGN이었음을 보여 줍니다. 상속된 것이 맞습니다."],
+      ['[pid    11] <span class="c">wait4</span>(12,  &lt;unfinished ...&gt;', "부모가 자식(12)을 기다리며 잠듭니다."],
+      ['[pid    12] <span class="c">execve</span>("/usr/local/cargo/bin/hostname", ["hostname"], 0xffffff508cf8 /* 9 vars */) = <span class="e">-1 ENOENT</span>',
+        "1장에서 본 PATH 탐색입니다. 이 실험 환경의 PATH 첫 항목이 cargo 디렉터리라 거기부터 시도합니다."],
+      ["... (/usr/local/sbin, /usr/local/bin, /usr/sbin 에서 ENOENT)", null],
+      ['[pid    12] <span class="c">execve</span>("/usr/bin/hostname", ["hostname"], 0xffffff508cf8 /* 9 vars */) = 0',
+        "exec 성공. 이제 PID 12(안에서는 1)는 hostname 프로그램입니다."],
+      ["box", "hostname의 출력. 자기 UTS ns의 값을 읽었습니다."],
+      ['[pid    12] <span class="c">exit_group</span>(0) = ?', "hostname이 끝납니다. PID 1이 끝났으므로 이 PID 네임스페이스도 함께 끝납니다."],
+      ['&lt;... <span class="c">wait4</span> resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = 12',
+        "부모의 wait4가 반환합니다. SIGCHLD를 종료 시그널로 줬기 때문에 평범한 wait4로 받을 수 있었습니다."],
+      ['<span class="c">exit_group</span>(0) = ?', "myctr가 0으로 끝납니다."],
+      ["sep", "=== myctr run --init true"],
+      ['<span class="c">clone</span>(child_stack=0xffffa5a4f010, flags=<span class="k">CLONE_NEWUTS|CLONE_NEWPID|SIGCHLD</span>) = 17',
+        "같은 clone. 자식은 호스트에서 17, 안에서 1입니다."],
+      ['[pid    17] <span class="c">clone</span>(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0xffffa5c620f0) = <span class="k">2</span>',
+        "init(17)이 fork합니다. 주목: strace는 새 프로세스를 <b>18</b>로 추적하는데(아래 줄의 <code>[pid 18]</code>), fork()의 반환값은 <b>2</b>입니다. 같은 프로세스가 strace(호스트 ns)에게는 18, init(컨테이너 ns)에게는 2입니다. 시스템 콜은 항상 <b>호출자의 네임스페이스 기준</b>으로 PID를 돌려줍니다."],
+      ['[pid    17] <span class="c">wait4</span>(<span class="k">-1</span>,  &lt;unfinished ...&gt;', "init이 <code>waitpid(None)</code> = wait4(-1)로 <b>아무 자식이나</b> 기다립니다. 입양된 고아도 여기서 거둡니다."],
+      ['[pid    18] <span class="c">execve</span>("/usr/bin/true", ["true"], 0xffffe1891630 /* 9 vars */) = 0', "PID 2(호스트 18)가 true로 exec합니다(PATH 탐색 줄은 생략)."],
+      ['[pid    18] <span class="c">exit_group</span>(0) = ?', "true가 끝납니다."],
+      ['[pid    17] &lt;... <span class="c">wait4</span> resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = <span class="k">2</span>',
+        "init의 wait4가 돌려준 PID도 2입니다. 메인 자식이므로 init은 이 코드(0)를 반환합니다."],
+      ['[pid    17] <span class="c">exit</span>(0) = ?',
+        "init이 끝납니다. <code>exit_group</code>이 아니라 <code>exit</code>인 점을 보세요. clone 클로저가 반환하면 glibc의 clone 래퍼가 그 값으로 <code>exit</code> 시스템 콜을 직접 부릅니다. Rust의 main 종료 경로를 타지 않으므로 소멸자나 버퍼 비우기도 일어나지 않습니다."],
+      ['&lt;... <span class="c">wait4</span> resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = 17', "myctr가 init(17)의 종료 코드를 받습니다. 0 → myctr도 0으로 종료."],
+    ];
+    const box = $("st-lines");
+    L.forEach(([html, ex]) => {
+      if (html === "sep") { box.append(MM.el("div", { class: "sep" }, esc(ex))); return; }
+      const d = MM.el("div", { class: ex ? "" : "skip" }, html);
+      if (ex) d.onclick = () => {
+        box.querySelectorAll(".on").forEach(x => x.classList.remove("on"));
+        d.classList.add("on");
+        $("st-explain").innerHTML = ex;
+      };
+      box.append(d);
+    });
+  })();
+})();
+</script>
+</body>
+</html>

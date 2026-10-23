@@ -1,0 +1,15 @@
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+store fs=overlayfs
+mknod: /tmp/course-whiteout-probe: Operation not permitted
+overlay_mknod_exit=1
+tmpfs_mknod_exit=0
+  File: /tmp/course-tmpfs-probe/whiteout
+  Size: 0         	Blocks: 0          IO Block: 4096   character special file
+Device: 0,101	Inode: 2           Links: 1     Device type: 0,0
+Access: (0644/crw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)
+Access: 2026-10-23 07:16:30.775795012 +0000
+Modify: 2026-10-23 07:16:30.775795012 +0000
+Change: 2026-10-23 07:16:30.775795012 +0000
+ Birth: 2026-10-23 07:16:30.775795012 +0000

@@ -1,0 +1,36 @@
+PASS  [0] true
+PASS  [1] false
+PASS  [3] /bin/sh -c exit 3
+PASS  [127] no-such-command
+PASS  stdout 전달
+PASS  hostname 격리
+PASS  명령이 PID 1
+PASS  [143] --init /bin/sh -c kill -TERM $$
+PASS  SIGPIPE 기본값
+PASS  루트가 Alpine
+PASS  이전 루트가 보이지 않음
+PASS  /proc/self가 컨테이너 PID
+PASS  ps에는 컨테이너 프로세스만
+PASS  /dev/null 동작
+PASS  /dev/zero 동작
+PASS  호스트 마운트 개수 그대로
+PASS  rootfs에 .oldroot 흔적 없음
+---
+통과 17 / 17
+PASS  안쪽 UID 0
+PASS  안쪽 GID 0
+PASS  단일 uid_map
+PASS  단일 gid_map
+PASS  setgroups deny
+PASS  rootfs 안 host-root 소유 fixture 권한 거부
+PASS  쓰기 성공
+PASS  rootfs 안 생성파일 바깥 UID
+PASS  호스트에서 동일 데이터 관측
+PASS  rootfs 바깥 호스트 sentinel 차단
+PASS  setgroups 호출 거부
+PASS  단일 매핑 밖 UID 1 전환 거부
+PASS  rootless 금지 옵션 --memory 16M
+PASS  rootless 금지 옵션 --cpus 0.5
+PASS  rootless 금지 옵션 --pids 8
+PASS  rootless 금지 옵션 --userns-base 100000
+통과 16 / 16

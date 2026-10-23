@@ -1,0 +1,1332 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>컨테이너 네트워크</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .lines { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 0; overflow-x: auto; }
+  .lines div { padding: 2px 14px; white-space: pre; cursor: pointer; border-left: 3px solid transparent; }
+  .lines div:hover { background: var(--accent-soft); }
+  .lines div.on { background: var(--accent-soft); border-left-color: var(--accent); }
+  .lines .c { color: var(--violet); } .lines .k { color: var(--teal); } .lines .e { color: var(--bad); }
+  .explain { min-height: 4.5em; }
+  .modes { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .modes .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .term-out { font-family: var(--mono); font-size: 12.5px; white-space: pre; overflow-x: auto; background: var(--surface-2); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+  #pk-svg .hop { transition: opacity .3s; }
+  .tuple { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; margin-top: 8px; }
+  .tuple div { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); font-size: 12.5px; }
+  .tuple div b { display: block; font-family: var(--mono); font-size: 13.5px; }
+  .tuple div.chg { border-color: var(--warn); background: var(--warn-soft); }
+  main { overflow-wrap:anywhere; }
+  pre { overflow-wrap:normal; }
+  .compare > div { min-width:0; }
+  .controls label { min-width:0; max-width:100%; flex-wrap:wrap; }
+  .controls select { min-width:0; max-width:100%; }
+</style>
+</head>
+<body data-chapter="06">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">자원 · 권한 · 네트워크 · Chapter 06</span>
+    <h1>컨테이너 네트워크</h1>
+    <p class="lead">지금까지의 컨테이너는 호스트와 같은 네트워크 스택을 썼습니다. 같은 IP, 같은 포트 공간, 같은 방화벽 규칙을 공유하니 두 컨테이너가 모두 8080을 열 수 없었습니다. 이 장에서는 컨테이너마다 <b>자기만의 네트워크 스택</b>을 주고, 가상 이더넷 케이블(veth)과 가상 스위치(bridge)로 연결한 뒤, NAT로 바깥에 나갈 길을 엽니다. <code>docker run</code>의 기본 네트워크가 실제로 하는 일이 정확히 이것입니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>네트워크 네임스페이스가 격리하는 것(장치, 주소, 경로, 방화벽, 포트)을 설명할 수 있다.</li>
+      <li>veth 쌍과 브리지로 컨테이너와 호스트를 연결하는 구조를 그리고, <code>ip</code> 명령으로 조립할 수 있다.</li>
+      <li>패킷이 컨테이너에서 인터넷까지 가는 경로(브리지, 라우팅, FORWARD, MASQUERADE, conntrack)를 따라갈 수 있다.</li>
+      <li>5장의 파이프 장벽에 네트워크 준비 단계를 더하고, 새 네트워크 네임스페이스를 누가 설정할 수 있는지(소유 user 네임스페이스) 설명할 수 있다.</li>
+      <li><code>myctr run --rootfs ./rootfs --net none|host|bridge</code>를 구현해 누적 기준(root 필수 54개, rootless 37개)을 통과시킨다.</li>
+    </ul></div>
+  </header>
+
+  <div class="callout"><span class="title">이 장은 5장 참조 구현에서 이어집니다</span>
+    3~5장의 rootfs·새 /proc·/dev·ID 매핑·파이프 장벽·cgroup을 유지하고 네트워크를 더합니다. 부모의 <code>ip</code>·<code>nsenter</code>는 호스트 도구이고, exec 뒤의 <code>ip</code>·<code>curl</code>은 rootfs에 설치한 Alpine 도구입니다. bridge 모드는 호스트에 장치와 방화벽 규칙을 만들어야 하므로 <code>sudo</code>가 필요하고, rootless로는 <code>none</code>과 <code>host</code>만 쓸 수 있습니다(4절).</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">세 가지 네트워크 모드</a></li>
+    <li><a href="#s2">네트워크 네임스페이스</a></li>
+    <li><a href="#s3">veth와 브리지</a></li>
+    <li><a href="#s4">누가 꾸미나: 파이프 장벽과 소유권</a></li>
+    <li><a href="#s5">바깥으로: 포워딩과 NAT</a></li>
+    <li><a href="#s6">패킷 따라가기</a></li>
+    <li><a href="#s7">주소 배정과 DNS</a></li>
+    <li><a href="#s8">정리, 그리고 netlink</a></li>
+    <li><a href="#s9">구현 가이드: 네트워크 붙이기</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 세 가지 네트워크 모드</h2>
+    <p>Docker의 <code>--network</code>와 같은 세 가지 모드를 만듭니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>모드</th><th>clone 플래그</th><th>컨테이너가 보는 것</th><th>쓰임</th></tr>
+      <tr><td><code>--net host</code></td><td>(없음)</td><td>호스트의 모든 인터페이스와 포트</td><td>성능이 중요하거나 호스트 네트워크를 직접 다뤄야 할 때. 격리 없음</td></tr>
+      <tr><td><code>--net none</code> (기본값)</td><td><code>CLONE_NEWNET</code></td><td>loopback(<code>lo</code>) 하나</td><td>네트워크가 필요 없는 배치 작업. 가장 안전</td></tr>
+      <tr><td><code>--net bridge</code></td><td><code>CLONE_NEWNET</code></td><td><code>lo</code> + <code>eth0</code>(10.88.0.x), 기본 경로는 호스트의 브리지</td><td>일반적인 서비스. Docker의 기본값. <b>root 전용</b></td></tr>
+    </table></div>
+    <div class="widget">
+      <div class="w-title">모드별로 컨테이너가 보는 세상</div>
+      <div class="w-desc">모드를 고르면 연결 구조와, 그 모드의 컨테이너 안에서 실제로 실행한 <code>ip</code> 명령 결과를 보여 줍니다(Linux aarch64 실험 환경, 꺼져 있는 터널 장치 줄은 생략).</div>
+      <div class="modes" id="md-btns"></div>
+      <div class="stage"><svg class="diagram" id="md-svg" viewBox="0 0 740 230" role="img" aria-label="네트워크 모드 구조도"></svg></div>
+      <div class="term-out" id="md-out"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. 네트워크 네임스페이스</h2>
+    <p><code>CLONE_NEWNET</code>으로 만든 네트워크 네임스페이스는 <b>네트워크 스택 전체의 복사본</b>이 아니라 <b>빈 스택</b>에서 시작합니다. 마운트 네임스페이스가 부모의 목록을 복사하는 것과 다릅니다. 새 네임스페이스에 있는 것은 꺼진 loopback 하나뿐입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>격리되는 것</th><th>확인하는 명령</th><th>의미</th></tr>
+      <tr><td>네트워크 장치</td><td><code>ip link</code></td><td>물리 장치든 가상 장치든 한 번에 한 네임스페이스에만 속한다. <code>ip link set X netns PID</code>로 옮긴다</td></tr>
+      <tr><td>IP 주소, 라우팅 테이블</td><td><code>ip addr</code>, <code>ip route</code></td><td>컨테이너마다 같은 대역을 써도 충돌하지 않는다</td></tr>
+      <tr><td>포트 공간</td><td><code>ss -tlnp</code></td><td>컨테이너 10개가 모두 :80을 열 수 있다</td></tr>
+      <tr><td>방화벽(netfilter) 규칙</td><td><code>iptables -S</code></td><td>컨테이너 안의 규칙은 호스트 규칙과 별개</td></tr>
+      <tr><td><code>/proc/net</code>, <code>/proc/sys/net</code></td><td><code>cat /proc/net/dev</code></td><td>네임스페이스별 통계와 sysctl(<code>ip_forward</code> 등)</td></tr>
+      <tr><td>유닉스 도메인 소켓 중 추상 주소</td><td>—</td><td>파일 경로 소켓은 파일시스템을 따른다(3장)</td></tr>
+    </table></div>
+    <div class="callout"><span class="title">꺼진 터널 장치가 보인다면</span>
+      실험 환경에서 새 네임스페이스의 <code>ip -br link</code>를 보면 <code>lo</code> 말고도 <code>tunl0@NONE</code>, <code>gre0@NONE</code>, <code>sit0@NONE</code> 같은 장치가 <code>DOWN</code> 상태로 있었습니다. 해당 터널 모듈이 로드된 커널은 새 네트워크 네임스페이스마다 이런 "기본 터널 장치"를 자동으로 만듭니다(<code>net.core.fb_tunnels_only_for_init_net</code> sysctl로 끌 수 있음). 쓰이지 않는 장치라 무시해도 됩니다. 이 장의 완료 기준이 "켜져 있는 인터페이스"만 세는 이유입니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. veth와 브리지</h2>
+    <p>빈 네임스페이스를 바깥과 잇는 도구는 두 가지입니다.</p>
+    <ul>
+      <li><b>veth 쌍</b>: 양 끝이 있는 가상 이더넷 케이블입니다. 한쪽으로 들어간 프레임은 반드시 반대쪽으로 나옵니다. 한쪽 끝을 컨테이너 네임스페이스로 옮기면 두 세계를 잇는 통로가 됩니다. 한쪽을 지우면 쌍 전체가 사라집니다.</li>
+      <li><b>브리지</b>: 커널 안의 가상 L2 스위치입니다. 여러 veth의 호스트 쪽 끝을 브리지에 꽂으면 컨테이너끼리 같은 LAN에 있는 것처럼 통신합니다. 브리지 자신에게 IP(10.88.0.1)를 주면 호스트도 그 LAN의 한 구성원, 즉 <b>게이트웨이</b>가 됩니다.</li>
+    </ul>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 290" role="img" aria-label="브리지와 veth로 연결된 두 컨테이너와 호스트">
+        <rect x="20" y="20" width="720" height="150" rx="14" class="box"/>
+        <text x="36" y="42" font-weight="700" font-size="13">호스트 네트워크 네임스페이스</text>
+        <rect x="250" y="70" width="260" height="44" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="380" y="90" text-anchor="middle" font-weight="700" font-family="var(--mono)" font-size="12.5">myctr0 (bridge)</text>
+        <text x="380" y="106" text-anchor="middle" font-family="var(--mono)" font-size="11.5">10.88.0.1/24 = 게이트웨이</text>
+        <rect x="560" y="70" width="160" height="44" rx="10" style="fill:var(--surface);stroke:var(--text)"/>
+        <text x="640" y="90" text-anchor="middle" font-family="var(--mono)" font-size="12.5">eth0 (물리)</text>
+        <text x="640" y="106" text-anchor="middle" font-family="var(--mono)" font-size="11">172.17.0.3</text>
+        <path d="M510 92 H560" class="line flow" style="stroke:var(--warn)"/>
+        <text x="535" y="62" text-anchor="middle" font-size="11" style="fill:var(--warn)">라우팅 + NAT</text>
+        <rect x="200" y="132" width="110" height="28" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="255" y="151" text-anchor="middle" font-family="var(--mono)" font-size="11.5">veth8</text>
+        <rect x="450" y="132" width="110" height="28" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="505" y="151" text-anchor="middle" font-family="var(--mono)" font-size="11.5">veth34</text>
+        <path d="M255 132 L330 114 M505 132 L430 114" class="line"/>
+        <rect x="120" y="200" width="270" height="76" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/>
+        <text x="134" y="220" font-size="12" font-weight="700" style="fill:var(--violet)">컨테이너 A (net ns)</text>
+        <rect x="200" y="232" width="110" height="30" rx="6" style="fill:var(--surface);stroke:var(--ok)"/><text x="255" y="252" text-anchor="middle" font-family="var(--mono)" font-size="11.5">eth0 .10</text>
+        <rect x="400" y="200" width="270" height="76" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/>
+        <text x="414" y="220" font-size="12" font-weight="700" style="fill:var(--violet)">컨테이너 B (net ns)</text>
+        <rect x="450" y="232" width="110" height="30" rx="6" style="fill:var(--surface);stroke:var(--ok)"/><text x="505" y="252" text-anchor="middle" font-family="var(--mono)" font-size="11.5">eth0 .62</text>
+        <path d="M255 160 V232 M505 160 V232" class="line" style="stroke:var(--ok);stroke-width:3"/>
+        <text x="268" y="196" font-size="11" class="muted">veth 쌍</text>
+      </svg>
+      </div>
+      <figcaption>veth의 한쪽 끝(eth0)은 컨테이너 안에, 다른 쪽(vethN)은 호스트의 브리지에 꽂혀 있습니다.</figcaption>
+    </figure>
+    <p>실제로 실행 중인 컨테이너를 양쪽에서 본 결과입니다. 이름 뒤의 <code>@ifN</code>은 <b>짝의 인터페이스 번호</b>입니다. 컨테이너의 eth0(15번)은 16번을, 호스트의 veth58(16번)은 15번을 가리킵니다.</p>
+<pre class="term"><code><span class="p">host$ </span>ip -br link show master myctr0
+<span class="o">veth58@if15      UP             ee:7f:4f:97:f6:20 &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt;</span>
+<span class="p">host$ </span>sudo nsenter -t &lt;컨테이너 PID&gt; -n ip -d link show eth0
+<span class="o">15: eth0@if16: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP ...
+    link/ether c2:4d:cf:76:e5:b2 brd ff:ff:ff:ff:ff:ff link-netnsid 0 ...
+    veth ...</span></code></pre>
+
+    <div class="widget">
+      <div class="w-title">bridge 모드 조립 과정</div>
+      <div class="w-desc">참조 구현의 <code>setup_bridge_net</code>이 실행하는 명령을 한 줄씩 따라갑니다. 각 명령이 어느 네임스페이스에서 실행되는지 주목하세요.</div>
+      <div class="stage"><svg class="diagram" id="as-svg" viewBox="0 0 740 280" role="img" aria-label="veth와 브리지 조립 애니메이션"></svg></div>
+      <div id="as-ctl"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 누가 꾸미나: 파이프 장벽과 소유권</h2>
+    <p>컨테이너 쪽 eth0에 주소를 주는 일은 컨테이너 네임스페이스 <b>안에서</b> 해야 하지만, veth를 만들고 브리지에 꽂는 일은 <b>호스트</b>에서 해야 합니다. 둘 다 할 수 있는 쪽은 부모(myctr)입니다. 부모는 호스트에 있고, <code>nsenter -t &lt;자식 PID&gt; -n</code>으로 자식의 네트워크 네임스페이스에 잠깐 들어갈 수 있습니다(2장의 setns).</p>
+    <p>타이밍 문제는 5장에서 이미 풀었습니다. 자식은 파이프에서 1바이트를 받을 때까지 exec하지 않고, 부모는 cgroup 배치와 ID 매핑을 끝낸 뒤 1바이트를 보냅니다. 이 장은 그 사이에 <b>네트워크 단계 하나를 끼워 넣을 뿐</b>입니다. 네트워크를 매핑 뒤, 마지막에 두는 이유는 호스트에 흔적(veth, 브리지, 방화벽 규칙)을 남기는 단계이기 때문입니다. 앞의 값싼 단계가 실패하면 호스트를 건드리기 전에 끝납니다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 290" role="img" aria-label="파이프 장벽에 네트워크 단계를 더한 시퀀스">
+        <defs><marker id="sq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+        <text x="150" y="22" text-anchor="middle" font-weight="700">부모 (myctr, 호스트)</text>
+        <text x="600" y="22" text-anchor="middle" font-weight="700" style="fill:var(--violet)">자식 (새 user·net ns ...)</text>
+        <line x1="150" y1="32" x2="150" y2="280" class="line" style="stroke-dasharray:3 3"/>
+        <line x1="600" y1="32" x2="600" y2="280" class="line" style="stroke-dasharray:3 3"/>
+        <g font-family="var(--mono)" font-size="11.5">
+          <rect x="60" y="40" width="180" height="24" rx="5" class="box"/><text x="150" y="56" text-anchor="middle">pipe2 → clone(..|NEWNET)</text>
+          <path d="M240 52 H510" class="line" marker-end="url(#sq)"/>
+          <rect x="510" y="40" width="180" height="24" rx="5" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="600" y="56" text-anchor="middle">쓰기 끝 닫기</text>
+          <rect x="510" y="72" width="180" height="150" rx="5" style="fill:var(--warn-soft);stroke:var(--warn)"/><text x="600" y="140" text-anchor="middle">read(읽기 끝) ...</text><text x="600" y="160" text-anchor="middle" font-family="var(--sans)">여기서 잠듦</text>
+          <rect x="60" y="72" width="180" height="24" rx="5" class="box"/><text x="150" y="88" text-anchor="middle">cgroup 배치 (root)</text>
+          <rect x="60" y="102" width="180" height="24" rx="5" class="box"/><text x="150" y="118" text-anchor="middle">setgroups·uid/gid_map</text>
+          <rect x="40" y="134" width="220" height="56" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="150" y="154" text-anchor="middle">네트워크 (이 장에서 추가)</text><text x="150" y="174" text-anchor="middle">veth · nsenter .. ip ..</text>
+          <text x="20" y="166" font-family="var(--sans)" font-size="18" style="fill:var(--accent)">★</text>
+          <rect x="60" y="198" width="180" height="24" rx="5" class="box"/><text x="150" y="214" text-anchor="middle">write(쓰기 끝, [1])</text>
+          <path d="M240 210 H510" class="line flow" style="stroke:var(--ok);stroke-width:2" marker-end="url(#sq)"/>
+          <rect x="510" y="230" width="180" height="42" rx="5" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="600" y="246" text-anchor="middle">ID 0 → hostname</text><text x="600" y="263" text-anchor="middle">rootfs · proc · dev → exec</text>
+          <rect x="60" y="230" width="180" height="24" rx="5" class="box"/><text x="150" y="246" text-anchor="middle">waitpid(자식)</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>5장의 장벽 그대로입니다. ★ 한 단계가 추가됐습니다. 어느 단계든 실패하면 1바이트 대신 EOF가 가고, 부모는 자식을 회수한 뒤 에러를 냅니다.</figcaption>
+    </figure>
+
+    <h3>새 네트워크 네임스페이스의 주인</h3>
+    <p>clone에 <code>CLONE_NEWUSER</code>와 <code>CLONE_NEWNET</code>을 함께 주면, 커널은 user 네임스페이스를 먼저 만들고 나머지 네임스페이스를 <b>그 user 네임스페이스의 소유</b>로 만듭니다. 네트워크 네임스페이스를 설정하려면 <b>그 소유 user 네임스페이스 안에서</b> <code>CAP_NET_ADMIN</code> 같은 권한이 있어야 합니다. 그래서 모드마다 부모가 들어가는 방법이 달라집니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>실행</th><th>net ns의 주인</th><th>부모가 들어가는 방법</th><th>bridge</th></tr>
+      <tr><td><code>sudo myctr run --rootfs ./rootfs</code></td><td>최상위 user ns</td><td><code>nsenter -t PID -n</code></td><td>가능</td></tr>
+      <tr><td><code>sudo myctr run --rootfs ./rootfs-range --userns-base 100000</code></td><td>자식의 user ns</td><td><code>nsenter -t PID -n</code>. 호스트 root는 조상 user ns의 권한자라 하위 ns에도 권한이 있다</td><td>가능</td></tr>
+      <tr><td><code>myctr run --rootfs ./rootfs-user</code> (rootless)</td><td>자식의 user ns</td><td><code>nsenter -t PID -U --preserve-credentials -n</code>. 그 user ns를 만든 사용자라 <b>그 안에서는</b> 권한이 있지만, 호스트에서는 없다</td><td><b>불가</b>: 호스트 쪽 veth·브리지·iptables는 최상위 net ns를 바꾸는 일</td></tr>
+    </table></div>
+    <p>실제로 일반 사용자로 확인한 결과입니다.</p>
+<pre class="term"><code><span class="p">$ </span>myctr run --rootfs ./rootfs-user sleep 100 &amp;                                  <span class="o"># rootless, --net none</span>
+<span class="p">$ </span>nsenter -t $(pgrep -x sleep) -n ip -br link show lo
+<span class="o">nsenter: reassociate to namespace 'ns/net' failed: Operation not permitted</span>
+<span class="p">$ </span>nsenter -t $(pgrep -x sleep) -U -n ip -br link show lo
+<span class="o">nsenter: setgroups failed: Operation not permitted          ← 5장의 setgroups=deny</span>
+<span class="p">$ </span>nsenter -t $(pgrep -x sleep) -U --preserve-credentials -n ip -br link show lo
+<span class="o">lo               UNKNOWN        00:00:00:00:00:00 &lt;LOOPBACK,UP,LOWER_UP&gt;</span>
+<span class="p">$ </span>myctr run --rootfs ./rootfs-user sh -c 'ip link add vX type veth peer name vY &amp;&amp; echo 안에서는 됨'
+<span class="o">안에서는 됨                                                 ← 자기 net ns 안에서는 권한이 있다</span>
+<span class="p">$ </span>ip link add vX type veth peer name vY                      <span class="o"># 호스트에서 같은 사용자로</span>
+<span class="o">RTNETLINK answers: Operation not permitted</span>
+<span class="p">$ </span>myctr run --rootfs ./rootfs-user --net bridge true
+<span class="o">Error: --net bridge는 root로 실행할 때만 쓸 수 있습니다</span></code></pre>
+    <p>두 번째 실패가 5장의 흔적입니다. <code>nsenter -U</code>는 기본적으로 들어간 뒤 보조 그룹을 비우려고 <code>setgroups</code>를 부르는데, rootless 컨테이너는 5장에서 <code>setgroups</code>를 <code>deny</code>로 막아 두었습니다. <code>--preserve-credentials</code>는 자격 증명을 바꾸지 않고 들어가게 합니다.</p>
+    <div class="callout deep"><span class="title">rootless 컨테이너는 어떻게 인터넷에 나가나</span>
+      호스트에 장치를 만들 수 없으니, Podman 같은 rootless 런타임은 <b>사용자 공간 네트워크 스택</b>을 씁니다. slirp4netns나 pasta가 컨테이너 net ns 안에 tap 장치를 만들고, 그 장치로 나오는 패킷을 일반 사용자 권한의 소켓 호출(connect, sendto)로 바꿔 대신 내보냅니다. 커널의 NAT 대신 프로세스가 중계하는 셈이라 느리지만 root가 필요 없습니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. 바깥으로: 포워딩과 NAT</h2>
+    <p>브리지까지만 연결하면 컨테이너끼리, 그리고 컨테이너와 호스트는 통신할 수 있지만 인터넷은 안 됩니다. 10.88.0.x는 사설 주소라 바깥 라우터가 응답을 돌려보낼 방법이 없기 때문입니다. 세 가지가 더 필요합니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>설정</th><th>명령 (참조 구현)</th><th>하는 일</th></tr>
+      <tr><td>IP 포워딩</td><td><code>echo 1 &gt; /proc/sys/net/ipv4/ip_forward</code></td><td>호스트가 한 인터페이스(myctr0)로 들어온 패킷을 다른 인터페이스(eth0)로 넘겨주는 "라우터"가 되도록 허락</td></tr>
+      <tr><td>FORWARD 허용</td><td><code>iptables -A FORWARD -i myctr0 -j ACCEPT</code><br><code>iptables -A FORWARD -o myctr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT</code></td><td>넘겨주는 패킷을 방화벽이 통과시키도록. 컨테이너가 시작한 연결과 그 응답만 허용</td></tr>
+      <tr><td>MASQUERADE</td><td><code>iptables -t nat -A POSTROUTING -s 10.88.0.0/24 ! -o myctr0 -j MASQUERADE</code></td><td>나가는 패킷의 출발 주소를 호스트의 주소로 바꿔 씀(SNAT). 응답이 호스트로 돌아오면 커널이 기억해 둔 대로 되돌려 컨테이너에 전달</td></tr>
+    </table></div>
+    <p>"기억해 둔 대로"가 <b>conntrack</b>(연결 추적)입니다. 컨테이너에서 <code>curl http://1.1.1.1</code>을 한 직후 호스트의 conntrack 표를 실제로 확인한 결과입니다.</p>
+<pre class="term"><code><span class="p">host$ </span>grep 10.88 /proc/net/nf_conntrack
+<span class="o">ipv4 2 tcp 6 59 CLOSE_WAIT src=10.88.0.62 dst=1.1.1.1 sport=41586 dport=80 src=1.1.1.1 dst=172.17.0.3 sport=80 dport=41586 [ASSURED] ...</span></code></pre>
+    <div class="widget">
+      <div class="w-title">conntrack 항목 읽기</div>
+      <div class="w-desc">한 줄에 방향이 두 개 들어 있습니다. 앞쪽은 <b>원래 방향</b>(컨테이너가 보낸 그대로), 뒤쪽은 <b>응답 방향</b>(바깥에서 돌아올 모습)입니다. 주황색이 MASQUERADE가 바꾼 부분입니다.</div>
+      <div class="tuple" id="ct-orig"></div>
+      <div class="tuple" id="ct-reply"></div>
+      <div class="stepper-cap">응답 방향의 목적지가 컨테이너(10.88.0.62)가 아니라 <b>호스트의 eth0 주소(172.17.0.3)</b>입니다. 바깥 세상은 호스트하고만 대화한다고 믿습니다. 응답 패킷이 172.17.0.3:41586으로 돌아오면, 커널은 이 항목을 찾아 목적지를 10.88.0.62:41586으로 되돌려 브리지로 보냅니다.</div>
+    </div>
+    <div class="callout warn"><span class="title">호스트에 Docker나 ufw가 있다면</span>
+      Docker는 설치될 때 FORWARD 체인의 기본 정책을 DROP으로 바꾸고, ufw도 기본적으로 포워딩을 막습니다. 그래서 참조 구현은 포워딩을 허용하는 규칙을 명시적으로 넣습니다. 그래도 컨테이너에서 바깥으로 나가지 못하면 <code>sudo iptables -S FORWARD</code>로 우리 규칙보다 앞에서 막는 규칙이 없는지 확인하세요. 같은 이유로 myctr는 Docker의 대역(172.17.0.0/16)과 겹치지 않는 10.88.0.0/24를 씁니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. 패킷 따라가기</h2>
+    <div class="widget">
+      <div class="w-title">패킷 경로 추적기</div>
+      <div class="w-desc">출발지와 목적지를 고르고 재생하세요. 패킷이 지나는 장치와, 각 지점에서 커널이 내리는 판단을 보여 줍니다.</div>
+      <div class="modes" id="pk-btns"></div>
+      <div class="stage"><svg class="diagram" id="pk-svg" viewBox="0 0 740 260" role="img" aria-label="패킷 경로 애니메이션"></svg></div>
+      <div id="pk-ctl"></div>
+    </div>
+    <p>실제로 확인한 결과입니다. 한 컨테이너에서 웹 서버를 띄우고, 다른 컨테이너와 호스트에서 접속했습니다.</p>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run --rootfs ./rootfs --net bridge --hostname web python3 -m http.server 8000 &amp;
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs --net bridge sh -c 'curl -s -o /dev/null -w "%{http_code}\n" http://10.88.0.10:8000/; ip neigh'
+<span class="o">200
+10.88.0.10 dev eth0 lladdr 86:a3:14:37:f8:73 REACHABLE      ← ARP로 알아낸 상대 MAC</span>
+<span class="p">$ </span>curl -s -o /dev/null -w "%{http_code}\n" http://10.88.0.10:8000/       <span class="o"># 호스트에서</span>
+<span class="o">200</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs --net none curl -s --max-time 2 http://10.88.0.10:8000/; echo $?
+<span class="o">7                                                          ← none 모드: 연결 실패</span>
+<span class="p">$ </span>bridge fdb show br myctr0 | grep -v permanent
+<span class="o">86:a3:14:37:f8:73 dev veth8 master myctr0                  ← 브리지가 학습한 "이 MAC은 이 포트"
+82:ae:29:1c:31:ae dev veth34 master myctr0</span></code></pre>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 주소 배정과 DNS</h2>
+    <h3>주소 배정 (IPAM)</h3>
+    <p>참조 구현은 myctr의 PID로 주소를 정합니다. <code>10.88.0.(2 + PID % 253)</code>. 상태 파일 없이 동작하는 가장 단순한 방법이지만, PID가 253 차이 나는 두 컨테이너는 같은 주소를 받습니다. 실제 런타임은 IPAM(IP Address Management)이 할당 상태를 파일이나 데이터베이스에 기록합니다. 동시에 몇 개를 띄우면 충돌이 날 만한지 계산해 보세요.</p>
+    <div class="widget">
+      <div class="w-title">주소 충돌 확률</div>
+      <div class="w-desc">PID가 무작위로 흩어져 있다고 가정하면, 253개 주소 중 하나를 고르는 생일 문제와 같습니다.</div>
+      <div class="controls"><label>동시에 실행 중인 컨테이너 <input type="range" id="ip-n" min="2" max="60" value="10"> <b id="ip-nv">10</b>개</label></div>
+      <div class="stat-row"><div class="stat"><div class="k">한 쌍이라도 겹칠 확률</div><div class="v" id="ip-p">-</div></div></div>
+    </div>
+    <h3>DNS</h3>
+    <p>컨테이너는 rootfs 안의 <code>/etc/resolv.conf</code>로 이름을 해석합니다. 실행마다 별도 resolver 파일을 준비해 bind하므로 공유 rootfs의 원본 파일은 덮어쓰지 않습니다. bridge 모드에서 호스트의 <code>127.0.0.53</code>을 그대로 쓰면 컨테이너 자신의 loopback을 가리켜 실패합니다. 사용할 upstream resolver를 명시하거나 호스트의 실제 upstream 설정을 확인해야 합니다.</p>
+<pre><code>cat /etc/resolv.conf                     # nameserver 127.0.0.53 이면 컨테이너에서는 실패
+resolvectl status | grep 'DNS Servers'   # 실제 상위 DNS 서버</code></pre>
+    <p>이 장에서 rootfs와 네트워크를 함께 연결합니다. bridge에는 그 namespace에서 도달 가능한 DNS 주소가 필요합니다. 지정한 DNS는 파일 구성에 쓰이며 서버를 자동 실행하는 옵션은 아닙니다. 로컬 DNS·HTTP fixture로 동작을 확인하고, 외부 인터넷 검사는 별도로 표시합니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 정리, 그리고 netlink</h2>
+    <h3>정리할 것과 저절로 사라지는 것</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>자원</th><th>컨테이너가 끝나면</th></tr>
+      <tr><td>컨테이너의 네트워크 네임스페이스</td><td>안의 마지막 프로세스가 끝나면 커널이 지운다</td></tr>
+      <tr><td>veth 쌍</td><td>한쪽 끝(eth0)이 있던 네임스페이스가 사라지면 그 끝이 지워지고, 짝인 호스트 쪽 vethN도 함께 사라진다. 실제로 측정해 보니 myctr가 끝나고 50ms 안에 사라졌다. 네임스페이스 정리는 커널 작업 큐에서 <b>비동기로</b> 일어나므로 끝나자마자 확인하면 잠깐 남아 있을 수 있다</td></tr>
+      <tr><td>브리지 <code>myctr0</code>, iptables 규칙, <code>ip_forward</code></td><td>모든 컨테이너가 공유하므로 남겨 둔다. 지우려면 아래 명령</td></tr>
+    </table></div>
+<pre><code>sudo ip link del myctr0
+sudo iptables -t nat -D POSTROUTING -s 10.88.0.0/24 ! -o myctr0 -j MASQUERADE
+sudo iptables -D FORWARD -i myctr0 -j ACCEPT
+sudo iptables -D FORWARD -o myctr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT</code></pre>
+
+    <h3>ip 명령의 정체: netlink</h3>
+    <p>참조 구현은 편의상 <code>ip</code>와 <code>iptables</code> 명령을 실행합니다. 그런데 <code>ip</code> 자신은 어떻게 커널과 대화할까요? 실제로 추적해 보면 파일도 ioctl도 아닌 <b>netlink 소켓</b>입니다.</p>
+    <div class="widget">
+      <div class="w-title">strace: ip link add vA type veth peer name vB</div>
+      <div class="w-desc"><code>strace -e trace=socket,bind,sendto,sendmsg,recvmsg</code>로 실제로 추적한 출력입니다(strace가 netlink 메시지를 해석해 보여 줍니다. 긴 부분은 <code>...</code>로 줄임). 줄을 눌러 보세요.</div>
+      <div class="lines" id="nl-lines"></div>
+      <div class="stepper-cap explain" id="nl-explain">줄을 눌러 보세요.</div>
+    </div>
+    <p>Docker의 libnetwork, Kubernetes의 CNI 플러그인, runc는 모두 netlink를 직접 말하는 라이브러리를 씁니다. 외부 명령을 실행하는 방식은 느리고(명령마다 프로세스 생성), 에러를 문자열로만 받는다는 단점이 있습니다. Rust에서는 <code>rtnetlink</code> 크레이트가 같은 일을 합니다(도전 과제).</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. 구현 가이드: 네트워크 붙이기</h2>
+    <p>5장 코드에서 출발합니다. 목표 사용법은 <code>myctr run --rootfs ./rootfs [--net none|host|bridge] [--dns 주소] ...</code>, 기본값은 <code>none</code>입니다. 호스트에 <code>iproute2</code>(<code>ip</code>), <code>iptables</code>, <code>util-linux</code>(<code>nsenter</code>)가 있어야 합니다. Ubuntu에는 기본으로 들어 있습니다. nix 기능 플래그는 5장과 같습니다(<code>process,signal,sched,hostname,mount,fs,user</code>).</p>
+
+    <h3>단계 A. CLI</h3>
+    <p>clap의 <code>ValueEnum</code>으로 모드를 받습니다. rootless로 bridge를 요청하면 clone 전에 거절합니다.</p>
+    <details class="deep"><summary>힌트 A</summary><div>
+<pre><code>#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Net {
+    /// 호스트의 네트워크를 그대로 쓴다
+    Host,
+    /// 새 네트워크 네임스페이스, loopback만
+    None,
+    /// 새 네트워크 네임스페이스 + veth + 브리지 + NAT (root 전용)
+    Bridge,
+}
+
+// Run 안에
+/// 네트워크 모드
+#[arg(long, value_enum, default_value = "none")]
+net: Net,
+
+// run() 앞부분
+if rootless &amp;&amp; net == Net::Bridge {
+    bail!("--net bridge는 root로 실행할 때만 쓸 수 있습니다");
+}</code></pre>
+    </div></details>
+
+    <h3>DNS 파일도 실행마다 분리</h3>
+<p><code>--dns ADDRESS</code>를 여러 번 받을 수 있도록 <code>Vec&lt;IpAddr&gt;</code>를 추가합니다. 부모는 clone 전에 전용 임시 resolver 파일을 만들고, 자식은 rootfs의 <code>/etc/resolv.conf</code>에 읽기 전용 bind mount한 뒤 이전 루트를 떼어 냅니다. 자식을 wait로 회수한 다음 부모가 임시 파일을 지웁니다. 공유 rootfs의 기존 resolver 내용은 덮어쓰지 않습니다.</p>
+<p>옵션이 없으면 호스트 resolver를 복사합니다. bridge에서 호스트 resolver가 loopback이면 도달할 수 없으므로 <code>--dns</code>를 요구하고 clone 전에 실패합니다. none 모드는 DNS 설정을 주어도 외부 경로가 생기지 않습니다. 대상 rootfs의 <code>etc/resolv.conf</code>는 일반 파일이어야 합니다.</p>
+<h3>단계 B. 장벽에 네트워크 단계 끼우기</h3>
+    <p>clone 플래그에 <code>CLONE_NEWNET</code>(host 모드가 아닐 때)을 더하고, 5장의 <code>prepared</code> 클로저에서 ID 매핑 뒤, 1바이트를 쓰기 전에 네트워크를 준비합니다.</p>
+<pre><code>let prepared = (|| -&gt; Result&lt;()&gt; {
+    if let Some(cg) = &amp;cgroup { cg.add(child)?; }
+    if let Some(map) = &amp;idmap { map.write(child)?; }
+    // TODO 1: NetnsEnter { child, via_userns: rootless } 를 만들고
+    //         None 이면 lo up, Bridge 면 setup_bridge_net
+    unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }.context("signal 설정 실패")?;
+    write(&amp;sync_wr, &amp;[1]).context("자식 깨우기")?;
+    Ok(())
+})();</code></pre>
+
+    <h3>단계 C. 외부 명령 도우미와 NetnsEnter</h3>
+<pre><code>/// 외부 명령을 실행하고 실패하면 stderr를 에러에 담는다
+fn sh(args: &amp;[&amp;str]) -&gt; Result&lt;()&gt; { todo!() }
+/// 성공 여부만 본다 (규칙이 이미 있는지 확인할 때)
+fn sh_ok(args: &amp;[&amp;str]) -&gt; bool { todo!() }
+
+struct NetnsEnter { child: Pid, via_userns: bool }
+impl NetnsEnter {
+    // TODO 2: nsenter -t &lt;pid&gt; [-U --preserve-credentials] -n &lt;args...&gt;
+    fn run(&amp;self, args: &amp;[&amp;str]) -&gt; Result&lt;()&gt; { todo!() }
+}</code></pre>
+    <details class="deep"><summary>힌트 C: 왜 rootless에서만 -U인가</summary><div>
+      <p>4절 표와 같습니다. 호스트 root는 하위 user 네임스페이스에도 권한이 있어 <code>-n</code>만으로 들어갈 수 있습니다. 일반 사용자는 자식의 user 네임스페이스를 거쳐야 그 안의 권한을 얻습니다. 이때 <code>--preserve-credentials</code>가 없으면 nsenter가 <code>setgroups</code>를 부르다 5장의 <code>deny</code>에 막힙니다.</p>
+    </div></details>
+
+    <h3>단계 D. 브리지와 NAT, veth</h3>
+<pre><code>fn ensure_bridge() -&gt; Result&lt;()&gt; {
+    // TODO 3: ip link show myctr0 이 실패하면 만들고 10.88.0.1/24 부여
+    // TODO 4: ip link set myctr0 up, ip_forward = 1
+    // TODO 5: iptables 규칙 3개. -C 로 확인하고 없을 때만 -A (여러 번 실행해도 중복되지 않게)
+}
+
+fn setup_bridge_net(ns: &amp;NetnsEnter, id: u32) -&gt; Result&lt;()&gt; {
+    // TODO 6: veth{id} &lt;-&gt; ceth{id} 쌍 만들기
+    // TODO 7: 호스트 쪽을 myctr0 에 꽂고 up
+    // TODO 8: ceth{id} 를 자식의 netns 로 (ip link set .. netns &lt;pid&gt;)
+    // TODO 9: ns.run 으로: lo up, ceth{id} → eth0 이름 변경, 주소, up, 기본 경로
+}</code></pre>
+    <details class="deep"><summary>힌트 D: 이름 길이와 순서</summary><div>
+      <p>Linux 인터페이스 이름은 최대 15자입니다(<code>IFNAMSIZ</code> 16, NUL 포함). <code>veth</code> + PID(최대 7자리)는 안전합니다. 컨테이너 쪽은 처음부터 <code>eth0</code>으로 만들 수 없습니다. 호스트에 이미 <code>eth0</code>이 있을 수 있기 때문입니다. 임시 이름으로 만들어 옮긴 뒤, 컨테이너 안에서 이름을 바꿉니다. 이름 변경은 장치가 꺼져 있을 때만 되므로 <code>up</code>보다 먼저 합니다.</p>
+    </div></details>
+
+    <h3>단계 E. 완료 기준</h3>
+<p>검사를 앞 장부터 누적합니다. 실행 가능한 전체 프로젝트는 <a href="examples/ch06/src/main.rs">src/main.rs</a>와 <a href="examples/ch06/Cargo.toml">Cargo.toml</a>에 있고, <a href="examples/README.md">준비·실행 안내</a>와 <a href="examples/ch06/check.sh">check.sh</a>를 함께 제공합니다. 아래 명령은 <code>examples/ch06</code>에서 실행합니다.</p>
+<div class="callout"><span class="title">rootfs를 모드별로 준비하세요</span><code>../rootfs</code>는 root 소유, <code>../rootfs-user</code>는 실행하는 일반 사용자 소유, <code>../rootfs-range</code>는 바깥 UID/GID 100000 소유입니다. <a href="examples/prepare-rootfs.sh">prepare-rootfs.sh</a>가 Alpine과 후속 장의 실험 도구를 설치합니다. rootless 권한 검사용 <code>/root-only</code>는 root 소유·0600인 예외 파일로 만들고 실제 open 실패를 검사합니다.</div>
+<h4>root 검사</h4>
+<p>3장 기본·파일시스템 17개 + 4장 cgroup 14개 + 5장 범위 매핑 8개 + 6장 네트워크 필수 15개입니다. 네트워크의 DNS·HTTP는 로컬 fixture로 필수 검증하고, 외부 인터넷 HTTP 1개는 연결 가능한 환경에서만 별도 실행합니다. cgroup 설정과 통계는 부모의 호스트 경로에서 관측합니다. 컨테이너에 cgroupfs 전체를 노출하지 않습니다.</p>
+<pre><code>cargo build --locked
+sudo env ROOTFS="$PWD/../rootfs" RANGE_ROOTFS="$PWD/../rootfs-range" bash check.sh rootful</code></pre>
+<h4>일반 사용자 검사: 37 / 37</h4>
+<p><code>sudo</code> 없이 실행합니다. 자기 소유의 별도 rootfs를 쓰며, 3장 17개 + 5장 단일 매핑 16개 + 네트워크 4개를 실행합니다. root 전용 cgroup·범위 매핑·bridge 검사는 여기에 합산하지 않습니다.</p>
+<pre><code>ROOTFS="$PWD/../rootfs-user" bash check.sh rootless</code></pre>
+<div class="callout tip" id="runtime-proof"><span class="title">통합본 실제 실행 결과</span>Linux aarch64, Debian 12 기반 전용 privileged 컨테이너, 커널 <code>7.0.12-linuxkit</code>, Rust/Cargo <code>1.86.0</code>, Alpine <code>3.22.2</code>에서 root <b>54 / 54 + 외부 HTTP 1 / 1</b> 및 일반 사용자 <b>37 / 37</b>를 통과했습니다. 일반 사용자 launcher는 UID/GID 1000, <code>CapPrm·CapEff·CapAmb=0</code>입니다. <a href="examples/VALIDATION.md">검사 모듈·소스 해시·실행 기록</a>을 확인할 수 있습니다. x86_64는 실행하지 않았습니다.</div>
+<details class="deep"><summary>참조 구현 (막혔을 때만 여세요)</summary><div>
+<p>5장 전체 구현에 이 장의 기능을 더했습니다. rootfs·새 procfs·최소 /dev와 앞 장의 옵션을 유지합니다. 접힌 코드와 examples의 소스는 같습니다.</p>
+<h4 data-integrated-cargo>Cargo.toml</h4><pre><code>[package]
+name="myctr"
+version="0.1.0"
+edition="2024"
+[dependencies]
+anyhow="1"
+clap={version="4",features=["derive"]}
+nix={version="0.29",features=["process", "signal", "sched", "hostname", "mount", "fs", "user"]}</code></pre>
+<h4>src/main.rs</h4>
+<pre><code>use std::ffi::CString;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::net::IpAddr;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::symlink;
+use std::os::fd::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
+use std::process::Command as Cmd;
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand, ValueEnum};
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::libc;
+use nix::mount::{MntFlags, MsFlags, mount, umount2};
+use nix::unistd::{chdir, pivot_root};
+use nix::sched::{CloneFlags, clone};
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{
+    ForkResult, Gid, Pid, Uid, close, execvp, fork, pipe2, read, setgid, setgroups, sethostname, setuid, write,
+};
+
+const OLD_ROOT: &amp;str = ".oldroot";
+const DEVICES: [&amp;str; 6] = ["null", "zero", "full", "random", "urandom", "tty"];
+
+const STACK_SIZE: usize = 1024 * 1024;
+const CGROUP_ROOT: &amp;str = "/sys/fs/cgroup";
+/// myctr가 만드는 모든 컨테이너 cgroup의 부모
+const CGROUP_PARENT: &amp;str = "myctr";
+const CPU_PERIOD_US: u64 = 100_000;
+/// --userns-base 로 매핑할 ID 개수
+const USERNS_RANGE: u32 = 65536;
+/// 모든 컨테이너가 붙는 브리지와 그 대역
+const BRIDGE: &amp;str = "myctr0";
+const SUBNET: &amp;str = "10.88.0.0/24";
+const GATEWAY: &amp;str = "10.88.0.1";
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Net {
+    /// 호스트의 네트워크를 그대로 쓴다
+    Host,
+    /// 새 네트워크 네임스페이스, loopback만
+    None,
+    /// 새 네트워크 네임스페이스 + veth + 브리지 + NAT (root 전용)
+    Bridge,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 새 네임스페이스와 cgroup 안에서 실행한다
+    Run {
+        /// 컨테이너의 루트가 될 디렉터리
+        #[arg(long)]
+        rootfs: PathBuf,
+        /// 컨테이너 안에서 보일 hostname
+        #[arg(long, default_value = "myctr")]
+        hostname: String,
+        /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+        #[arg(long)]
+        init: bool,
+        /// 메모리 상한 (예: 64M, 1G, 바이트 수)
+        #[arg(long, value_parser = parse_bytes)]
+        memory: Option&lt;u64&gt;,
+        /// CPU 상한 (코어 수, 예: 0.5)
+        #[arg(long)]
+        cpus: Option&lt;f64&gt;,
+        /// 최대 프로세스(스레드) 수
+        #[arg(long)]
+        pids: Option&lt;u64&gt;,
+        /// (root 전용) 컨테이너의 UID/GID 0..65535 를 이 호스트 ID부터 매핑한다
+        #[arg(long)]
+        userns_base: Option&lt;u32&gt;,
+        /// 네트워크 모드
+        #[arg(long, value_enum, default_value = "none")]
+        net: Net,
+        /// DNS 서버 주소 (반복 가능). bridge에서 호스트 resolver가 loopback이면 필수
+        #[arg(long)]
+        dns: Vec&lt;IpAddr&gt;,
+        /// 실행할 프로그램과 인자
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+struct Limits {
+    memory: Option&lt;u64&gt;,
+    cpus: Option&lt;f64&gt;,
+    pids: Option&lt;u64&gt;,
+}
+
+impl Limits {
+    fn any(&amp;self) -&gt; bool {
+        self.memory.is_some() || self.cpus.is_some() || self.pids.is_some()
+    }
+}
+
+/// clone된 자식에게 넘길 설정
+struct Config {
+    rootfs: PathBuf,
+    resolver: PathBuf,
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    /// 부모가 준비를 마쳤다고 알려 주는 파이프 (읽는 쪽, 쓰는 쪽)
+    sync: (RawFd, RawFd),
+    userns: bool,
+    clear_groups: bool,
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { rootfs, hostname, init, memory, cpus, pids, userns_base, net, dns, cmd } =&gt; {
+            let argv = cmd
+                .iter()
+                .map(|s| CString::new(s.as_bytes()))
+                .collect::&lt;Result&lt;_, _&gt;&gt;()
+                .context("인자에 NUL 바이트가 있습니다")?;
+            let rootfs = fs::canonicalize(&amp;rootfs).context("rootfs 경로 확인")?;
+            validate_rootfs(&amp;rootfs)?;
+            let code = run(rootfs, hostname, init, argv, &amp;Limits { memory, cpus, pids }, userns_base, net, dns)?;
+            std::process::exit(code);
+        }
+    }
+}
+
+/// "64M", "1G", "512K", "1048576" 을 바이트 수로
+fn parse_bytes(s: &amp;str) -&gt; Result&lt;u64, String&gt; {
+    let (num, mul) = match s.chars().last() {
+        Some('K' | 'k') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 10),
+        Some('M' | 'm') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 20),
+        Some('G' | 'g') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 30),
+        _ =&gt; (s, 1),
+    };
+    num.parse::&lt;u64&gt;().map(|n| n * mul).map_err(|e| format!("{s}: {e}"))
+}
+
+fn run(rootfs: PathBuf, 
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    limits: &amp;Limits,
+    userns_base: Option&lt;u32&gt;,
+    net: Net,
+    dns: Vec&lt;IpAddr&gt;,
+) -&gt; Result&lt;i32&gt; {
+    let rootless = !Uid::effective().is_root();
+    let idmap = match (rootless, userns_base) {
+        (true, Some(_)) =&gt; bail!("--userns-base는 root로 실행할 때만 쓸 수 있습니다"),
+        (true, None) =&gt; Some(IdMap::rootless()),
+        (false, Some(base)) =&gt; {
+            if base.checked_add(USERNS_RANGE - 1).is_none_or(|last| last == u32::MAX) {
+                bail!("--userns-base는 0..4294901759 범위여야 합니다 (65536개 ID, UID/GID -1 제외)");
+            }
+            Some(IdMap::range(base))
+        },
+        (false, None) =&gt; None,
+    };
+    if rootless &amp;&amp; net == Net::Bridge {
+        // veth·브리지·iptables는 호스트(최상위) 네트워크 네임스페이스를 바꾸는 일이다
+        bail!("--net bridge는 root로 실행할 때만 쓸 수 있습니다");
+    }
+    let resolver = Resolver::prepare(&amp;rootfs, net, &amp;dns)?;
+    let cgroup = if rootless {
+        if limits.any() {
+            bail!("rootless 모드에서는 --memory/--cpus/--pids를 쓸 수 없습니다 (cgroup 위임이 필요합니다)");
+        }
+        None
+    } else {
+        Some(Cgroup::create(&amp;format!("ctr-{}", std::process::id()), limits)?)
+    };
+
+    // O_CLOEXEC: 사용자 프로그램으로 새지 않게
+    let (sync_rd, sync_wr) = pipe2(OFlag::O_CLOEXEC).context("pipe")?;
+    let cfg = Config { rootfs, resolver: resolver.path.clone(),
+        hostname, init, argv,
+        sync: (sync_rd.as_raw_fd(), sync_wr.as_raw_fd()),
+        userns: idmap.is_some(),
+        // 특권 range 모드에서는 상속한 호스트 보조 그룹을 남기지 않는다.
+        // rootless는 setgroups=deny이므로 변경할 수 없다.
+        clear_groups: idmap.as_ref().is_some_and(|map| !map.deny_setgroups),
+    };
+
+    let mut flags = CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
+    if idmap.is_some() {
+        flags |= CloneFlags::CLONE_NEWUSER;
+    }
+    if net != Net::Host {
+        flags |= CloneFlags::CLONE_NEWNET;
+    }
+    let mut stack = vec![0u8; STACK_SIZE];
+    let cb = Box::new(|| container_main(&amp;cfg));
+    let child = unsafe { clone(cb, &amp;mut stack, flags, Some(Signal::SIGCHLD as i32)) }
+        .context("clone 실패")?;
+    drop(sync_rd);
+
+    // 준비 실패 시 먼저 파이프를 닫는다. 자식은 EOF를 받고 종료하며,
+    // 부모는 반드시 wait로 회수한 뒤 cgroup을 정리한다.
+    let mut veth_guard = None;
+    let prepared = (|| -&gt; Result&lt;()&gt; {
+        if let Some(cg) = &amp;cgroup {
+            cg.add(child)?;
+        }
+        if let Some(map) = &amp;idmap {
+            map.write(child)?;
+        }
+        // 매핑까지 끝난 뒤에 네트워크. 자식은 아직 파이프에서 기다린다
+        let ns = NetnsEnter { child, via_userns: rootless };
+        match net {
+            Net::Host =&gt; {}
+            Net::None =&gt; ns.run(&amp;["ip", "link", "set", "lo", "up"])?,
+            Net::Bridge =&gt; { veth_guard = Some(setup_bridge_net(&amp;ns, std::process::id())?); },
+        }
+        unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }
+            .context("signal 설정 실패")?;
+        write(&amp;sync_wr, &amp;[1]).context("자식 깨우기")?;
+        Ok(())
+    })();
+    drop(sync_wr);
+    if let Err(error) = prepared {
+        // EOF로 종료한 PID 1을 회수하기 전에 Cgroup::drop이 실행되면
+        // cgroup.procs가 비어 있지 않아 정리가 실패할 수 있다.
+        wait_exit_code(child).context("준비 실패한 자식 회수")?;
+        return Err(error);
+    }
+    let code = wait_exit_code(child)?;
+    if cgroup.as_ref().is_some_and(|cg| cg.oom_kills() &gt; 0) {
+        eprintln!("myctr: 메모리 상한을 넘어 OOM killer가 프로세스를 종료했습니다");
+    }
+    Ok(code)
+}
+
+fn wait_exit_code(child: Pid) -&gt; Result&lt;i32&gt; {
+    loop {
+        match waitpid(child, None) {
+            Ok(WaitStatus::Exited(_, code)) =&gt; return Ok(code),
+            Ok(WaitStatus::Signaled(_, sig, _)) =&gt; return Ok(128 + sig as i32),
+            Ok(other) =&gt; bail!("예상하지 못한 상태: {other:?}"),
+            Err(Errno::EINTR) =&gt; continue,
+            Err(error) =&gt; return Err(error).context("waitpid 실패"),
+        }
+    }
+}
+
+/// 외부 명령을 실행하고 실패하면 stderr를 에러에 담는다
+fn sh(args: &amp;[&amp;str]) -&gt; Result&lt;()&gt; {
+    let out = Cmd::new(args[0])
+        .args(&amp;args[1..])
+        .output()
+        .with_context(|| format!("{} 실행", args[0]))?;
+    if !out.status.success() {
+        bail!("{}: {}", args.join(" "), String::from_utf8_lossy(&amp;out.stderr).trim());
+    }
+    Ok(())
+}
+
+/// 성공 여부만 본다 (규칙이 이미 있는지 확인할 때)
+fn sh_ok(args: &amp;[&amp;str]) -&gt; bool {
+    Cmd::new(args[0]).args(&amp;args[1..]).output().is_ok_and(|o| o.status.success())
+}
+
+/// 자식의 네트워크 네임스페이스 안에서 명령을 실행하는 방법
+struct NetnsEnter {
+    child: Pid,
+    /// rootless: 호스트에서 권한이 없으므로 자식의 user 네임스페이스를 거쳐 들어간다
+    via_userns: bool,
+}
+
+impl NetnsEnter {
+    fn run(&amp;self, args: &amp;[&amp;str]) -&gt; Result&lt;()&gt; {
+        let target = self.child.to_string();
+        let mut full = vec!["nsenter", "-t", target.as_str()];
+        if self.via_userns {
+            // 5장의 setgroups=deny 때문에 nsenter가 자격 증명을 바꾸지 않게 한다
+            full.extend_from_slice(&amp;["-U", "--preserve-credentials"]);
+        }
+        full.push("-n");
+        full.extend_from_slice(args);
+        sh(&amp;full)
+    }
+}
+
+/// 브리지, 포워딩, NAT. 모든 컨테이너가 공유하므로 없을 때만 만든다
+fn ensure_bridge() -&gt; Result&lt;()&gt; {
+    if !sh_ok(&amp;["ip", "link", "show", BRIDGE]) {
+        sh(&amp;["ip", "link", "add", BRIDGE, "type", "bridge"])?;
+        sh(&amp;["ip", "addr", "add", &amp;format!("{GATEWAY}/24"), "dev", BRIDGE])?;
+    }
+    sh(&amp;["ip", "link", "set", BRIDGE, "up"])?;
+    fs::write("/proc/sys/net/ipv4/ip_forward", "1").context("ip_forward 켜기")?;
+    let rules: [&amp;[&amp;str]; 3] = [
+        &amp;["-t", "nat", "POSTROUTING", "-s", SUBNET, "!", "-o", BRIDGE, "-j", "MASQUERADE"],
+        &amp;["-t", "filter", "FORWARD", "-i", BRIDGE, "-j", "ACCEPT"],
+        &amp;["-t", "filter", "FORWARD", "-o", BRIDGE, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    ];
+    for rule in rules {
+        // iptables -t &lt;표&gt; -C &lt;체인&gt; ... 로 있는지 보고, 없으면 -A
+        let (table, rest) = rule.split_at(2);
+        let mut check = vec!["iptables"];
+        check.extend_from_slice(table);
+        check.push("-C");
+        check.extend_from_slice(rest);
+        if !sh_ok(&amp;check) {
+            check[3] = "-A";
+            sh(&amp;check)?;
+        }
+    }
+    Ok(())
+}
+
+struct VethGuard { name: String }
+impl Drop for VethGuard {
+    fn drop(&amp;mut self) { let _ = sh(&amp;["ip", "link", "del", &amp;self.name]); }
+}
+
+fn setup_bridge_net(ns: &amp;NetnsEnter, id: u32) -&gt; Result&lt;VethGuard&gt; {
+    ensure_bridge()?;
+    // 인터페이스 이름은 15자 제한. 컨테이너 쪽은 옮긴 뒤 eth0으로 바꾼다
+    let host_if = format!("veth{id}");
+    let peer_if = format!("ceth{id}");
+    // 간단한 주소 배정: 10.88.0.2 ~ 10.88.0.254
+    let ip = format!("10.88.0.{}/24", 2 + id % 253);
+
+    sh(&amp;["ip", "link", "add", &amp;host_if, "type", "veth", "peer", "name", &amp;peer_if])?;
+    let guard = VethGuard { name: host_if.clone() };
+    sh(&amp;["ip", "link", "set", &amp;host_if, "master", BRIDGE, "up"])?;
+    sh(&amp;["ip", "link", "set", &amp;peer_if, "netns", &amp;ns.child.to_string()])?;
+
+    ns.run(&amp;["ip", "link", "set", "lo", "up"])?;
+    ns.run(&amp;["ip", "link", "set", &amp;peer_if, "name", "eth0"])?;
+    ns.run(&amp;["ip", "addr", "add", &amp;ip, "dev", "eth0"])?;
+    ns.run(&amp;["ip", "link", "set", "eth0", "up"])?;
+    ns.run(&amp;["ip", "route", "add", "default", "via", GATEWAY])?;
+    Ok(guard)
+}
+
+/// 실행마다 별도 resolver 파일. 자식을 회수한 뒤 삭제된다.
+struct Resolver { path: PathBuf }
+impl Resolver {
+    fn prepare(rootfs: &amp;Path, net: Net, dns: &amp;[IpAddr]) -&gt; Result&lt;Self&gt; {
+        let content = if dns.is_empty() {
+            let text = fs::read_to_string("/etc/resolv.conf").context("호스트 resolver 읽기")?;
+            let loopback = text.lines().any(|line| {
+                let mut words = line.split_whitespace();
+                words.next() == Some("nameserver") &amp;&amp; words.next()
+                    .and_then(|v| v.parse::&lt;IpAddr&gt;().ok()).is_some_and(|ip| ip.is_loopback())
+            });
+            if net == Net::Bridge &amp;&amp; loopback {
+                bail!("호스트 resolver가 loopback입니다. bridge에서 접근 가능한 --dns ADDRESS를 지정하세요");
+            }
+            text
+        } else {
+            dns.iter().map(|ip| format!("nameserver {ip}\n")).collect()
+        };
+        let target = rootfs.join("etc/resolv.conf");
+        match fs::symlink_metadata(&amp;target) {
+            Ok(meta) if !meta.is_file() =&gt; bail!("rootfs/etc/resolv.conf는 일반 파일이어야 합니다"),
+            Ok(_) =&gt; {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =&gt; {
+                OpenOptions::new().write(true).create_new(true).open(&amp;target)
+                    .context("resolv.conf 마운트 대상 만들기")?;
+            },
+            Err(error) =&gt; return Err(error).context("resolv.conf 대상 확인"),
+        }
+        let path = std::env::temp_dir().join(format!("myctr-resolv-{}", std::process::id()));
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&amp;path)
+            .context("전용 resolver 파일 만들기")?;
+        let resolver = Self { path };
+        file.write_all(content.as_bytes()).context("resolver 쓰기")?;
+        Ok(resolver)
+    }
+}
+impl Drop for Resolver {
+    fn drop(&amp;mut self) { let _ = fs::remove_file(&amp;self.path); }
+}
+
+/// user 네임스페이스의 UID/GID 매핑
+struct IdMap {
+    uid_map: String,
+    gid_map: String,
+    /// 비특권 프로세스가 gid_map을 쓰려면 먼저 setgroups를 막아야 한다
+    deny_setgroups: bool,
+}
+
+impl IdMap {
+    /// 컨테이너 root(0) 하나를 나 자신에게
+    fn rootless() -&gt; Self {
+        IdMap {
+            uid_map: format!("0 {} 1", Uid::effective()),
+            gid_map: format!("0 {} 1", Gid::effective()),
+            deny_setgroups: true,
+        }
+    }
+
+    /// 컨테이너의 0..65535 를 호스트의 base..base+65535 로
+    fn range(base: u32) -&gt; Self {
+        IdMap {
+            uid_map: format!("0 {base} {USERNS_RANGE}"),
+            gid_map: format!("0 {base} {USERNS_RANGE}"),
+            deny_setgroups: false,
+        }
+    }
+
+    fn write(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        if self.deny_setgroups {
+            fs::write(proc.join("setgroups"), "deny").context("setgroups 막기")?;
+        }
+        fs::write(proc.join("uid_map"), &amp;self.uid_map)
+            .with_context(|| format!("uid_map 쓰기 ({})", self.uid_map))?;
+        fs::write(proc.join("gid_map"), &amp;self.gid_map)
+            .with_context(|| format!("gid_map 쓰기 ({})", self.gid_map))?;
+        Ok(())
+    }
+}
+
+struct Cgroup {
+    path: PathBuf,
+}
+
+impl Cgroup {
+    fn create(name: &amp;str, limits: &amp;Limits) -&gt; Result&lt;Self&gt; {
+        let parent = Path::new(CGROUP_ROOT).join(CGROUP_PARENT);
+        fs::create_dir_all(&amp;parent).with_context(|| format!("{} 만들기", parent.display()))?;
+        // 부모에서 컨트롤러를 켜야 자식 cgroup에 memory.max 같은 파일이 생긴다
+        fs::write(parent.join("cgroup.subtree_control"), "+memory +cpu +pids")
+            .context("컨트롤러 활성화 (상위 cgroup의 cgroup.subtree_control에 memory cpu pids가 켜져 있나요?)")?;
+
+        let path = parent.join(name);
+        fs::create_dir(&amp;path).with_context(|| format!("{} 만들기", path.display()))?;
+        let cg = Cgroup { path };
+        if let Some(bytes) = limits.memory {
+            cg.write("memory.max", &amp;bytes.to_string())?;
+            // 스왑으로 도망가지 못하게. 스왑 계정이 꺼진 커널에는 파일이 없다
+            if cg.path.join("memory.swap.max").exists() {
+                cg.write("memory.swap.max", "0")?;
+            }
+        }
+        if let Some(cpus) = limits.cpus {
+            let quota = (cpus * CPU_PERIOD_US as f64) as u64;
+            cg.write("cpu.max", &amp;format!("{quota} {CPU_PERIOD_US}"))?;
+        }
+        if let Some(n) = limits.pids {
+            cg.write("pids.max", &amp;n.to_string())?;
+        }
+        Ok(cg)
+    }
+
+    fn write(&amp;self, file: &amp;str, value: &amp;str) -&gt; Result&lt;()&gt; {
+        fs::write(self.path.join(file), value)
+            .with_context(|| format!("{}/{file} 에 {value} 쓰기", self.path.display()))
+    }
+
+    /// 프로세스를 이 cgroup으로 옮긴다 (호스트 PID)
+    fn add(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        self.write("cgroup.procs", &amp;pid.to_string())
+    }
+
+    /// memory.events 의 oom_kill 카운터
+    fn oom_kills(&amp;self) -&gt; u64 {
+        fs::read_to_string(self.path.join("memory.events"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("oom_kill ").and_then(|n| n.parse().ok()))
+            })
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for Cgroup {
+    fn drop(&amp;mut self) {
+        // 프로세스가 남아 있으면 EBUSY. PID 1이 끝나면 네임스페이스 전체가 정리되므로 비어 있다
+        if let Err(e) = fs::remove_dir(&amp;self.path) {
+            eprintln!("myctr: cgroup 정리 실패 {}: {e}", self.path.display());
+        }
+    }
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다.
+fn container_main(cfg: &amp;Config) -&gt; isize {
+    // 부모가 cgroup, ID 매핑, 네트워크를 끝낼 때까지 기다린다.
+    // 쓰는 쪽을 닫아 두어야 부모가 죽었을 때 read가 EOF(0)로 깨어난다
+    let _ = close(cfg.sync.1);
+    let mut buf = [0u8; 1];
+    loop {
+        match read(cfg.sync.0, &amp;mut buf) {
+            Ok(1) =&gt; break,
+            Err(Errno::EINTR) =&gt; continue,
+            _ =&gt; {
+                eprintln!("myctr: 부모가 준비를 마치지 못했습니다");
+                return 1;
+            }
+        }
+    }
+    let _ = close(cfg.sync.0);
+
+    if let Err(e) = setup(cfg) {
+        eprintln!("myctr: {e:#}");
+        return 1;
+    }
+    if cfg.init { mini_init(&amp;cfg.argv) } else { exec(&amp;cfg.argv) }
+}
+
+/// fork와 exec 사이에서 컨테이너의 모양을 만든다
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    if cfg.userns {
+        // 매핑은 ID의 대응표만 만든다. 특히 range 모드에서 host UID 0은
+        // 매핑 밖이므로, 새 namespace의 ID 0으로 자격 증명을 옮긴다.
+        if cfg.clear_groups {
+            setgroups(&amp;[]).context("보조 그룹 비우기")?;
+        }
+        setgid(Gid::from_raw(0)).context("컨테이너 GID 0으로 전환")?;
+        setuid(Uid::from_raw(0)).context("컨테이너 UID 0으로 전환")?;
+    }
+    sethostname(&amp;cfg.hostname).context("sethostname")?;
+    setup_rootfs(&amp;cfg.rootfs, &amp;cfg.resolver)?;
+    Ok(())
+}
+
+/// 실습 중 호스트 /를 rootfs로 지정하거나 준비를 빠뜨리는 실수를 막는다.
+/// 신뢰하는 Alpine 입력을 전제로 하며 악성 rootfs 검증기는 아니다.
+fn validate_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    if rootfs == Path::new("/") || !rootfs.is_dir() {
+        bail!("rootfs는 호스트 /가 아닌 디렉터리여야 합니다");
+    }
+    if !fs::symlink_metadata(rootfs.join("bin/sh")).is_ok_and(|meta| meta.is_file() || meta.file_type().is_symlink())
+        || !rootfs.join("proc").is_dir() || !rootfs.join("dev").is_dir() {
+        bail!("rootfs에 bin/sh와 proc·dev 디렉터리를 준비하세요");
+    }
+    Ok(())
+}
+
+fn setup_rootfs(rootfs: &amp;Path, resolver: &amp;Path) -&gt; Result&lt;()&gt; {
+    // 1. 이후의 마운트가 호스트로 전파되지 않도록 모든 마운트를 private으로
+    mount(None::&lt;&amp;str&gt;, "/", None::&lt;&amp;str&gt;, MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::&lt;&amp;str&gt;)
+        .context("/ 를 rprivate으로 바꾸기")?;
+
+    // 2. pivot_root의 new_root는 마운트 지점이어야 하므로 자기 자신에게 bind
+    mount(Some(rootfs), rootfs, None::&lt;&amp;str&gt;, MsFlags::MS_BIND | MsFlags::MS_REC, None::&lt;&amp;str&gt;)
+        .context("rootfs bind mount")?;
+
+    // 3. 루트를 바꾼다. 이전 루트는 /.oldroot 에 걸린다
+    let old_root = rootfs.join(OLD_ROOT);
+    fs::create_dir_all(&amp;old_root).context(".oldroot 만들기")?;
+    pivot_root(rootfs, &amp;old_root).context("pivot_root")?;
+    chdir("/").context("chdir /")?;
+
+    // 4. 이 PID 네임스페이스 기준의 procfs
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None::&lt;&amp;str&gt;,
+    )
+    .context("/proc 마운트")?;
+
+    // 5. 최소한의 /dev. 장치 파일은 아직 붙어 있는 이전 루트에서 bind로 빌려 온다
+    setup_dev().context("/dev 구성")?;
+
+    // 이 실행 전용 DNS 파일을 붙인다. 공유 rootfs의 기존 내용은 덮어쓰지 않는다.
+    let source = format!("/{OLD_ROOT}{}", resolver.display());
+    mount(Some(source.as_str()), "/etc/resolv.conf", None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+        .context("전용 resolv.conf bind")?;
+    mount(None::&lt;&amp;str&gt;, "/etc/resolv.conf", None::&lt;&amp;str&gt;,
+          MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY, None::&lt;&amp;str&gt;)
+        .context("resolv.conf 읽기 전용")?;
+
+    // 6. 이전 루트를 떼어 내고 흔적을 지운다
+    let old = format!("/{OLD_ROOT}");
+    umount2(old.as_str(), MntFlags::MNT_DETACH).context("이전 루트 분리")?;
+    fs::remove_dir(&amp;old).context(".oldroot 지우기")?;
+    Ok(())
+}
+
+fn setup_dev() -&gt; Result&lt;()&gt; {
+    mount(
+        Some("tmpfs"),
+        "/dev",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+        Some("mode=755,size=65536k"),
+    )?;
+    for dev in DEVICES {
+        let target = format!("/dev/{dev}");
+        File::create(&amp;target).with_context(|| format!("{target} 만들기"))?;
+        let source = format!("/{OLD_ROOT}/dev/{dev}");
+        mount(Some(source.as_str()), target.as_str(), None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+            .with_context(|| format!("{target} bind"))?;
+    }
+    for (link, to) in [
+        ("/dev/fd", "/proc/self/fd"),
+        ("/dev/stdin", "/proc/self/fd/0"),
+        ("/dev/stdout", "/proc/self/fd/1"),
+        ("/dev/stderr", "/proc/self/fd/2"),
+    ] {
+        symlink(to, link).with_context(|| format!("{link} 링크"))?;
+    }
+    Ok(())
+}
+
+/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) } {
+        eprintln!("myctr: SIGPIPE 복원 실패: {e}");
+        return 1;
+    }
+    let err = execvp(&amp;argv[0], argv).unwrap_err();
+    eprintln!("myctr: {}: {err}", argv[0].to_string_lossy());
+    127
+}
+
+/// PID 1로 남아 명령을 PID 2로 띄우고, 입양된 고아까지 거두다가
+/// 명령이 끝나면 그 종료 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    let main_child = match unsafe { fork() } {
+        Ok(ForkResult::Child) =&gt; unsafe { libc::_exit(exec(argv) as i32) },
+        Ok(ForkResult::Parent { child }) =&gt; child,
+        Err(e) =&gt; {
+            eprintln!("myctr-init: fork: {e}");
+            return 1;
+        }
+    };
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, code)) if pid == main_child =&gt; return code as isize,
+            Ok(WaitStatus::Signaled(pid, sig, _)) if pid == main_child =&gt; return 128 + sig as isize,
+            Ok(_) =&gt; continue,
+            Err(Errno::EINTR) =&gt; continue,
+            Err(e) =&gt; {
+                eprintln!("myctr-init: waitpid: {e}");
+                return 1;
+            }
+        }
+    }
+}</code></pre>
+    </div></details>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>네트워크 네임스페이스는 장치, 주소, 경로, 방화벽, 포트 공간을 격리하며 <b>빈 스택</b>(꺼진 lo)에서 시작합니다.</li>
+    <li>veth 쌍은 두 네임스페이스를 잇는 가상 케이블이고, 브리지는 여러 veth를 묶는 가상 스위치입니다. 브리지의 IP가 컨테이너들의 게이트웨이가 됩니다.</li>
+    <li>호스트와 컨테이너 양쪽을 꾸밀 수 있는 것은 부모입니다. 5장의 파이프 장벽에 네트워크 단계를 더해, 자식은 매핑과 네트워크가 끝난 뒤 rootfs를 준비하고 exec합니다.</li>
+    <li>새 net ns는 함께 만든 user ns의 소유입니다. 호스트 root는 <code>nsenter -n</code>으로 들어갈 수 있고, rootless 사용자는 <code>-U --preserve-credentials</code>로 자기 user ns를 거쳐야 합니다. 호스트 쪽 장치를 만들 수 없으므로 rootless bridge는 불가능합니다.</li>
+    <li>인터넷으로 나가려면 ip_forward, FORWARD 허용, MASQUERADE가 필요합니다. conntrack이 원래 방향과 응답 방향을 기억해 응답을 컨테이너로 되돌립니다.</li>
+    <li>veth는 네트워크 네임스페이스와 함께 (비동기로) 사라지고, 브리지와 iptables 규칙은 공유 자원이라 남습니다.</li>
+    <li><code>ip</code> 명령은 netlink 소켓(<code>NETLINK_ROUTE</code>)으로 커널과 대화합니다. 실제 런타임은 netlink를 직접 씁니다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q"><code>CLONE_NEWNET</code>으로 만든 직후의 네트워크 네임스페이스에 있는 것은?</div>
+    <button class="opt">호스트 인터페이스의 복사본</button>
+    <button class="opt">꺼진 loopback 하나 (커널에 따라 꺼진 기본 터널 장치들)</button>
+    <button class="opt">eth0과 기본 경로</button>
+    <button class="opt">아무것도 없다. loopback도 없다</button>
+    <div class="explain">네트워크 네임스페이스는 빈 스택에서 시작합니다. lo는 있지만 꺼져 있어서, none 모드에서도 <code>ip link set lo up</code>을 해 줘야 127.0.0.1을 쓸 수 있습니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">자식이 파이프의 쓰는 쪽을 닫지 않았다. 부모가 네트워크 설정 중 에러로 종료하면?</div>
+    <button class="opt">자식의 read가 즉시 EOF를 받는다</button>
+    <button class="opt">자식의 read가 EPIPE 에러를 받는다</button>
+    <button class="opt">커널이 자식에게 SIGPIPE를 보낸다</button>
+    <button class="opt">자식이 자기가 가진 쓰는 쪽 때문에 EOF를 받지 못하고 영원히 잠든다</button>
+    <div class="explain">파이프의 read는 쓰는 쪽 fd가 <b>모두</b> 닫혀야 EOF를 받습니다. clone으로 복사된 자식 자신의 쓰는 쪽이 열려 있으면 그 조건이 영원히 충족되지 않습니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">MASQUERADE 규칙만 지우면 어떤 통신이 끊기나?</div>
+    <button class="opt">컨테이너에서 인터넷으로 나가는 통신 (응답이 돌아오지 못함)</button>
+    <button class="opt">같은 브리지의 컨테이너끼리 통신</button>
+    <button class="opt">호스트에서 컨테이너로 가는 통신</button>
+    <button class="opt">컨테이너 안의 loopback 통신</button>
+    <div class="explain">MASQUERADE는 사설 주소(10.88.0.x)를 호스트 주소로 바꿔 줍니다. 이 규칙이 없으면 패킷은 나가지만 바깥은 10.88.0.x로 응답할 방법이 없습니다. 같은 브리지 안이나 호스트와의 통신은 NAT를 거치지 않으므로 영향이 없습니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">conntrack 항목 <code>src=10.88.0.62 dst=1.1.1.1 ... src=1.1.1.1 dst=172.17.0.3</code>에서 172.17.0.3은 무엇인가?</div>
+    <button class="opt">컨테이너의 두 번째 IP</button>
+    <button class="opt">브리지 myctr0의 IP</button>
+    <button class="opt">호스트의 바깥쪽 인터페이스 주소. 응답은 여기로 돌아온 뒤 컨테이너로 되돌려진다</button>
+    <button class="opt">1.1.1.1의 게이트웨이</button>
+    <div class="explain">응답 방향 튜플의 목적지가 MASQUERADE가 바꿔 쓴 주소입니다. 바깥은 호스트(172.17.0.3)와 대화한다고 믿고, 커널은 이 항목으로 응답을 10.88.0.62에 되돌립니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">통합 구현은 호스트 resolv.conf에 127.0.0.53이 있으면 bridge 시작 전에 --dns를 요구합니다. 이유는?</div>
+    <button class="opt">MASQUERADE가 UDP를 지원하지 않아서</button>
+    <button class="opt">호스트의 resolv.conf에 있는 127.0.0.53이 컨테이너 네임스페이스에서는 자기 loopback을 가리켜서</button>
+    <button class="opt">컨테이너에 hostname이 box로 설정되어서</button>
+    <button class="opt">FORWARD 규칙이 53번 포트를 막아서</button>
+    <div class="explain">127.0.0.53은 호스트 네트워크 네임스페이스의 loopback에서만 의미가 있습니다. 컨테이너의 loopback에는 리졸버가 없습니다. 통합 구현은 이를 clone 전에 감지해 오류로 알립니다. bridge에서 도달 가능한 서버를 <code>--dns ADDRESS</code>로 지정하세요.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q"><code>ip link add</code>를 strace하면 보이는, 커널과 대화하는 통로는?</div>
+    <button class="opt">/sys/class/net 파일 쓰기</button>
+    <button class="opt">ioctl(SIOCSIFFLAGS)</button>
+    <button class="opt">/proc/net/dev 쓰기</button>
+    <button class="opt">socket(AF_NETLINK, ..., NETLINK_ROUTE)로 연 소켓에 sendmsg</button>
+    <div class="explain">iproute2는 RTM_NEWLINK 같은 rtnetlink 메시지를 netlink 소켓으로 보내고, 응답(NLMSG_ERROR, error=0이면 성공)을 recvmsg로 받습니다. 예전의 ifconfig는 ioctl을 썼습니다.</div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">일반 사용자로 <code>myctr run --rootfs ./rootfs-user sleep 100</code>(rootless, none)을 띄웠다. 같은 사용자가 <code>nsenter -t &lt;pid&gt; -n</code>으로 그 네트워크 네임스페이스에 들어가려 하면?</div>
+    <button class="opt">성공한다. 자기가 만든 프로세스이기 때문</button>
+    <button class="opt">성공하지만 읽기만 할 수 있다</button>
+    <button class="opt">EPERM. 그 net ns는 자식의 user ns 소유라, 그 user ns를 거쳐(-U) 들어가야 권한이 생긴다</button>
+    <button class="opt">ENOENT. rootless 컨테이너에는 net ns가 없다</button>
+    <div class="explain">실제 결과는 <code>reassociate to namespace 'ns/net' failed: Operation not permitted</code>였습니다. 호스트(최상위 user ns)에서는 권한이 없고, 자기가 만든 user ns 안에서만 권한이 있습니다. 5장의 <code>setgroups=deny</code> 때문에 <code>--preserve-credentials</code>도 함께 필요합니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>네트워크 완성.</b> 9절 단계 A~E를 구현하고 <code>bash check.sh rootful</code>를 통과시킨 뒤 <code>git tag ch06</code>. 기대: root 필수 <code>54 / 54</code>, rootless <code>37 / 37</code>. 외부 HTTP 1개는 별도 선택 검사.</li>
+    <li><b>컨테이너 두 개.</b> 아래 bridge 예제는 호스트 resolver가 컨테이너에서 도달 가능한 환경을 전제로 합니다. loopback resolver 환경이면 접근 가능한 DNS 주소를 <code>--dns ADDRESS</code>로 함께 지정하세요.  터미널 1에서 <code>sudo ./target/debug/myctr run --rootfs ./rootfs --net bridge --hostname web python3 -m http.server 8000</code>. 터미널 2에서 <code>sudo nsenter -t $(pgrep -x python3) -n ip -4 -br addr show eth0</code>로 주소를 확인한 뒤, <code>sudo ./target/debug/myctr run --rootfs ./rootfs --net bridge curl -s -o /dev/null -w '%{http_code}\n' http://&lt;주소&gt;:8000/</code>. 기대: <code>200</code>. 이어서 <code>bridge fdb show br myctr0</code>로 브리지가 학습한 MAC을 확인하세요.</li>
+    <li><b>규칙 하나씩 빼 보기.</b> MASQUERADE 규칙을 <code>-D</code>로 지우고 bridge 모드에서 <code>curl http://1.1.1.1</code>이 어떻게 되는지(기대: 시간 초과), <code>tcpdump -ni eth0 host 1.1.1.1</code>(호스트에서)로 나가는 패킷의 출발 주소가 10.88.0.x인지 확인하세요. 다시 myctr를 실행하면 규칙이 복구되는지도 보세요(기대: 복구됨, <code>-C</code>로 확인 후 추가하므로).</li>
+    <li><b>netlink 관찰.</b> <code>sudo strace -f -e trace=socket,sendmsg -o /tmp/net.trace ./target/debug/myctr run --rootfs ./rootfs --net bridge true</code> 후 <code>grep -c NETLINK /tmp/net.trace</code>로 컨테이너 하나를 띄우는 데 netlink 소켓이 몇 번 열렸는지 세어 보세요. 외부 명령 하나가 소켓 하나입니다.</li>
+    <li><b>rootless에서 들여다보기.</b> 일반 사용자로 <code>./target/debug/myctr run --rootfs ./rootfs-user sleep 100 &amp;</code> 후, <code>nsenter -t $(pgrep -x sleep) -n ip -br link</code>, <code>-U -n</code>, <code>-U --preserve-credentials -n</code>을 차례로 실행해 4절의 결과(EPERM, setgroups 실패, 성공)를 재현하세요. 같은 사용자로 호스트에서 <code>ip link add vX type veth peer name vY</code>도 시도해 보세요(기대: <code>Operation not permitted</code>).</li>
+    <li><b>도전: 포트 공개 <code>-p 8080:80</code>.</b> 호스트의 8080으로 들어온 연결을 컨테이너의 80으로 보내는 옵션을 추가하세요. 힌트: <code>iptables -t nat -A PREROUTING -p tcp --dport 8080 -j DNAT --to-destination &lt;컨테이너IP&gt;:80</code>(바깥에서 들어오는 경우)와 <code>-A OUTPUT</code>(호스트 자신이 localhost가 아닌 주소로 접속하는 경우). 컨테이너가 끝나면 규칙을 지워야 합니다. 어디서 지우는 것이 안전할까요?</li>
+    <li><b>도전: IPAM.</b> PID 기반 주소 대신 <code>/run/myctr/ipam</code> 파일에 사용 중인 주소를 기록하고, <code>flock</code>으로 동시 실행을 막으며 빈 주소를 고르게 바꾸세요. 컨테이너가 끝나면 주소를 반납합니다.</li>
+    <li><b>도전: netlink 직접 쓰기.</b> <code>rtnetlink</code> 크레이트(tokio 기반)로 <code>ip</code> 명령 호출을 바꿔 보세요. 컨테이너 쪽 설정은 <code>setns</code>로 자식의 네트워크 네임스페이스에 들어간 스레드에서 해야 한다는 점이 까다로운 부분입니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = MM.esc;
+
+  // ===== 위젯 1: 모드 비교 =====
+  (function () {
+    const OUT = {
+      host: `$ ip -br link          # 호스트와 똑같다
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>
+eth0@if82        UP             b6:a7:f1:e3:31:06 <BROADCAST,MULTICAST,UP,LOWER_UP>
+$ ip route
+default via 172.17.0.1 dev eth0
+172.17.0.0/16 dev eth0 proto kernel scope link src 172.17.0.2`,
+      none: `$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128
+$ ip route
+(비어 있음)
+$ curl -s --max-time 3 http://1.1.1.1; echo $?
+7`,
+      bridge: `$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128
+eth0@if16        UP             10.88.0.60/24 fe80::c04d:cfff:fe76:e5b2/64
+$ ip route
+default via 10.88.0.1 dev eth0
+10.88.0.0/24 dev eth0 proto kernel scope link src 10.88.0.60
+$ curl -s -o /dev/null -w '%{http_code}' http://1.1.1.1
+301`,
+    };
+    const NAMES = { host: "--net host", none: "--net none", bridge: "--net bridge" };
+    let cur = "bridge";
+    const btns = $("md-btns");
+    Object.keys(NAMES).forEach(k => {
+      const b = MM.el("button", { class: "btn", type: "button" }, NAMES[k]);
+      b.onclick = () => { cur = k; draw(); };
+      btns.append(b);
+    });
+    function draw() {
+      [...btns.children].forEach((b, i) => b.classList.toggle("on", Object.keys(NAMES)[i] === cur));
+      let g = `<rect x="20" y="20" width="700" height="${cur === "host" ? 190 : 100}" rx="14" class="box"/>
+        <text x="36" y="42" font-size="12.5" font-weight="700">호스트 net ns</text>
+        <rect x="560" y="56" width="140" height="40" rx="8" style="fill:var(--surface);stroke:var(--text)"/><text x="630" y="81" text-anchor="middle" font-family="var(--mono)" font-size="12">eth0 → 인터넷</text>`;
+      if (cur === "host") {
+        g += `<rect x="60" y="110" width="300" height="70" rx="10" style="fill:var(--ok-soft);stroke:var(--ok)"/>
+          <text x="210" y="140" text-anchor="middle" font-weight="700">컨테이너 프로세스</text>
+          <text x="210" y="162" text-anchor="middle" font-size="12" class="muted">호스트 ns 안에 그대로 있음 (격리 없음)</text>
+          <path d="M360 140 C 460 140, 520 90, 560 80" class="line flow" style="stroke:var(--ok)"/>`;
+      } else {
+        g += `<rect x="60" y="140" width="320" height="76" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/>
+          <text x="74" y="160" font-size="12" font-weight="700" style="fill:var(--violet)">컨테이너 net ns</text>
+          <rect x="80" y="172" width="80" height="30" rx="6" style="fill:var(--surface);stroke:var(--ok)"/><text x="120" y="192" text-anchor="middle" font-family="var(--mono)" font-size="11.5">lo</text>`;
+        if (cur === "bridge") {
+          g += `<rect x="200" y="172" width="150" height="30" rx="6" style="fill:var(--surface);stroke:var(--ok)"/><text x="275" y="192" text-anchor="middle" font-family="var(--mono)" font-size="11.5">eth0 10.88.0.60</text>
+            <rect x="200" y="56" width="180" height="40" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="290" y="81" text-anchor="middle" font-family="var(--mono)" font-size="12">myctr0 10.88.0.1</text>
+            <path d="M275 172 V96" class="line" style="stroke:var(--ok);stroke-width:3"/><text x="285" y="135" font-size="11" class="muted">veth 쌍</text>
+            <path d="M380 76 H560" class="line flow" style="stroke:var(--warn)"/><text x="470" y="68" text-anchor="middle" font-size="11" style="fill:var(--warn)">forward + NAT</text>`;
+        } else {
+          g += `<text x="250" y="192" text-anchor="middle" font-size="12" class="muted">바깥으로 가는 길 없음</text>`;
+        }
+      }
+      $("md-svg").setAttribute("viewBox", `0 0 740 ${cur === "host" ? 220 : 230}`);
+      $("md-svg").innerHTML = g;
+      $("md-out").textContent = OUT[cur];
+    }
+    draw();
+  })();
+
+  // ===== 위젯 2: 조립 스테퍼 =====
+  (function () {
+    const S = [
+      { cmd: "(clone 직후)", where: "", st: {}, cap: "clone(CLONE_NEWNET)으로 자식이 빈 네트워크 네임스페이스에서 태어났습니다. 부모는 cgroup 배치와 ID 매핑을 끝냈고, 자식은 파이프에서 기다리는 중입니다. 컨테이너 안에는 꺼진 lo뿐입니다." },
+      { cmd: "ip link add myctr0 type bridge; ip addr add 10.88.0.1/24 dev myctr0; ip link set myctr0 up", where: "호스트", st: { br: 1 }, cap: "브리지가 없으면 만들고 게이트웨이 주소를 줍니다. ip_forward와 iptables 규칙도 이때 확인합니다. 두 번째 컨테이너부터는 이미 있으므로 건너뜁니다." },
+      { cmd: "ip link add veth4241 type veth peer name ceth4241", where: "호스트", st: { br: 1, veth: 1 }, cap: "veth 쌍을 만듭니다. 처음에는 <b>두 끝이 모두 호스트</b>에 있습니다." },
+      { cmd: "ip link set veth4241 master myctr0 up", where: "호스트", st: { br: 1, veth: 1, plug: 1 }, cap: "호스트 쪽 끝을 브리지에 꽂고 켭니다." },
+      { cmd: "ip link set ceth4241 netns 4242", where: "호스트", st: { br: 1, veth: 1, plug: 1, moved: 1 }, cap: "다른 쪽 끝을 자식(PID 4242)의 네트워크 네임스페이스로 <b>옮깁니다</b>. 이 순간 호스트의 <code>ip link</code>에서 ceth4241이 사라지고 컨테이너 안에 나타납니다." },
+      { cmd: "nsenter -t 4242 -n ip link set lo up", where: "컨테이너", st: { br: 1, veth: 1, plug: 1, moved: 1, lo: 1 }, cap: "여기부터는 <code>nsenter</code>로 자식의 네트워크 네임스페이스 안에서 실행합니다. 먼저 loopback을 켭니다." },
+      { cmd: "nsenter -t 4242 -n ip link set ceth4241 name eth0", where: "컨테이너", st: { br: 1, veth: 1, plug: 1, moved: 1, lo: 1, named: 1 }, cap: "컨테이너 안에서 이름을 eth0으로 바꿉니다. 호스트에 eth0이 이미 있어도 상관없습니다. 다른 네임스페이스이기 때문입니다." },
+      { cmd: "nsenter -t 4242 -n ip addr add 10.88.0.60/24 dev eth0; ip link set eth0 up", where: "컨테이너", st: { br: 1, veth: 1, plug: 1, moved: 1, lo: 1, named: 1, ip: 1 }, cap: "주소를 주고 켭니다. 이제 브리지(10.88.0.1)와 같은 LAN입니다." },
+      { cmd: "nsenter -t 4242 -n ip route add default via 10.88.0.1", where: "컨테이너", st: { br: 1, veth: 1, plug: 1, moved: 1, lo: 1, named: 1, ip: 1, route: 1 }, cap: "기본 경로를 브리지로. 바깥으로 가는 모든 패킷은 호스트에게 넘겨집니다." },
+      { cmd: "write(sync_wr, [1])", where: "호스트", st: { br: 1, veth: 1, plug: 1, moved: 1, lo: 1, named: 1, ip: 1, route: 1, go: 1 }, cap: "준비 끝. 파이프에 1바이트를 써서 자식을 깨웁니다. 자식은 ID를 선택하고 hostname·rootfs·새 /proc·/dev를 준비한 뒤 exec합니다. cgroup 배치와 ID 매핑은 이 조립 전에 이미 끝났습니다(5장)." },
+    ];
+    MM.stepper($("as-ctl"), {
+      steps: S.length, interval: 2000,
+      render(i) {
+        const s = S[i], st = s.st;
+        let g = `<rect x="20" y="16" width="420" height="250" rx="14" class="box"/><text x="34" y="38" font-size="12.5" font-weight="700">호스트 net ns</text>
+                 <rect x="460" y="16" width="260" height="250" rx="14" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4"/><text x="474" y="38" font-size="12.5" font-weight="700" style="fill:var(--violet)">컨테이너 net ns (PID 4242)</text>`;
+        g += `<rect x="480" y="56" width="90" height="30" rx="6" style="fill:var(--surface);stroke:var(--${st.lo ? "ok" : "border"})"/><text x="525" y="76" text-anchor="middle" font-family="var(--mono)" font-size="11.5">lo ${st.lo ? "UP" : "DOWN"}</text>`;
+        if (st.br) g += `<rect x="40" y="56" width="200" height="40" rx="8" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="140" y="81" text-anchor="middle" font-family="var(--mono)" font-size="12">myctr0 10.88.0.1</text>`;
+        if (st.veth) {
+          g += `<rect x="40" y="150" width="140" height="30" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="110" y="170" text-anchor="middle" font-family="var(--mono)" font-size="11.5">veth4241${st.plug ? " UP" : ""}</text>`;
+          const px = st.moved ? 500 : 240, label = st.named ? "eth0" : "ceth4241";
+          g += `<rect x="${px}" y="150" width="${st.ip ? 200 : 140}" height="30" rx="6" style="fill:var(--surface);stroke:var(--ok);transition:all .4s"/><text x="${px + (st.ip ? 100 : 70)}" y="170" text-anchor="middle" font-family="var(--mono)" font-size="11.5">${label}${st.ip ? " 10.88.0.60 UP" : ""}</text>`;
+          g += `<path d="M180 165 H${px}" class="line" style="stroke:var(--ok);stroke-width:3"/>`;
+          if (st.plug) g += `<path d="M110 150 V96" class="line" style="stroke:var(--accent);stroke-width:2"/>`;
+        }
+        if (st.route) g += `<text x="480" y="220" font-family="var(--mono)" font-size="11.5">default via 10.88.0.1</text>`;
+        if (st.go) g += `<rect x="480" y="232" width="220" height="26" rx="6" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="590" y="250" text-anchor="middle" font-size="12">파이프 신호 → exec</text>`;
+        else g += `<text x="480" y="250" font-size="12" class="muted">자식: read(pipe) 대기 중</text>`;
+        $("as-svg").innerHTML = g;
+        return `<code>${esc(s.cmd)}</code>${s.where ? ` <span class="muted">(${s.where}에서)</span>` : ""}<br>${s.cap}`;
+      }
+    });
+  })();
+
+  // ===== 위젯 3: conntrack =====
+  (function () {
+    const F = (k, v, chg) => `<div class="${chg ? "chg" : ""}">${k}<b>${v}</b></div>`;
+    $("ct-orig").innerHTML = F("원래 방향 · 출발", "10.88.0.62:41586") + F("원래 방향 · 목적", "1.1.1.1:80");
+    $("ct-reply").innerHTML = F("응답 방향 · 출발", "1.1.1.1:80") + F("응답 방향 · 목적", "172.17.0.3:41586", 1);
+  })();
+
+  // ===== 위젯 4: 패킷 경로 =====
+  (function () {
+    const N = { A: [90, 210], B: [300, 210], VA: [90, 140], VB: [300, 140], BR: [195, 70], HOST: [410, 70], ETH: [545, 70], NET: [675, 70], N0: [545, 210] };
+    const LBL = { A: "컨테이너 A eth0", B: "컨테이너 B eth0", VA: "vethA", VB: "vethB", BR: "myctr0", HOST: "호스트 라우팅", ETH: "호스트 eth0", NET: "1.1.1.1", N0: "none 컨테이너" };
+    const ROUTES = {
+      cc: { name: "컨테이너 A → 컨테이너 B", path: ["A", "VA", "BR", "VB", "B"], notes: [
+        "A가 10.88.0.62로 보냄. 같은 /24 대역이라 게이트웨이 없이 직접. 먼저 ARP로 B의 MAC을 묻습니다.",
+        "A의 eth0으로 나간 프레임은 veth 짝인 vethA로 나옵니다.",
+        "브리지는 L2 스위치. 목적지 MAC을 FDB(학습 테이블)에서 찾아 vethB 포트로 내보냅니다. IP 라우팅도 NAT도 없습니다.",
+        "vethB로 나간 프레임은 짝인 B의 eth0으로.",
+        "B가 받음. 출발 주소는 A의 10.88.0.10 그대로입니다." ] },
+      ci: { name: "컨테이너 A → 인터넷", path: ["A", "VA", "BR", "HOST", "ETH", "NET"], notes: [
+        "1.1.1.1은 다른 대역이라 기본 경로(10.88.0.1)로 보냅니다. 목적지 MAC은 브리지의 MAC.",
+        "veth를 지나 호스트 쪽으로.",
+        "목적지 MAC이 브리지 자신이므로 프레임이 호스트의 IP 스택으로 올라갑니다.",
+        "호스트가 라우팅: 1.1.1.1은 eth0 방향. ip_forward=1이라 넘겨줄 수 있고, FORWARD 체인의 <code>-i myctr0 -j ACCEPT</code>가 통과시킵니다.",
+        "POSTROUTING의 MASQUERADE가 출발 주소 10.88.0.10을 eth0의 주소로 바꾸고 conntrack에 기록합니다.",
+        "1.1.1.1은 호스트가 보낸 패킷으로 압니다. 응답은 호스트로 오고, conntrack이 목적지를 10.88.0.10으로 되돌려 같은 길을 거꾸로 갑니다(FORWARD의 ESTABLISHED 규칙 통과)." ] },
+      hc: { name: "호스트 → 컨테이너 A", path: ["HOST", "BR", "VA", "A"], notes: [
+        "호스트의 라우팅 테이블에는 <code>10.88.0.0/24 dev myctr0</code>이 있습니다(브리지에 주소를 줄 때 자동 생성).",
+        "브리지 인터페이스로 내보냅니다. 출발 주소는 10.88.0.1.",
+        "브리지가 A의 MAC이 있는 vethA 포트로.",
+        "A가 받음. 포워딩이 아니라 호스트 자신이 보낸 것이라 FORWARD 체인을 거치지 않습니다." ] },
+      ia: { name: "인터넷 → 컨테이너 A (포트 공개 없음)", path: ["NET", "ETH", "HOST"], fail: true, notes: [
+        "바깥에서 새 연결을 시도합니다. 하지만 바깥은 10.88.0.x라는 주소를 모릅니다. 호스트의 주소로 보낼 수밖에 없습니다.",
+        "호스트 eth0으로 도착.",
+        "<b>막힘.</b> 목적지가 호스트 자신이고, 그 포트를 컨테이너로 보내라는 DNAT 규칙이 없습니다. 실습 5의 <code>-p 8080:80</code>이 이 길을 엽니다." ] },
+      nn: { name: "none 컨테이너 → 무엇이든", path: ["N0"], fail: true, notes: [
+        "none 모드에는 lo밖에 없습니다. 경로가 없으므로 connect()가 즉시 실패합니다(curl 종료 코드 7, Network is unreachable)." ] },
+    };
+    let cur = "cc", stepper;
+    const btns = $("pk-btns");
+    Object.keys(ROUTES).forEach(k => {
+      const b = MM.el("button", { class: "btn", type: "button" }, ROUTES[k].name);
+      b.onclick = () => { cur = k; build(); };
+      btns.append(b);
+    });
+    function draw(i) {
+      const r = ROUTES[cur];
+      let g = `<rect x="20" y="20" width="620" height="88" rx="12" class="box" style="opacity:.6"/><text x="30" y="16" font-size="11" class="muted">호스트 net ns</text>`;
+      g += `<rect x="20" y="180" width="380" height="64" rx="12" style="fill:var(--violet-soft);stroke:var(--violet);stroke-dasharray:5 4;opacity:.7"/><text x="30" y="258" font-size="11" class="muted">컨테이너 net ns들</text>`;
+      g += `<path d="M90 140 V196 M300 140 V196" class="line" style="stroke:var(--ok);stroke-width:3"/>`;
+      g += `<path d="M90 128 L180 82 M300 128 L210 82 M257 70 H348 M472 70 H483 M607 70 H613" class="line"/>`;
+      const on = new Set(r.path.slice(0, i + 1));
+      Object.entries(N).forEach(([k, [x, y]]) => {
+        const hit = on.has(k), now = r.path[i] === k;
+        const col = now ? (r.fail && i === r.path.length - 1 ? "bad" : "accent") : hit ? "ok" : "border";
+        g += `<g class="hop"><rect x="${x - 62}" y="${y - 16}" width="124" height="32" rx="7" style="fill:var(--${col === "border" ? "surface" : col + "-soft"});stroke:var(--${col});stroke-width:${now ? 2.5 : 1}"/>
+              <text x="${x}" y="${y + 4}" text-anchor="middle" font-family="var(--mono)" font-size="11">${LBL[k]}</text></g>`;
+      });
+      $("pk-svg").innerHTML = g;
+    }
+    function build() {
+      [...btns.children].forEach((b, j) => b.classList.toggle("on", Object.keys(ROUTES)[j] === cur));
+      $("pk-ctl").innerHTML = "";
+      const r = ROUTES[cur];
+      stepper = MM.stepper($("pk-ctl"), { steps: r.path.length, interval: 1700, render(i) { draw(i); return r.notes[i]; } });
+    }
+    build();
+  })();
+
+  // ===== 위젯 5: IP 충돌 확률 =====
+  (function () {
+    function calc() {
+      const n = +$("ip-n").value; $("ip-nv").textContent = n;
+      let p = 1; for (let k = 0; k < n; k++) p *= (253 - k) / 253;
+      $("ip-p").textContent = (n > 253 ? 100 : (1 - p) * 100).toFixed(1) + "%";
+    }
+    $("ip-n").oninput = calc; calc();
+  })();
+
+  // ===== 위젯 6: netlink strace =====
+  (function () {
+    const L = [
+      ['<span class="c">socket</span>(<span class="k">AF_NETLINK</span>, SOCK_RAW|SOCK_CLOEXEC, <span class="k">NETLINK_ROUTE</span>) = 3', "netlink는 커널과 사용자 공간이 메시지를 주고받는 소켓 계열입니다. <code>NETLINK_ROUTE</code>(rtnetlink)는 인터페이스, 주소, 경로를 다루는 하위 프로토콜입니다. TCP처럼 소켓을 열지만 상대가 커널입니다."],
+      ['<span class="c">bind</span>(3, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12) = 0', "<code>nl_pid=0</code>은 \"주소는 커널이 정해 달라\"는 뜻입니다. <code>nl_groups=0</code>: 이벤트 구독(멀티캐스트 그룹)은 하지 않습니다. <code>ip monitor</code>는 여기에 그룹을 지정해 변경 이벤트를 받습니다."],
+      ['<span class="c">sendto</span>(3, [{nlmsg_len=32, nlmsg_type=<span class="k">RTM_NEWLINK</span>, nlmsg_flags=NLM_F_REQUEST|NLM_F_ACK, ...}, {ifi_index=0, ...}], 32, ...) = 32', "본 요청 전에 iproute2가 보내는 32바이트짜리 빈 RTM_NEWLINK입니다. 이름도 종류도 없는 요청이라 실패가 예상되는데, 커널이 어떻게 거절하는지 보고 커널의 동작을 확인하는 용도입니다."],
+      ['<span class="c">recvmsg</span>(3, {... [{nlmsg_type=<span class="k">NLMSG_ERROR</span>, ...}, {error=<span class="e">-ENODEV</span>, ...}] ...}, 0) = 52', "예상대로 거절(-ENODEV). netlink의 응답은 항상 이런 NLMSG_ERROR 메시지이고, error가 0이면 성공(ACK)입니다."],
+      ['<span class="c">sendmsg</span>(3, {... [{nlmsg_len=<span class="k">84</span>, nlmsg_type=<span class="k">RTM_NEWLINK</span>, nlmsg_flags=NLM_F_REQUEST|NLM_F_ACK|NLM_F_EXCL|NLM_F_CREATE, ...}, {...}, [[{nla_type=IFLA_IFNAME}, <span class="k">"vA"</span>], [{nla_type=IFLA_LINKINFO}, [[{nla_type=IFLA_INFO_KIND}, <span class="k">"veth"</span>...], [{nla_type=IFLA_INFO_DATA}, "...\\x76\\x42..."]]]]] ...}, 0) = 84', "<b>핵심 줄.</b> 84바이트 RTM_NEWLINK 메시지 하나에 \"이름 vA, 종류 veth\"가 속성(TLV)으로 담겨 있습니다. <code>IFLA_INFO_DATA</code> 안의 <code>\\x76\\x42</code>는 ASCII로 \"vB\", 즉 짝의 이름입니다. <code>NLM_F_EXCL|NLM_F_CREATE</code>: 없으면 만들고, 이미 있으면 실패(-EEXIST)하라는 뜻. veth 쌍 생성이 메시지 하나로 끝납니다."],
+      ['<span class="c">recvmsg</span>(3, {...}, MSG_PEEK|MSG_TRUNC) = 36', "응답 크기를 먼저 엿봅니다(MSG_PEEK). 버퍼를 알맞게 잡기 위해서입니다."],
+      ['<span class="c">recvmsg</span>(3, {... [{nlmsg_type=NLMSG_ERROR, ...}, {<span class="k">error=0</span>, ...}] ...}, 0) = 36', "error=0 = 성공(ACK). 실패했다면 여기에 -EEXIST 같은 값이 들어 있고, iproute2가 그것을 \"RTNETLINK answers: File exists\" 같은 문장으로 바꿔 출력합니다."],
+    ];
+    const box = $("nl-lines");
+    L.forEach(([html, ex]) => {
+      const d = MM.el("div", null, html);
+      d.onclick = () => { box.querySelectorAll(".on").forEach(x => x.classList.remove("on")); d.classList.add("on"); $("nl-explain").innerHTML = ex; };
+      box.append(d);
+    });
+  })();
+})();
+</script>
+</body>
+</html>

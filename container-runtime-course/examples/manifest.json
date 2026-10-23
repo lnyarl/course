@@ -1,0 +1,294 @@
+{
+  "environment": {
+    "os": "Debian 12 privileged disposable Docker container",
+    "kernel": "7.0.12-linuxkit",
+    "architecture": "aarch64",
+    "rust": "1.86.0",
+    "cargo": "1.86.0",
+    "image": "minibox-lab:latest",
+    "image_id": "sha256:89fc6f292cbf7b26e7843cbe4340033f1ad70d5a4a6027ad977ce17539a76efc",
+    "rootfs": "Alpine minirootfs 3.22.2 aarch64 + installed tools",
+    "rootfs_archive_sha256": "6bf491907b705caa5fc65773fbbc1d0954530b6c455d4446f670a4c1fdcea489",
+    "rootless_parent": {
+      "uid": 1000,
+      "gid": 1000,
+      "CapPrm": "0000000000000000",
+      "CapEff": "0000000000000000",
+      "CapAmb": "0000000000000000"
+    },
+    "x86_64_executed": false
+  },
+  "results": [
+    {
+      "chapter": "03",
+      "mode": "rootful",
+      "modules": {
+        "base": 17
+      },
+      "required_pass": 17,
+      "required_fail": 0,
+      "optional": {
+        "external_http": {
+          "pass": 0,
+          "skip": 0,
+          "status": "not applicable"
+        }
+      },
+      "required_skips": [],
+      "log": "evidence/packaged-rootful-final.log",
+      "command": "ROOTFS=/absolute/rootfs RANGE_ROOTFS=/absolute/rootfs-range bash ch03/check.sh rootful"
+    },
+    {
+      "chapter": "04",
+      "mode": "rootful",
+      "modules": {
+        "base": 17,
+        "cgroup": 14
+      },
+      "required_pass": 31,
+      "required_fail": 0,
+      "optional": {
+        "external_http": {
+          "pass": 0,
+          "skip": 0,
+          "status": "not applicable"
+        }
+      },
+      "required_skips": [],
+      "log": "evidence/packaged-rootful-final.log",
+      "command": "ROOTFS=/absolute/rootfs RANGE_ROOTFS=/absolute/rootfs-range bash ch04/check.sh rootful"
+    },
+    {
+      "chapter": "05",
+      "mode": "rootful",
+      "modules": {
+        "base": 17,
+        "cgroup": 14,
+        "range": 8
+      },
+      "required_pass": 39,
+      "required_fail": 0,
+      "optional": {
+        "external_http": {
+          "pass": 0,
+          "skip": 0,
+          "status": "not applicable"
+        }
+      },
+      "required_skips": [],
+      "log": "evidence/packaged-rootful-final.log",
+      "command": "ROOTFS=/absolute/rootfs RANGE_ROOTFS=/absolute/rootfs-range bash ch05/check.sh rootful"
+    },
+    {
+      "chapter": "05",
+      "mode": "rootless",
+      "modules": {
+        "base": 17,
+        "user": 16
+      },
+      "required_pass": 33,
+      "required_fail": 0,
+      "optional": {},
+      "required_skips": [],
+      "log": "evidence/packaged-rootless-final.log",
+      "command": "ROOTFS=/absolute/rootfs-user bash ch05/check.sh rootless"
+    },
+    {
+      "chapter": "06",
+      "mode": "rootful",
+      "modules": {
+        "base": 17,
+        "cgroup": 14,
+        "range": 8,
+        "network": 15
+      },
+      "required_pass": 54,
+      "required_fail": 0,
+      "optional": {
+        "external_http": {
+          "pass": 1,
+          "skip": 0,
+          "status": "HTTP 301"
+        }
+      },
+      "required_skips": [],
+      "log": "evidence/packaged-rootful-final.log",
+      "command": "ROOTFS=/absolute/rootfs RANGE_ROOTFS=/absolute/rootfs-range bash ch06/check.sh rootful"
+    },
+    {
+      "chapter": "06",
+      "mode": "rootless",
+      "modules": {
+        "base": 17,
+        "user": 16,
+        "network": 4
+      },
+      "required_pass": 37,
+      "required_fail": 0,
+      "optional": {},
+      "required_skips": [],
+      "log": "evidence/packaged-rootless-final.log",
+      "command": "ROOTFS=/absolute/rootfs-user bash ch06/check.sh rootless"
+    },
+    {
+      "chapter": "07",
+      "mode": "rootful",
+      "modules": {
+        "base": 17,
+        "cgroup": 14,
+        "range": 8,
+        "network": 15,
+        "security": 19
+      },
+      "required_pass": 73,
+      "required_fail": 0,
+      "optional": {
+        "external_http": {
+          "pass": 1,
+          "skip": 0,
+          "status": "HTTP 301"
+        }
+      },
+      "required_skips": [],
+      "log": "evidence/packaged-rootful-final.log",
+      "command": "ROOTFS=/absolute/rootfs RANGE_ROOTFS=/absolute/rootfs-range bash ch07/check.sh rootful"
+    },
+    {
+      "chapter": "07",
+      "mode": "rootless",
+      "modules": {
+        "base": 17,
+        "user": 16,
+        "network": 4,
+        "security": 19
+      },
+      "required_pass": 56,
+      "required_fail": 0,
+      "optional": {},
+      "required_skips": [],
+      "log": "evidence/packaged-rootless-final.log",
+      "command": "ROOTFS=/absolute/rootfs-user bash ch07/check.sh rootless"
+    },
+    {
+      "chapter": "08",
+      "mode": "rootful",
+      "modules": {
+        "base": 17,
+        "cgroup": 14,
+        "range": 8,
+        "network": 15,
+        "security": 19,
+        "images": 25
+      },
+      "required_pass": 98,
+      "required_fail": 0,
+      "required_skips": [],
+      "optional": {
+        "external_http": {
+          "pass": 1,
+          "skip": 0,
+          "status": "HTTP 301"
+        }
+      },
+      "command": "ROOTFS=/absolute/rootfs RANGE_ROOTFS=/absolute/rootfs-range bash ch08/check.sh rootful",
+      "log": "evidence/ch08/packaged-rootful-final.log"
+    },
+    {
+      "chapter": "08",
+      "mode": "rootless",
+      "modules": {
+        "base": 17,
+        "user": 16,
+        "network": 4,
+        "security": 19
+      },
+      "required_pass": 56,
+      "required_fail": 0,
+      "required_skips": [],
+      "optional": {},
+      "command": "ROOTFS=/absolute/rootfs-user bash ch08/check.sh rootless",
+      "log": "evidence/ch08/packaged-rootless-final.log"
+    }
+  ],
+  "extra_proof": {
+    "packaged_cgroup_helper": "evidence/packaged-cgroup-helper.log",
+    "driver_mode_guards": "evidence/driver-mode-guards.log",
+    "prepare_rootfs_and_rootless_driver": [
+      "evidence/prepare-rootfs-proof.log",
+      "evidence/prepare-rootfs-driver-proof.log"
+    ],
+    "failed_network_helper_cleanup": "evidence/network-failure-cleanup.log",
+    "loopback_dns_rejects_unspecified_bridge": "evidence/loopback-resolver-policy.log"
+  },
+  "hashes": {
+    "README.md": "983521ea99df629cf3dc20617a3d08c75b5b61e626b005c4597d4936e9c4a85f",
+    "ch03/Cargo.lock": "34f6343f4e09ba789d2e5ee0139e45b6074b725cc12564000715a43a5d738d51",
+    "ch03/Cargo.toml": "b77d6f7f455793c676bb14de9e9925625367b2491e08e1d112aa0b38f7c3c8dc",
+    "ch03/check.sh": "7a417ab4bdd3a434df3c377282f4bbb28c5eec236f19b524149307005a15fb61",
+    "ch03/src/main.rs": "e3e4b170ba731d1b12774736844ac0c2e31a54de6ccdba5ec76fb4daa1e748c8",
+    "ch04/Cargo.lock": "34f6343f4e09ba789d2e5ee0139e45b6074b725cc12564000715a43a5d738d51",
+    "ch04/Cargo.toml": "e878efa5a9408515eb77e7a4d95a7429724f323070470a08710a09356219199c",
+    "ch04/check.sh": "e6a35a1164f088b1f89794a17e1dac400ed7c5007441a062f7ce2293801a7102",
+    "ch04/src/main.rs": "90088f1f70e5356c31156b74a5aad6235a8fa7f97fd7779c22ec9f59fefea3be",
+    "ch05/Cargo.lock": "34f6343f4e09ba789d2e5ee0139e45b6074b725cc12564000715a43a5d738d51",
+    "ch05/Cargo.toml": "f5b2130288a8bf7a420651fd0cf85c666226805d2d112b598e52c98743f3c7fd",
+    "ch05/check.sh": "0a42ae8203c7c349ad55a3221e86cdc4fe4c379da5258f7f12894bb1b26f9c8c",
+    "ch05/src/main.rs": "4494fa560d806300f27cff26f72da18dab05ac9557d7718614c06a39d18869fb",
+    "ch06/Cargo.lock": "34f6343f4e09ba789d2e5ee0139e45b6074b725cc12564000715a43a5d738d51",
+    "ch06/Cargo.toml": "f5b2130288a8bf7a420651fd0cf85c666226805d2d112b598e52c98743f3c7fd",
+    "ch06/check.sh": "cc6d06a19a67ce3781ad3fd2e0c122b6c7a2eaa7245018b9220ccad5618ac2ea",
+    "ch06/src/main.rs": "be19e91faa12b4d60354b49088cbf501128fdce2472714b3ad05549918faeee2",
+    "ch07/Cargo.lock": "e8b7e0fe5f36d53883f9792f176f2798f3b5af928ed3937d3bf0da11f4130760",
+    "ch07/Cargo.toml": "0bb4510297d3900a2b595a6c4e35cc91fa70121e37f40948401c8601845c880a",
+    "ch07/check.sh": "3df7356f6db25b0bdb81f863672f5170b4e2ece357a5b7a9fc5a48280c249ce0",
+    "ch07/src/main.rs": "d0da22b3fc26d3f08230ab901b066b18de34dfb368397fcf6d7148248fb38697",
+    "checks/check-base.sh": "674977b688780a05fc5d0b27fdcfe03702152a90ab154cde82df095ab18ef0f0",
+    "checks/check-cgroup.sh": "41324b217c289d1c85edd2985da57a02271e98d77f140918fb54d5b396d104b1",
+    "checks/check-network.sh": "e2dff1bbec057d951b3a84159c9572a3318e019d4fb86ede27f3805db0959d0e",
+    "checks/check-range.sh": "96fc390716c1f7b811ac1d08e581496f343473eab937732bfb857ee5beb89386",
+    "checks/check-security.sh": "46d1a57c3f2e0d6240ee1d5e0f5a5d18d4f334b1b530b6a7af3d98db4c9bfd2f",
+    "checks/check-user.sh": "a9704c1d6e5e04a166653e3d148f01b643cabcd1c3863a3538239170b174932c",
+    "checks/network-fixture.py": "ac4c5bac4df7c7f319846f1a51aa91066a7a9e4a770f6af1b9a2762d7c55d127",
+    "prepare-rootfs.sh": "6d9cd8850aad6d4546f43a28bf63f1c3ccda98876df9b5cb84b9360c67abd522",
+    "run-cgroup-lab.sh": "b0abfdad2c0c4ce3507a3ee4b9e56e75c92c8235268a11c48ea2a616b6c94024",
+    "VALIDATION.md": "b0d097474d23a21d2723e243743a4950f26847b99156540cc154131349f1b908",
+    "ch08/Cargo.lock": "24b3a45eaa18e0fe06a5a06c6cce582f7daef4e411ef3f26edd13017936609f3",
+    "ch08/Cargo.toml": "4a97647e623ad785cee5b08f9517a0191826d8f2cc8b9c2bf0af67f7c0522345",
+    "ch08/check.sh": "05d085a4d99dc9e38ab8a61cdea4b8fecca1bfbca0ada0b0a3c720c9f9cd50e6",
+    "ch08/src/image.rs": "c9f49f2c4a0d92bf5135fab8389090acb75587974f02846fce5ff8791f282120",
+    "ch08/src/main.rs": "993b915c6670cc7a76712cfe7d24c3d2cc35eee35b6b9123b272968a7eea4e20",
+    "checks/check-images.sh": "d6c14b87da01d9f202f6ae706fb989eebfda40b131364f1fe85e832442faa15a",
+    "checks/image-fixtures.py": "9bf731449c0395c2d0d3fcc97e0e20f5d1271badef61c8fa041e9b9ef67c4c2c",
+    "prepare-image-store.sh": "580c82da06fdf310a0e10a3ad5bcd1bb70814992aa9b0a2df0fd763802da11b4"
+  },
+  "chapter8_environment": {
+    "os": "Debian 12 privileged disposable Docker",
+    "kernel": "7.0.12-linuxkit",
+    "architecture": "aarch64",
+    "rust": "1.86.0",
+    "cargo": "1.86.0",
+    "build": "cargo build --locked (reused Rust 1.86 compatible lock)",
+    "image_store_fs": "tmpfs (Docker rootfs overlayfs rejected character 0:0 mknod; controlled tmpfs succeeded)",
+    "image_store_size_mib": 512,
+    "alpine_oci_ref": "alpine:3.24",
+    "alpine_manifest": "sha256:e311ae748be7f56ae5cba304bc488f0786df68ee507513f654a5cc8597cffb42",
+    "rootless_parent": {
+      "uid": 1000,
+      "gid": 1000,
+      "CapPrm": "0000000000000000",
+      "CapEff": "0000000000000000",
+      "CapAmb": "0000000000000000"
+    },
+    "x86_64_executed": false
+  },
+  "verified_date": "2026-10-23",
+  "notes": [
+    "Dir mode retains cumulative chapter 3-7 rootfs and DNS/security policy.",
+    "Image CLI requires EUID 0 and no explicit --userns-base; it does not prove caller is in the initial user namespace.",
+    "Image fixture test is explicitly ignored by default; check-images.sh invokes cargo test --ignored in root-only disposable environment.",
+    "Image whiteout fixture uses actual unpack_layer to produce char 0:0 and trusted.overlay.opaque, then runs the resulting OCI image.",
+    "Image pull requires Docker Hub access; local DNS/HTTP checks are mandatory and separate from optional external HTTP.",
+    "prepare-image-store.sh refuses nonempty or already mounted stores and was executed successfully on a fresh store in the disposable container.",
+    "Source main.rs and image.rs are frozen; only test fixture portability was adjusted in check-images.sh before this final run."
+  ]
+}

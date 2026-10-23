@@ -1,0 +1,1465 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>capabilities와 seccomp</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .lines { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 0; overflow-x: auto; }
+  .lines div { padding: 2px 14px; white-space: pre; cursor: pointer; border-left: 3px solid transparent; }
+  .lines div:hover { background: var(--accent-soft); }
+  .lines div.on { background: var(--accent-soft); border-left-color: var(--accent); }
+  .lines div.skip { color: var(--muted); cursor: default; }
+  .lines div.skip:hover { background: none; }
+  .lines .c { color: var(--violet); } .lines .k { color: var(--teal); } .lines .e { color: var(--bad); }
+  .explain { min-height: 4.5em; }
+  .capgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 4px; margin: 8px 0; }
+  .capgrid label { display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: background .2s, border-color .2s; }
+  .capgrid label.on { background: var(--ok-soft); border-color: var(--ok); }
+  .capgrid label.danger.on { background: var(--bad-soft); border-color: var(--bad); }
+  .capgrid code { font-size: 11.5px; }
+  .capgrid small { display: block; color: var(--muted); font-size: 11px; line-height: 1.35; }
+  .hexout { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: .03em; }
+  .sets { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; margin: 8px 0; }
+  .sets > div { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); transition: background .3s, border-color .3s; }
+  .sets > div.chg { background: var(--warn-soft); border-color: var(--warn); }
+  .sets div .k { font-size: 11.5px; color: var(--muted); }
+  .sets div .v { font-family: var(--mono); font-size: 13.5px; font-weight: 700; }
+  .matrix td, .matrix th { text-align: center; font-size: 13px; }
+  .matrix td:first-child, .matrix th:first-child { text-align: left; }
+  .matrix .ok { background: var(--ok-soft); color: var(--ok); font-weight: 700; }
+  .matrix .no { background: var(--bad-soft); color: var(--bad); }
+  .matrix .warn { background: var(--warn-soft); color: var(--warn); font-weight: 700; }
+  .toggles { display: flex; flex-wrap: wrap; gap: 6px 14px; font-family: var(--mono); font-size: 13px; margin: 6px 0 10px; }
+  .toggles label { display: inline-flex; gap: 5px; align-items: center; }
+  .bpf { font-family: var(--mono); font-size: 12.5px; }
+  .bpf div { padding: 3px 10px; border-left: 3px solid transparent; border-radius: 4px; transition: background .25s; }
+  .bpf div.cur { background: var(--accent-soft); border-left-color: var(--accent); }
+  .bpf div.hit { background: var(--bad-soft); border-left-color: var(--bad); }
+  .bpf div.pass { background: var(--ok-soft); border-left-color: var(--ok); }
+  main { overflow-wrap:anywhere; }
+  pre { overflow-wrap:normal; }
+  .compare > div { min-width:0; }
+  .controls label { min-width:0; max-width:100%; flex-wrap:wrap; }
+  .controls select { min-width:0; max-width:100%; }
+</style>
+</head>
+<body data-chapter="07">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">자원 · 권한 · 네트워크 · Chapter 07</span>
+    <h1>보안 강화: capabilities · seccomp</h1>
+    <p class="lead">지금 myctr로 띄운 컨테이너 안의 root는 rootfs·네임스페이스·cgroup으로 격리되어 있지만, 그 안에서는 여전히 <b>모든 권한</b>을 갖고 있습니다. 실제로 확인하면 <code>CapEff: 000001ffffffffff</code>, 즉 커널이 아는 41개 권한이 전부 켜져 있습니다. 네임스페이스가 "무엇이 보이나", cgroup이 "얼마나 쓰나"를 정했다면, 이 장은 "<b>무엇을 할 수 있나</b>"를 정합니다. 필요 없는 권한을 내려놓고(capabilities), 다시 얻지 못하게 잠그고(no_new_privs), 쓸 일 없는 시스템 콜을 아예 막습니다(seccomp). 모두 exec 직전, 자식이 할 일을 다 끝낸 뒤에 합니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>root 권한을 나눈 capability와 다섯 가지 집합(permitted, effective, inheritable, bounding, ambient)의 역할을 설명할 수 있다.</li>
+      <li>exec할 때 capability가 다시 계산되는 규칙을 알고, bounding set이 왜 핵심인지 설명할 수 있다.</li>
+      <li>no_new_privs가 막는 것과, seccomp를 설치하는 데 왜 필요한지 설명할 수 있다.</li>
+      <li>seccomp BPF 필터가 시스템 콜을 판정하는 과정을 따라갈 수 있다.</li>
+      <li>capability와 seccomp가 서로 독립된 두 겹의 방어라는 것을 실험으로 보일 수 있다.</li>
+      <li><code>myctr run --rootfs ./rootfs [--cap-add X] [--cap-drop Y] [--no-seccomp] ...</code>를 구현해 누적 기준(root 필수 73개, rootless 56개)을 통과시킨다.</li>
+    </ul></div>
+  </header>
+
+  <div class="callout"><span class="title">이 장은 6장 참조 구현에서 이어집니다</span>
+    3~6장의 rootfs·새 /proc·/dev·ID 매핑·cgroup·네트워크를 유지합니다. 자식은 rootfs 마운트까지 마친 뒤 권한과 시스템 콜을 제한합니다. 읽기 전용 루트와 민감한 /proc 파일 마스킹은 rootfs 격리와 별도 정책이며, 이번 장에는 추가하지 않습니다. 새 의존성은 <code>caps</code>(capability 시스템 콜 래퍼)와 <code>seccompiler</code>(seccomp BPF 생성기) 두 개입니다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">세 겹의 잠금</a></li>
+    <li><a href="#s2">capability: root를 41조각으로</a></li>
+    <li><a href="#s3">exec할 때 다시 계산된다</a></li>
+    <li><a href="#s4">언제 내려놓나</a></li>
+    <li><a href="#s5">no_new_privs</a></li>
+    <li><a href="#s6">seccomp: 시스템 콜 필터</a></li>
+    <li><a href="#s7">두 겹은 서로 독립이다</a></li>
+    <li><a href="#s8">실제 런타임은 무엇을 더 하나</a></li>
+    <li><a href="#s9">strace로 확인하기</a></li>
+    <li><a href="#s10">구현 가이드: 권한 내려놓기</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. 세 겹의 잠금</h2>
+    <p>보안의 기본 원칙은 <b>최소 권한</b>입니다. 웹 서버는 80번 포트를 열고 파일을 읽을 수 있으면 되지, 커널 모듈을 올리거나 시계를 바꿀 이유가 없습니다. 이 장에서 붙이는 세 가지는 서로 다른 질문에 답합니다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 760 230" role="img" aria-label="capability, no_new_privs, seccomp 세 겹 구조">
+        <defs><marker id="l1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+        <rect x="20" y="90" width="120" height="50" rx="10" style="fill:var(--accent-soft);stroke:var(--accent)"/>
+        <text x="80" y="112" text-anchor="middle" font-weight="700" font-size="13">컨테이너</text>
+        <text x="80" y="130" text-anchor="middle" font-size="12" class="muted">프로세스</text>
+        <rect x="190" y="30" width="160" height="170" rx="12" style="fill:var(--bad-soft);stroke:var(--bad)"/>
+        <text x="270" y="54" text-anchor="middle" font-weight="700" font-size="13" style="fill:var(--bad)">seccomp</text>
+        <text x="270" y="80" text-anchor="middle" font-size="12">이 시스템 콜을</text>
+        <text x="270" y="98" text-anchor="middle" font-size="12">부를 수 있나?</text>
+        <text x="270" y="130" text-anchor="middle" font-size="11.5" class="muted">번호로 판정</text>
+        <text x="270" y="148" text-anchor="middle" font-size="11.5" class="muted">커널 진입 직후</text>
+        <rect x="400" y="30" width="160" height="170" rx="12" style="fill:var(--warn-soft);stroke:var(--warn)"/>
+        <text x="480" y="54" text-anchor="middle" font-weight="700" font-size="13" style="fill:var(--warn)">capability</text>
+        <text x="480" y="80" text-anchor="middle" font-size="12">이 특권 동작을</text>
+        <text x="480" y="98" text-anchor="middle" font-size="12">할 자격이 있나?</text>
+        <text x="480" y="130" text-anchor="middle" font-size="11.5" class="muted">커널 코드 안의</text>
+        <text x="480" y="148" text-anchor="middle" font-size="11.5" class="muted">권한 검사 지점</text>
+        <rect x="610" y="90" width="130" height="50" rx="10" class="box"/>
+        <text x="675" y="112" text-anchor="middle" font-weight="700" font-size="13">커널 기능</text>
+        <text x="675" y="130" text-anchor="middle" font-size="12" class="muted">mount, 시계 ...</text>
+        <path d="M140 115 H190 M350 115 H400 M560 115 H610" class="line flow" marker-end="url(#l1)"/>
+        <rect x="190" y="205" width="370" height="20" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/>
+        <text x="375" y="219" text-anchor="middle" font-size="11.5" style="fill:var(--violet)">no_new_privs: 위 잠금을 exec로 다시 풀 수 없게</text>
+      </svg>
+      </div>
+      <figcaption>시스템 콜은 seccomp를 먼저 통과하고, 그 안의 특권 동작은 capability 검사를 통과해야 실행됩니다.</figcaption>
+    </figure>
+    <div class="tbl-wrap"><table>
+      <tr><th>장치</th><th>질문</th><th>어기면</th><th>이 장의 기본값</th></tr>
+      <tr><td>capability</td><td>이 특권 동작을 할 자격이 있나?</td><td><code>EPERM</code></td><td>Docker 기본값과 같은 14개만 남김</td></tr>
+      <tr><td>no_new_privs</td><td>exec로 권한을 새로 얻을 수 있나?</td><td>setuid 비트·파일 capability가 무시됨</td><td>항상 켬</td></tr>
+      <tr><td>seccomp</td><td>이 시스템 콜을 부를 수 있나?</td><td><code>EPERM</code> (설정에 따라 프로세스 종료도 가능)</td><td>24개 시스템 콜 차단</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. capability: root를 41조각으로</h2>
+    <p>예전 Unix의 권한은 둘뿐이었습니다. UID 0이면 모든 검사를 통과하고, 아니면 일반 권한 검사를 받습니다. Linux는 이 "root의 특권"을 <b>capability</b>라는 조각으로 나눴습니다. 실험 커널(7.0)은 0번 <code>CAP_CHOWN</code>부터 40번 <code>CAP_CHECKPOINT_RESTORE</code>까지 41개를 압니다. 커널은 특권 동작을 할 때 "UID가 0인가"가 아니라 "해당 capability가 effective 집합에 있는가"를 봅니다. 그래서 root라도 capability가 없으면 거절되고, root가 아니라도 capability가 있으면 허용됩니다.</p>
+    <div class="widget">
+      <div class="w-title">capability 계산기</div>
+      <div class="w-desc">체크한 capability로 <code>/proc/self/status</code>의 <code>CapEff</code> 값을 계산합니다. 초록은 Docker 기본값에 들어 있는 것, 빨강 테두리는 특히 강력해서 기본값에서 빠진 것입니다. 16진수를 직접 입력해 해석할 수도 있습니다.</div>
+      <div class="controls">
+        <button class="btn" id="cc-docker">Docker 기본값</button>
+        <button class="btn" id="cc-all">전부 (호스트 root)</button>
+        <button class="btn" id="cc-none">전부 끄기</button>
+        <label>16진수 <input type="text" id="cc-hex" style="width:170px" spellcheck="false"></label>
+      </div>
+      <div class="stat-row"><div class="stat" style="flex:1"><div class="k">CapEff</div><div class="hexout" id="cc-out">-</div></div><div class="stat"><div class="k">켜진 수</div><div class="v" id="cc-n">-</div></div></div>
+      <div class="capgrid" id="cc-grid"></div>
+    </div>
+    <p>실제로 확인한 값입니다. <code>capsh --decode</code>로 풀어 보면 Docker 기본값과 정확히 같습니다.</p>
+<pre class="term"><code><span class="p">$ </span>grep CapEff /proc/self/status                      <span class="o"># 호스트의 root 셸</span>
+<span class="o">CapEff:	000001ffffffffff</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs grep -E '^(Cap|NoNewPrivs|Seccomp)' /proc/self/status
+<span class="o">CapInh:	0000000000000000
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1</span>
+<span class="p">$ </span>capsh --decode=00000000a80425fb
+<span class="o">0x00000000a80425fb=cap_chown,cap_dac_override,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_net_bind_service,cap_net_raw,cap_sys_chroot,cap_mknod,cap_audit_write,cap_setfcap</span></code></pre>
+
+    <h3>다섯 가지 집합</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th>집합</th><th>의미</th><th>myctr가 설정하는 값</th></tr>
+      <tr><td><b>effective</b></td><td>지금 이 순간 커널이 검사하는 집합</td><td>남길 14개</td></tr>
+      <tr><td><b>permitted</b></td><td>effective에 올릴 수 있는 상한. 줄일 수만 있고 늘릴 수 없다</td><td>남길 14개</td></tr>
+      <tr><td><b>bounding</b></td><td>exec로 새로 얻을 수 있는 상한. 한 번 빼면 이 프로세스와 자손은 다시 얻지 못한다</td><td>남길 14개 (나머지 27개를 <code>PR_CAPBSET_DROP</code>)</td></tr>
+      <tr><td>inheritable</td><td>exec 뒤에 파일 capability와 함께 물려줄 수 있는 것</td><td>비움</td></tr>
+      <tr><td>ambient</td><td>파일 capability 없이도 root가 아닌 프로그램에 exec를 넘어 유지되는 것 (4.3+)</td><td>비움</td></tr>
+    </table></div>
+    <div class="callout"><span class="title">왜 inheritable을 비우나</span>
+      예전 런타임은 inheritable에도 기본 capability를 넣었습니다. 그런데 이 값이 남아 있으면, 컨테이너 안에서 파일 capability가 붙은 프로그램을 실행할 때 의도보다 많은 권한이 넘어갈 수 있는 경로가 생깁니다. 지금의 Docker와 runc는 inheritable을 비워 둡니다. 필요한 경우가 거의 없기 때문입니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. exec할 때 다시 계산된다</h2>
+    <p>1장에서 "capability는 exec를 넘어 유지된다"고 했지만, 정확히는 <b>exec할 때 규칙에 따라 다시 계산</b>됩니다. <code>man 7 capabilities</code>의 규칙을 줄이면 이렇습니다(P = 이전 프로세스, F = 실행 파일, P' = 새 프로세스).</p>
+<pre><code>P'(ambient)   = (특권 파일이면 0) 아니면 P(ambient)
+P'(permitted) = (P(inheritable) &amp; F(inheritable)) | (F(permitted) &amp; P(bounding)) | P'(ambient)
+P'(effective) = F(effective) ? P'(permitted) : P'(ambient)
+P'(bounding)  = P(bounding)   (exec로는 바뀌지 않음)</code></pre>
+    <p>핵심은 <b>UID 0이 exec할 때</b>입니다. 커널은 root가 실행하는 파일을 "모든 capability가 붙은 파일"처럼 취급합니다(F(permitted) = F(inheritable) = 전부, F(effective) = 켬). 그러면 P'(permitted)는 <b>P(bounding) 전체</b>가 됩니다. 즉 컨테이너 안의 root는 exec할 때마다 bounding set만큼 권한을 다시 채웁니다. 그래서 effective만 줄이면 소용이 없고, <b>bounding을 줄여야</b> 합니다.</p>
+    <div class="widget">
+      <div class="w-title">exec 변환기</div>
+      <div class="w-desc">상황을 고르면 exec 직후의 capability를 위 규칙으로 계산합니다. 집합은 단순화해 "기본 14개(D)", "전부(A)", "없음(0)" 세 가지 값으로만 표시합니다.</div>
+      <div class="controls">
+        <label>상황 <select id="ex-case">
+          <option value="root">컨테이너 root가 일반 프로그램 실행</option>
+          <option value="rootE">effective만 줄인 root가 실행 (bounding은 그대로)</option>
+          <option value="user">root가 아닌 사용자가 일반 프로그램 실행</option>
+          <option value="suid">root가 아닌 사용자가 setuid-root 프로그램 실행</option>
+        </select></label>
+        <label><input type="checkbox" id="ex-nnp"> no_new_privs</label>
+      </div>
+      <div class="sets" id="ex-before"></div>
+      <div style="text-align:center;font-size:20px;color:var(--muted)">↓ execve</div>
+      <div class="sets" id="ex-after"></div>
+      <div class="stepper-cap" id="ex-note"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 언제 내려놓나</h2>
+    <p>권한을 너무 일찍 내려놓으면 런타임 자신이 할 일을 못 합니다. 자식은 exec 전에 ID 0으로 바꾸고(<code>setuid</code>, <code>setgid</code>: <code>CAP_SETUID</code>·<code>CAP_SETGID</code>), hostname과 rootfs·proc·dev 마운트를 준비합니다(<code>CAP_SYS_ADMIN</code>). 이 모든 준비를 끝낸 뒤 <b>exec 직전에</b> 제한합니다. 이 장의 <code>lock_down</code>은 <code>setup</code>의 마지막 줄입니다.</p>
+    <div class="widget">
+      <div class="w-title">lock_down 한 줄씩</div>
+      <div class="w-desc">참조 구현의 <code>lock_down</code>이 실행될 때 자식의 capability 집합이 어떻게 줄어드는지 봅니다. 값은 실제 strace와 <code>/proc/self/status</code>에서 확인한 것입니다(root로 실행, user 네임스페이스 없음).</div>
+      <div class="sets" id="ld-sets"></div>
+      <div id="ld-ctl"></div>
+    </div>
+    <div class="callout warn"><span class="title">순서를 바꾸면 생기는 일</span>
+      <ul style="margin:0;padding-left:18px">
+        <li><b>bounding을 줄이기 전에 permitted를 줄이면:</b> <code>PR_CAPBSET_DROP</code>은 <code>CAP_SETPCAP</code>이 effective에 있어야 합니다. 남길 목록에 <code>SETPCAP</code>이 없으면(<code>--cap-drop ALL</code>) bounding을 더는 줄일 수 없습니다. 그래서 bounding을 가장 먼저 줄입니다.</li>
+        <li><b>effective보다 permitted를 먼저 줄이면:</b> effective는 permitted의 부분집합이어야 하므로 capset이 실패합니다. effective를 먼저 줄이고 permitted를 줄입니다.</li>
+        <li><b>seccomp를 rootfs 준비 전에 설치하면:</b> 이 필터는 mount·umount·pivot_root를 막으므로 런타임 자신이 실패합니다. seccomp는 rootfs·proc·dev 준비까지 끝난 맨 마지막에 설치합니다.</li>
+      </ul></div>
+    <p><code>--init</code> 모드에서는 lock_down이 init(PID 1)에서 실행되므로 init도, 그 자식인 사용자 프로그램도 같은 제한을 받습니다. 실제로 컨테이너 안에서 init의 <code>/proc/1/status</code>를 확인하면 <code>CapEff: 00000000a80425fb</code>, <code>Seccomp: 2</code>입니다. init은 fork와 waitpid만 하므로 제한을 받아도 문제가 없습니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. no_new_privs</h2>
+    <p><code>prctl(PR_SET_NO_NEW_PRIVS, 1)</code>을 부르면 그 프로세스와 모든 자손은 <b>exec로 권한을 새로 얻을 수 없습니다</b>. setuid 비트는 무시되고(UID가 바뀌지 않음), 파일 capability도 부여되지 않습니다. 한 번 켜면 끌 수 없고 fork와 exec를 넘어 유지됩니다.</p>
+    <ul class="checklist">
+      <li><b>무엇을 막나:</b> 컨테이너 안에 setuid-root 프로그램이 있어도, 그것을 실행해 root가 되는 길이 사라집니다. 3절 위젯에서 "setuid-root 프로그램 실행"에 no_new_privs를 켜 보세요.</li>
+      <li><b>무엇을 막지 않나:</b> 이미 가진 권한을 빼앗지는 않습니다. 컨테이너 root는 여전히 bounding set만큼의 capability를 갖고 exec합니다.</li>
+      <li><b>seccomp와의 관계:</b> <code>CAP_SYS_ADMIN</code>이 없는 프로세스가 seccomp 필터를 설치하려면 no_new_privs가 켜져 있어야 합니다. 그렇지 않으면 "필터로 setuid 프로그램을 속여 권한을 얻는" 경로가 생기기 때문입니다. 실제로 <code>seccompiler::apply_filter</code>는 필터를 설치하기 전에 스스로 <code>PR_SET_NO_NEW_PRIVS</code>를 부릅니다. 9절 strace에서 이 호출이 두 번 보이는 이유입니다.</li>
+      <li><b>대가:</b> 컨테이너 안에서 <code>sudo</code>, <code>su</code>, setuid 방식의 <code>ping</code> 같은 프로그램이 권한을 얻지 못합니다. Docker는 기본값이 꺼짐이고 <code>--security-opt no-new-privileges</code>로 켭니다. myctr는 항상 켭니다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. seccomp: 시스템 콜 필터</h2>
+    <p>seccomp(secure computing) 필터 모드는 프로세스가 시스템 콜을 할 때마다 <b>작은 BPF 프로그램</b>을 실행해 그 결과로 허용·거부를 정합니다. BPF 프로그램이 볼 수 있는 것은 시스템 콜 번호, 아키텍처, 인자 6개(값만, 포인터가 가리키는 내용은 못 봄)입니다. 필터는 fork와 exec를 넘어 상속되고, 한 번 설치하면 제거할 수 없으며, 더 엄격한 필터를 덧붙일 수만 있습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>판정</th><th>결과</th></tr>
+      <tr><td><code>SECCOMP_RET_ALLOW</code></td><td>그대로 실행</td></tr>
+      <tr><td><code>SECCOMP_RET_ERRNO</code></td><td>실행하지 않고 지정한 에러(myctr는 EPERM)를 돌려줌. 프로그램은 "권한이 없다"로 받아들이고 대개 우아하게 처리함</td></tr>
+      <tr><td><code>SECCOMP_RET_KILL_PROCESS</code></td><td>프로세스를 즉시 종료(SIGSYS)</td></tr>
+      <tr><td><code>SECCOMP_RET_TRAP</code> / <code>LOG</code> / <code>USER_NOTIF</code></td><td>SIGSYS 보내기 / 기록 후 허용 / 감시 프로세스에게 판정을 맡김</td></tr>
+    </table></div>
+
+    <h3>막는 목록</h3>
+    <p>myctr는 "기본 허용, 목록만 거부"(deny-list) 방식으로 24개를 막습니다. 모두 컨테이너 안의 평범한 프로그램이 쓸 일이 없고, 쓰면 호스트 전체에 영향을 주는 시스템 콜입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>묶음</th><th>시스템 콜</th><th>막는 이유</th></tr>
+      <tr><td>파일시스템·네임스페이스 구조</td><td><code>mount umount2 pivot_root unshare setns open_by_handle_at</code></td><td>런타임이 이미 다 꾸며 놓았으니 컨테이너가 다시 바꿀 이유가 없다</td></tr>
+      <tr><td>커널 자체</td><td><code>init_module finit_module delete_module kexec_load reboot swapon swapoff acct</code></td><td>커널은 호스트와 공유한다. 모듈·재부팅·스왑은 호스트 전체의 일</td></tr>
+      <tr><td>시계</td><td><code>settimeofday clock_settime</code></td><td>시계는 네임스페이스로 격리되지 않는다(time ns는 부팅 후 경과 시간만)</td></tr>
+      <tr><td>커널 키링</td><td><code>keyctl add_key request_key</code></td><td>키링은 네임스페이스로 격리되지 않는 부분이 있다</td></tr>
+      <tr><td>관찰·계측</td><td><code>ptrace perf_event_open bpf syslog userfaultfd</code></td><td>다른 프로세스나 커널 내부를 들여다보는 강력한 도구</td></tr>
+    </table></div>
+    <div class="widget">
+      <div class="w-title">seccomp 필터 따라가기</div>
+      <div class="w-desc">시스템 콜을 고르면 필터가 판정하는 과정을 보여 줍니다. seccompiler가 만든 실제 프로그램은 BPF 명령 125개였습니다. 아래는 그 구조를 줄여 쓴 의사 코드입니다.</div>
+      <div class="controls"><label>시스템 콜 <select id="bp-sys"></select></label><button class="btn primary" id="bp-run">판정</button></div>
+      <div class="bpf" id="bp-prog"></div>
+      <div class="stepper-cap" id="bp-out"></div>
+    </div>
+    <div class="callout deep"><span class="title">deny-list의 한계와 Docker의 allow-list</span>
+      목록 방식은 이해하기 쉽지만, 새 커널에 비슷한 일을 하는 새 시스템 콜이 생기면 그대로 통과합니다. 예를 들어 이 목록은 <code>clone</code>에 <code>CLONE_NEWUSER</code> 같은 네임스페이스 플래그를 넣는 경우를 막지 않습니다(<code>unshare</code>만 막음). Docker의 기본 프로파일은 반대로 <b>허용할 시스템 콜 수백 개를 나열</b>하고 나머지를 거부하며, <code>clone</code>처럼 인자에 따라 위험도가 달라지는 시스템 콜은 인자 값까지 검사합니다. seccompiler도 <code>SeccompRule</code>에 조건(<code>SeccompCondition</code>)을 넣어 인자 검사를 표현할 수 있습니다(도전 과제).</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 두 겹은 서로 독립이다</h2>
+    <p>capability와 seccomp는 서로 다른 지점에서 검사합니다. 그래서 한쪽을 풀어도 다른 쪽이 막고, 둘 다 풀어야 통과합니다. 실제로 확인한 결과입니다.</p>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run --rootfs ./rootfs unshare -U true; echo $?
+<span class="o">unshare: unshare failed: Operation not permitted
+1                    ← user ns 만들기는 capability가 필요 없지만 seccomp가 막음</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs --no-seccomp unshare -U true; echo $?
+<span class="o">0</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs --cap-add SYS_ADMIN unshare -m true; echo $?
+<span class="o">unshare: unshare failed: Operation not permitted
+1                    ← capability를 줘도 seccomp가 막음</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs --no-seccomp unshare -m true; echo $?
+<span class="o">unshare: unshare failed: Operation not permitted
+1                    ← seccomp를 꺼도 CAP_SYS_ADMIN이 없음</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs --cap-add SYS_ADMIN --no-seccomp unshare -m true; echo $?
+<span class="o">0                    ← 둘 다 풀어야 통과</span>
+<span class="p">$ </span>sudo myctr run --rootfs ./rootfs date -s 2020-01-01; echo $?
+<span class="o">Wed Jan  1 00:00:00 UTC 2020
+date: cannot set date: Operation not permitted
+1                    ← CAP_SYS_TIME도 없고 clock_settime도 막힘. 호스트 시계는 그대로</span></code></pre>
+    <div class="widget">
+      <div class="w-title">방어 매트릭스</div>
+      <div class="w-desc">capability를 더하거나 seccomp를 끄면서 각 동작이 어느 겹에서 막히는지 보세요. 판정은 위 실험과 커널 규칙을 따릅니다(이 장의 컨테이너는 root로 실행, user 네임스페이스 없음, net none).</div>
+      <div class="toggles" id="mx-tg"></div>
+      <div class="tbl-wrap"><table class="matrix" id="mx-tbl"></table></div>
+    </div>
+    <p>이 성질 때문에 실제 런타임은 둘 다 씁니다. capability는 "이 권한이 필요하다"는 의도를 표현하기 좋고(<code>--cap-add NET_ADMIN</code>), seccomp는 capability 하나에 너무 많은 기능이 묶여 있는 문제(<code>CAP_SYS_ADMIN</code>은 mount, 네임스페이스, 수십 가지 관리 작업을 한꺼번에 허락함)를 시스템 콜 단위로 보완합니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 실제 런타임은 무엇을 더 하나</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>기법</th><th>하는 일</th><th>myctr</th></tr>
+      <tr><td>읽기 전용 루트</td><td>pivot_root 후 루트를 <code>MS_RDONLY</code>로 다시 마운트(<code>docker run --read-only</code>). 침입자가 바이너리를 바꿔 심지 못함</td><td>rootfs는 유지. 읽기 전용 remount는 확장 과제</td></tr>
+      <tr><td>민감한 /proc·/sys 가리기</td><td><code>/proc/kcore</code>, <code>/proc/keys</code>, <code>/proc/sysrq-trigger</code> 등에 빈 파일을 bind하고, <code>/proc/sys</code>·<code>/sys</code>를 읽기 전용으로</td><td>새 /proc는 유지. 민감 경로 마스킹은 확장 과제</td></tr>
+      <tr><td>LSM (AppArmor, SELinux)</td><td>경로·레이블 기반 접근 제어를 한 겹 더. Docker는 <code>docker-default</code> AppArmor 프로파일을 씀</td><td>다루지 않음</td></tr>
+      <tr><td>allow-list seccomp + 인자 검사</td><td>6절 참고</td><td>도전 과제</td></tr>
+      <tr><td>root가 아닌 사용자로 실행</td><td>이미지의 <code>USER</code> 지시어. capability 집합이 처음부터 비어 있게 됨(3절 "root가 아닌 사용자" 참고)</td><td>도전 과제</td></tr>
+      <tr><td>user 네임스페이스</td><td>컨테이너 root가 호스트에서는 일반 사용자</td><td>5장에서 구현</td></tr>
+    </table></div>
+    <p>rootless로 실행하면(5장) 이 장의 capability는 <b>컨테이너의 user 네임스페이스 안에서</b>의 권한입니다. 실제로 일반 사용자로 실행해도 <code>CapEff</code>는 <code>00000000a80425fb</code>로 같지만, 그 권한이 미치는 범위는 자기 네임스페이스뿐입니다. 두 장치가 겹쳐서 더 단단해집니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. strace로 확인하기</h2>
+    <p>참조 구현을 Linux(aarch64)에서 실제로 추적한 출력입니다. capset 줄은 길어서 집합의 비트 목록을 줄였습니다.</p>
+<pre><code>sudo strace -f -e trace=prctl,capset,seccomp,execve,unshare ./target/debug/myctr run --rootfs ./rootfs unshare -U true</code></pre>
+    <div class="widget">
+      <div class="w-title">strace 출력 읽기: 권한을 내려놓는 순간</div>
+      <div class="w-desc">줄을 눌러 의미를 확인하세요.</div>
+      <div class="lines" id="st-lines"></div>
+      <div class="stepper-cap explain" id="st-explain">줄을 눌러 보세요.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. 구현 가이드: 권한 내려놓기</h2>
+    <p>6장 코드에서 출발합니다. 목표 사용법은 <code>myctr run --rootfs ./rootfs [--cap-add CAP]... [--cap-drop CAP|ALL]... [--no-seccomp] ...</code>입니다.</p>
+
+    <h3>단계 A. 의존성과 CLI</h3>
+<pre><code>cargo add caps@0.5 seccompiler@0.5
+# nix 기능 플래그는 6장과 같다 (prctl은 process 기능에 들어 있다)</code></pre>
+    <details class="deep"><summary>힌트 A</summary><div>
+<pre><code>/// 기본 capability에 더한다 (예: NET_ADMIN)
+#[arg(long = "cap-add", value_name = "CAP")]
+cap_add: Vec&lt;String&gt;,
+/// 기본 capability에서 뺀다 (ALL이면 전부)
+#[arg(long = "cap-drop", value_name = "CAP")]
+cap_drop: Vec&lt;String&gt;,
+/// seccomp 필터를 설치하지 않는다
+#[arg(long)]
+no_seccomp: bool,</code></pre>
+      <p><code>Vec&lt;String&gt;</code>으로 받으면 <code>--cap-add A --cap-add B</code>처럼 여러 번 쓸 수 있습니다.</p>
+    </div></details>
+
+    <h3>단계 B. 설정은 clone 전에 만든다</h3>
+    <p>capability 집합 계산과 BPF 컴파일은 메모리 할당이 필요합니다. 2장에서 배운 대로 자식에서는 할당을 줄이고, 잘못된 이름 같은 에러는 컨테이너를 만들기 전에 알리는 편이 좋습니다. 그래서 <code>main</code>에서 <code>Security</code>를 만들어 <code>Config</code>에 넣습니다.</p>
+<pre><code>/// exec 직전에 적용할 권한 제한. 할당이 필요한 일은 clone 전에 끝내 둔다
+struct Security {
+    caps: CapsHashSet,
+    seccomp: Option&lt;BpfProgram&gt;,
+}
+
+impl Security {
+    fn new(add: &amp;[String], drop: &amp;[String], no_seccomp: bool) -&gt; Result&lt;Self&gt; {
+        // TODO 1: DEFAULT_CAPS 로 시작, drop 적용(ALL이면 비우기), 그다음 add 적용
+        // TODO 2: no_seccomp 가 아니면 seccomp_filter()
+        todo!()
+    }
+}
+
+/// "net_admin", "NET_ADMIN", "CAP_NET_ADMIN" 을 모두 받는다
+fn parse_cap(name: &amp;str) -&gt; Result&lt;Capability&gt; { todo!() }</code></pre>
+    <details class="deep"><summary>힌트 B: 이름 파싱</summary><div>
+      <p><code>caps::Capability</code>는 <code>FromStr</code>을 구현하고 <code>"CAP_NET_ADMIN"</code> 형식을 받습니다. 대문자로 바꾸고 <code>CAP_</code>가 없으면 붙인 뒤 <code>.parse()</code>하세요. Docker와 같이 drop을 먼저, add를 나중에 적용하면 <code>--cap-drop ALL --cap-add KILL</code>이 "KILL 하나만"이 됩니다(실제 결과 <code>CapEff: 0000000000000020</code> = 1 &lt;&lt; 5).</p>
+    </div></details>
+
+    <h3>단계 C. seccomp 필터</h3>
+<pre><code>/// 목록의 시스템 콜은 EPERM, 나머지는 허용하는 BPF 프로그램
+fn seccomp_filter() -&gt; Result&lt;BpfProgram&gt; {
+    // TODO 3: BLOCKED_SYSCALLS 의 번호마다 빈 규칙 목록(= 무조건 일치)을 넣은 BTreeMap
+    // TODO 4: SeccompFilter::new(rules, 불일치 시 Allow, 일치 시 Errno(EPERM), 현재 아키텍처)
+    // TODO 5: BpfProgram 으로 변환 (try_into)
+    todo!()
+}</code></pre>
+    <details class="deep"><summary>힌트 C: 아키텍처마다 번호가 다르다</summary><div>
+      <p>시스템 콜 번호는 아키텍처마다 다릅니다(예: <code>mount</code>는 x86_64에서 165, aarch64에서 40). 번호를 직접 쓰지 말고 <code>libc::SYS_mount</code>처럼 libc 상수를 쓰면 빌드하는 아키텍처의 번호가 들어갑니다. 아키텍처는 <code>std::env::consts::ARCH.try_into()</code>로 <code>TargetArch</code>를 얻습니다. 필터는 맨 앞에서 아키텍처를 검사하므로, 다른 아키텍처의 호출 규약으로 들어오는 시스템 콜이 번호만 같아 통과하는 일을 막습니다.</p>
+    </div></details>
+
+    <h3>단계 D. lock_down</h3>
+<pre><code>/// exec 직전의 마지막 단계: 권한을 줄이고 시스템 콜을 막는다
+fn lock_down(sec: &amp;Security) -&gt; Result&lt;()&gt; {
+    // TODO 6: caps::runtime::thread_all_supported() 중 남기지 않을 것을 Bounding 에서 drop
+    // TODO 7: Inheritable, Ambient 비우기
+    // TODO 8: Effective → Permitted 순서로 sec.caps 설정
+    // TODO 9: prctl::set_no_new_privs()
+    // TODO 10: seccomp 가 있으면 seccompiler::apply_filter
+    todo!()
+}
+
+// setup() 의 마지막 줄
+lock_down(&amp;cfg.security)</code></pre>
+    <details class="deep"><summary>힌트 D: caps::all()이 아니라 thread_all_supported()인 이유</summary><div>
+      <p><code>caps::all()</code>은 크레이트가 아는 모든 capability를 돌려주지만, 실행 중인 커널이 그것을 다 아는 것은 아닙니다. 오래된 커널에서 모르는 번호를 <code>PR_CAPBSET_DROP</code>하면 <code>EINVAL</code>이 납니다. <code>thread_all_supported()</code>는 현재 커널이 지원하는 것만 돌려줍니다. 실험 커널에서는 41개였고, 그중 남길 14개를 뺀 27개를 drop했습니다.</p>
+    </div></details>
+
+    <h3>단계 E. 완료 기준</h3>
+<p>검사를 앞 장부터 누적합니다. 실행 가능한 전체 프로젝트는 <a href="examples/ch07/src/main.rs">src/main.rs</a>와 <a href="examples/ch07/Cargo.toml">Cargo.toml</a>에 있고, <a href="examples/README.md">준비·실행 안내</a>와 <a href="examples/ch07/check.sh">check.sh</a>를 함께 제공합니다. 아래 명령은 <code>examples/ch07</code>에서 실행합니다.</p>
+<div class="callout"><span class="title">rootfs를 모드별로 준비하세요</span><code>../rootfs</code>는 root 소유, <code>../rootfs-user</code>는 실행하는 일반 사용자 소유, <code>../rootfs-range</code>는 바깥 UID/GID 100000 소유입니다. <a href="examples/prepare-rootfs.sh">prepare-rootfs.sh</a>가 Alpine과 후속 장의 실험 도구를 설치합니다. rootless 권한 검사용 <code>/root-only</code>는 root 소유·0600인 예외 파일로 만들고 실제 open 실패를 검사합니다.</div>
+<h4>root 검사</h4>
+<p>3장 기본·파일시스템 17개 + 4장 cgroup 14개 + 5장 범위 매핑 8개 + 6장 네트워크 필수 15개 + 7장 보안 19개입니다. 네트워크의 DNS·HTTP는 로컬 fixture로 필수 검증하고, 외부 인터넷 HTTP 1개는 연결 가능한 환경에서만 별도 실행합니다. cgroup 설정과 통계는 부모의 호스트 경로에서 관측합니다. 컨테이너에 cgroupfs 전체를 노출하지 않습니다.</p>
+<pre><code>cargo build --locked
+sudo env ROOTFS="$PWD/../rootfs" RANGE_ROOTFS="$PWD/../rootfs-range" bash check.sh rootful</code></pre>
+<h4>일반 사용자 검사: 56 / 56</h4>
+<p><code>sudo</code> 없이 실행합니다. 자기 소유의 별도 rootfs를 쓰며, 3장 17개 + 5장 단일 매핑 16개 + 네트워크 4개 + 보안 19개를 실행합니다. root 전용 cgroup·범위 매핑·bridge 검사는 여기에 합산하지 않습니다.</p>
+<pre><code>ROOTFS="$PWD/../rootfs-user" bash check.sh rootless</code></pre>
+<div class="callout tip" id="runtime-proof"><span class="title">통합본 실제 실행 결과</span>Linux aarch64, Debian 12 기반 전용 privileged 컨테이너, 커널 <code>7.0.12-linuxkit</code>, Rust/Cargo <code>1.86.0</code>, Alpine <code>3.22.2</code>에서 root <b>73 / 73 + 외부 HTTP 1 / 1</b> 및 일반 사용자 <b>56 / 56</b>를 통과했습니다. 일반 사용자 launcher는 UID/GID 1000, <code>CapPrm·CapEff·CapAmb=0</code>입니다. <a href="examples/VALIDATION.md">검사 모듈·소스 해시·실행 기록</a>을 확인할 수 있습니다. x86_64는 실행하지 않았습니다.</div>
+<details class="deep"><summary>참조 구현 (막혔을 때만 여세요)</summary><div>
+<p>6장 전체 구현에 이 장의 기능을 더했습니다. rootfs·새 procfs·최소 /dev와 앞 장의 옵션을 유지합니다. 접힌 코드와 examples의 소스는 같습니다.</p>
+<h4 data-integrated-cargo>Cargo.toml</h4><pre><code>[package]
+name="myctr"
+version="0.1.0"
+edition="2024"
+[dependencies]
+anyhow="1"
+clap={version="4",features=["derive"]}
+nix={version="0.29",features=["process", "signal", "sched", "hostname", "mount", "fs", "user"]}
+caps="0.5"
+seccompiler="0.5"</code></pre>
+<h4>src/main.rs</h4>
+<pre><code>use std::collections::BTreeMap;
+use std::ffi::CString;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::net::IpAddr;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::symlink;
+use std::os::fd::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
+use std::process::Command as Cmd;
+
+use anyhow::{Context, Result, anyhow, bail};
+use caps::{CapSet, Capability, CapsHashSet};
+use clap::{Parser, Subcommand, ValueEnum};
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::libc;
+use nix::mount::{MntFlags, MsFlags, mount, umount2};
+use nix::unistd::{chdir, pivot_root};
+use nix::sched::{CloneFlags, clone};
+use nix::sys::prctl;
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::sys::wait::{WaitStatus, waitpid};
+use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
+use nix::unistd::{
+    ForkResult, Gid, Pid, Uid, close, execvp, fork, pipe2, read, setgid, setgroups, sethostname, setuid, write,
+};
+
+const OLD_ROOT: &amp;str = ".oldroot";
+const DEVICES: [&amp;str; 6] = ["null", "zero", "full", "random", "urandom", "tty"];
+
+const STACK_SIZE: usize = 1024 * 1024;
+const CGROUP_ROOT: &amp;str = "/sys/fs/cgroup";
+/// myctr가 만드는 모든 컨테이너 cgroup의 부모
+const CGROUP_PARENT: &amp;str = "myctr";
+const CPU_PERIOD_US: u64 = 100_000;
+/// --userns-base 로 매핑할 ID 개수
+const USERNS_RANGE: u32 = 65536;
+/// 모든 컨테이너가 붙는 브리지와 그 대역
+const BRIDGE: &amp;str = "myctr0";
+const SUBNET: &amp;str = "10.88.0.0/24";
+const GATEWAY: &amp;str = "10.88.0.1";
+/// 기본으로 남겨 두는 capability (Docker 기본값과 같은 14개)
+const DEFAULT_CAPS: [Capability; 14] = [
+    Capability::CAP_CHOWN,
+    Capability::CAP_DAC_OVERRIDE,
+    Capability::CAP_FSETID,
+    Capability::CAP_FOWNER,
+    Capability::CAP_MKNOD,
+    Capability::CAP_NET_RAW,
+    Capability::CAP_SETGID,
+    Capability::CAP_SETUID,
+    Capability::CAP_SETFCAP,
+    Capability::CAP_SETPCAP,
+    Capability::CAP_NET_BIND_SERVICE,
+    Capability::CAP_SYS_CHROOT,
+    Capability::CAP_KILL,
+    Capability::CAP_AUDIT_WRITE,
+];
+/// seccomp로 막는 시스템 콜. 호출하면 EPERM이 돌아온다
+const BLOCKED_SYSCALLS: [(&amp;str, i64); 24] = [
+    // 파일시스템과 네임스페이스 구조 바꾸기
+    ("mount", libc::SYS_mount),
+    ("umount2", libc::SYS_umount2),
+    ("pivot_root", libc::SYS_pivot_root),
+    ("unshare", libc::SYS_unshare),
+    ("setns", libc::SYS_setns),
+    ("open_by_handle_at", libc::SYS_open_by_handle_at),
+    // 커널 자체를 바꾸기
+    ("init_module", libc::SYS_init_module),
+    ("finit_module", libc::SYS_finit_module),
+    ("delete_module", libc::SYS_delete_module),
+    ("kexec_load", libc::SYS_kexec_load),
+    ("reboot", libc::SYS_reboot),
+    ("swapon", libc::SYS_swapon),
+    ("swapoff", libc::SYS_swapoff),
+    ("acct", libc::SYS_acct),
+    // 호스트 전체가 공유하는 시계
+    ("settimeofday", libc::SYS_settimeofday),
+    ("clock_settime", libc::SYS_clock_settime),
+    // 커널 키링
+    ("keyctl", libc::SYS_keyctl),
+    ("add_key", libc::SYS_add_key),
+    ("request_key", libc::SYS_request_key),
+    // 다른 프로세스나 커널 내부 관찰
+    ("ptrace", libc::SYS_ptrace),
+    ("perf_event_open", libc::SYS_perf_event_open),
+    ("bpf", libc::SYS_bpf),
+    ("syslog", libc::SYS_syslog),
+    ("userfaultfd", libc::SYS_userfaultfd),
+];
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Net {
+    /// 호스트의 네트워크를 그대로 쓴다
+    Host,
+    /// 새 네트워크 네임스페이스, loopback만
+    None,
+    /// 새 네트워크 네임스페이스 + veth + 브리지 + NAT (root 전용)
+    Bridge,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 새 네임스페이스와 cgroup 안에서 실행한다
+    Run {
+        /// 컨테이너의 루트가 될 디렉터리
+        #[arg(long)]
+        rootfs: PathBuf,
+        /// 컨테이너 안에서 보일 hostname
+        #[arg(long, default_value = "myctr")]
+        hostname: String,
+        /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+        #[arg(long)]
+        init: bool,
+        /// 메모리 상한 (예: 64M, 1G, 바이트 수)
+        #[arg(long, value_parser = parse_bytes)]
+        memory: Option&lt;u64&gt;,
+        /// CPU 상한 (코어 수, 예: 0.5)
+        #[arg(long)]
+        cpus: Option&lt;f64&gt;,
+        /// 최대 프로세스(스레드) 수
+        #[arg(long)]
+        pids: Option&lt;u64&gt;,
+        /// (root 전용) 컨테이너의 UID/GID 0..65535 를 이 호스트 ID부터 매핑한다
+        #[arg(long)]
+        userns_base: Option&lt;u32&gt;,
+        /// 네트워크 모드
+        #[arg(long, value_enum, default_value = "none")]
+        net: Net,
+        /// DNS 서버 주소 (반복 가능). bridge에서 호스트 resolver가 loopback이면 필수
+        #[arg(long)]
+        dns: Vec&lt;IpAddr&gt;,
+        /// 기본 capability에 더한다 (예: NET_ADMIN)
+        #[arg(long = "cap-add", value_name = "CAP")]
+        cap_add: Vec&lt;String&gt;,
+        /// 기본 capability에서 뺀다 (ALL이면 전부)
+        #[arg(long = "cap-drop", value_name = "CAP")]
+        cap_drop: Vec&lt;String&gt;,
+        /// seccomp 필터를 설치하지 않는다
+        #[arg(long)]
+        no_seccomp: bool,
+        /// 실행할 프로그램과 인자
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+struct Limits {
+    memory: Option&lt;u64&gt;,
+    cpus: Option&lt;f64&gt;,
+    pids: Option&lt;u64&gt;,
+}
+
+impl Limits {
+    fn any(&amp;self) -&gt; bool {
+        self.memory.is_some() || self.cpus.is_some() || self.pids.is_some()
+    }
+}
+
+/// clone된 자식에게 넘길 설정
+struct Config {
+    rootfs: PathBuf,
+    resolver: PathBuf,
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    /// 부모가 준비를 마쳤다고 알려 주는 파이프 (읽는 쪽, 쓰는 쪽)
+    sync: (RawFd, RawFd),
+    userns: bool,
+    clear_groups: bool,
+    security: Security,
+}
+
+/// exec 직전에 적용할 권한 제한. 할당이 필요한 일은 clone 전에 끝내 둔다
+struct Security {
+    caps: CapsHashSet,
+    seccomp: Option&lt;BpfProgram&gt;,
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { rootfs,
+            hostname, init, memory, cpus, pids, userns_base, net, dns, cap_add, cap_drop, no_seccomp, cmd,
+        } =&gt; {
+            let argv = cmd
+                .iter()
+                .map(|s| CString::new(s.as_bytes()))
+                .collect::&lt;Result&lt;_, _&gt;&gt;()
+                .context("인자에 NUL 바이트가 있습니다")?;
+            let security = Security::new(&amp;cap_add, &amp;cap_drop, no_seccomp)?;
+            let limits = Limits { memory, cpus, pids };
+            let rootfs = fs::canonicalize(&amp;rootfs).context("rootfs 경로 확인")?;
+            validate_rootfs(&amp;rootfs)?;
+            let code = run(rootfs, hostname, init, argv, &amp;limits, userns_base, net, dns, security)?;
+            std::process::exit(code);
+        }
+    }
+}
+
+/// "64M", "1G", "512K", "1048576" 을 바이트 수로
+fn parse_bytes(s: &amp;str) -&gt; Result&lt;u64, String&gt; {
+    let (num, mul) = match s.chars().last() {
+        Some('K' | 'k') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 10),
+        Some('M' | 'm') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 20),
+        Some('G' | 'g') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 30),
+        _ =&gt; (s, 1),
+    };
+    num.parse::&lt;u64&gt;().map(|n| n * mul).map_err(|e| format!("{s}: {e}"))
+}
+
+fn run(rootfs: PathBuf, 
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    limits: &amp;Limits,
+    userns_base: Option&lt;u32&gt;,
+    net: Net,
+    dns: Vec&lt;IpAddr&gt;,
+    security: Security,
+) -&gt; Result&lt;i32&gt; {
+    let rootless = !Uid::effective().is_root();
+    let idmap = match (rootless, userns_base) {
+        (true, Some(_)) =&gt; bail!("--userns-base는 root로 실행할 때만 쓸 수 있습니다"),
+        (true, None) =&gt; Some(IdMap::rootless()),
+        (false, Some(base)) =&gt; {
+            if base.checked_add(USERNS_RANGE - 1).is_none_or(|last| last == u32::MAX) {
+                bail!("--userns-base는 0..4294901759 범위여야 합니다 (65536개 ID, UID/GID -1 제외)");
+            }
+            Some(IdMap::range(base))
+        },
+        (false, None) =&gt; None,
+    };
+    if rootless &amp;&amp; net == Net::Bridge {
+        // veth·브리지·iptables는 호스트(최상위) 네트워크 네임스페이스를 바꾸는 일이다
+        bail!("--net bridge는 root로 실행할 때만 쓸 수 있습니다");
+    }
+    let resolver = Resolver::prepare(&amp;rootfs, net, &amp;dns)?;
+    let cgroup = if rootless {
+        if limits.any() {
+            bail!("rootless 모드에서는 --memory/--cpus/--pids를 쓸 수 없습니다 (cgroup 위임이 필요합니다)");
+        }
+        None
+    } else {
+        Some(Cgroup::create(&amp;format!("ctr-{}", std::process::id()), limits)?)
+    };
+
+    // O_CLOEXEC: 사용자 프로그램으로 새지 않게
+    let (sync_rd, sync_wr) = pipe2(OFlag::O_CLOEXEC).context("pipe")?;
+    let cfg = Config { rootfs, resolver: resolver.path.clone(),
+        hostname, init, argv,
+        sync: (sync_rd.as_raw_fd(), sync_wr.as_raw_fd()),
+        userns: idmap.is_some(),
+        // 특권 range 모드에서는 상속한 호스트 보조 그룹을 남기지 않는다.
+        // rootless는 setgroups=deny이므로 변경할 수 없다.
+        clear_groups: idmap.as_ref().is_some_and(|map| !map.deny_setgroups),
+        security,
+    };
+
+    let mut flags = CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
+    if idmap.is_some() {
+        flags |= CloneFlags::CLONE_NEWUSER;
+    }
+    if net != Net::Host {
+        flags |= CloneFlags::CLONE_NEWNET;
+    }
+    let mut stack = vec![0u8; STACK_SIZE];
+    let cb = Box::new(|| container_main(&amp;cfg));
+    let child = unsafe { clone(cb, &amp;mut stack, flags, Some(Signal::SIGCHLD as i32)) }
+        .context("clone 실패")?;
+    drop(sync_rd);
+
+    // 준비 실패 시 먼저 파이프를 닫는다. 자식은 EOF를 받고 종료하며,
+    // 부모는 반드시 wait로 회수한 뒤 cgroup을 정리한다.
+    let mut veth_guard = None;
+    let prepared = (|| -&gt; Result&lt;()&gt; {
+        if let Some(cg) = &amp;cgroup {
+            cg.add(child)?;
+        }
+        if let Some(map) = &amp;idmap {
+            map.write(child)?;
+        }
+        // 매핑까지 끝난 뒤에 네트워크. 자식은 아직 파이프에서 기다린다
+        let ns = NetnsEnter { child, via_userns: rootless };
+        match net {
+            Net::Host =&gt; {}
+            Net::None =&gt; ns.run(&amp;["ip", "link", "set", "lo", "up"])?,
+            Net::Bridge =&gt; { veth_guard = Some(setup_bridge_net(&amp;ns, std::process::id())?); },
+        }
+        unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }
+            .context("signal 설정 실패")?;
+        write(&amp;sync_wr, &amp;[1]).context("자식 깨우기")?;
+        Ok(())
+    })();
+    drop(sync_wr);
+    if let Err(error) = prepared {
+        // EOF로 종료한 PID 1을 회수하기 전에 Cgroup::drop이 실행되면
+        // cgroup.procs가 비어 있지 않아 정리가 실패할 수 있다.
+        wait_exit_code(child).context("준비 실패한 자식 회수")?;
+        return Err(error);
+    }
+    let code = wait_exit_code(child)?;
+    if cgroup.as_ref().is_some_and(|cg| cg.oom_kills() &gt; 0) {
+        eprintln!("myctr: 메모리 상한을 넘어 OOM killer가 프로세스를 종료했습니다");
+    }
+    Ok(code)
+}
+
+fn wait_exit_code(child: Pid) -&gt; Result&lt;i32&gt; {
+    loop {
+        match waitpid(child, None) {
+            Ok(WaitStatus::Exited(_, code)) =&gt; return Ok(code),
+            Ok(WaitStatus::Signaled(_, sig, _)) =&gt; return Ok(128 + sig as i32),
+            Ok(other) =&gt; bail!("예상하지 못한 상태: {other:?}"),
+            Err(Errno::EINTR) =&gt; continue,
+            Err(error) =&gt; return Err(error).context("waitpid 실패"),
+        }
+    }
+}
+
+/// 외부 명령을 실행하고 실패하면 stderr를 에러에 담는다
+fn sh(args: &amp;[&amp;str]) -&gt; Result&lt;()&gt; {
+    let out = Cmd::new(args[0])
+        .args(&amp;args[1..])
+        .output()
+        .with_context(|| format!("{} 실행", args[0]))?;
+    if !out.status.success() {
+        bail!("{}: {}", args.join(" "), String::from_utf8_lossy(&amp;out.stderr).trim());
+    }
+    Ok(())
+}
+
+/// 성공 여부만 본다 (규칙이 이미 있는지 확인할 때)
+fn sh_ok(args: &amp;[&amp;str]) -&gt; bool {
+    Cmd::new(args[0]).args(&amp;args[1..]).output().is_ok_and(|o| o.status.success())
+}
+
+/// 자식의 네트워크 네임스페이스 안에서 명령을 실행하는 방법
+struct NetnsEnter {
+    child: Pid,
+    /// rootless: 호스트에서 권한이 없으므로 자식의 user 네임스페이스를 거쳐 들어간다
+    via_userns: bool,
+}
+
+impl NetnsEnter {
+    fn run(&amp;self, args: &amp;[&amp;str]) -&gt; Result&lt;()&gt; {
+        let target = self.child.to_string();
+        let mut full = vec!["nsenter", "-t", target.as_str()];
+        if self.via_userns {
+            // 5장의 setgroups=deny 때문에 nsenter가 자격 증명을 바꾸지 않게 한다
+            full.extend_from_slice(&amp;["-U", "--preserve-credentials"]);
+        }
+        full.push("-n");
+        full.extend_from_slice(args);
+        sh(&amp;full)
+    }
+}
+
+/// 브리지, 포워딩, NAT. 모든 컨테이너가 공유하므로 없을 때만 만든다
+fn ensure_bridge() -&gt; Result&lt;()&gt; {
+    if !sh_ok(&amp;["ip", "link", "show", BRIDGE]) {
+        sh(&amp;["ip", "link", "add", BRIDGE, "type", "bridge"])?;
+        sh(&amp;["ip", "addr", "add", &amp;format!("{GATEWAY}/24"), "dev", BRIDGE])?;
+    }
+    sh(&amp;["ip", "link", "set", BRIDGE, "up"])?;
+    fs::write("/proc/sys/net/ipv4/ip_forward", "1").context("ip_forward 켜기")?;
+    let rules: [&amp;[&amp;str]; 3] = [
+        &amp;["-t", "nat", "POSTROUTING", "-s", SUBNET, "!", "-o", BRIDGE, "-j", "MASQUERADE"],
+        &amp;["-t", "filter", "FORWARD", "-i", BRIDGE, "-j", "ACCEPT"],
+        &amp;["-t", "filter", "FORWARD", "-o", BRIDGE, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    ];
+    for rule in rules {
+        // iptables -t &lt;표&gt; -C &lt;체인&gt; ... 로 있는지 보고, 없으면 -A
+        let (table, rest) = rule.split_at(2);
+        let mut check = vec!["iptables"];
+        check.extend_from_slice(table);
+        check.push("-C");
+        check.extend_from_slice(rest);
+        if !sh_ok(&amp;check) {
+            check[3] = "-A";
+            sh(&amp;check)?;
+        }
+    }
+    Ok(())
+}
+
+struct VethGuard { name: String }
+impl Drop for VethGuard {
+    fn drop(&amp;mut self) { let _ = sh(&amp;["ip", "link", "del", &amp;self.name]); }
+}
+
+fn setup_bridge_net(ns: &amp;NetnsEnter, id: u32) -&gt; Result&lt;VethGuard&gt; {
+    ensure_bridge()?;
+    // 인터페이스 이름은 15자 제한. 컨테이너 쪽은 옮긴 뒤 eth0으로 바꾼다
+    let host_if = format!("veth{id}");
+    let peer_if = format!("ceth{id}");
+    // 간단한 주소 배정: 10.88.0.2 ~ 10.88.0.254
+    let ip = format!("10.88.0.{}/24", 2 + id % 253);
+
+    sh(&amp;["ip", "link", "add", &amp;host_if, "type", "veth", "peer", "name", &amp;peer_if])?;
+    let guard = VethGuard { name: host_if.clone() };
+    sh(&amp;["ip", "link", "set", &amp;host_if, "master", BRIDGE, "up"])?;
+    sh(&amp;["ip", "link", "set", &amp;peer_if, "netns", &amp;ns.child.to_string()])?;
+
+    ns.run(&amp;["ip", "link", "set", "lo", "up"])?;
+    ns.run(&amp;["ip", "link", "set", &amp;peer_if, "name", "eth0"])?;
+    ns.run(&amp;["ip", "addr", "add", &amp;ip, "dev", "eth0"])?;
+    ns.run(&amp;["ip", "link", "set", "eth0", "up"])?;
+    ns.run(&amp;["ip", "route", "add", "default", "via", GATEWAY])?;
+    Ok(guard)
+}
+
+/// 실행마다 별도 resolver 파일. 자식을 회수한 뒤 삭제된다.
+struct Resolver { path: PathBuf }
+impl Resolver {
+    fn prepare(rootfs: &amp;Path, net: Net, dns: &amp;[IpAddr]) -&gt; Result&lt;Self&gt; {
+        let content = if dns.is_empty() {
+            let text = fs::read_to_string("/etc/resolv.conf").context("호스트 resolver 읽기")?;
+            let loopback = text.lines().any(|line| {
+                let mut words = line.split_whitespace();
+                words.next() == Some("nameserver") &amp;&amp; words.next()
+                    .and_then(|v| v.parse::&lt;IpAddr&gt;().ok()).is_some_and(|ip| ip.is_loopback())
+            });
+            if net == Net::Bridge &amp;&amp; loopback {
+                bail!("호스트 resolver가 loopback입니다. bridge에서 접근 가능한 --dns ADDRESS를 지정하세요");
+            }
+            text
+        } else {
+            dns.iter().map(|ip| format!("nameserver {ip}\n")).collect()
+        };
+        let target = rootfs.join("etc/resolv.conf");
+        match fs::symlink_metadata(&amp;target) {
+            Ok(meta) if !meta.is_file() =&gt; bail!("rootfs/etc/resolv.conf는 일반 파일이어야 합니다"),
+            Ok(_) =&gt; {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =&gt; {
+                OpenOptions::new().write(true).create_new(true).open(&amp;target)
+                    .context("resolv.conf 마운트 대상 만들기")?;
+            },
+            Err(error) =&gt; return Err(error).context("resolv.conf 대상 확인"),
+        }
+        let path = std::env::temp_dir().join(format!("myctr-resolv-{}", std::process::id()));
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&amp;path)
+            .context("전용 resolver 파일 만들기")?;
+        let resolver = Self { path };
+        file.write_all(content.as_bytes()).context("resolver 쓰기")?;
+        Ok(resolver)
+    }
+}
+impl Drop for Resolver {
+    fn drop(&amp;mut self) { let _ = fs::remove_file(&amp;self.path); }
+}
+
+/// user 네임스페이스의 UID/GID 매핑
+struct IdMap {
+    uid_map: String,
+    gid_map: String,
+    /// 비특권 프로세스가 gid_map을 쓰려면 먼저 setgroups를 막아야 한다
+    deny_setgroups: bool,
+}
+
+impl IdMap {
+    /// 컨테이너 root(0) 하나를 나 자신에게
+    fn rootless() -&gt; Self {
+        IdMap {
+            uid_map: format!("0 {} 1", Uid::effective()),
+            gid_map: format!("0 {} 1", Gid::effective()),
+            deny_setgroups: true,
+        }
+    }
+
+    /// 컨테이너의 0..65535 를 호스트의 base..base+65535 로
+    fn range(base: u32) -&gt; Self {
+        IdMap {
+            uid_map: format!("0 {base} {USERNS_RANGE}"),
+            gid_map: format!("0 {base} {USERNS_RANGE}"),
+            deny_setgroups: false,
+        }
+    }
+
+    fn write(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        if self.deny_setgroups {
+            fs::write(proc.join("setgroups"), "deny").context("setgroups 막기")?;
+        }
+        fs::write(proc.join("uid_map"), &amp;self.uid_map)
+            .with_context(|| format!("uid_map 쓰기 ({})", self.uid_map))?;
+        fs::write(proc.join("gid_map"), &amp;self.gid_map)
+            .with_context(|| format!("gid_map 쓰기 ({})", self.gid_map))?;
+        Ok(())
+    }
+}
+
+struct Cgroup {
+    path: PathBuf,
+}
+
+impl Cgroup {
+    fn create(name: &amp;str, limits: &amp;Limits) -&gt; Result&lt;Self&gt; {
+        let parent = Path::new(CGROUP_ROOT).join(CGROUP_PARENT);
+        fs::create_dir_all(&amp;parent).with_context(|| format!("{} 만들기", parent.display()))?;
+        // 부모에서 컨트롤러를 켜야 자식 cgroup에 memory.max 같은 파일이 생긴다
+        fs::write(parent.join("cgroup.subtree_control"), "+memory +cpu +pids")
+            .context("컨트롤러 활성화 (상위 cgroup의 cgroup.subtree_control에 memory cpu pids가 켜져 있나요?)")?;
+
+        let path = parent.join(name);
+        fs::create_dir(&amp;path).with_context(|| format!("{} 만들기", path.display()))?;
+        let cg = Cgroup { path };
+        if let Some(bytes) = limits.memory {
+            cg.write("memory.max", &amp;bytes.to_string())?;
+            // 스왑으로 도망가지 못하게. 스왑 계정이 꺼진 커널에는 파일이 없다
+            if cg.path.join("memory.swap.max").exists() {
+                cg.write("memory.swap.max", "0")?;
+            }
+        }
+        if let Some(cpus) = limits.cpus {
+            let quota = (cpus * CPU_PERIOD_US as f64) as u64;
+            cg.write("cpu.max", &amp;format!("{quota} {CPU_PERIOD_US}"))?;
+        }
+        if let Some(n) = limits.pids {
+            cg.write("pids.max", &amp;n.to_string())?;
+        }
+        Ok(cg)
+    }
+
+    fn write(&amp;self, file: &amp;str, value: &amp;str) -&gt; Result&lt;()&gt; {
+        fs::write(self.path.join(file), value)
+            .with_context(|| format!("{}/{file} 에 {value} 쓰기", self.path.display()))
+    }
+
+    /// 프로세스를 이 cgroup으로 옮긴다 (호스트 PID)
+    fn add(&amp;self, pid: Pid) -&gt; Result&lt;()&gt; {
+        self.write("cgroup.procs", &amp;pid.to_string())
+    }
+
+    /// memory.events 의 oom_kill 카운터
+    fn oom_kills(&amp;self) -&gt; u64 {
+        fs::read_to_string(self.path.join("memory.events"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("oom_kill ").and_then(|n| n.parse().ok()))
+            })
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for Cgroup {
+    fn drop(&amp;mut self) {
+        // 프로세스가 남아 있으면 EBUSY. PID 1이 끝나면 네임스페이스 전체가 정리되므로 비어 있다
+        if let Err(e) = fs::remove_dir(&amp;self.path) {
+            eprintln!("myctr: cgroup 정리 실패 {}: {e}", self.path.display());
+        }
+    }
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다.
+fn container_main(cfg: &amp;Config) -&gt; isize {
+    // 부모가 cgroup, ID 매핑, 네트워크를 끝낼 때까지 기다린다.
+    // 쓰는 쪽을 닫아 두어야 부모가 죽었을 때 read가 EOF(0)로 깨어난다
+    let _ = close(cfg.sync.1);
+    let mut buf = [0u8; 1];
+    loop {
+        match read(cfg.sync.0, &amp;mut buf) {
+            Ok(1) =&gt; break,
+            Err(Errno::EINTR) =&gt; continue,
+            _ =&gt; {
+                eprintln!("myctr: 부모가 준비를 마치지 못했습니다");
+                return 1;
+            }
+        }
+    }
+    let _ = close(cfg.sync.0);
+
+    if let Err(e) = setup(cfg) {
+        eprintln!("myctr: {e:#}");
+        return 1;
+    }
+    if cfg.init { mini_init(&amp;cfg.argv) } else { exec(&amp;cfg.argv) }
+}
+
+/// fork와 exec 사이에서 컨테이너의 모양을 만든다
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    if cfg.userns {
+        // 매핑은 ID의 대응표만 만든다. 특히 range 모드에서 host UID 0은
+        // 매핑 밖이므로, 새 namespace의 ID 0으로 자격 증명을 옮긴다.
+        if cfg.clear_groups {
+            setgroups(&amp;[]).context("보조 그룹 비우기")?;
+        }
+        setgid(Gid::from_raw(0)).context("컨테이너 GID 0으로 전환")?;
+        setuid(Uid::from_raw(0)).context("컨테이너 UID 0으로 전환")?;
+    }
+    sethostname(&amp;cfg.hostname).context("sethostname")?;
+    setup_rootfs(&amp;cfg.rootfs, &amp;cfg.resolver)?;
+    // 위의 일들은 권한이 필요하다. 다 끝났으니 마지막으로 권한을 내려놓는다
+    lock_down(&amp;cfg.security)
+}
+
+impl Security {
+    fn new(add: &amp;[String], drop: &amp;[String], no_seccomp: bool) -&gt; Result&lt;Self&gt; {
+        let mut caps: CapsHashSet = DEFAULT_CAPS.into_iter().collect();
+        for name in drop {
+            if name.eq_ignore_ascii_case("ALL") {
+                caps.clear();
+            } else {
+                caps.remove(&amp;parse_cap(name)?);
+            }
+        }
+        for name in add {
+            caps.insert(parse_cap(name)?);
+        }
+        let seccomp = if no_seccomp { None } else { Some(seccomp_filter()?) };
+        Ok(Security { caps, seccomp })
+    }
+}
+
+/// "net_admin", "NET_ADMIN", "CAP_NET_ADMIN" 을 모두 받는다
+fn parse_cap(name: &amp;str) -&gt; Result&lt;Capability&gt; {
+    let upper = name.to_ascii_uppercase();
+    let full = if upper.starts_with("CAP_") { upper } else { format!("CAP_{upper}") };
+    full.parse().map_err(|_| anyhow!("알 수 없는 capability: {name}"))
+}
+
+/// 목록의 시스템 콜은 EPERM, 나머지는 허용하는 BPF 프로그램
+fn seccomp_filter() -&gt; Result&lt;BpfProgram&gt; {
+    let rules: BTreeMap&lt;i64, Vec&lt;SeccompRule&gt;&gt; =
+        BLOCKED_SYSCALLS.iter().map(|&amp;(_, nr)| (nr, vec![])).collect();
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,                        // 목록에 없으면
+        SeccompAction::Errno(libc::EPERM as u32),    // 목록에 있으면
+        std::env::consts::ARCH.try_into().context("seccomp 아키텍처")?,
+    )
+    .context("seccomp 필터 만들기")?;
+    filter.try_into().context("seccomp BPF 컴파일")
+}
+
+/// exec 직전의 마지막 단계: 권한을 줄이고 시스템 콜을 막는다
+fn lock_down(sec: &amp;Security) -&gt; Result&lt;()&gt; {
+    // 1. bounding set: exec를 거쳐도 다시 얻을 수 없는 상한
+    for cap in caps::runtime::thread_all_supported() {
+        if !sec.caps.contains(&amp;cap) {
+            caps::drop(None, CapSet::Bounding, cap).with_context(|| format!("bounding에서 {cap} 빼기"))?;
+        }
+    }
+    // 2. 지금 가진 권한도 같은 범위로. inheritable과 ambient는 비운다
+    caps::clear(None, CapSet::Inheritable).context("inheritable 비우기")?;
+    caps::clear(None, CapSet::Ambient).context("ambient 비우기")?;
+    caps::set(None, CapSet::Effective, &amp;sec.caps).context("effective 설정")?;
+    caps::set(None, CapSet::Permitted, &amp;sec.caps).context("permitted 설정")?;
+    // 3. setuid 비트나 파일 capability로 권한을 다시 얻지 못하게
+    prctl::set_no_new_privs().context("no_new_privs")?;
+    // 4. 마지막에 seccomp. 이 뒤로는 막힌 시스템 콜을 부를 수 없다
+    if let Some(bpf) = &amp;sec.seccomp {
+        seccompiler::apply_filter(bpf).context("seccomp 설치")?;
+    }
+    Ok(())
+}
+
+/// 실습 중 호스트 /를 rootfs로 지정하거나 준비를 빠뜨리는 실수를 막는다.
+/// 신뢰하는 Alpine 입력을 전제로 하며 악성 rootfs 검증기는 아니다.
+fn validate_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    if rootfs == Path::new("/") || !rootfs.is_dir() {
+        bail!("rootfs는 호스트 /가 아닌 디렉터리여야 합니다");
+    }
+    if !fs::symlink_metadata(rootfs.join("bin/sh")).is_ok_and(|meta| meta.is_file() || meta.file_type().is_symlink())
+        || !rootfs.join("proc").is_dir() || !rootfs.join("dev").is_dir() {
+        bail!("rootfs에 bin/sh와 proc·dev 디렉터리를 준비하세요");
+    }
+    Ok(())
+}
+
+fn setup_rootfs(rootfs: &amp;Path, resolver: &amp;Path) -&gt; Result&lt;()&gt; {
+    // 1. 이후의 마운트가 호스트로 전파되지 않도록 모든 마운트를 private으로
+    mount(None::&lt;&amp;str&gt;, "/", None::&lt;&amp;str&gt;, MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::&lt;&amp;str&gt;)
+        .context("/ 를 rprivate으로 바꾸기")?;
+
+    // 2. pivot_root의 new_root는 마운트 지점이어야 하므로 자기 자신에게 bind
+    mount(Some(rootfs), rootfs, None::&lt;&amp;str&gt;, MsFlags::MS_BIND | MsFlags::MS_REC, None::&lt;&amp;str&gt;)
+        .context("rootfs bind mount")?;
+
+    // 3. 루트를 바꾼다. 이전 루트는 /.oldroot 에 걸린다
+    let old_root = rootfs.join(OLD_ROOT);
+    fs::create_dir_all(&amp;old_root).context(".oldroot 만들기")?;
+    pivot_root(rootfs, &amp;old_root).context("pivot_root")?;
+    chdir("/").context("chdir /")?;
+
+    // 4. 이 PID 네임스페이스 기준의 procfs
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None::&lt;&amp;str&gt;,
+    )
+    .context("/proc 마운트")?;
+
+    // 5. 최소한의 /dev. 장치 파일은 아직 붙어 있는 이전 루트에서 bind로 빌려 온다
+    setup_dev().context("/dev 구성")?;
+
+    // 이 실행 전용 DNS 파일을 붙인다. 공유 rootfs의 기존 내용은 덮어쓰지 않는다.
+    let source = format!("/{OLD_ROOT}{}", resolver.display());
+    mount(Some(source.as_str()), "/etc/resolv.conf", None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+        .context("전용 resolv.conf bind")?;
+    mount(None::&lt;&amp;str&gt;, "/etc/resolv.conf", None::&lt;&amp;str&gt;,
+          MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY, None::&lt;&amp;str&gt;)
+        .context("resolv.conf 읽기 전용")?;
+
+    // 6. 이전 루트를 떼어 내고 흔적을 지운다
+    let old = format!("/{OLD_ROOT}");
+    umount2(old.as_str(), MntFlags::MNT_DETACH).context("이전 루트 분리")?;
+    fs::remove_dir(&amp;old).context(".oldroot 지우기")?;
+    Ok(())
+}
+
+fn setup_dev() -&gt; Result&lt;()&gt; {
+    mount(
+        Some("tmpfs"),
+        "/dev",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+        Some("mode=755,size=65536k"),
+    )?;
+    for dev in DEVICES {
+        let target = format!("/dev/{dev}");
+        File::create(&amp;target).with_context(|| format!("{target} 만들기"))?;
+        let source = format!("/{OLD_ROOT}/dev/{dev}");
+        mount(Some(source.as_str()), target.as_str(), None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+            .with_context(|| format!("{target} bind"))?;
+    }
+    for (link, to) in [
+        ("/dev/fd", "/proc/self/fd"),
+        ("/dev/stdin", "/proc/self/fd/0"),
+        ("/dev/stdout", "/proc/self/fd/1"),
+        ("/dev/stderr", "/proc/self/fd/2"),
+    ] {
+        symlink(to, link).with_context(|| format!("{link} 링크"))?;
+    }
+    Ok(())
+}
+
+/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) } {
+        eprintln!("myctr: SIGPIPE 복원 실패: {e}");
+        return 1;
+    }
+    let err = execvp(&amp;argv[0], argv).unwrap_err();
+    eprintln!("myctr: {}: {err}", argv[0].to_string_lossy());
+    127
+}
+
+/// PID 1로 남아 명령을 PID 2로 띄우고, 입양된 고아까지 거두다가
+/// 명령이 끝나면 그 종료 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    let main_child = match unsafe { fork() } {
+        Ok(ForkResult::Child) =&gt; unsafe { libc::_exit(exec(argv) as i32) },
+        Ok(ForkResult::Parent { child }) =&gt; child,
+        Err(e) =&gt; {
+            eprintln!("myctr-init: fork: {e}");
+            return 1;
+        }
+    };
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, code)) if pid == main_child =&gt; return code as isize,
+            Ok(WaitStatus::Signaled(pid, sig, _)) if pid == main_child =&gt; return 128 + sig as isize,
+            Ok(_) =&gt; continue,
+            Err(Errno::EINTR) =&gt; continue,
+            Err(e) =&gt; {
+                eprintln!("myctr-init: waitpid: {e}");
+                return 1;
+            }
+        }
+    }
+}</code></pre>
+    </div></details>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>root의 특권은 capability 41개(실험 커널 기준)로 나뉘고, 커널은 UID가 아니라 effective 집합을 검사합니다.</li>
+    <li>UID 0이 exec하면 permitted가 bounding 전체로 다시 채워집니다. 그래서 권한을 줄일 때는 <b>bounding</b>을 줄여야 합니다. inheritable과 ambient는 비웁니다.</li>
+    <li>권한은 ID 전환·hostname·rootfs·/proc·/dev 준비를 다 한 뒤 exec 직전에 내려놓습니다. 순서는 bounding → inheritable·ambient → effective → permitted → no_new_privs → seccomp.</li>
+    <li>no_new_privs는 setuid·파일 capability로 권한을 새로 얻는 길을 막고, 권한 없는 프로세스가 seccomp를 설치하기 위한 전제 조건입니다.</li>
+    <li>seccomp는 시스템 콜 번호(와 인자 값)로 BPF 필터가 판정합니다. myctr는 24개를 EPERM으로 막는 deny-list, Docker는 allow-list와 인자 검사를 씁니다.</li>
+    <li>capability와 seccomp는 독립된 두 겹이라 한쪽을 풀어도 다른 쪽이 막습니다.</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">컨테이너 root의 effective 집합만 비우고 bounding은 그대로 둔 채 exec했다. 새 프로그램의 capability는?</div>
+    <button class="opt">비어 있다</button>
+    <button class="opt">이전 effective와 같다</button>
+    <button class="opt">bounding 전체로 다시 채워진다</button>
+    <button class="opt">inheritable과 같다</button>
+    <div class="explain">UID 0이 exec하면 커널은 파일에 모든 capability가 있는 것처럼 계산해 P'(permitted) = P(bounding)이 됩니다. effective만 줄이는 것은 exec 한 번으로 무효가 됩니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>--cap-drop ALL</code>을 처리할 때 permitted를 먼저 비우고 bounding을 나중에 줄이려 하면?</div>
+    <button class="opt">CAP_SETPCAP이 사라져 PR_CAPBSET_DROP이 실패한다</button>
+    <button class="opt">아무 차이 없다</button>
+    <button class="opt">bounding이 자동으로 비워진다</button>
+    <button class="opt">seccomp가 prctl을 막는다</button>
+    <div class="explain">bounding set에서 빼려면 CAP_SETPCAP이 effective에 있어야 합니다. 그래서 bounding을 가장 먼저 줄입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">no_new_privs가 켜진 컨테이너에서 root가 아닌 사용자가 setuid-root 프로그램(예: sudo)을 실행하면?</div>
+    <button class="opt">root가 되지만 capability는 없다</button>
+    <button class="opt">실행 자체가 EPERM으로 거부된다</button>
+    <button class="opt">bounding만큼 capability를 얻는다</button>
+    <button class="opt">setuid 비트가 무시되어 원래 사용자 그대로, capability 없이 실행된다</button>
+    <div class="explain">no_new_privs는 exec 자체를 막지 않고, exec로 권한을 새로 얻는 것(setuid의 UID 변경, 파일 capability)만 무시합니다. sudo는 실행되지만 권한을 얻지 못해 실패합니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q"><code>--cap-add SYS_ADMIN</code>을 줬는데도 <code>unshare -m</code>이 EPERM이다. 왜인가?</div>
+    <button class="opt">no_new_privs 때문에</button>
+    <button class="opt">seccomp 필터가 unshare 시스템 콜 자체를 막기 때문에</button>
+    <button class="opt">bounding에서 SYS_ADMIN이 빠져서</button>
+    <button class="opt">user 네임스페이스가 없어서</button>
+    <div class="explain">seccomp는 capability 검사보다 먼저, 시스템 콜 번호만 보고 거부합니다. <code>--no-seccomp</code>까지 줘야 통과했습니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">seccomp BPF 필터가 판정에 쓸 수 <b>없는</b> 것은?</div>
+    <button class="opt">시스템 콜 번호</button>
+    <button class="opt">아키텍처</button>
+    <button class="opt"><code>openat</code>에 넘긴 경로 문자열의 내용</button>
+    <button class="opt">인자의 정수 값 (예: clone의 플래그)</button>
+    <div class="explain">BPF는 인자의 값만 봅니다. 포인터가 가리키는 메모리(경로 문자열 등)는 읽을 수 없습니다. 읽는 시점과 커널이 쓰는 시점 사이에 내용이 바뀔 수 있어 안전하게 검사할 수도 없습니다. 경로 기반 제어는 LSM(AppArmor 등)의 몫입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">왜 capability 집합 계산과 BPF 컴파일을 clone 전, 부모에서 하나?</div>
+    <button class="opt">메모리 할당을 자식에서 줄이고, 잘못된 옵션을 컨테이너를 만들기 전에 알리기 위해</button>
+    <button class="opt">자식에서는 seccompiler를 쓸 수 없어서</button>
+    <button class="opt">부모만 CAP_SETPCAP을 갖고 있어서</button>
+    <button class="opt">BPF는 부모 프로세스에만 설치할 수 있어서</button>
+    <div class="explain">계산은 어디서 해도 결과가 같지만, 설치(<code>apply_filter</code>, capset)는 자식이 자기 자신에게 해야 합니다. 준비와 적용을 나누면 자식이 하는 일이 단순해집니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>권한 내려놓기 완성.</b> 10절 단계 A~E를 구현하고 <code>bash check.sh rootful</code>를 통과시킨 뒤 <code>git tag ch07</code>. 기대: <code>root 필수 73 / 73, rootless 56 / 56</code>.</li>
+    <li><b>capability 하나씩.</b> <code>--cap-drop ALL --cap-add &lt;하나&gt;</code>로 <code>CHOWN</code>, <code>KILL</code>, <code>NET_ADMIN</code>을 각각 줘 보고, <code>grep CapEff /proc/self/status</code> 값을 2절 계산기로 해석하세요. 기대: CHOWN 하나면 <code>0000000000000001</code>, KILL 하나면 <code>0000000000000020</code>.</li>
+    <li><b>막힌 시스템 콜 보기.</b> <code>sudo strace -f -e trace=unshare,mount ./target/debug/myctr run --rootfs ./rootfs unshare -U true</code>로 <code>unshare(CLONE_NEWUSER) = -1 EPERM</code>을 확인하세요. 이어서 <code>SeccompAction::Errno(libc::EPERM as u32)</code>를 <code>SeccompAction::KillProcess</code>로 바꿔 빌드하고 같은 명령을 실행해 종료 코드를 보세요(기대: 159 = 128 + SIGSYS(31)). 확인 후 되돌리세요.</li>
+    <li><b>도전: 목록에 하나 더.</b> 컨테이너가 쓸 일이 없다고 생각하는 시스템 콜을 하나 골라 <code>BLOCKED_SYSCALLS</code>에 더하고, 그 시스템 콜을 쓰는 명령으로 EPERM을 확인하세요. 평범한 명령(<code>ls</code>, <code>sh</code>, <code>curl</code>)이 여전히 되는지도 확인하세요.</li>
+    <li><b>도전: 인자 검사.</b> <code>clone</code>에 <code>CLONE_NEWUSER</code> 비트가 있을 때만 막는 규칙을 <code>SeccompRule::new(vec![SeccompCondition::new(0, SeccompCmpArgLen::Qword, SeccompCmpOp::MaskedEq(...), ...)])</code>로 만들어 보세요. 평범한 fork(같은 clone 시스템 콜)는 통과해야 합니다.</li>
+    <li><b>도전: <code>--user UID</code>.</b> lock_down 전에 <code>setgid</code>/<code>setuid</code>로 root가 아닌 사용자가 되는 옵션을 더하고, exec 후 <code>CapEff</code>가 0이 되는지 확인하세요(3절 "root가 아닌 사용자" 규칙).</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = MM.esc;
+  // 0..40 번 capability: [이름, 설명, Docker 기본값, 특히 강력함]
+  const CAPS = [
+    ["CHOWN", "파일 소유자 바꾸기", 1], ["DAC_OVERRIDE", "파일 읽기·쓰기·실행 권한 검사 무시", 1], ["DAC_READ_SEARCH", "읽기·디렉터리 탐색 권한 검사 무시", 0], ["FOWNER", "소유자 확인이 필요한 작업 허용", 1],
+    ["FSETID", "setuid/setgid 비트 유지", 1], ["KILL", "다른 사용자의 프로세스에 시그널", 1], ["SETGID", "GID 바꾸기", 1], ["SETUID", "UID 바꾸기", 1],
+    ["SETPCAP", "capability 집합 조정 (bounding 축소 등)", 1], ["LINUX_IMMUTABLE", "immutable·append-only 속성", 0], ["NET_BIND_SERVICE", "1024 미만 포트 바인드", 1], ["NET_BROADCAST", "브로드캐스트·멀티캐스트", 0],
+    ["NET_ADMIN", "인터페이스·경로·방화벽 설정", 0, 1], ["NET_RAW", "RAW 소켓 (ping 등)", 1], ["IPC_LOCK", "메모리 잠금 (mlock)", 0], ["IPC_OWNER", "IPC 권한 검사 무시", 0],
+    ["SYS_MODULE", "커널 모듈 올리기·내리기", 0, 1], ["SYS_RAWIO", "I/O 포트·장치 직접 접근", 0, 1], ["SYS_CHROOT", "chroot", 1], ["SYS_PTRACE", "다른 프로세스 추적", 0, 1],
+    ["SYS_PACCT", "프로세스 회계", 0], ["SYS_ADMIN", "mount, 네임스페이스 등 수많은 관리 작업", 0, 1], ["SYS_BOOT", "재부팅, kexec", 0, 1], ["SYS_NICE", "우선순위·스케줄링 조정", 0],
+    ["SYS_RESOURCE", "자원 한도 넘기기", 0], ["SYS_TIME", "시스템 시계 바꾸기", 0, 1], ["SYS_TTY_CONFIG", "터미널 설정 (vhangup)", 0], ["MKNOD", "장치 파일 만들기", 1],
+    ["LEASE", "파일 임대(lease)", 0], ["AUDIT_WRITE", "감사 로그 쓰기", 1], ["AUDIT_CONTROL", "감사 설정 바꾸기", 0], ["SETFCAP", "파일 capability 설정", 1],
+    ["MAC_OVERRIDE", "LSM(MAC) 정책 무시", 0, 1], ["MAC_ADMIN", "LSM 정책 바꾸기", 0, 1], ["SYSLOG", "커널 로그 읽기·설정", 0], ["WAKE_ALARM", "절전 해제 알람", 0],
+    ["BLOCK_SUSPEND", "절전 막기", 0], ["AUDIT_READ", "감사 로그 읽기", 0], ["PERFMON", "성능 관찰 (perf)", 0, 1], ["BPF", "BPF 프로그램 다루기", 0, 1],
+    ["CHECKPOINT_RESTORE", "체크포인트·복원", 0],
+  ];
+  const DOCKER = CAPS.map(c => !!c[2]);
+  const toHex = bits => { let v = 0n; bits.forEach((on, i) => { if (on) v |= 1n << BigInt(i); }); return v.toString(16).padStart(16, "0"); };
+  const fromHex = h => { let v; try { v = BigInt("0x" + h.replace(/^0x/i, "")); } catch (e) { return null; } return CAPS.map((_, i) => ((v >> BigInt(i)) & 1n) === 1n); };
+
+  // ===== 위젯 1: capability 계산기 =====
+  (function () {
+    let bits = DOCKER.slice();
+    const grid = $("cc-grid");
+    CAPS.forEach(([n, d, dock, danger], i) => {
+      const l = MM.el("label", { class: (danger ? "danger" : "") }, `<input type="checkbox"><span><code>${i} CAP_${n}</code><small>${d}${dock ? " · Docker 기본" : ""}</small></span>`);
+      l.querySelector("input").onchange = e => { bits[i] = e.target.checked; draw(true); };
+      grid.append(l);
+    });
+    function draw(fromBoxes) {
+      [...grid.children].forEach((l, i) => { l.querySelector("input").checked = bits[i]; l.classList.toggle("on", bits[i]); });
+      const h = toHex(bits);
+      $("cc-out").textContent = h; $("cc-n").textContent = bits.filter(Boolean).length + " / 41";
+      if (fromBoxes !== "hex") $("cc-hex").value = h;
+    }
+    $("cc-docker").onclick = () => { bits = DOCKER.slice(); draw(); };
+    $("cc-all").onclick = () => { bits = CAPS.map(() => true); draw(); };
+    $("cc-none").onclick = () => { bits = CAPS.map(() => false); draw(); };
+    $("cc-hex").oninput = () => { const b = fromHex($("cc-hex").value.trim()); if (b) { bits = b; draw("hex"); } };
+    draw();
+  })();
+
+  // ===== 위젯 2: exec 변환기 =====
+  (function () {
+    const LBL = { D: "기본 14개 (a80425fb)", A: "전부 (1ffffffffff)", Z: "없음 (0)" };
+    const CASES = {
+      root: { uid: 0, P: "D", E: "D", B: "D", I: "Z", Amb: "Z", file: "일반 파일" },
+      rootE: { uid: 0, P: "A", E: "Z", B: "A", I: "Z", Amb: "Z", file: "일반 파일" },
+      user: { uid: 1000, P: "Z", E: "Z", B: "D", I: "Z", Amb: "Z", file: "일반 파일" },
+      suid: { uid: 1000, P: "Z", E: "Z", B: "D", I: "Z", Amb: "Z", file: "setuid-root 파일", suid: true },
+    };
+    const and = (a, b) => (a === "Z" || b === "Z") ? "Z" : (a === "A" ? b : b === "A" ? a : "D");
+    const or = (a, b) => (a === "A" || b === "A") ? "A" : (a === "D" || b === "D") ? "D" : "Z";
+    function box(k, v, chg) { return `<div class="${chg ? "chg" : ""}"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
+    function draw() {
+      const c = CASES[$("ex-case").value], nnp = $("ex-nnp").checked;
+      const euidAfter = c.suid && !nnp ? 0 : c.uid;
+      // root로 취급되면 파일의 inheritable·permitted를 전부로, effective 켬
+      const rootLike = euidAfter === 0;
+      const FI = rootLike ? "A" : "Z", FP = rootLike ? "A" : "Z", FE = rootLike;
+      const Amb2 = (c.suid && !nnp) ? "Z" : c.Amb;
+      const P2 = or(or(and(c.I, FI), and(FP, c.B)), Amb2);
+      const E2 = FE ? P2 : Amb2;
+      $("ex-before").innerHTML = box("euid", c.uid) + box("permitted", LBL[c.P]) + box("effective", LBL[c.E]) + box("bounding", LBL[c.B]) + box("실행 파일", c.file);
+      $("ex-after").innerHTML = box("euid", euidAfter, euidAfter !== c.uid) + box("permitted", LBL[P2], P2 !== c.P) + box("effective", LBL[E2], E2 !== c.E) + box("bounding", LBL[c.B]) + box("no_new_privs", nnp ? "켜짐" : "꺼짐");
+      const notes = {
+        root: "UID 0이므로 F(permitted)=전부로 취급되어 P' = bounding = 기본 14개. myctr가 bounding을 줄여 두었기 때문에 exec 뒤에도 14개로 유지됩니다.",
+        rootE: "effective를 비웠지만 bounding이 전부라, exec 한 번에 <b>전부 다시 채워졌습니다</b>. effective만 줄이는 것은 소용이 없습니다.",
+        user: "root가 아니고 파일 capability도 없으니 F=0. P' = ambient = 0. root가 아닌 사용자로 실행하는 것만으로 capability가 사라지는 이유입니다(8절).",
+        suid: nnp ? "no_new_privs 때문에 setuid 비트가 무시되어 euid가 1000 그대로입니다. 권한을 얻지 못합니다." : "setuid-root라 euid가 0이 되고 root처럼 계산되어 bounding(기본 14개)을 얻습니다. bounding이 상한이라 그 이상은 아니지만, 권한을 얻는 길이 열려 있습니다. no_new_privs를 켜 보세요.",
+      };
+      $("ex-note").innerHTML = notes[$("ex-case").value];
+    }
+    $("ex-case").onchange = draw; $("ex-nnp").onchange = draw;
+    draw();
+  })();
+
+  // ===== 위젯 3: lock_down 스테퍼 =====
+  (function () {
+    const ALL = "000001ffffffffff", D = "00000000a80425fb", Z = "0000000000000000";
+    const S = [
+      { s: { CapBnd: ALL, CapPrm: ALL, CapEff: ALL, CapInh: Z, NoNewPrivs: "0", Seccomp: "0" }, cap: "ID 전환·hostname·rootfs 마운트 준비를 마친 상태입니다. 아직 정책을 적용하지 않아 root 권한 집합이 유지됩니다." },
+      { s: { CapBnd: ALL, CapPrm: ALL, CapEff: ALL, CapInh: Z, NoNewPrivs: "0", Seccomp: "0" }, hl: [], cap: "<code>sethostname(\"myctr\")</code>. <code>CAP_SYS_ADMIN</code>이 필요한 일. 권한을 내려놓기 전에 끝냅니다(user ns를 쓰면 그 전에 ID 0 전환도)." },
+      { s: { CapBnd: D, CapPrm: ALL, CapEff: ALL, CapInh: Z, NoNewPrivs: "0", Seccomp: "0" }, hl: ["CapBnd"], cap: "<code>prctl(PR_CAPBSET_DROP, ...)</code> × 27. bounding이 14개로. 지금 가진 effective는 아직 그대로라 다음 단계들을 할 수 있습니다." },
+      { s: { CapBnd: D, CapPrm: ALL, CapEff: ALL, CapInh: Z, NoNewPrivs: "0", Seccomp: "0" }, hl: ["CapInh"], cap: "<code>capset(inheritable=0)</code>. 원래 0이었지만 명시적으로 비웁니다. ambient도 같이 비웁니다(<code>PR_CAP_AMBIENT_CLEAR_ALL</code>)." },
+      { s: { CapBnd: D, CapPrm: ALL, CapEff: D, CapInh: Z, NoNewPrivs: "0", Seccomp: "0" }, hl: ["CapEff"], cap: "<code>capset(effective=14개)</code>. effective는 permitted의 부분집합이어야 하므로 먼저 줄입니다." },
+      { s: { CapBnd: D, CapPrm: D, CapEff: D, CapInh: Z, NoNewPrivs: "0", Seccomp: "0" }, hl: ["CapPrm"], cap: "<code>capset(permitted=14개)</code>. 이제 다시 늘릴 수 없습니다." },
+      { s: { CapBnd: D, CapPrm: D, CapEff: D, CapInh: Z, NoNewPrivs: "1", Seccomp: "0" }, hl: ["NoNewPrivs"], cap: "<code>prctl(PR_SET_NO_NEW_PRIVS, 1)</code>. 끌 수 없는 스위치." },
+      { s: { CapBnd: D, CapPrm: D, CapEff: D, CapInh: Z, NoNewPrivs: "1", Seccomp: "2" }, hl: ["Seccomp"], cap: "<code>seccomp(SECCOMP_SET_MODE_FILTER, ..., {len=125})</code>. 이 순간부터 24개 시스템 콜이 EPERM. <code>Seccomp: 2</code>는 필터 모드라는 뜻입니다." },
+      { s: { CapBnd: D, CapPrm: D, CapEff: D, CapInh: Z, NoNewPrivs: "1", Seccomp: "2" }, hl: [], cap: "<code>execve</code>. UID 0이라 P' = bounding = 14개. 필터와 no_new_privs는 그대로 이어집니다. 컨테이너에서 실제로 본 <code>/proc/self/status</code>와 같은 값입니다." },
+    ];
+    MM.stepper($("ld-ctl"), {
+      steps: S.length, interval: 2000,
+      render(i) {
+        const st = S[i];
+        $("ld-sets").innerHTML = Object.entries(st.s).map(([k, v]) => `<div class="${(st.hl || []).includes(k) ? "chg" : ""}"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+        return st.cap;
+      }
+    });
+  })();
+
+  // ===== 위젯 4: seccomp 따라가기 =====
+  (function () {
+    const BLOCK = ["mount", "umount2", "pivot_root", "unshare", "setns", "open_by_handle_at", "init_module", "finit_module", "delete_module", "kexec_load", "reboot", "swapon", "swapoff", "acct", "settimeofday", "clock_settime", "keyctl", "add_key", "request_key", "ptrace", "perf_event_open", "bpf", "syslog", "userfaultfd"];
+    const ALLOW = ["read", "write", "openat", "execve", "clone", "clone3", "socket", "sethostname"];
+    const sel = $("bp-sys");
+    [...ALLOW, ...BLOCK].forEach(s => sel.append(MM.el("option", { value: s }, s + (BLOCK.includes(s) ? "" : " (허용 목록 밖)"))));
+    sel.value = "unshare";
+    const prog = $("bp-prog");
+    const LINES = ["A = seccomp_data.arch", "if A != AUDIT_ARCH_AARCH64 → KILL", "A = seccomp_data.nr", ...BLOCK.map(s => `if A == __NR_${s} → ERRNO(EPERM)`), "→ ALLOW"];
+    prog.innerHTML = LINES.map(l => `<div>${esc(l)}</div>`).join("");
+    let timer = null;
+    $("bp-run").onclick = () => {
+      clearInterval(timer);
+      const sys = sel.value, rows = [...prog.children];
+      rows.forEach(r => r.className = "");
+      const target = BLOCK.includes(sys) ? 3 + BLOCK.indexOf(sys) : rows.length - 1;
+      let i = 0;
+      $("bp-out").innerHTML = "";
+      timer = setInterval(step, 110);
+      function step() {
+        rows.forEach(r => r.classList.remove("cur"));
+        if (i > target) { clearInterval(timer); return; }
+        rows[i].classList.add(i === target ? (BLOCK.includes(sys) ? "hit" : "pass") : "cur");
+        if (i === target) {
+          $("bp-out").innerHTML = BLOCK.includes(sys)
+            ? `<b class="c-bad">ERRNO(EPERM)</b>: <code>${sys}</code>는 커널 기능에 닿기 전에 거절됩니다. 프로그램은 <code>-1 EPERM (Operation not permitted)</code>을 받습니다.`
+            : `<b class="c-ok">ALLOW</b>: 목록에 없으므로 통과합니다. ${sys === "clone" || sys === "clone3" ? "네임스페이스 플래그가 있어도 통과합니다. deny-list의 한계(아래 상자)." : sys === "sethostname" ? "통과하지만, 다음 겹인 capability 검사에서 CAP_SYS_ADMIN이 없어 EPERM이 됩니다(7절)." : ""}`;
+        }
+        i++;
+      }
+    };
+  })();
+
+  // ===== 위젯 5: 방어 매트릭스 =====
+  (function () {
+    const TG = [["SYS_ADMIN", false], ["NET_ADMIN", false], ["SYS_TIME", false], ["CHOWN", true], ["seccomp", true]];
+    const state = Object.fromEntries(TG);
+    const box = $("mx-tg");
+    TG.forEach(([k]) => {
+      const l = MM.el("label", null, `<input type="checkbox" ${state[k] ? "checked" : ""}> ${k === "seccomp" ? "seccomp 켬" : "CAP_" + k}`);
+      l.querySelector("input").onchange = e => { state[k] = e.target.checked; draw(); };
+      box.append(l);
+    });
+    // [동작, 필요한 capability(null=불필요), seccomp가 막는가, 성공 시 영향]
+    const OPS = [
+      ["unshare -U true (user ns 만들기)", null, true, ""],
+      ["unshare -m true (mount ns 만들기)", "SYS_ADMIN", true, ""],
+      ["hostname x (컨테이너 hostname 바꾸기)", "SYS_ADMIN", false, "컨테이너의 UTS ns만 바뀜"],
+      ["ip link add vX type veth ... (net none 안에서)", "NET_ADMIN", false, "컨테이너 net ns 안에만 생김"],
+      ["date -s 2020-01-01", "SYS_TIME", true, "호스트 시계가 바뀜 (시계는 격리되지 않음)"],
+      ["chown 1 /tmp/파일", "CHOWN", false, ""],
+      ["ls /", null, false, ""],
+    ];
+    function draw() {
+      let h = "<tr><th>동작</th><th>seccomp</th><th>capability</th><th>결과</th></tr>";
+      OPS.forEach(([op, cap, sc, eff]) => {
+        const scBlock = sc && state.seccomp;
+        const capBlock = cap && !state[cap];
+        const r1 = sc ? (state.seccomp ? '<td class="no">막음</td>' : '<td>통과</td>') : '<td>통과 (목록 밖)</td>';
+        const r2 = scBlock ? '<td class="muted">—</td>' : cap ? (capBlock ? `<td class="no">CAP_${cap} 없음</td>` : `<td>CAP_${cap} 있음</td>`) : "<td>불필요</td>";
+        const ok = !scBlock && !capBlock;
+        const r3 = ok ? (eff.startsWith("호스트") ? `<td class="warn">성공: ${eff}</td>` : `<td class="ok">성공${eff ? ": " + eff : ""}</td>`) : '<td class="no">EPERM</td>';
+        h += `<tr><td><code>${esc(op)}</code></td>${r1}${r2}${r3}</tr>`;
+      });
+      $("mx-tbl").innerHTML = h;
+    }
+    draw();
+  })();
+
+  // ===== 위젯 6: strace =====
+  (function () {
+    const L = [
+      ['[pid 21] <span class="c">prctl</span>(<span class="k">PR_CAPBSET_DROP</span>, CAP_SYS_PACCT) = 0', "bounding에서 하나씩 뺍니다. 이런 줄이 27개(41 − 14) 이어집니다. 순서는 번호순이 아닙니다. <code>thread_all_supported()</code>가 돌려주는 HashSet을 순회하는 순서라 실행마다 달라질 수 있습니다."],
+      ['[pid 21] <span class="c">prctl</span>(<span class="k">PR_CAPBSET_DROP</span>, CAP_SYS_BOOT) = 0', "두 번째 줄. 실제로 센 결과 <code>PR_CAPBSET_DROP</code>은 정확히 27번 나왔습니다."],
+      ["... (PR_CAPBSET_DROP 25줄 더)", null],
+      ['[pid 21] <span class="c">capset</span>({..._LINUX_CAPABILITY_VERSION_3...}, {effective=<span class="k">(41개)</span>, permitted=<span class="k">(41개)</span>, inheritable=<span class="k">0</span>}) = 0', "<code>caps::clear(Inheritable)</code>. capset은 세 집합을 한 번에 쓰는 시스템 콜이라, 크레이트가 현재 effective·permitted를 읽어 그대로 넣고 inheritable만 0으로 씁니다. ambient 비우기는 별도의 prctl(<code>PR_CAP_AMBIENT</code>)이고 이 출력에서는 줄였습니다."],
+      ['[pid 21] <span class="c">capset</span>({...}, {effective=<span class="k">(14개)</span>, permitted=(41개), inheritable=0}) = 0', "effective를 14개로. 실제 줄에는 <code>1&lt;&lt;CAP_CHOWN|1&lt;&lt;CAP_DAC_OVERRIDE|...</code>처럼 비트가 이름으로 나열됩니다."],
+      ['[pid 21] <span class="c">capset</span>({...}, {effective=(14개), permitted=<span class="k">(14개)</span>, inheritable=0}) = 0', "permitted도 14개로. 이 줄 이후로는 늘릴 방법이 없습니다."],
+      ['[pid 21] <span class="c">prctl</span>(<span class="k">PR_SET_NO_NEW_PRIVS</span>, 1, 0, 0, 0) = 0', "우리 코드의 <code>prctl::set_no_new_privs()</code>."],
+      ['[pid 21] <span class="c">prctl</span>(<span class="k">PR_SET_NO_NEW_PRIVS</span>, 1, 0, 0, 0) = 0', "한 번 더. <code>seccompiler::apply_filter</code>가 필터를 설치하기 직전에 스스로 부릅니다(5절). 이미 켜져 있으니 아무 일도 없습니다."],
+      ['[pid 21] <span class="c">seccomp</span>(<span class="k">SECCOMP_SET_MODE_FILTER</span>, 0, {len=<span class="k">125</span>, filter=0xaaaae3778b50}) = 0', "BPF 명령 125개짜리 필터 설치. 아키텍처 검사, 시스템 콜 번호 읽기, 24개 비교와 점프로 이루어집니다. 이 줄 이후 이 프로세스와 자손의 모든 시스템 콜이 이 프로그램을 거칩니다."],
+      ['[pid 21] <span class="c">execve</span>("/usr/bin/unshare", [...], 0xffffe7ba4158 /* 9 vars */) = 0', "exec는 막지 않았으니 통과. capability는 bounding 기준으로 다시 계산되어 14개가 됩니다."],
+      ['[pid 21] <span class="c">unshare</span>(CLONE_NEWUSER) = <span class="e">-1 EPERM</span> (Operation not permitted)', "필터가 거절했습니다. 커널의 unshare 구현에는 들어가지도 못했습니다. user ns 만들기는 capability가 필요 없으니 이것은 순수하게 seccomp의 판정입니다."],
+      ["[pid 21] +++ exited with 1 +++", "unshare 명령이 에러 메시지를 출력하고 1로 종료합니다."],
+    ];
+    const box = $("st-lines");
+    L.forEach(([html, ex]) => {
+      const d = MM.el("div", { class: ex ? "" : "skip" }, html);
+      if (ex) d.onclick = () => { box.querySelectorAll(".on").forEach(x => x.classList.remove("on")); d.classList.add("on"); $("st-explain").innerHTML = ex; };
+      box.append(d);
+    });
+  })();
+})();
+</script>
+</body>
+</html>

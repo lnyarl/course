@@ -1,0 +1,1144 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cgroups v2 자원 제한</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  /* 출력 리더 */
+  .lines { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 0; overflow-x: auto; }
+  .lines div { padding: 2px 14px; white-space: pre; cursor: pointer; border-left: 3px solid transparent; }
+  .lines div:hover { background: var(--accent-soft); }
+  .lines div.on { background: var(--accent-soft); border-left-color: var(--accent); }
+  .lines div.skip { color: var(--muted); cursor: default; }
+  .lines div.skip:hover { background: none; }
+  .lines .c { color: var(--violet); } .lines .k { color: var(--teal); } .lines .e { color: var(--bad); }
+  #st-explain { min-height: 4.5em; }
+  /* cgroup 트리 */
+  .cgn { border: 2px solid var(--border); border-radius: 12px; padding: 8px 12px 10px; margin-top: 8px; background: var(--surface); }
+  .cgn .cgn { margin-left: 18px; }
+  .cgn > .h { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-family: var(--mono); font-size: 13px; font-weight: 700; }
+  .cgn > .h .procs { font-family: var(--sans); font-weight: 400; font-size: 12px; color: var(--muted); }
+  .cgn .row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12.5px; margin-top: 6px; }
+  .cgn .row > b { font-family: var(--mono); font-weight: 400; color: var(--muted); min-width: 170px; }
+  .cgn .row label { font-family: var(--mono); display: inline-flex; gap: 3px; align-items: center; }
+  .files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .files span { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); }
+  .files span.mem { background: var(--accent-soft); border-color: var(--accent); }
+  .files span.cpu { background: var(--violet-soft); border-color: var(--violet); }
+  .files span.pids { background: var(--teal-soft); border-color: var(--teal); }
+  .pchip { display: inline-block; font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 999px; background: var(--ok-soft); border: 1px solid var(--ok); }
+  /* 메모리 */
+  .membar { position: relative; height: 44px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .membar .anon, .membar .file { position: absolute; top: 0; height: 100%; transition: width .25s, left .25s; }
+  .membar .anon { left: 0; background: var(--accent-soft); border-right: 1px solid var(--accent); }
+  .membar .file { background: var(--teal-soft); }
+  .membar .lim { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--bad); }
+  .membar .limh { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); }
+  .membar .lbl { position: absolute; top: 2px; font-size: 11px; font-family: var(--mono); padding: 0 4px; }
+  .membar.dead { animation: flash .6s; }
+  @keyframes flash { 0%, 100% { background: var(--surface-2); } 40% { background: var(--bad-soft); } }
+  /* CPU 타임라인 */
+  #cpu-svg text { font-family: var(--mono); font-size: 11px; }
+  /* pids */
+  .pgrid { display: flex; flex-wrap: wrap; gap: 4px; min-height: 34px; padding: 6px; background: var(--surface-2); border-radius: 8px; }
+  .pgrid span { font-family: var(--mono); font-size: 11.5px; padding: 3px 7px; border-radius: 6px; background: var(--ok-soft); border: 1px solid var(--ok); animation: pop .3s; }
+  .pgrid span.fail { background: var(--bad-soft); border-color: var(--bad); border-style: dashed; }
+  @keyframes pop { from { transform: scale(.6); opacity: 0; } }
+  main { overflow-wrap:anywhere; }
+  pre { overflow-wrap:normal; }
+  .compare > div { min-width:0; }
+  .controls label { min-width:0; max-width:100%; flex-wrap:wrap; }
+  .controls select { min-width:0; max-width:100%; }
+</style>
+</head>
+<body data-chapter="04">
+<main>
+  <header class="chapter-head">
+    <span class="label adv">자원 · 권한 · 네트워크 · Chapter 04</span>
+    <h1>cgroups v2 자원 제한</h1>
+    <p class="lead">네임스페이스는 프로세스가 <b>무엇을 보는지</b>를 바꿉니다. 하지만 PID 1이 된 sleep도 마음먹으면 호스트의 메모리를 전부 먹고, CPU를 모두 태우고, 프로세스를 끝없이 만들 수 있습니다. 이 장에서는 <b>얼마나 쓸 수 있는지</b>를 정하는 cgroup을 붙입니다. 컨테이너마다 cgroup 디렉터리를 만들고, 파일 몇 개에 숫자를 쓰고, 자식이 그 안에 들어간 뒤 exec하면 끝입니다. 그 단순한 인터페이스 아래에서 OOM killer가 어떻게 137을 만들고, CPU 상한이 왜 지연 시간을 늘리는지까지 실험으로 확인합니다.</p>
+    <div class="objectives"><h4>학습 목표</h4><ul>
+      <li>cgroup v2의 단일 계층 구조와 인터페이스 파일, 세 가지 트리 규칙(위에서 아래로 활성화, 내부 프로세스 금지, 빈 cgroup만 삭제)을 설명할 수 있다.</li>
+      <li><code>memory.max</code>를 넘을 때 회수와 OOM kill이 일어나는 과정을 설명하고 <code>memory.events</code>로 확인할 수 있다.</li>
+      <li><code>cpu.max</code>의 quota/period 모델과 throttling이 지연 시간에 미치는 영향을 계산할 수 있다.</li>
+      <li><code>pids.max</code>로 프로세스 폭증을 막을 수 있다.</li>
+      <li>자식을 exec 전에 cgroup에 넣는 방법을 비교하고, 컨테이너가 끝나면 cgroup을 정리할 수 있다.</li>
+      <li><code>myctr run --rootfs ./rootfs --memory 64M --cpus 0.5 --pids 20 ...</code>을 구현해 누적 완료 기준 31개를 통과시킨다.</li>
+    </ul></div>
+  </header>
+
+  <div class="callout"><span class="title">3장 구현 위에 자원 제한을 더합니다</span>
+    <code>--rootfs</code>, mount namespace, pivot_root, 새 /proc와 /dev를 그대로 유지합니다. 자식은 <b>pivot_root 전에</b> 호스트의 cgroup.procs에 들어간 뒤 루트를 바꿉니다. 호스트의 /sys/fs/cgroup 전체는 컨테이너에 노출하지 않습니다. 제한값과 통계는 부모 쪽 경로에서 검사하고, 이후 5~7장에서도 이 구조를 이어갑니다.</div>
+
+  <nav class="toc"><b>목차</b><ol>
+    <li><a href="#s1">cgroup: 얼마나 쓸 수 있나</a></li>
+    <li><a href="#s2">cgroupfs: 모든 것이 파일</a></li>
+    <li><a href="#s3">트리의 세 가지 규칙</a></li>
+    <li><a href="#s4">메모리: memory.max와 OOM</a></li>
+    <li><a href="#s5">CPU: cpu.max와 throttling</a></li>
+    <li><a href="#s6">PID: pids.max</a></li>
+    <li><a href="#s7">컨테이너를 cgroup에 넣기</a></li>
+    <li><a href="#s8">정리와 누수</a></li>
+    <li><a href="#s9">strace로 확인하기</a></li>
+    <li><a href="#s10">구현 가이드: 자원 제한 붙이기</a></li>
+  </ol></nav>
+
+  <!-- ============================================================ -->
+  <section id="s1">
+    <h2>1. cgroup: 얼마나 쓸 수 있나</h2>
+    <p>cgroup(control group)은 프로세스들을 묶어 그 묶음 단위로 자원 사용량을 <b>세고</b>, <b>제한</b>하는 커널 기능입니다. 프로세스는 반드시 하나의 cgroup에 속하고, fork한 자식은 부모의 cgroup을 물려받습니다. 컨테이너 안의 모든 프로세스가 같은 cgroup에 모이므로 "컨테이너 전체의 메모리 합계"를 제한할 수 있습니다.</p>
+
+    <div class="tbl-wrap"><table>
+      <tr><th></th><th>네임스페이스 (1~3장)</th><th>cgroup (이 장)</th></tr>
+      <tr><td>질문</td><td>무엇이 보이나?</td><td>얼마나 쓸 수 있나?</td></tr>
+      <tr><td>인터페이스</td><td>시스템 콜 (<code>clone</code>, <code>unshare</code>, <code>setns</code>)</td><td>파일시스템 (<code>/sys/fs/cgroup</code> 아래 파일 읽기/쓰기)</td></tr>
+      <tr><td>상속</td><td>fork 시 공유, exec 후 유지</td><td>fork 시 같은 cgroup, exec 후 유지</td></tr>
+      <tr><td>위반하면</td><td>애초에 보이지 않음</td><td>회수, 지연(throttle), 실패(EAGAIN), 강제 종료(OOM kill)</td></tr>
+    </table></div>
+
+    <h3>v1과 v2</h3>
+    <p>cgroup v1은 컨트롤러(memory, cpu, pids ...)마다 <b>계층이 따로</b> 있었습니다. 한 프로세스가 memory 트리에서는 A에, cpu 트리에서는 B에 있을 수 있었고, 이 자유도가 관리를 지옥으로 만들었습니다. 커널 4.5에서 안정화된 v2는 <b>계층을 하나로 합치고</b> 각 cgroup에서 어떤 컨트롤러를 켤지 고르게 했습니다. 최신 배포판(Ubuntu 21.10+, Fedora 31+, Debian 11+)은 v2만 마운트합니다. 이 코스는 v2만 다룹니다.</p>
+    <figure>
+      <div class="stage">
+      <svg class="diagram" viewBox="0 0 780 250" role="img" aria-label="cgroup v1의 여러 계층과 v2의 단일 계층 비교">
+        <text x="190" y="22" text-anchor="middle" font-weight="700">v1: 컨트롤러마다 계층</text>
+        <text x="590" y="22" text-anchor="middle" font-weight="700">v2: 하나의 계층</text>
+        <g font-family="var(--mono)" font-size="11.5">
+          <rect x="20" y="40" width="110" height="26" rx="6" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="75" y="58" text-anchor="middle">memory/</text>
+          <rect x="20" y="96" width="50" height="24" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="45" y="113" text-anchor="middle">A</text>
+          <rect x="80" y="96" width="50" height="24" rx="5" style="fill:var(--accent-soft);stroke:var(--accent)"/><text x="105" y="113" text-anchor="middle">B</text>
+          <path d="M75 66 L45 96 M75 66 L105 96" class="line"/>
+          <rect x="140" y="40" width="110" height="26" rx="6" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="195" y="58" text-anchor="middle">cpu/</text>
+          <rect x="140" y="96" width="50" height="24" rx="5" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="165" y="113" text-anchor="middle">X</text>
+          <rect x="200" y="96" width="50" height="24" rx="5" style="fill:var(--violet-soft);stroke:var(--violet)"/><text x="225" y="113" text-anchor="middle">Y</text>
+          <path d="M195 66 L165 96 M195 66 L225 96" class="line"/>
+          <rect x="260" y="40" width="110" height="26" rx="6" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="315" y="58" text-anchor="middle">pids/</text>
+          <rect x="285" y="96" width="60" height="24" rx="5" style="fill:var(--teal-soft);stroke:var(--teal)"/><text x="315" y="113" text-anchor="middle">P</text>
+          <path d="M315 66 V96" class="line"/>
+          <circle cx="190" cy="190" r="16" style="fill:var(--ok-soft);stroke:var(--ok)"/><text x="190" y="194" text-anchor="middle">sh</text>
+          <path d="M45 120 L178 178 M165 120 L186 174 M315 120 L203 180" class="line" style="stroke-dasharray:4 3"/>
+          <text x="190" y="232" text-anchor="middle" font-family="var(--sans)" font-size="12" class="muted">한 프로세스가 트리마다 다른 위치에</text>
+
+          <rect x="530" y="40" width="120" height="26" rx="6" class="box"/><text x="590" y="58" text-anchor="middle">/sys/fs/cgroup</text>
+          <rect x="530" y="96" width="120" height="26" rx="6" class="box"/><text x="590" y="114" text-anchor="middle">myctr/</text>
+          <rect x="470" y="156" width="110" height="40" rx="6" style="fill:var(--surface);stroke:var(--ok)"/><text x="525" y="172" text-anchor="middle">ctr-4241/</text><text x="525" y="188" text-anchor="middle" font-size="10" class="muted">mem·cpu·pids</text>
+          <rect x="600" y="156" width="110" height="40" rx="6" style="fill:var(--surface);stroke:var(--ok)"/><text x="655" y="172" text-anchor="middle">ctr-5120/</text><text x="655" y="188" text-anchor="middle" font-size="10" class="muted">mem·cpu·pids</text>
+          <path d="M590 66 V96 M590 122 L525 156 M590 122 L655 156" class="line"/>
+          <text x="590" y="232" text-anchor="middle" font-family="var(--sans)" font-size="12" class="muted">한 위치에 모든 컨트롤러</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>v2에서는 프로세스의 위치가 하나뿐입니다. <code>cat /proc/self/cgroup</code>이 <code>0::/경로</code> 한 줄만 출력하는 이유입니다.</figcaption>
+    </figure>
+<pre><code># 내 시스템이 v2인지 확인
+stat -fc %T /sys/fs/cgroup                 # cgroup2fs 면 v2
+cat /sys/fs/cgroup/cgroup.controllers      # 쓸 수 있는 컨트롤러: cpuset cpu io memory hugetlb pids ...
+cat /sys/fs/cgroup/cgroup.subtree_control  # 자식들에게 켜 준 컨트롤러 (아래 3절)
+cat /proc/self/cgroup                      # 지금 셸이 속한 cgroup</code></pre>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s2">
+    <h2>2. cgroupfs: 모든 것이 파일</h2>
+    <p>cgroup에는 전용 시스템 콜이 없습니다. <code>/sys/fs/cgroup</code>에 마운트된 cgroup2 파일시스템에서 <b>디렉터리가 곧 cgroup</b>이고, 그 안의 파일이 설정과 통계입니다. <code>mkdir</code>로 만들고, 파일에 써서 설정하고, <code>rmdir</code>로 지웁니다. 아래는 참조 구현이 만든 컨테이너 cgroup 안에서 실제로 <code>ls</code>한 결과 중 이 장에서 쓰는 파일입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>파일</th><th>용도</th><th>예</th></tr>
+      <tr><td><code>cgroup.procs</code></td><td>소속 프로세스 목록. PID를 쓰면 그 프로세스를 옮긴다. <b>"0"을 쓰면 쓰는 프로세스 자신</b>을 옮긴다</td><td><code>echo 0 &gt; cgroup.procs</code></td></tr>
+      <tr><td><code>cgroup.controllers</code></td><td>이 cgroup에서 쓸 수 있는 컨트롤러 (= 부모가 켜 준 것, 읽기 전용)</td><td><code>cpu memory pids</code></td></tr>
+      <tr><td><code>cgroup.subtree_control</code></td><td>자식 cgroup들에게 켜 줄 컨트롤러</td><td><code>echo "+memory +cpu" &gt; ...</code></td></tr>
+      <tr><td><code>cgroup.events</code></td><td><code>populated 1/0</code>: 안에 프로세스가 있는지</td><td>정리 시점 판단</td></tr>
+      <tr><td><code>cgroup.kill</code></td><td><code>1</code>을 쓰면 안의 모든 프로세스를 SIGKILL (커널 5.14+)</td><td>정리</td></tr>
+      <tr><td><code>memory.max</code> / <code>memory.high</code></td><td>하드 상한(넘으면 OOM) / 소프트 상한(넘으면 회수 압박과 지연)</td><td><code>67108864</code>, <code>max</code></td></tr>
+      <tr><td><code>memory.current</code> / <code>memory.peak</code></td><td>현재 / 최대 사용량 (page cache 포함)</td><td>통계</td></tr>
+      <tr><td><code>memory.events</code></td><td><code>max</code>(상한 도달 횟수), <code>oom</code>, <code>oom_kill</code> 카운터</td><td>OOM 판정</td></tr>
+      <tr><td><code>memory.swap.max</code></td><td>스왑 상한</td><td><code>0</code></td></tr>
+      <tr><td><code>cpu.max</code></td><td><code>quota period</code> (마이크로초). period마다 quota만큼만 실행</td><td><code>50000 100000</code> = 0.5코어</td></tr>
+      <tr><td><code>cpu.weight</code></td><td>경쟁 시 상대적 비중 (1~10000, 기본 100)</td><td>상한이 아니라 비율</td></tr>
+      <tr><td><code>cpu.stat</code></td><td><code>usage_usec</code>, <code>nr_periods</code>, <code>nr_throttled</code>, <code>throttled_usec</code></td><td>throttling 진단</td></tr>
+      <tr><td><code>pids.max</code> / <code>pids.current</code></td><td>프로세스(스레드 포함) 수 상한 / 현재</td><td><code>20</code></td></tr>
+    </table></div>
+    <div class="callout tip"><span class="title">쓰기 형식은 텍스트</span>
+      값은 숫자를 텍스트로 씁니다. "제한 없음"은 숫자가 아니라 문자열 <code>max</code>입니다. Rust에서는 <code>fs::write(path, "67108864")</code> 한 줄이면 되고, strace로 보면 <code>write(3, "67108864", 8)</code>로 나타납니다(9절).</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s3">
+    <h2>3. 트리의 세 가지 규칙</h2>
+    <p>v2가 단순한 대신 지켜야 할 규칙이 생겼습니다. 런타임을 짜다가 만나는 에러의 대부분이 이 셋에서 나옵니다. 아래 에러는 모두 실제로 재현해 확인했습니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>규칙</th><th>내용</th><th>어기면</th></tr>
+      <tr><td>① 위에서 아래로 활성화</td><td>자식 cgroup에 memory 파일이 생기려면 부모의 <code>subtree_control</code>에 <code>+memory</code>가 있어야 하고, 부모가 그것을 켜려면 부모의 <code>controllers</code>에 memory가 있어야 한다(= 조부모가 켜 줘야 한다)</td><td><code>ENOENT</code> (No such file or directory). 파일이 없다는 뜻이 아니라 켤 수 없는 컨트롤러라는 뜻이라 헷갈린다</td></tr>
+      <tr><td>② 내부 프로세스 금지</td><td>루트가 아닌 cgroup은 "프로세스를 직접 갖는 것"과 "자식에게 컨트롤러를 나눠 주는 것"을 동시에 할 수 없다. 자원 분배는 잎(leaf)에서만 일어난다</td><td><code>EBUSY</code> (Device or resource busy)</td></tr>
+      <tr><td>③ 빈 cgroup만 삭제</td><td>안에 프로세스가 있으면 <code>rmdir</code> 불가. 먼저 끝내거나(<code>cgroup.kill</code>) 옮겨야 한다</td><td><code>EBUSY</code></td></tr>
+    </table></div>
+
+    <div class="widget">
+      <div class="w-title">cgroup 트리 실험실</div>
+      <div class="w-desc">myctr가 만드는 구조(<code>/sys/fs/cgroup</code> → <code>myctr</code> → <code>ctr-4241</code>)입니다. 컨트롤러를 켜고 끄거나 프로세스를 옮겨 보세요. 각 cgroup에 어떤 인터페이스 파일이 생기는지, 어떤 동작이 어떤 에러로 막히는지 보여 줍니다.</div>
+      <div id="cg-tree"></div>
+      <div class="log" id="cg-log"></div>
+    </div>
+    <div class="callout"><span class="title">Docker 안에서 실험한다면</span>
+      Docker 컨테이너(<code>--privileged --cgroupns=private</code>) 안에서는 <code>/sys/fs/cgroup</code>이 진짜 루트가 아니라 그 컨테이너의 cgroup입니다. 그래서 규칙 ②의 루트 예외가 적용되지 않고, 셸이 그 안에 있는 한 컨트롤러를 켤 수 없습니다. 셸을 하위 cgroup으로 옮긴 뒤 켜면 됩니다. 이 장의 검증도 그렇게 했습니다.
+<pre><code>mkdir /sys/fs/cgroup/shell &amp;&amp; echo $$ &gt; /sys/fs/cgroup/shell/cgroup.procs
+echo "+memory +cpu +pids" &gt; /sys/fs/cgroup/cgroup.subtree_control</code></pre>
+      systemd를 쓰는 일반 VM(OrbStack, Lima의 Ubuntu)에서는 루트 cgroup에 이미 컨트롤러가 켜져 있어서 이 과정이 필요 없습니다.</div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s4">
+    <h2>4. 메모리: memory.max와 OOM</h2>
+    <p><code>memory.current</code>는 그 cgroup의 프로세스들이 쓰는 <b>익명 메모리</b>(힙, 스택)와 그들이 읽고 쓴 파일의 <b>page cache</b>, 일부 커널 메모리를 합친 값입니다. 사용량이 <code>memory.max</code>에 닿으면 커널은 먼저 <b>회수</b>를 시도합니다. page cache는 디스크에 있는 내용이라 버리면 그만이고, 익명 메모리는 스왑이 있으면 스왑으로 내보냅니다. 회수로도 자리를 못 만들면 <b>cgroup 안의 OOM killer</b>가 가장 큰 프로세스를 골라 <code>SIGKILL</code>을 보냅니다. 이것이 1장에서 본 137의 정체입니다.</p>
+
+    <div class="widget">
+      <div class="w-title">memory.max 시뮬레이터</div>
+      <div class="w-desc">작업 종류를 고르고 실행하세요. 파란색은 익명 메모리, 청록색은 page cache입니다. 빨간 선이 <code>memory.max</code>, 주황 선이 <code>memory.high</code>입니다. 같은 64M 상한에서 "큰 파일 읽기"는 왜 죽지 않는지 비교해 보세요.</div>
+      <div class="controls">
+        <label>memory.max <input type="range" id="mm-max" min="32" max="256" step="16" value="64"> <b id="mm-maxv">64M</b></label>
+        <label>memory.high <select id="mm-high"><option value="0">max (없음)</option><option value="0.75">max의 75%</option></select></label>
+        <label>스왑 <select id="mm-swap"><option value="0" selected>memory.swap.max = 0</option><option value="1">스왑 허용</option></select></label>
+      </div>
+      <div class="controls">
+        <button class="btn" data-w="dd16">dd bs=16M (버퍼 16M)</button>
+        <button class="btn" data-w="dd200">dd bs=200M (버퍼 200M)</button>
+        <button class="btn" data-w="leak">조금씩 새는 서버</button>
+        <button class="btn" data-w="file">1G 파일 읽기 (cat big.log)</button>
+        <button class="btn" id="mm-reset">초기화</button>
+      </div>
+      <div class="membar" id="mm-bar"><div class="anon"></div><div class="file"></div><div class="limh"></div><div class="lim"></div><span class="lbl" id="mm-lbl"></span></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">memory.current</div><div class="v" id="mm-cur">0</div></div>
+        <div class="stat"><div class="k">memory.events max</div><div class="v" id="mm-evmax">0</div></div>
+        <div class="stat"><div class="k">oom_kill</div><div class="v" id="mm-oom">0</div></div>
+        <div class="stat"><div class="k">myctr $?</div><div class="v" id="mm-exit">-</div></div>
+      </div>
+      <div class="log" id="mm-log"></div>
+    </div>
+
+    <p>rootfs 안의 Alpine 도구로 실행합니다. 정상 버퍼는 0, 상한을 크게 넘긴 버퍼는 OOM으로 137을 돌려주는지 검사합니다. 출력 바이트·처리 시간은 도구와 환경마다 다릅니다.</p>
+<pre><code>sudo ./target/debug/myctr run --rootfs ./rootfs --memory 64M dd if=/dev/zero of=/dev/null bs=16M count=1
+echo $?  # 기대: 0
+sudo ./target/debug/myctr run --rootfs ./rootfs --memory 64M dd if=/dev/zero of=/dev/null bs=200M count=1
+echo $?  # 기대: 137, 부모의 OOM 안내
+
+# --init의 셸은 dd의 실패 뒤에도 계속할 수 있다.
+sudo ./target/debug/myctr run --rootfs ./rootfs --init --memory 64M sh -c 'dd if=/dev/zero of=/dev/null bs=200M count=1; echo dd_exit=$?'
+# dd_exit=137이어도 마지막 echo가 성공하면 셸과 myctr의 종료 코드는 0일 수 있다.</code></pre>
+<div class="callout"><span class="title">cgroup 파일은 호스트에서 관찰합니다</span>pivot_root 뒤에는 호스트의 /sys/fs/cgroup을 볼 수 없습니다. 컨테이너에 전체 cgroupfs를 붙이는 대신 부모의 경로 <code>/sys/fs/cgroup/myctr/ctr-&lt;myctr PID&gt;</code>를 읽습니다. 프로세스가 살아 있는 동안 memory.events·memory.current·cpu.stat을 확인하고, 종료 후에는 leaf가 정리되는지 봅니다. 아래 완료 검사도 같은 방식입니다.</div>
+
+    <div class="callout danger"><span class="title">OOM이 났는데 종료 코드가 0일 수 있다</span>
+      마지막 실험에서 OOM killer는 메모리를 가장 많이 쓰던 <b>dd만</b> 죽였고, 메인 프로세스인 sh는 살아남아 정상 종료했습니다. 종료 코드만 보는 모니터링은 이 OOM을 놓칩니다. 그래서 myctr는 종료 코드와 별개로 <code>memory.events</code>의 <code>oom_kill</code> 카운터를 읽어 알립니다. Docker의 <code>OOMKilled</code> 플래그, Kubernetes의 OOM 이벤트도 같은 카운터를 봅니다. 컨테이너 안의 프로세스 하나라도 죽으면 전체를 죽이고 싶다면 <code>memory.oom.group</code>에 1을 쓰면 됩니다.</div>
+    <ul class="checklist">
+      <li><b>왜 swap.max = 0인가:</b> 스왑이 있으면 상한을 넘은 익명 메모리가 스왑으로 밀려나 OOM 대신 극심한 느려짐이 옵니다. 결과가 호스트의 스왑 설정에 따라 달라지지 않도록 myctr는 <code>--memory</code>를 주면 스왑도 막습니다. Docker는 기본적으로 메모리와 같은 양의 스왑을 더 허용합니다(<code>--memory-swap</code>).</li>
+      <li><b>page cache도 셉니다:</b> 로그를 많이 읽는 컨테이너의 <code>memory.current</code>가 상한 근처에 붙어 있어도 정상일 수 있습니다. 회수 가능한 캐시이기 때문입니다. "실제로 위험한가"는 <code>memory.stat</code>의 <code>anon</code>과 <code>memory.events</code>의 <code>oom_kill</code>로 판단하세요.</li>
+      <li><b>memory.high:</b> 넘으면 죽이지 않고, 할당하는 프로세스에게 회수 작업을 시키고 지연을 걸어 속도를 늦춥니다. "죽기 전에 느려지는" 완충 구간입니다.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s5">
+    <h2>5. CPU: cpu.max와 throttling</h2>
+    <p><code>cpu.max</code>는 "<b>period마다 quota만큼만</b> 실행해도 된다"는 예산입니다. <code>50000 100000</code>이면 100ms마다 50ms, 즉 평균 0.5코어입니다. 예산은 cgroup 전체가 공유합니다. 스레드 4개가 동시에 돌면 50ms 예산을 12.5ms 만에 다 쓰고, 그 period의 나머지 87.5ms 동안 <b>전부 멈춥니다</b>. 이것이 throttling입니다.</p>
+
+    <div class="widget">
+      <div class="w-title">cpu.max 타임라인</div>
+      <div class="w-desc">CPU를 쓰려는 스레드 수와 상한을 바꿔 보세요. 각 줄은 스레드 하나, 초록은 실행, 빨강 빗금은 throttle로 멈춘 구간입니다. 아래의 "요청 지연"은 throttle 구간이 시작될 때 도착한 요청이 얼마나 기다리는지를 보여 줍니다.</div>
+      <div class="controls">
+        <label>--cpus <input type="range" id="cp-q" min="0.1" max="4" step="0.1" value="0.5"> <b id="cp-qv">0.5</b></label>
+        <label>바쁜 스레드 <input type="range" id="cp-t" min="1" max="8" value="1"> <b id="cp-tv">1</b></label>
+        <label>period <select id="cp-p"><option value="100000" selected>100ms (기본)</option><option value="20000">20ms</option></select></label>
+      </div>
+      <div class="stage"><svg class="diagram" id="cpu-svg" viewBox="0 0 720 200"></svg></div>
+      <div class="stat-row">
+        <div class="stat"><div class="k">cpu.max</div><div class="v" id="cp-max" style="font-size:16px">-</div></div>
+        <div class="stat"><div class="k">실효 코어</div><div class="v" id="cp-eff">-</div></div>
+        <div class="stat"><div class="k">nr_throttled / nr_periods</div><div class="v" id="cp-thr">-</div></div>
+        <div class="stat"><div class="k">최악 요청 지연</div><div class="v" id="cp-lat">-</div></div>
+      </div>
+    </div>
+
+    <p>호스트의 root 셸에서 실행 중인 cgroup을 관찰하는 예시입니다. 0.5코어 제한에서는 충분한 측정 구간에 CPU 사용량이 벽시계 시간의 약 절반으로 증가하고, nr_throttled가 증가하는지 확인합니다.</p>
+<pre><code># 실습용 Linux의 root 셸에서. $!가 myctr 자체의 PID가 되게 실행한다.
+B=$(realpath ./target/debug/myctr)
+R=$(realpath ./rootfs)
+"$B" run --rootfs "$R" --cpus 0.5 /bin/sh -c 'while :; do :; done' &amp;
+launcher=$!
+cg="/sys/fs/cgroup/myctr/ctr-$launcher"
+for i in $(seq 1 100); do [ -r "$cg/cpu.stat" ] &amp;&amp; break; sleep 0.05; done
+sleep 2
+cat "$cg/cpu.stat"
+# 관찰 뒤 자신이 띄운 PID 1만 종료한다. 부모는 자식을 회수하고 cgroup을 정리한다.
+child=$(head -n 1 "$cg/cgroup.procs")
+kill -KILL "$child"
+wait "$launcher"  # 137 예상</code></pre>
+    <div class="callout warn"><span class="title">CPU 상한은 평균이 아니라 지연을 만든다</span>
+      "0.5코어면 절반 속도로 돌겠지"라고 생각하기 쉽지만, 실제로는 <b>전속력으로 달리다 멈추기</b>를 반복합니다. 멀티스레드 서버(JVM, Go, Node.js의 libuv 스레드풀)는 예산을 빠르게 소진하고, 그 period의 남은 시간 동안 들어온 요청은 다음 period까지 기다립니다. 평균 CPU 사용률은 낮은데 p99 지연이 수십 ms씩 튀는 Kubernetes의 전형적인 증상입니다. 위 위젯에서 스레드를 8로 올려 보세요. 진단은 <code>cpu.stat</code>의 <code>nr_throttled</code> 비율로 합니다.</div>
+    <p><code>cpu.weight</code>는 상한이 아니라 <b>경쟁할 때의 비율</b>입니다. CPU가 남으면 weight가 낮아도 다 쓸 수 있습니다. Kubernetes의 <code>requests.cpu</code>가 weight로, <code>limits.cpu</code>가 <code>cpu.max</code>로 바뀝니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s6">
+    <h2>6. PID: pids.max</h2>
+    <p>메모리와 CPU를 막아도, 프로세스를 끝없이 만드는 프로그램은 호스트 전체의 PID(<code>/proc/sys/kernel/pid_max</code>)를 고갈시켜 <b>호스트에서도</b> 새 프로세스를 못 만들게 할 수 있습니다. <code>pids.max</code>는 cgroup 안의 태스크(프로세스와 스레드) 수를 제한합니다. 넘으면 fork/clone이 <code>EAGAIN</code>으로 실패하고, 기존 프로세스는 죽이지 않습니다.</p>
+
+    <div class="widget">
+      <div class="w-title">pids.max 시뮬레이터</div>
+      <div class="w-desc"><code>sh -c 'for i in 1 2 3 4 5 6 7 8; do sleep 1 &amp; done; wait'</code>를 실행한다고 합시다. 처음부터 sh(1개)가 있고, 반복마다 sleep을 하나씩 fork합니다. <code>--init</code>을 켜면 init이 하나 더 있습니다.</div>
+      <div class="controls">
+        <label>pids.max <input type="range" id="pd-max" min="2" max="12" value="5"> <b id="pd-maxv">5</b></label>
+        <label><input type="checkbox" id="pd-init"> --init</label>
+        <button class="btn primary" id="pd-run">실행</button>
+      </div>
+      <div class="pgrid" id="pd-grid"></div>
+      <div class="stepper-cap" id="pd-out">실행을 누르세요.</div>
+    </div>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run --rootfs ./rootfs --pids 5 sh -c 'for i in 1 2 3 4 5 6 7 8; do sleep 1 &amp; done; wait'; echo $?
+<span class="o">sh: 0: Cannot fork
+2</span></code></pre>
+    <p>pids.max는 스레드도 셉니다. 스레드를 많이 쓰는 런타임(JVM, Go)에 너무 낮게 주면 스레드 생성 실패로 이상하게 죽습니다. 실무에서는 수백~수천 단위로 줍니다.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s7">
+    <h2>7. 컨테이너를 cgroup에 넣기</h2>
+    <p>제한은 사용자 프로그램이 <b>첫 명령을 실행하기 전부터</b> 걸려 있어야 합니다. exec 후에 넣으면 그 사이에 이미 메모리를 할당하거나 fork했을 수 있기 때문입니다. cgroup 소속은 fork와 exec를 넘어 유지되므로, 결국 "fork와 exec 사이에 넣으면" 됩니다. 방법은 세 가지입니다.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>방법</th><th>어떻게</th><th>장단점</th></tr>
+      <tr><td>A. 자식이 스스로 들어감</td><td>자식이 exec 전에 <code>cgroup.procs</code>에 <code>"0"</code>을 씀</td><td>가장 단순하고 경쟁 상태가 없음. 자식이 cgroupfs에 접근할 수 있어야 함(3장 이후엔 pivot_root 전에). <b>이 장의 방식</b></td></tr>
+      <tr><td>B. 부모가 넣고 신호</td><td>clone 후 부모가 자식의 호스트 PID를 <code>cgroup.procs</code>에 쓰고, 파이프로 "이제 exec해도 된다"고 알림</td><td>자식은 아무 권한도 필요 없음. 동기화 파이프가 필요함(5장에서 uid_map 때문에 어차피 만들게 됨)</td></tr>
+      <tr><td>C. 처음부터 그 안에서 태어남</td><td><code>clone3</code>에 <code>CLONE_INTO_CGROUP</code>과 cgroup 디렉터리 fd를 넘김 (커널 5.7+)</td><td>가장 정확함. nix 0.29에는 clone3 래퍼가 없어 직접 시스템 콜을 불러야 함</td></tr>
+    </table></div>
+    <div class="callout"><span class="title">왜 "0"인가</span>
+      자식은 새 PID 네임스페이스에서 PID 1이지만, cgroupfs에 PID를 쓰면 커널은 <b>쓰는 프로세스의 네임스페이스 기준</b>으로 해석합니다. 그러니 "1"을 써도 자기 자신이 맞긴 하지만 읽는 사람을 헷갈리게 합니다. "0"은 PID 네임스페이스와 상관없이 "나"를 뜻하는 약속입니다.</div>
+
+    <div class="widget">
+      <div class="w-title">cgroup을 붙인 myctr의 생애주기</div>
+      <div class="w-desc"><code>sudo myctr run --rootfs ./rootfs --memory 64M --cpus 0.5 --pids 20 dd ... bs=200M</code>을 실행했을 때 일어나는 일입니다. 9절의 누적 구현 흐름과 순서가 같습니다.</div>
+      <div class="stage"><svg class="diagram" id="lc-svg" viewBox="0 0 740 270" role="img" aria-label="cgroup 생애주기 애니메이션"></svg></div>
+      <div id="lc-ctl"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s8">
+    <h2>8. 정리와 누수</h2>
+    <p>컨테이너가 끝나면 cgroup 디렉터리를 지워야 합니다. 안 지우면 <code>/sys/fs/cgroup/myctr/</code>에 빈 디렉터리가 계속 쌓입니다. 참조 구현은 Rust의 <code>Drop</code>으로 정리합니다. <code>run</code> 함수가 끝날 때(에러로 빠져나갈 때도) cgroup 구조체가 drop되며 <code>rmdir</code>합니다. 2장에서 확인했듯이 PID 1이 끝나면 커널이 네임스페이스의 나머지 프로세스를 모두 죽이므로, waitpid가 돌아온 시점에는 cgroup이 비어 있습니다.</p>
+    <div class="callout"><span class="title">Drop이 clone 자식에서는 돌지 않는 이유</span>
+      clone된 자식도 부모 메모리의 복사본이라 <code>Cgroup</code> 구조체를 갖고 있습니다. 자식이 끝날 때 Drop이 돌면 자식이 cgroup을 지우려 하겠지요. 하지만 2장에서 봤듯이 clone 클로저가 반환하면 glibc가 <code>exit</code> 시스템 콜을 <b>직접</b> 부르므로 Rust의 소멸자는 실행되지 않습니다. mini_init의 fork 자식도 <code>_exit</code>로 끝납니다. 같은 이유로 main의 <code>std::process::exit</code>도 소멸자를 부르지 않으므로, 참조 구현은 cgroup을 <code>run</code> 안에 두어 exit 전에 drop되게 했습니다.</div>
+    <p>하지만 Drop으로는 막을 수 없는 경우가 있습니다. 실제로 확인했습니다.</p>
+<pre class="term"><code><span class="p">$ </span>sudo myctr run --rootfs ./rootfs --init sleep 30 &amp;
+<span class="p">$ </span>sudo kill -9 %1                    <span class="o"># myctr 자체를 SIGKILL</span>
+<span class="p">$ </span>ls -d /sys/fs/cgroup/myctr/ctr-*
+<span class="o">/sys/fs/cgroup/myctr/ctr-178        ← cgroup이 남음</span>
+<span class="p">$ </span>cat /sys/fs/cgroup/myctr/ctr-178/cgroup.procs
+<span class="o">180                                 ← init과 sleep도 계속 살아 있음
+181</span>
+<span class="p">$ </span>echo 1 | sudo tee /sys/fs/cgroup/myctr/ctr-178/cgroup.kill; sudo rmdir /sys/fs/cgroup/myctr/ctr-178</code></pre>
+    <p>SIGKILL은 잡을 수 없으므로 소멸자도, 시그널 핸들러도 돌지 않습니다. 컨테이너는 고아가 되어 계속 돌고, 아무도 회수하지 않습니다. 실제 런타임은 이 문제를 구조로 풉니다. Docker는 <code>containerd-shim</code>이라는 별도 프로세스가 컨테이너의 부모 역할을 하고, 런타임이 죽어도 shim이 남아 정리합니다. 9장에서 상태 파일과 <code>myctr delete</code>로 같은 문제를 다룹니다. 그전까지는 실습 5의 정리 명령을 쓰세요.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s9">
+    <h2>9. strace로 확인하기</h2>
+    <p>아래는 cgroup 관련 호출을 읽는 설명용 trace입니다. 누적 구현의 실제 trace에는 3장에서 이어진 mount·pivot_root·새 /proc·/dev 준비가 cgroup 진입 뒤, exec 전에 추가됩니다. PID·FD 값은 실행마다 달라집니다.</p>
+<pre><code>sudo strace -f -s 60 -e trace=mkdirat,openat,write,clone,unlinkat,execve,wait4,exit_group,read \
+    ./target/debug/myctr run --rootfs ./rootfs --memory 64M --cpus 0.5 --pids 20 dd if=/dev/zero of=/dev/null bs=200M count=1</code></pre>
+    <div class="widget">
+      <div class="w-title">strace 출력 읽기: cgroup은 파일 쓰기다</div>
+      <div class="w-desc">줄을 눌러 의미를 확인하세요. 시스템 콜이 <code>mkdir</code>, <code>open</code>, <code>write</code>, <code>rmdir</code>뿐이라는 점에 주목하세요.</div>
+      <div class="lines" id="st-lines"></div>
+      <div class="stepper-cap" id="st-explain">줄을 눌러 보세요.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="s10">
+    <h2>10. 구현 가이드: 자원 제한 붙이기</h2>
+    <p>3장 코드에서 출발합니다. 목표 사용법은 <code>myctr run --rootfs ./rootfs [--memory 64M] [--cpus 0.5] [--pids 20] [--hostname 이름] [--init] &lt;명령&gt;</code>입니다. 3장에서 추가한 nix의 <code>mount,fs</code> 기능을 유지합니다. cgroup 파일 처리는 <code>std::fs</code>를 사용합니다.</p>
+
+    <h3>단계 A. CLI와 설정 구조체</h3>
+    <p><code>--memory</code>는 <code>64M</code>, <code>1G</code> 같은 표기를 받아야 합니다. clap의 <code>value_parser</code>에 직접 만든 함수를 넘기세요. 자식에게 넘길 값이 늘었으니 <code>Config</code> 구조체로 묶어 clone 클로저에 넘기면 깔끔합니다.</p>
+    <details class="deep"><summary>힌트 A</summary><div>
+<pre><code>/// 메모리 상한 (예: 64M, 1G, 바이트 수)
+#[arg(long, value_parser = parse_bytes)]
+memory: Option&lt;u64&gt;,
+/// CPU 상한 (코어 수, 예: 0.5)
+#[arg(long)]
+cpus: Option&lt;f64&gt;,
+/// 최대 프로세스(스레드) 수
+#[arg(long)]
+pids: Option&lt;u64&gt;,
+
+fn parse_bytes(s: &amp;str) -&gt; Result&lt;u64, String&gt; {
+    let (num, mul) = match s.chars().last() {
+        Some('K' | 'k') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 10),
+        Some('M' | 'm') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 20),
+        Some('G' | 'g') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 30),
+        _ =&gt; (s, 1),
+    };
+    num.parse::&lt;u64&gt;().map(|n| n * mul).map_err(|e| format!("{s}: {e}"))
+}</code></pre>
+    </div></details>
+
+    <h3>단계 B. Cgroup 구조체</h3>
+<pre><code>struct Cgroup { path: PathBuf }
+
+impl Cgroup {
+    fn create(name: &amp;str, limits: &amp;Limits) -&gt; Result&lt;Self&gt; {
+        // TODO 1: /sys/fs/cgroup/myctr 를 만든다 (create_dir_all)
+        // TODO 2: 그 subtree_control 에 "+memory +cpu +pids" (규칙 ①)
+        // TODO 3: /sys/fs/cgroup/myctr/&lt;name&gt; 을 만든다
+        // TODO 4: limits 에 따라 memory.max(+ memory.swap.max=0), cpu.max, pids.max 를 쓴다
+        //         cpu.max = "{cpus * 100000} 100000"
+        todo!()
+    }
+    /// memory.events 의 oom_kill 값
+    fn oom_kills(&amp;self) -&gt; u64 { todo!() }
+}
+
+impl Drop for Cgroup {
+    fn drop(&amp;mut self) {
+        // TODO 5: rmdir. 실패하면 경고만 출력
+    }
+}</code></pre>
+    <details class="deep"><summary>힌트 B: memory.swap.max가 없다는 에러가 나면</summary><div>
+      <p>스왑 계정(<code>CONFIG_MEMCG_SWAP</code>)이 꺼진 커널에는 <code>memory.swap.max</code> 파일이 없습니다. 쓰기 전에 <code>path.exists()</code>로 확인하세요. 컨트롤러 활성화가 <code>ENOENT</code>로 실패하면 규칙 ①입니다. 에러 메시지에 "상위 cgroup의 cgroup.subtree_control을 확인하라"는 안내를 붙여 두면 나중의 자신이 고마워합니다.</p>
+    </div></details>
+
+    <h3>단계 C. run과 자식</h3>
+<pre><code>fn run(..) -&gt; Result&lt;i32&gt; {
+    // TODO 6: Cgroup::create(&amp;format!("ctr-{}", std::process::id()), limits)
+    // TODO 7: Config에 rootfs와 cgroup.procs를 담아 clone (3장의 CLONE_NEWNS 유지)
+    // TODO 8: 종료 코드를 받은 뒤 oom_kills() &gt; 0 이면 안내 메시지
+    //         cgroup 은 함수 끝에서 drop 되며 지워진다
+    todo!()
+}
+
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    // TODO 9: cfg.cgroup_procs에 "0"을 쓴다 (pivot_root 전에, 가장 먼저)
+    sethostname(&amp;cfg.hostname).context("sethostname")?;
+    setup_rootfs(&amp;cfg.rootfs) // 3장 구현 유지
+}</code></pre>
+
+    <h3>단계 D. 완료 기준</h3>
+<p>검사를 앞 장부터 누적합니다. 실행 가능한 전체 프로젝트는 <a href="examples/ch04/src/main.rs">src/main.rs</a>와 <a href="examples/ch04/Cargo.toml">Cargo.toml</a>에 있고, <a href="examples/README.md">준비·실행 안내</a>와 <a href="examples/ch04/check.sh">check.sh</a>를 함께 제공합니다. 아래 명령은 <code>examples/ch04</code>에서 실행합니다.</p>
+<div class="callout"><span class="title">rootfs를 모드별로 준비하세요</span><code>../rootfs</code>는 root 소유, <code>../rootfs-user</code>는 실행하는 일반 사용자 소유, <code>../rootfs-range</code>는 바깥 UID/GID 100000 소유입니다. <a href="examples/prepare-rootfs.sh">prepare-rootfs.sh</a>가 Alpine과 후속 장의 실험 도구를 설치합니다. rootless 권한 검사용 <code>/root-only</code>는 root 소유·0600인 예외 파일로 만들고 실제 open 실패를 검사합니다.</div>
+<h4>root 검사</h4>
+<p>3장 기본·파일시스템 17개 + 4장 cgroup 14개입니다. cgroup 설정과 통계는 부모의 호스트 경로에서 관측합니다. 컨테이너에 cgroupfs 전체를 노출하지 않습니다.</p>
+<pre><code>cargo build --locked
+sudo env ROOTFS="$PWD/../rootfs" bash check.sh rootful</code></pre>
+
+<div class="callout tip" id="runtime-proof"><span class="title">통합본 실제 실행 결과</span>Linux aarch64, Debian 12 기반 전용 privileged 컨테이너, 커널 <code>7.0.12-linuxkit</code>, Rust/Cargo <code>1.86.0</code>, Alpine <code>3.22.2</code>에서 root <b>31 / 31</b>를 통과했습니다. <a href="examples/VALIDATION.md">검사 모듈·소스 해시·실행 기록</a>을 확인할 수 있습니다. x86_64는 실행하지 않았습니다.</div>
+<details class="deep"><summary>참조 구현 (막혔을 때만 여세요)</summary><div>
+      <p>3장 rootfs 기능과 이 장의 cgroup 기능을 합친 전체 코드입니다. 아래 Cargo.toml과 완료 기준은 누적 구현에 맞춘 검증본입니다.</p>
+<h4 data-integrated-cargo>Cargo.toml</h4><pre><code>[package]
+name="myctr"
+version="0.1.0"
+edition="2024"
+[dependencies]
+anyhow="1"
+clap={version="4",features=["derive"]}
+nix={version="0.29",features=["process", "signal", "sched", "hostname", "mount", "fs"]}</code></pre>
+<h4>src/main.rs</h4>
+<pre><code>use std::ffi::CString;
+use std::fs::{self, File};
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use nix::errno::Errno;
+use nix::libc;
+use nix::mount::{MntFlags, MsFlags, mount, umount2};
+use nix::unistd::{chdir, pivot_root};
+use nix::sched::{CloneFlags, clone};
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, execvp, fork, sethostname};
+
+const OLD_ROOT: &amp;str = ".oldroot";
+const DEVICES: [&amp;str; 6] = ["null", "zero", "full", "random", "urandom", "tty"];
+
+const STACK_SIZE: usize = 1024 * 1024;
+const CGROUP_ROOT: &amp;str = "/sys/fs/cgroup";
+/// myctr가 만드는 모든 컨테이너 cgroup의 부모
+const CGROUP_PARENT: &amp;str = "myctr";
+const CPU_PERIOD_US: u64 = 100_000;
+
+#[derive(Parser)]
+#[command(name = "myctr", about = "나만의 컨테이너 런타임")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 명령을 새 네임스페이스와 cgroup 안에서 실행한다
+    Run {
+        /// 컨테이너의 루트가 될 디렉터리
+        #[arg(long)]
+        rootfs: PathBuf,
+        /// 컨테이너 안에서 보일 hostname
+        #[arg(long, default_value = "myctr")]
+        hostname: String,
+        /// PID 1에 작은 init을 두고 명령은 PID 2로 실행한다
+        #[arg(long)]
+        init: bool,
+        /// 메모리 상한 (예: 64M, 1G, 바이트 수)
+        #[arg(long, value_parser = parse_bytes)]
+        memory: Option&lt;u64&gt;,
+        /// CPU 상한 (코어 수, 예: 0.5)
+        #[arg(long)]
+        cpus: Option&lt;f64&gt;,
+        /// 최대 프로세스(스레드) 수
+        #[arg(long)]
+        pids: Option&lt;u64&gt;,
+        /// 실행할 프로그램과 인자
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec&lt;String&gt;,
+    },
+}
+
+struct Limits {
+    memory: Option&lt;u64&gt;,
+    cpus: Option&lt;f64&gt;,
+    pids: Option&lt;u64&gt;,
+}
+
+/// clone된 자식에게 넘길 설정
+struct Config {
+    rootfs: PathBuf,
+    hostname: String,
+    init: bool,
+    argv: Vec&lt;CString&gt;,
+    /// 자식이 스스로 들어갈 cgroup.procs 경로
+    cgroup_procs: PathBuf,
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    match Cli::parse().command {
+        Command::Run { rootfs, hostname, init, memory, cpus, pids, cmd } =&gt; {
+            let argv = cmd
+                .iter()
+                .map(|s| CString::new(s.as_bytes()))
+                .collect::&lt;Result&lt;_, _&gt;&gt;()
+                .context("인자에 NUL 바이트가 있습니다")?;
+            let rootfs = fs::canonicalize(&amp;rootfs).context("rootfs 경로 확인")?;
+            validate_rootfs(&amp;rootfs)?;
+            let code = run(rootfs, hostname, init, argv, &amp;Limits { memory, cpus, pids })?;
+            std::process::exit(code);
+        }
+    }
+}
+
+/// "64M", "1G", "512K", "1048576" 을 바이트 수로
+fn parse_bytes(s: &amp;str) -&gt; Result&lt;u64, String&gt; {
+    let (num, mul) = match s.chars().last() {
+        Some('K' | 'k') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 10),
+        Some('M' | 'm') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 20),
+        Some('G' | 'g') =&gt; (&amp;s[..s.len() - 1], 1 &lt;&lt; 30),
+        _ =&gt; (s, 1),
+    };
+    num.parse::&lt;u64&gt;().map(|n| n * mul).map_err(|e| format!("{s}: {e}"))
+}
+
+fn run(rootfs: PathBuf, hostname: String, init: bool, argv: Vec&lt;CString&gt;, limits: &amp;Limits) -&gt; Result&lt;i32&gt; {
+    let cgroup = Cgroup::create(&amp;format!("ctr-{}", std::process::id()), limits)?;
+    let cfg = Config { rootfs, hostname, init, argv, cgroup_procs: cgroup.path.join("cgroup.procs") };
+
+    let mut stack = vec![0u8; STACK_SIZE];
+    let flags = CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
+    let cb = Box::new(|| container_main(&amp;cfg));
+    let child = unsafe { clone(cb, &amp;mut stack, flags, Some(Signal::SIGCHLD as i32)) }
+        .context("clone 실패 (root 권한으로 실행했나요?)")?;
+
+    unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }.context("signal 설정 실패")?;
+    let code = wait_exit_code(child)?;
+    if cgroup.oom_kills() &gt; 0 {
+        eprintln!("myctr: 메모리 상한을 넘어 OOM killer가 프로세스를 종료했습니다");
+    }
+    Ok(code)
+    // cgroup은 여기서 drop되며 지워진다
+}
+
+fn wait_exit_code(child: Pid) -&gt; Result&lt;i32&gt; {
+    match waitpid(child, None).context("waitpid 실패")? {
+        WaitStatus::Exited(_, code) =&gt; Ok(code),
+        WaitStatus::Signaled(_, sig, _) =&gt; Ok(128 + sig as i32),
+        other =&gt; bail!("예상하지 못한 상태: {other:?}"),
+    }
+}
+
+struct Cgroup {
+    path: PathBuf,
+}
+
+impl Cgroup {
+    fn create(name: &amp;str, limits: &amp;Limits) -&gt; Result&lt;Self&gt; {
+        let parent = Path::new(CGROUP_ROOT).join(CGROUP_PARENT);
+        fs::create_dir_all(&amp;parent).with_context(|| format!("{} 만들기", parent.display()))?;
+        // 부모에서 컨트롤러를 켜야 자식 cgroup에 memory.max 같은 파일이 생긴다
+        fs::write(parent.join("cgroup.subtree_control"), "+memory +cpu +pids")
+            .context("컨트롤러 활성화 (상위 cgroup의 cgroup.subtree_control에 memory cpu pids가 켜져 있나요?)")?;
+
+        let path = parent.join(name);
+        fs::create_dir(&amp;path).with_context(|| format!("{} 만들기", path.display()))?;
+        let cg = Cgroup { path };
+        if let Some(bytes) = limits.memory {
+            cg.write("memory.max", &amp;bytes.to_string())?;
+            // 스왑으로 도망가지 못하게. 스왑 계정이 꺼진 커널에는 파일이 없다
+            if cg.path.join("memory.swap.max").exists() {
+                cg.write("memory.swap.max", "0")?;
+            }
+        }
+        if let Some(cpus) = limits.cpus {
+            let quota = (cpus * CPU_PERIOD_US as f64) as u64;
+            cg.write("cpu.max", &amp;format!("{quota} {CPU_PERIOD_US}"))?;
+        }
+        if let Some(n) = limits.pids {
+            cg.write("pids.max", &amp;n.to_string())?;
+        }
+        Ok(cg)
+    }
+
+    fn write(&amp;self, file: &amp;str, value: &amp;str) -&gt; Result&lt;()&gt; {
+        fs::write(self.path.join(file), value)
+            .with_context(|| format!("{}/{file} 에 {value} 쓰기", self.path.display()))
+    }
+
+    /// memory.events 의 oom_kill 카운터
+    fn oom_kills(&amp;self) -&gt; u64 {
+        fs::read_to_string(self.path.join("memory.events"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("oom_kill ").and_then(|n| n.parse().ok()))
+            })
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for Cgroup {
+    fn drop(&amp;mut self) {
+        // 프로세스가 남아 있으면 EBUSY. PID 1이 끝나면 네임스페이스 전체가 정리되므로 비어 있다
+        if let Err(e) = fs::remove_dir(&amp;self.path) {
+            eprintln!("myctr: cgroup 정리 실패 {}: {e}", self.path.display());
+        }
+    }
+}
+
+/// clone된 자식. 새 네임스페이스 안의 PID 1이다.
+fn container_main(cfg: &amp;Config) -&gt; isize {
+    if let Err(e) = setup(cfg) {
+        eprintln!("myctr: {e:#}");
+        return 1;
+    }
+    if cfg.init { mini_init(&amp;cfg.argv) } else { exec(&amp;cfg.argv) }
+}
+
+/// fork와 exec 사이에서 컨테이너의 모양을 만든다
+fn setup(cfg: &amp;Config) -&gt; Result&lt;()&gt; {
+    // "0"을 쓰면 쓰는 프로세스 자신이 그 cgroup으로 옮겨진다. exec 전에 들어가야 한다
+    fs::write(&amp;cfg.cgroup_procs, "0").context("cgroup 들어가기")?;
+    sethostname(&amp;cfg.hostname).context("sethostname")?;
+    setup_rootfs(&amp;cfg.rootfs)?;
+    Ok(())
+}
+
+/// 실습 중 호스트 /를 rootfs로 지정하거나 준비를 빠뜨리는 실수를 막는다.
+/// 신뢰하는 Alpine 입력을 전제로 하며 악성 rootfs 검증기는 아니다.
+fn validate_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    if rootfs == Path::new("/") || !rootfs.is_dir() {
+        bail!("rootfs는 호스트 /가 아닌 디렉터리여야 합니다");
+    }
+    if !fs::symlink_metadata(rootfs.join("bin/sh")).is_ok_and(|meta| meta.is_file() || meta.file_type().is_symlink())
+        || !rootfs.join("proc").is_dir() || !rootfs.join("dev").is_dir() {
+        bail!("rootfs에 bin/sh와 proc·dev 디렉터리를 준비하세요");
+    }
+    Ok(())
+}
+
+fn setup_rootfs(rootfs: &amp;Path) -&gt; Result&lt;()&gt; {
+    // 1. 이후의 마운트가 호스트로 전파되지 않도록 모든 마운트를 private으로
+    mount(None::&lt;&amp;str&gt;, "/", None::&lt;&amp;str&gt;, MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::&lt;&amp;str&gt;)
+        .context("/ 를 rprivate으로 바꾸기")?;
+
+    // 2. pivot_root의 new_root는 마운트 지점이어야 하므로 자기 자신에게 bind
+    mount(Some(rootfs), rootfs, None::&lt;&amp;str&gt;, MsFlags::MS_BIND | MsFlags::MS_REC, None::&lt;&amp;str&gt;)
+        .context("rootfs bind mount")?;
+
+    // 3. 루트를 바꾼다. 이전 루트는 /.oldroot 에 걸린다
+    let old_root = rootfs.join(OLD_ROOT);
+    fs::create_dir_all(&amp;old_root).context(".oldroot 만들기")?;
+    pivot_root(rootfs, &amp;old_root).context("pivot_root")?;
+    chdir("/").context("chdir /")?;
+
+    // 4. 이 PID 네임스페이스 기준의 procfs
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None::&lt;&amp;str&gt;,
+    )
+    .context("/proc 마운트")?;
+
+    // 5. 최소한의 /dev. 장치 파일은 아직 붙어 있는 이전 루트에서 bind로 빌려 온다
+    setup_dev().context("/dev 구성")?;
+
+    // 6. 이전 루트를 떼어 내고 흔적을 지운다
+    let old = format!("/{OLD_ROOT}");
+    umount2(old.as_str(), MntFlags::MNT_DETACH).context("이전 루트 분리")?;
+    fs::remove_dir(&amp;old).context(".oldroot 지우기")?;
+    Ok(())
+}
+
+fn setup_dev() -&gt; Result&lt;()&gt; {
+    mount(
+        Some("tmpfs"),
+        "/dev",
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+        Some("mode=755,size=65536k"),
+    )?;
+    for dev in DEVICES {
+        let target = format!("/dev/{dev}");
+        File::create(&amp;target).with_context(|| format!("{target} 만들기"))?;
+        let source = format!("/{OLD_ROOT}/dev/{dev}");
+        mount(Some(source.as_str()), target.as_str(), None::&lt;&amp;str&gt;, MsFlags::MS_BIND, None::&lt;&amp;str&gt;)
+            .with_context(|| format!("{target} bind"))?;
+    }
+    for (link, to) in [
+        ("/dev/fd", "/proc/self/fd"),
+        ("/dev/stdin", "/proc/self/fd/0"),
+        ("/dev/stdout", "/proc/self/fd/1"),
+        ("/dev/stderr", "/proc/self/fd/2"),
+    ] {
+        symlink(to, link).with_context(|| format!("{link} 링크"))?;
+    }
+    Ok(())
+}
+
+/// 성공하면 돌아오지 않는다. 돌아오면 127.
+fn exec(argv: &amp;[CString]) -&gt; isize {
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) } {
+        eprintln!("myctr: SIGPIPE 복원 실패: {e}");
+        return 1;
+    }
+    let err = execvp(&amp;argv[0], argv).unwrap_err();
+    eprintln!("myctr: {}: {err}", argv[0].to_string_lossy());
+    127
+}
+
+/// PID 1로 남아 명령을 PID 2로 띄우고, 입양된 고아까지 거두다가
+/// 명령이 끝나면 그 종료 코드로 끝난다.
+fn mini_init(argv: &amp;[CString]) -&gt; isize {
+    let main_child = match unsafe { fork() } {
+        Ok(ForkResult::Child) =&gt; unsafe { libc::_exit(exec(argv) as i32) },
+        Ok(ForkResult::Parent { child }) =&gt; child,
+        Err(e) =&gt; {
+            eprintln!("myctr-init: fork: {e}");
+            return 1;
+        }
+    };
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, code)) if pid == main_child =&gt; return code as isize,
+            Ok(WaitStatus::Signaled(pid, sig, _)) if pid == main_child =&gt; return 128 + sig as isize,
+            Ok(_) =&gt; continue,
+            Err(Errno::EINTR) =&gt; continue,
+            Err(e) =&gt; {
+                eprintln!("myctr-init: waitpid: {e}");
+                return 1;
+            }
+        }
+    }
+}</code></pre>
+    </div></details>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>cgroup은 프로세스 묶음 단위로 자원을 세고 제한합니다. v2는 단일 계층이고, 디렉터리가 cgroup이며 파일 쓰기가 설정입니다.</li>
+    <li>트리 규칙 세 가지: 컨트롤러는 위에서 아래로 켜야 하고(어기면 ENOENT), 루트가 아닌 cgroup은 프로세스와 자식 컨트롤러를 동시에 가질 수 없고(EBUSY), 빈 cgroup만 지울 수 있습니다(EBUSY, <code>cgroup.kill</code>로 해결).</li>
+    <li><code>memory.max</code>를 넘으면 회수 후 OOM kill(SIGKILL, 137). OOM killer는 가장 큰 프로세스를 고르므로 메인 프로세스가 살아 종료 코드가 0일 수 있습니다. <code>memory.events</code>의 <code>oom_kill</code>로 판정합니다.</li>
+    <li><code>cpu.max</code>는 period당 quota입니다. 멀티스레드는 예산을 빨리 소진하고 period의 나머지 동안 멈추며, 이것이 지연 시간 급증으로 나타납니다. <code>cpu.stat</code>의 <code>nr_throttled</code>로 진단합니다.</li>
+    <li><code>pids.max</code>를 넘으면 fork가 EAGAIN으로 실패합니다. 스레드도 셉니다.</li>
+    <li>컨테이너는 exec 전에 cgroup에 들어가야 합니다. myctr는 자식이 <code>cgroup.procs</code>에 "0"을 씁니다. 정리는 Drop으로 하지만, 런타임이 SIGKILL되면 남습니다(9장).</li>
+  </ul></div>
+
+  <h2>확인 문제</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>/sys/fs/cgroup/myctr/cgroup.subtree_control</code>에 <code>+memory</code>를 쓰는데 <code>ENOENT</code>가 났다. 가장 가능성 높은 원인은?</div>
+    <button class="opt">myctr 디렉터리가 없다</button>
+    <button class="opt">메모리가 부족하다</button>
+    <button class="opt">부모(/sys/fs/cgroup)의 subtree_control에 memory가 켜져 있지 않아 myctr의 cgroup.controllers에 memory가 없다</button>
+    <button class="opt">cgroup v1을 쓰고 있다</button>
+    <div class="explain">컨트롤러는 위에서 아래로만 켤 수 있습니다. 자기 <code>cgroup.controllers</code>에 없는 컨트롤러를 자식에게 켜 주려 하면 ENOENT가 납니다. 파일이 없다는 뜻이 아니라서 헷갈리는 에러입니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">프로세스가 들어 있는 cgroup <code>A</code>의 subtree_control에 컨트롤러를 켜려 했더니 EBUSY가 났다. 왜인가?</div>
+    <button class="opt">A에 자식 cgroup이 아직 없어서</button>
+    <button class="opt">루트가 아닌 cgroup은 프로세스를 직접 가지면서 자식에게 컨트롤러를 나눠 줄 수 없어서 (내부 프로세스 금지)</button>
+    <button class="opt">A의 프로세스가 root가 아니라서</button>
+    <button class="opt">pids.max에 도달해서</button>
+    <div class="explain">v2는 자원 분배를 잎에서만 하도록 강제합니다. 프로세스를 하위 cgroup으로 옮긴 뒤 켜야 합니다. 루트 cgroup만 예외입니다.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q"><code>--memory 64M</code> 컨테이너에서 1 GB 로그 파일을 <code>cat</code>했다. 어떻게 되나?</div>
+    <button class="opt">파일 크기가 상한보다 커서 즉시 OOM으로 죽는다</button>
+    <button class="opt">cat이 ENOMEM 에러를 낸다</button>
+    <button class="opt">page cache는 세지 않으므로 아무 영향이 없다</button>
+    <button class="opt">page cache가 상한까지 차지만 회수 가능하므로 커널이 오래된 캐시를 버리며 정상적으로 끝난다</button>
+    <div class="explain">page cache도 memory.current에 포함되지만 디스크에 원본이 있어 버릴 수 있습니다. 상한에 닿으면 회수가 일어나고(memory.events의 max 증가) OOM은 나지 않습니다. 위험한 것은 회수할 수 없는 익명 메모리입니다.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>cpu.max = "50000 100000"</code>인 컨테이너에서 스레드 4개가 동시에 CPU를 쓰면, 각 period에서 대략 어떻게 되나?</div>
+    <button class="opt">12.5ms 동안 4개가 함께 실행된 뒤 나머지 87.5ms 동안 모두 멈춘다</button>
+    <button class="opt">각 스레드가 50ms씩, 합쳐서 200ms를 쓴다</button>
+    <button class="opt">한 스레드만 50ms 실행되고 나머지는 계속 대기한다</button>
+    <button class="opt">100ms 내내 4개가 1/8 속도로 실행된다</button>
+    <div class="explain">50ms 예산은 cgroup 전체가 공유합니다. 4개가 병렬로 쓰면 50 / 4 = 12.5ms 만에 소진되고, period가 끝날 때까지 throttle됩니다. 그 사이에 도착한 요청은 최대 87.5ms를 기다립니다.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">컨테이너 안에서 dd가 OOM으로 죽었지만 myctr의 종료 코드는 0이었다. 어떻게 가능한가?</div>
+    <button class="opt">myctr가 SIGKILL을 0으로 잘못 변환했다</button>
+    <button class="opt">OOM이 실제로 일어나지 않았다</button>
+    <button class="opt">OOM killer가 가장 큰 프로세스인 dd만 죽였고, 메인 프로세스(sh)는 계속 실행되어 정상 종료했다</button>
+    <button class="opt">memory.swap.max가 0이라서</button>
+    <div class="explain">OOM killer는 cgroup에서 가장 큰 프로세스를 고릅니다. 메인 프로세스가 아닐 수 있습니다. 그래서 OOM 판정은 종료 코드가 아니라 <code>memory.events</code>의 <code>oom_kill</code>로 해야 합니다. 그룹 전체를 죽이고 싶으면 <code>memory.oom.group</code>을 씁니다.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">myctr가 <code>kill -9</code>로 죽으면 cgroup 디렉터리가 남는 이유는?</div>
+    <button class="opt">cgroup은 원래 자동으로 지워지지 않는 설정이라서</button>
+    <button class="opt">SIGKILL은 잡을 수 없어 Drop(rmdir)이 실행되지 않고, 컨테이너 프로세스도 살아 있어 cgroup이 비지 않기 때문</button>
+    <button class="opt">Drop이 clone 자식에서 먼저 실행되어서</button>
+    <button class="opt">pids.max 때문에 rmdir 프로세스를 만들 수 없어서</button>
+    <div class="explain">SIGKILL은 어떤 정리 코드도 실행하지 않습니다. 게다가 init과 sleep은 myctr가 죽어도 계속 돌고 있어 cgroup은 비어 있지 않습니다. <code>cgroup.kill</code> 후 <code>rmdir</code>로 수동 정리하거나, shim 같은 별도 감시 프로세스 구조로 해결합니다.</div>
+  </div>
+
+  <h2>실습 과제</h2>
+  <ol>
+    <li><b>자원 제한 완성.</b> 10절 단계 A~D를 구현하고 <code>sudo bash check.sh rootful</code>를 통과시킨 뒤 <code>git tag ch04</code>. 기대: <code>통과 31 / 31</code>.</li>
+    <li><b>밖에서 들여다보기.</b> 터미널 1에서 <code>sudo ./target/debug/myctr run --rootfs ./rootfs --memory 64M --cpus 0.5 sleep 1000</code>. 터미널 2에서 <code>ls /sys/fs/cgroup/myctr/</code>로 cgroup을 찾고, <code>cat .../cgroup.procs</code>(호스트 PID가 보임), <code>cat .../memory.current</code>, <code>systemd-cgls /sys/fs/cgroup/myctr</code>(systemd가 있다면)를 확인하세요. 그 cgroup의 <code>memory.max</code>에 <code>32M</code>을 써서 <b>실행 중에</b> 상한을 바꿀 수 있는지도 확인하세요(기대: 바로 반영됨).</li>
+    <li><b>page cache 실험.</b> rootfs 안의 <code>/tmp</code>에 컨테이너가 직접 큰 파일을 쓰고 다시 읽게 하세요. 기대: 파일은 바깥의 <code>rootfs/tmp</code>에 남고, page cache도 cgroup 사용량에 포함됩니다. 호스트에서 미리 만든 파일은 캐시가 호스트 cgroup에 귀속되어 있을 수 있으므로 같은 조건으로 취급하지 마세요. memory.current·memory.events는 호스트에서 관찰하고 파일은 확인 후 지우세요.</li>
+    <li><b>throttling과 지연.</b> <code>--cpus 0.2</code>에서 <code>sh -c 'time sh -c "i=0; while [ \$i -lt 200000 ]; do i=\$((i+1)); done"'</code>을 실행하고, 제한 없을 때와 real 시간을 비교하세요. 기대: real은 약 5배로 늘지만 user 시간은 비슷합니다. 5절 위젯으로 이유를 설명해 보세요.</li>
+    <li><b>남은 cgroup 정리 스크립트.</b> 8절처럼 myctr를 kill -9로 죽인 뒤, 남은 <code>/sys/fs/cgroup/myctr/ctr-*</code>를 모두 찾아 <code>cgroup.kill</code> → <code>rmdir</code>하는 셸 스크립트 <code>cleanup.sh</code>를 만드세요. 기대: 실행 후 <code>ls -d /sys/fs/cgroup/myctr/ctr-*</code>가 비어 있음.</li>
+    <li><b>도전: --oom-group.</b> <code>memory.oom.group</code>을 1로 쓰는 옵션을 추가하고, 6번 퀴즈의 상황(sh 안에서 dd가 OOM)에서 종료 코드가 0에서 137로 바뀌는지 확인하세요.</li>
+    <li><b>도전: 방법 B로 바꾸기.</b> 자식이 "0"을 쓰는 대신, 부모가 clone 직후 자식의 호스트 PID를 <code>cgroup.procs</code>에 쓰고 <code>nix::unistd::pipe()</code>로 만든 파이프에 1바이트를 써서 자식을 깨우게 바꾸세요. 자식은 exec 전에 그 파이프를 <code>read</code>로 기다립니다. 5장(user 네임스페이스)에서 이 구조가 반드시 필요해지므로 미리 연습해 두면 좋습니다.</li>
+  </ol>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = MM.esc;
+
+  // ===== 위젯 1: cgroup 트리 실험실 =====
+  (function () {
+    const CTRL = ["memory", "cpu", "pids"];
+    const FILES = {
+      core: ["cgroup.procs", "cgroup.controllers", "cgroup.subtree_control", "cgroup.events", "cgroup.kill"],
+      memory: ["memory.max", "memory.high", "memory.current", "memory.events", "memory.swap.max"],
+      cpu: ["cpu.max", "cpu.weight", "cpu.stat"],
+      pids: ["pids.max", "pids.current"],
+    };
+    let N;
+    function reset() {
+      N = [
+        { name: "/sys/fs/cgroup", root: true, sub: new Set(CTRL), procs: ["systemd", "sshd"] },
+        { name: "myctr", sub: new Set(), procs: [] },
+        { name: "ctr-4241", sub: new Set(), procs: ["sh"] },
+      ];
+      logs = ["myctr가 /sys/fs/cgroup/myctr 와 ctr-4241 을 만들고 sh를 넣었습니다. 아직 myctr의 subtree_control은 비어 있습니다."];
+      render();
+    }
+    let logs = [];
+    const controllers = i => i === 0 ? new Set([...CTRL, "io", "cpuset"]) : N[i - 1].sub;
+    function log(s, err) { logs.push((err ? "✗ " : "✓ ") + s); }
+    function toggle(i, c, on) {
+      const n = N[i];
+      if (on) {
+        if (!controllers(i).has(c)) return log(`echo +${c} > ${n.name}/cgroup.subtree_control → ENOENT: ${n.name}의 cgroup.controllers에 ${c}가 없음 (규칙 ①: 부모가 먼저 켜야 함)`, 1);
+        if (!n.root && n.procs.length) return log(`echo +${c} > ${n.name}/cgroup.subtree_control → EBUSY: ${n.name}에 프로세스가 있음 (규칙 ②: 내부 프로세스 금지)`, 1);
+        n.sub.add(c); log(`echo +${c} > ${n.name}/cgroup.subtree_control → 자식 cgroup에 ${c}.* 파일이 생김`);
+      } else {
+        if (i + 1 < N.length && N[i + 1].sub.has(c)) return log(`echo -${c} > ${n.name}/cgroup.subtree_control → EBUSY: 자식(${N[i + 1].name})이 이미 ${c}를 아래로 나눠 주는 중`, 1);
+        n.sub.delete(c); log(`echo -${c} > ${n.name}/cgroup.subtree_control → 자식의 ${c}.* 파일이 사라짐`);
+      }
+    }
+    function move(from, to) {
+      const p = N[from].procs[N[from].procs.length - 1];
+      if (!p) return;
+      if (!N[to].root && N[to].sub.size) return log(`echo <pid> > ${N[to].name}/cgroup.procs → EBUSY: ${N[to].name}은 자식에게 컨트롤러를 나눠 주는 중 (규칙 ②)`, 1);
+      N[from].procs.pop(); N[to].procs.push(p);
+      log(`${p}를 ${N[from].name} → ${N[to].name} 로 옮김`);
+    }
+    function render() {
+      const root = $("cg-tree"); root.innerHTML = "";
+      let parentEl = root;
+      N.forEach((n, i) => {
+        const d = MM.el("div", { class: "cgn" });
+        const ctrls = controllers(i);
+        d.append(MM.el("div", { class: "h" }, `${esc(n.name)}${n.root ? " (루트)" : "/"} <span class="procs">프로세스: ${n.procs.length ? n.procs.map(p => `<span class="pchip">${p}</span>`).join(" ") : "없음"}</span>`));
+        d.append(MM.el("div", { class: "row" }, `<b>cgroup.controllers</b><span style="font-family:var(--mono)">${i === 0 ? "cpuset cpu io memory pids ..." : [...ctrls].join(" ") || "(비어 있음)"}</span>`));
+        if (i < N.length - 1) {
+          const r = MM.el("div", { class: "row" }, `<b>cgroup.subtree_control</b>`);
+          CTRL.forEach(c => {
+            const l = MM.el("label", null, `<input type="checkbox" ${n.sub.has(c) ? "checked" : ""}> ${c}`);
+            l.querySelector("input").onchange = e => { toggle(i, c, e.target.checked); render(); };
+            r.append(l);
+          });
+          d.append(r);
+        }
+        const f = MM.el("div", { class: "files" });
+        const fl = [...FILES.core.map(x => [x, ""])];
+        if (i > 0) CTRL.forEach(c => { if (ctrls.has(c)) FILES[c].forEach(x => fl.push([x, c === "memory" ? "mem" : c])); });
+        else fl.push(["(루트에는 memory.max 등 상한 파일이 없음)", ""]);
+        f.innerHTML = fl.map(([x, c]) => `<span class="${c}">${x}</span>`).join("");
+        d.append(f);
+        if (i > 0) {
+          const mv = MM.el("div", { class: "row" });
+          const b1 = MM.el("button", { class: "btn", type: "button" }, `↓ 프로세스를 ${N[i].name}로`);
+          b1.onclick = () => { move(i - 1, i); render(); };
+          b1.disabled = !N[i - 1].procs.length;
+          const b2 = MM.el("button", { class: "btn", type: "button" }, `rmdir ${N[i].name}`);
+          b2.onclick = () => {
+            if (N[i].procs.length || N[i + 1]) log(`rmdir ${N[i].name} → EBUSY: ${N[i].procs.length ? "프로세스가 남아 있음" : "자식 cgroup이 남아 있음"} (규칙 ③)`, 1);
+            else log(`rmdir ${N[i].name} → 성공. 비어 있으므로 지워집니다 (myctr에서는 Drop이 이 일을 함)`);
+            render();
+          };
+          const b3 = MM.el("button", { class: "btn", type: "button" }, `echo 1 > cgroup.kill`);
+          b3.onclick = () => { if (N[i].procs.length) { log(`${N[i].name}/cgroup.kill → ${N[i].procs.join(", ")} 에 SIGKILL. 이제 비었으므로 rmdir 가능`); N[i].procs = []; } else log(`${N[i].name}/cgroup.kill → 죽일 프로세스가 없음`); render(); };
+          mv.append(b1, b2, b3);
+          d.append(mv);
+        }
+        parentEl.append(d);
+        parentEl = d;
+      });
+      const rs = MM.el("div", { class: "controls" }); const rb = MM.el("button", { class: "btn", type: "button" }, "처음으로"); rb.onclick = reset; rs.append(rb); root.append(rs);
+      $("cg-log").textContent = logs.slice(-8).join("\n");
+      $("cg-log").scrollTop = 1e9;
+    }
+    reset();
+  })();
+
+  // ===== 위젯 2: memory.max =====
+  (function () {
+    let anon = 0, file = 0, evmax = 0, oom = 0, timer = null, swapped = 0;
+    const bar = $("mm-bar");
+    function lim() { return +$("mm-max").value; }
+    function high() { const h = +$("mm-high").value; return h ? lim() * h : 0; }
+    function draw() {
+      const L = lim(), scale = Math.max(L * 1.6, 100);
+      const pct = v => Math.min(100, v / scale * 100) + "%";
+      bar.querySelector(".anon").style.width = pct(anon);
+      bar.querySelector(".file").style.left = pct(anon); bar.querySelector(".file").style.width = pct(file);
+      bar.querySelector(".lim").style.left = pct(L);
+      const h = high(); const hb = bar.querySelector(".limh"); hb.style.display = h ? "" : "none"; hb.style.left = pct(h);
+      $("mm-lbl").textContent = `anon ${anon.toFixed(0)}M + cache ${file.toFixed(0)}M` + (swapped ? ` (스왑 ${swapped.toFixed(0)}M)` : "");
+      $("mm-cur").textContent = (anon + file).toFixed(0) + "M";
+      $("mm-evmax").textContent = evmax; $("mm-oom").textContent = oom;
+      $("mm-maxv").textContent = L + "M";
+    }
+    function log(s) { const l = $("mm-log"); l.textContent += (l.textContent ? "\n" : "") + s; l.scrollTop = 1e9; }
+    function stop() { clearInterval(timer); timer = null; }
+    function reset() { stop(); anon = 0; file = 0; evmax = 0; oom = 0; swapped = 0; $("mm-exit").textContent = "-"; $("mm-log").textContent = ""; draw(); }
+    // 한 틱에 할당 시도: 반환값 true면 계속
+    function alloc(kind, mb) {
+      const L = lim(), swap = $("mm-swap").value === "1";
+      if (kind === "file") file += mb; else anon += mb;
+      if (anon + file > L) {
+        evmax++;
+        // 1) page cache 회수
+        const over = anon + file - L;
+        const fromCache = Math.min(file, over); file -= fromCache;
+        let still = anon + file - L;
+        if (still > 0 && swap) { anon -= still; swapped += still; log(`상한 도달 → 익명 메모리 ${still.toFixed(0)}M를 스왑으로 내보냄 (OOM 대신 느려짐)`); still = 0; }
+        if (still > 0) {
+          oom++; anon = 0; file = Math.min(file, L);
+          bar.classList.remove("dead"); void bar.offsetWidth; bar.classList.add("dead");
+          log(`상한 ${L}M 초과, 회수할 캐시 없음 → OOM killer가 가장 큰 프로세스에 SIGKILL`);
+          $("mm-exit").textContent = "137";
+          draw(); return false;
+        }
+        if (fromCache > 0) log(`상한 도달 → page cache ${fromCache.toFixed(0)}M 회수 (OOM 아님)`);
+      } else if (high() && anon + file > high()) {
+        log(`memory.high(${high().toFixed(0)}M) 초과 → 할당하는 프로세스가 회수를 돕고 속도가 느려짐`);
+      }
+      draw(); return true;
+    }
+    const W = {
+      dd16: () => { if (alloc("anon", 16)) { log("dd: 16M 버퍼 할당·사용 후 종료 → 메모리 반환"); anon = Math.max(0, anon - 16); draw(); $("mm-exit").textContent = "0"; } },
+      dd200: () => { let left = 200; timer = setInterval(() => { const step = Math.min(20, left); left -= step; if (!alloc("anon", step) || left <= 0) { stop(); if (left <= 0) { log("dd 완료"); anon = Math.max(0, anon - 200); draw(); $("mm-exit").textContent = "0"; } } }, 120); },
+      leak: () => { timer = setInterval(() => { if (!alloc("anon", 6)) stop(); }, 200); },
+      file: () => { let left = 1024; timer = setInterval(() => { const step = Math.min(48, left); left -= step; alloc("file", step); if (left <= 0) { stop(); log("cat 완료: 1G를 다 읽었지만 캐시가 회수되어 OOM 없음"); $("mm-exit").textContent = "0"; } }, 60); },
+    };
+    document.querySelectorAll("[data-w]").forEach(b => b.onclick = () => { reset(); log(`실행: ${b.textContent}`); W[b.dataset.w](); });
+    $("mm-reset").onclick = reset;
+    ["mm-max", "mm-high", "mm-swap"].forEach(id => $(id).oninput = () => { reset(); });
+    reset();
+  })();
+
+  // ===== 위젯 3: cpu.max 타임라인 =====
+  (function () {
+    function draw() {
+      const cpus = +$("cp-q").value, T = +$("cp-t").value, period = +$("cp-p").value;
+      $("cp-qv").textContent = cpus.toFixed(1); $("cp-tv").textContent = T;
+      const quota = Math.round(cpus * period);
+      const totalMs = 400, periods = Math.round(totalMs * 1000 / period);
+      const W = 640, left = 70, laneH = Math.min(20, 150 / T), top = 24;
+      const X = us => left + us / (totalMs * 1000) * W;
+      let g = "";
+      g += `<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--bad-soft)"/><line x1="0" y1="0" x2="0" y2="6" style="stroke:var(--bad);stroke-width:2"/></pattern></defs>`;
+      // 각 period: 스레드들이 병렬로 실행. 필요량 T*period, 예산 quota
+      const need = T * period;
+      const runEach = need <= quota ? period : quota / T; // 각 스레드가 period 안에서 달리는 시간
+      let throttled = 0;
+      for (let p = 0; p < periods; p++) {
+        const s = p * period;
+        g += `<line x1="${X(s)}" y1="${top - 6}" x2="${X(s)}" y2="${top + T * laneH + 4}" style="stroke:var(--border)"/>`;
+        if (p < 8 || period === 100000) g += `<text x="${X(s) + 2}" y="${top - 9}" class="muted">${s / 1000}ms</text>`;
+        if (need > quota) throttled++;
+        for (let t = 0; t < T; t++) {
+          const y = top + t * laneH;
+          g += `<rect x="${X(s)}" y="${y + 1}" width="${Math.max(0.5, X(s + runEach) - X(s))}" height="${laneH - 3}" style="fill:var(--ok-soft);stroke:var(--ok)"/>`;
+          if (runEach < period) g += `<rect x="${X(s + runEach)}" y="${y + 1}" width="${X(s + period) - X(s + runEach)}" height="${laneH - 3}" style="fill:url(#hatch)"/>`;
+        }
+      }
+      for (let t = 0; t < T; t++) g += `<text x="${left - 6}" y="${top + t * laneH + laneH / 2 + 3}" text-anchor="end">스레드${t + 1}</text>`;
+      const svg = $("cpu-svg");
+      const H = top + T * laneH + 16;
+      svg.setAttribute("viewBox", `0 0 720 ${H}`);
+      svg.innerHTML = g;
+      $("cp-max").textContent = `${quota} ${period}`;
+      $("cp-eff").textContent = Math.min(T, cpus).toFixed(2);
+      $("cp-thr").textContent = `${throttled} / ${periods}`;
+      $("cp-lat").textContent = runEach < period ? ((period - runEach) / 1000).toFixed(1) + " ms" : "0 ms";
+    }
+    ["cp-q", "cp-t", "cp-p"].forEach(id => $(id).oninput = draw);
+    draw();
+  })();
+
+  // ===== 위젯 4: pids.max =====
+  (function () {
+    let timer = null;
+    function run() {
+      clearInterval(timer);
+      const max = +$("pd-max").value, init = $("pd-init").checked;
+      const grid = $("pd-grid"); grid.innerHTML = "";
+      let cur = 0, events = 0;
+      const add = (name, ok) => { const s = MM.el("span", ok ? null : { class: "fail" }, name); grid.append(s); };
+      if (init) { add("init", true); cur++; }
+      add("sh", true); cur++;
+      let i = 0;
+      $("pd-out").innerHTML = `pids.current = ${cur}`;
+      timer = setInterval(() => {
+        i++;
+        if (cur < max) { add(`sleep${i}`, true); cur++; $("pd-out").innerHTML = `pids.current = ${cur} / pids.max = ${max}`; }
+        else {
+          events++; add(`fork ✗`, false); clearInterval(timer);
+          $("pd-out").innerHTML = `pids.current = ${cur} / pids.max = ${max} → ${i}번째 fork가 <b>EAGAIN</b>으로 실패. sh가 "Cannot fork"를 출력하고 종료 코드 2로 끝납니다. pids.events의 max 카운터가 ${events} 증가. 이미 만든 sleep들은 죽지 않습니다.`;
+          return;
+        }
+        if (i >= 8) { clearInterval(timer); $("pd-out").innerHTML = `8개 모두 fork 성공 (pids.current = ${cur}). wait 후 종료 코드 0.`; }
+      }, 260);
+    }
+    $("pd-max").oninput = () => { $("pd-maxv").textContent = $("pd-max").value; };
+    $("pd-run").onclick = run;
+  })();
+
+  // ===== 위젯 5: 생애주기 스테퍼 =====
+  (function () {
+    const svg = $("lc-svg");
+    const S = [
+      { cg: [], ctr: false, p: "R", c: null, k: "", cap: "myctr(4241)가 시작합니다. 아직 cgroup도 자식도 없습니다." },
+      { cg: ["myctr/"], ctr: false, p: "R", c: null, k: "mkdir /sys/fs/cgroup/myctr", file: "subtree_control ← \"+memory +cpu +pids\"", cap: "공용 부모 <code>myctr/</code>를 만들고(이미 있으면 그대로) 자식들에게 세 컨트롤러를 켜 줍니다. 규칙 ①." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "R", c: null, k: "mkdir .../ctr-4241", file: "memory.max ← 67108864 · memory.swap.max ← 0 · cpu.max ← \"50000 100000\" · pids.max ← 20", cap: "컨테이너 전용 cgroup을 만들고 상한을 씁니다. 아직 그 안에 프로세스는 없습니다." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "R", c: { st: "R", where: "out", note: "clone 직후 · 아직 myctr의 cgroup" }, k: "clone(NEWUTS|NEWPID|NEWNS|SIGCHLD)", cap: "clone. 자식은 <b>부모의 cgroup</b>을 물려받아 태어납니다. 아직 제한을 받지 않습니다." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "S", c: { st: "R", where: "in", note: "cgroup.procs ← \"0\"" }, k: "openat + write(3, \"0\", 1)", cap: "자식이 exec <b>전에</b> 스스로 <code>cgroup.procs</code>에 \"0\"을 써서 들어갑니다. 이 순간부터 제한이 걸립니다. 이어서 3장의 rootfs 준비를 끝낸 뒤 exec합니다." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "S", c: { st: "R", where: "in", note: "rootfs·proc·dev 준비" }, k: "rprivate → pivot_root → proc/dev", cap: "cgroup 진입 뒤 3장의 rootfs·새 procfs·최소 /dev를 준비하고 이전 루트를 분리합니다. 사용자 프로그램은 아직 exec하지 않았습니다." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "S", c: { st: "R", where: "in", note: "execve(dd) · 200M 버퍼 할당 중" }, k: "execve(\"/bin/dd\")", mem: 0.9, cap: "dd로 exec합니다. cgroup 소속은 exec를 넘어 유지됩니다. dd가 200M 버퍼를 채우기 시작합니다." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "S", c: { st: "Z", where: "in", note: "SIGKILL (OOM killer)" }, k: "memory.max 초과 → OOM kill", mem: 1.0, oom: true, cap: "64M에 닿고, 회수할 캐시가 없으니 cgroup의 OOM killer가 dd에 SIGKILL을 보냅니다. <code>memory.events</code>: oom_kill 1." },
+      { cg: ["myctr/", "ctr-4241/"], ctr: true, p: "R", c: null, k: "wait4 → WIFSIGNALED, SIGKILL", file: "memory.events → oom_kill 1", cap: "myctr의 wait4가 <code>Signaled(SIGKILL)</code>를 받아 137을 계산하고, <code>memory.events</code>를 읽어 OOM 안내를 출력합니다." },
+      { cg: ["myctr/"], ctr: false, p: "-", c: null, k: "rmdir .../ctr-4241 · exit_group(137)", cap: "Drop이 비어 있는 cgroup을 rmdir하고, myctr가 137로 끝납니다. <code>myctr/</code> 부모는 다음 컨테이너를 위해 남겨 둡니다." },
+    ];
+    MM.stepper($("lc-ctl"), {
+      steps: S.length, interval: 2300,
+      render(i) {
+        const s = S[i];
+        let g = "";
+        // 왼쪽: 프로세스
+        g += `<rect x="20" y="20" width="270" height="64" rx="10" style="fill:var(--surface);stroke:var(--border);opacity:${s.p === "-" ? .4 : 1}"/>
+              <text x="34" y="44" font-family="var(--mono)" font-size="12.5" font-weight="700">myctr 4241</text>
+              <text x="34" y="66" font-family="var(--mono)" font-size="11.5" class="muted">${s.p === "S" ? "wait4(4242) 대기" : s.p === "-" ? "종료 (137)" : "실행 중"}</text>`;
+        if (s.c) {
+          const x = s.c.where === "in" ? 470 : 20, y = s.c.where === "in" ? 150 : 110;
+          g += `<rect x="${x}" y="${y}" width="250" height="60" rx="10" style="fill:var(--surface);stroke:var(--${s.c.st === "Z" ? "bad" : "ok"});stroke-width:2${s.c.st === "Z" ? ";stroke-dasharray:6 4" : ""};transition:all .4s"/>
+                <text x="${x + 12}" y="${y + 24}" font-family="var(--mono)" font-size="12.5" font-weight="700">자식 4242 (ns PID 1)</text>
+                <text x="${x + 12}" y="${y + 46}" font-family="var(--mono)" font-size="11" class="muted">${esc(s.c.note)}</text>`;
+          if (s.c.where === "in" && i === 4) g += `<path d="M150 140 C 300 140, 380 180, 470 180" class="line flow" style="stroke:var(--ok);stroke-width:2"/>`;
+        }
+        // 오른쪽: cgroup 트리
+        g += `<rect x="460" y="14" width="270" height="34" rx="8" class="box"/><text x="474" y="36" font-family="var(--mono)" font-size="12">/sys/fs/cgroup</text>`;
+        if (s.cg.includes("myctr/")) g += `<rect x="480" y="62" width="250" height="34" rx="8" class="box"/><text x="494" y="84" font-family="var(--mono)" font-size="12">myctr/  [+memory +cpu +pids]</text><path d="M470 48 V79 H480" class="line"/>`;
+        if (s.ctr) {
+          const col = s.oom ? "bad" : "accent";
+          g += `<rect x="460" y="110" width="270" height="${s.c && s.c.where === "in" ? 120 : 34}" rx="10" style="fill:var(--${col}-soft);stroke:var(--${col});transition:height .3s"/>
+                <text x="474" y="132" font-family="var(--mono)" font-size="12">ctr-4241/</text><path d="M490 96 V110" class="line"/>`;
+          if (s.mem != null) {
+            g += `<rect x="560" y="122" width="150" height="14" rx="4" style="fill:var(--surface-2);stroke:var(--border)"/>
+                  <rect x="560" y="122" width="${150 * s.mem}" height="14" rx="4" style="fill:var(--${s.oom ? "bad" : "warn"}-soft);stroke:var(--${s.oom ? "bad" : "warn"})"/>
+                  <text x="635" y="133" text-anchor="middle" font-size="10" font-family="var(--mono)">${s.oom ? "64M / 64M" : "~58M"}</text>`;
+          }
+        }
+        if (s.file) g += `<text x="20" y="250" font-family="var(--mono)" font-size="11" style="fill:var(--accent)">${esc(s.file)}</text>`;
+        g += `<rect x="20" y="200" width="420" height="30" rx="8" style="fill:var(--surface-2);stroke:var(--text)"/>
+              <text x="32" y="220" font-size="12" font-weight="700">커널</text>
+              <text x="70" y="220" font-family="var(--mono)" font-size="11.5" style="fill:var(--${s.k ? "violet" : "muted"})">${s.k ? esc(s.k) : "—"}</text>`;
+        svg.innerHTML = g;
+        return s.cap;
+      }
+    });
+  })();
+
+  // ===== 위젯 6: strace =====
+  (function () {
+    const L = [
+      ['<span class="c">mkdirat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr", 0777) = 0', "공용 부모 cgroup을 만듭니다. <code>create_dir_all</code>이라 이미 있으면 EEXIST가 나도 괜찮습니다. 디렉터리를 만드는 것만으로 커널이 cgroup 객체를 만들고 인터페이스 파일을 채웁니다."],
+      ['<span class="c">openat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr/cgroup.subtree_control", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 3', "<code>fs::write</code>는 open → write → close입니다. <code>O_CREAT|O_TRUNC</code>가 붙지만 cgroupfs의 파일은 이미 있고 잘리지도 않습니다. 커널이 무시합니다."],
+      ['<span class="c">write</span>(3, "<span class="k">+memory +cpu +pids</span>", 18) = 18', "자식 cgroup들에게 세 컨트롤러를 켭니다. 반환값 18 = 전부 받아들여짐. 실패했다면 -1 ENOENT/EBUSY가 보였을 겁니다."],
+      ['<span class="c">mkdirat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr/ctr-13", 0777) = 0', "컨테이너 전용 cgroup. 이름의 13은 myctr의 PID(이 실험 환경에서)입니다."],
+      ['<span class="c">openat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr/ctr-13/memory.max", ...) = 3', null],
+      ['<span class="c">write</span>(3, "<span class="k">67108864</span>", 8) = 8', "64M = 64 × 1024 × 1024 = 67108864 바이트. 텍스트로 씁니다."],
+      ['<span class="c">write</span>(3, "<span class="k">0</span>", 1) = 1     <span style="color:var(--muted)">(memory.swap.max)</span>', "스왑 상한 0. OOM이 결정적으로 일어나게 합니다."],
+      ['<span class="c">write</span>(3, "<span class="k">50000 100000</span>", 12) = 12     <span style="color:var(--muted)">(cpu.max)</span>', "100ms마다 50ms = 0.5코어."],
+      ['<span class="c">write</span>(3, "<span class="k">20</span>", 2) = 2     <span style="color:var(--muted)">(pids.max)</span>', "프로세스·스레드 최대 20개."],
+      ['<span class="c">clone</span>(child_stack=0xffffb18df010, flags=CLONE_NEWUTS|CLONE_NEWPID|CLONE_NEWNS|SIGCHLD) = 14', "3장의 mount namespace를 포함한 clone입니다. 자식(14)은 아직 부모의 cgroup에 있습니다."],
+      ['[pid    14] <span class="c">openat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr/ctr-13/cgroup.procs", O_WRONLY|...) = 3', "자식이 직접 cgroup.procs를 엽니다."],
+      ['[pid    13] <span class="c">wait4</span>(14,  &lt;unfinished ...&gt;', "부모는 기다리기 시작합니다. 부모는 자식이 cgroup에 들어갔는지 확인하지 않습니다. 자식이 스스로 들어가므로 확인할 필요가 없습니다."],
+      ['[pid    14] <span class="c">write</span>(3, "<span class="k">0</span>", 1) = 1', "<b>핵심 줄.</b> \"0\" = 나 자신. 이 write가 끝난 순간부터 자식과 그 자손 모두 ctr-13의 제한을 받습니다."],
+      ['[pid    14] <span class="c">pivot_root</span>(rootfs, rootfs/.oldroot) = 0', "cgroup 진입 뒤에 3장의 루트 전환을 수행합니다. 이후 chdir, proc/dev 준비, oldroot 분리를 마쳐야 exec합니다."],
+      ['[pid    14] <span class="c">execve</span>("/bin/dd", ["dd", "if=/dev/zero", "of=/dev/null", "bs=200M", "count=1"], ...) = 0', "cgroup에 들어간 <b>뒤에</b> exec. dd의 첫 할당부터 제한이 적용됩니다."],
+      ['[pid    14] +++ <span class="e">killed by SIGKILL</span> +++', "dd가 200M 버퍼를 채우다 64M 상한에 닿아 OOM killer에게 죽었습니다. 커널 내부에서 일어난 일이라 시스템 콜 줄은 없습니다."],
+      ['&lt;... <span class="c">wait4</span> resumed&gt;[{<span class="e">WIFSIGNALED(s) &amp;&amp; WTERMSIG(s) == SIGKILL</span>}], 0, NULL) = 14', "1장의 디코더로 보면 status = 0x0009. myctr는 128 + 9 = 137을 계산합니다."],
+      ['<span class="c">openat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr/ctr-13/memory.events", O_RDONLY|O_CLOEXEC) = 3', "OOM이었는지 확인하러 memory.events를 엽니다. SIGKILL만으로는 OOM인지 누군가 kill -9를 했는지 알 수 없기 때문입니다."],
+      ['<span class="c">read</span>(3, "low 0\\nhigh 0\\nmax 20\\noom 1\\noom_ki", 32) = 32', "<code>max 20</code>: 상한에 20번 부딪힘(회수 시도). <code>oom 1</code>, 그리고 다음 줄로 이어지는 <code>oom_kill 1</code>. Rust의 read_to_string이 32바이트씩 읽고 있습니다."],
+      ['<span class="c">write</span>(2, "myctr: 메모리 상한을 넘어 OOM killer가 ...", 83) = 83', "stderr로 안내."],
+      ['<span class="c">unlinkat</span>(AT_FDCWD, "/sys/fs/cgroup/myctr/ctr-13", AT_REMOVEDIR) = 0', "Drop의 <code>fs::remove_dir</code>. 안이 비었으므로 성공합니다. cgroup의 인터페이스 파일들은 지우지 않아도 디렉터리와 함께 사라집니다."],
+      ['<span class="c">exit_group</span>(137) = ?', "myctr가 137로 끝납니다."],
+    ];
+    const box = $("st-lines");
+    L.forEach(([html, ex]) => {
+      const d = MM.el("div", { class: ex ? "" : "skip" }, html);
+      if (ex) d.onclick = () => { box.querySelectorAll(".on").forEach(x => x.classList.remove("on")); d.classList.add("on"); $("st-explain").innerHTML = ex; };
+      box.append(d);
+    });
+  })();
+})();
+</script>
+</body>
+</html>

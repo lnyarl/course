@@ -1,0 +1,66 @@
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapAmb:	0000000000000000
+PASS  [0] true
+PASS  [1] false
+PASS  [3] /bin/sh -c exit 3
+PASS  [127] no-such-command
+PASS  stdout 전달
+PASS  hostname 격리
+PASS  명령이 PID 1
+PASS  [143] --init /bin/sh -c kill -TERM $$
+PASS  SIGPIPE 기본값
+PASS  루트가 Alpine
+PASS  이전 루트가 보이지 않음
+PASS  /proc/self가 컨테이너 PID
+PASS  ps에는 컨테이너 프로세스만
+PASS  /dev/null 동작
+PASS  /dev/zero 동작
+PASS  호스트 마운트 개수 그대로
+PASS  rootfs에 .oldroot 흔적 없음
+---
+통과 17 / 17
+PASS  안쪽 UID 0
+PASS  안쪽 GID 0
+PASS  단일 uid_map
+PASS  단일 gid_map
+PASS  setgroups deny
+PASS  rootfs 안 host-root 소유 fixture 권한 거부
+PASS  쓰기 성공
+PASS  rootfs 안 생성파일 바깥 UID
+PASS  호스트에서 동일 데이터 관측
+PASS  rootfs 바깥 호스트 sentinel 차단
+PASS  setgroups 호출 거부
+PASS  단일 매핑 밖 UID 1 전환 거부
+PASS  rootless 금지 옵션 --memory 16M
+PASS  rootless 금지 옵션 --cpus 0.5
+PASS  rootless 금지 옵션 --pids 8
+PASS  rootless 금지 옵션 --userns-base 100000
+통과 16 / 16
+PASS  none은 새 net ns
+PASS  none은 lo만
+PASS  host는 부모 net ns
+PASS  rootless bridge 거부
+통과 4 / 4
+PASS  기본 bounding 14개
+PASS  기본 effective
+PASS  inheritable 비움
+PASS  setup hostname 유지
+PASS  [1] hostname changed-inside
+PASS  [2] ip link add vX type veth peer name vY
+PASS  [0] --cap-add NET_ADMIN ip link add vX type veth peer name vY
+PASS  rootless CHOWN bit 제거
+PASS  cap-drop ALL
+PASS  [1] --cap-add NO_SUCH_CAP true
+PASS  init도 기본 제한
+PASS  no_new_privs
+PASS  seccomp 필터
+PASS  [1] unshare -U true
+PASS  [0] --no-seccomp unshare -U true
+PASS  [1] --cap-add SYS_ADMIN unshare -m true
+PASS  [0] --cap-add SYS_ADMIN --no-seccomp unshare -m true
+PASS  [1] --no-seccomp unshare -m true
+PASS  권한제한뒤에도 cgroupfs 비노출
+통과 19 / 19
