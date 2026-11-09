@@ -1,0 +1,21 @@
+{
+  "browser": "153.0.8010.12",
+  "pages": 14,
+  "layoutCases": 56,
+  "checks": 320,
+  "errors": [],
+  "screenshots": [
+    "index-desktop.png",
+    "index-mobile.png",
+    "02-dns-desktop.png",
+    "02-dns-mobile.png",
+    "06-browser-security-desktop.png",
+    "06-browser-security-mobile.png",
+    "07-tls-desktop.png",
+    "07-tls-mobile.png",
+    "02-dns-dark-mobile.png",
+    "real-cors.png"
+  ],
+  "scope": "Real headless Chromium: desktop/mobile rendering, interactions, SMIL/CSS motion, persistence, local browser CORS, offline file access. TLS wire handshake and other browser engines not tested.",
+  "result": "PASS"
+}

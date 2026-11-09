@@ -10,6 +10,7 @@
 | 현대 운영체제 메모리 관리 | 운영체제 | 16장 | https://lnyarl.github.io/course/os-memory-course/ |
 | Windows Kernel Deep Dive | 운영체제 | 17장 | https://lnyarl.github.io/course/windows-kernel-course/ |
 | TCP/IP 전문가 과정 | 네트워크 | 14장 | https://lnyarl.github.io/course/tcpip-course/ |
+| 웹 네트워크 해부 실험실 | 네트워크 | 12장 · 12개 실험 · 48문항 | [교재 열기](network-web-course/index.html) |
 | Node.js 전문가 코스 | 런타임 | 20장 | https://lnyarl.github.io/course/nodejs-advanced-course/ |
 | C# 가비지 컬렉터 해부 | 런타임 | 19개 섹션 (한 페이지) | https://lnyarl.github.io/course/CSharp_GC_%ED%95%99%EC%8A%B5%EC%9E%90%EB%A3%8C.html |
 | 컨테이너 런타임 만들기 (Rust) | 시스템 프로그래밍 | 9장 | https://lnyarl.github.io/course/container-runtime-course/ |

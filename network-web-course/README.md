@@ -1,0 +1,80 @@
+# 웹 네트워크 해부 실험실
+
+TCP/IP 심화 교재 이후에 읽는 한국어 네트워크 학습 자료입니다. DNS·HTTP·브라우저 보안·TLS·프록시·서비스 경계·성능·장애 분석을 12장, 101개 본문 절로 설명합니다.
+
+## 열기
+
+[index.html](index.html)을 브라우저에서 엽니다. 본문·이미지·시뮬레이터·48개 확인 문제는 외부 라이브러리나 인터넷 없이 동작합니다. `assets/` 폴더도 함께 보관해야 합니다. 외부 원전과 공개 도메인 실습에는 인터넷이 필요합니다.
+
+정적 HTTP 접속을 원하면 이 폴더에서 실행합니다.
+
+```sh
+python3 -m http.server 8088 --bind 127.0.0.1
+```
+
+브라우저 주소는 `http://127.0.0.1:8088/`입니다. 실제 HTTP 실습용 서버는 별도입니다.
+
+```sh
+python3 tools/lab_server.py
+```
+
+실습 서버는 `http://127.0.0.1:8765/`에 열립니다. Python 표준 라이브러리만 사용합니다. 자세한 명령과 예상 결과는 [실습 안내](lab-guide.html)를 확인하세요.
+
+## 구성
+
+| 장 | 주제 | 조작형 실험 |
+|---|---|---|
+| 01 | 요청 전체 지도 · TCP/IP 짧은 복습 | DNS와 웹 요청의 경로, 프록시의 별도 연결 |
+| 02 | DNS 이름 공간 · 위임 · 권한 서버 | 재귀 리졸버가 위임을 따라가는 과정 |
+| 03 | DNS 캐시 · TTL · 운영 | 원본 주소 변경과 캐시 만료 |
+| 04 | HTTP 메시지 · 메서드 · 상태 · 멱등성 | 메시지 각 줄 해부 |
+| 05 | HTTP 캐시 · 조건부 요청 · CDN | fresh / 304 / 새 본문 / no-store |
+| 06 | origin · site · 쿠키 · CORS | preflight, 실제 전송, JS 읽기 구분 |
+| 07 | TLS · 인증서 · 신뢰 · 키 합의 | TLS 1.3 단계별 진행 |
+| 08 | HTTP/1.1·2·3 · 스트리밍 | 다중화와 손실의 전달 지연 |
+| 09 | 프록시 · 로드밸런서 · health check | round robin / least connections |
+| 10 | NAT · 방화벽 · 암호화 경계 | 정책과 주소 변환, TLS 종료 방식 |
+| 11 | 타이밍 · 대역폭 · 지연 · 재시도 | waterfall과 연결 재사용 |
+| 12 | 증거 기반 장애 분석 | CORS·DNS 변경·504·TLS 사례 |
+
+장별 상세 설명, 모바일용 SVG 개념도, 실험, 실제 명령 실습, 해설 있는 퀴즈, 원전 링크가 있습니다. 단계별 애니메이션은 자동 재생·일시정지·초기화를 지원하고 동작 감소 설정을 존중합니다. 진행률은 브라우저에 저장합니다.
+
+기존 [TCP/IP 전문가 과정](../tcpip-course/index.html)과 연결하며 패킷 구조·라우팅·혼잡 제어 심화는 중복하지 않습니다.
+
+## 수정과 재생성
+
+- `content/part-intro.json`, `part-a.json`, `part-b.json`: 직접 집필한 장별 본문·문제·출처
+- `build.py`: 정적 HTML과 장별 SVG 생성
+- `assets/course.js`: 실험과 퀴즈 동작
+- `assets/course.css`: 반응형 테마와 인쇄 스타일
+- `tools/lab_server.py`: 로컬 HTTP 실습 서버
+
+```sh
+python3 build.py
+node --check assets/course.js
+python3 tools/verify_lab.py
+```
+
+실제 브라우저 검사는 설치된 Playwright와 Chromium 경로를 전달합니다. 새 패키지나 브라우저를 다운로드하지 않습니다.
+
+```sh
+node tools/verify-browser.mjs /absolute/path/to/playwright/index.mjs /absolute/path/to/chromium
+```
+
+선택적으로 기존에 설치된 jsdom이 있다면 DOM 동작을 검사할 수 있습니다. 검증 스크립트는 의존성을 설치하지 않습니다.
+
+```sh
+node tools/verify.mjs /absolute/path/to/jsdom/lib/api.js
+```
+
+## 검증 범위
+
+- 12장 시뮬레이터·문제·진행률·테마: jsdom에서 이벤트와 결과를 검사
+- 실제 로컬 HTTP 응답: 200/304/204, 본문·헤더, CORS 응답 정책, 메서드 제한, 타임아웃 검사
+- 내부 링크·앵커·ID와 JavaScript 구문 확인
+- 실제 headless Chromium: 14개 페이지 × 320·390·768·1440px, 총 56개 화면 조건 확인
+- 320개 브라우저 검사 통과: 도식 글자 크기, 가로 넘침, 이미지 로딩, 퀴즈, 진행률·테마 저장, 모바일 목차, SMIL 이동·일시정지·동작 감소, 실제 로컬 CORS, 오프라인 파일 실행
+- 브라우저 실행 오류 0건. [검사 결과와 화면](qa/README.md) 참고
+- TLS 패킷 핸드셰이크, 실제 HTTP/2·HTTP/3 서버, Safari·Firefox는 검증 대상에 포함하지 않음
+
+도식과 시뮬레이터는 교육용 모델입니다. 실제 DNS·TLS·QUIC·로드밸런서 구현이나 성능 측정 도구가 아닙니다. 각 실험 아래에 생략한 조건을 표시했습니다. 로컬 실습 서버도 HTTP/1.1만 제공합니다.
