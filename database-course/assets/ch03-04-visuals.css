@@ -1,0 +1,21 @@
+/* Chapter 03–04 process diagrams: neutral surfaces, explicit state and learner input. */
+.process-visual { margin: 12px 0; overflow-x: auto; }
+.process-visual svg { display:block; width:100%; min-width:640px; font-family:var(--sans); }
+.process-visual rect { fill:var(--surface-2); stroke:var(--border); stroke-width:2; }
+.process-visual .active rect, .process-visual rect.active { stroke:var(--accent); stroke-width:3; }
+.process-visual .retired rect { stroke-dasharray:5 4; opacity:.5; }
+.process-visual text { fill:var(--text); font-size:14px; }
+.process-visual .muted { fill:var(--muted); font-size:12px; }
+.process-visual .wire { fill:none; stroke:var(--muted); stroke-width:1.5; }
+.process-visual .current-wire { stroke:var(--accent); stroke-width:3; }
+.process-facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin:12px 0; }
+.process-facts > div { border:1px solid var(--border); border-radius:6px; padding:8px; background:var(--surface-2); font-size:13px; overflow-wrap:anywhere; }
+.process-facts b { display:block; color:var(--muted); font-size:12px; }
+.process-feedback { display:block; margin:8px 0; min-height:1.6em; overflow-wrap:anywhere; }
+.process-feedback[data-correct="true"] { color:var(--ok); }
+.process-feedback[data-correct="false"] { color:var(--bad); }
+.process-source { font-size:13px; color:var(--muted); }
+.process-widget input[type="text"] { max-width:100%; }
+.process-widget pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+.process-step-state { font-family:var(--mono); font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+@media (prefers-reduced-motion: no-preference) { .process-visual .active rect { transition:stroke .2s; } }

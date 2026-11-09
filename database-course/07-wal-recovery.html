@@ -1,0 +1,1206 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>WAL과 크래시 복구</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/syntax.css"><link rel="stylesheet" href="assets/wal-recovery.css"><script src="assets/common.js"></script><script src="assets/syntax.js"></script></head><body data-chapter="07"><main>
+<header class="chapter-head"><span class="label adv">신뢰성과 동시성 · Chapter 07</span><h1>WAL과 크래시 복구</h1><p class="lead">힙과 색인을 고치는 도중 종료돼도 같은 커밋 상태로 복원합니다. 변경은 private workspace에 만들고, 커밋할 파일의 afterimage를 먼저 WAL에 동기화한 다음 home에 설치합니다.</p><div class="objectives"><h4>학습 목표</h4><ul><li>프로세스 종료·장치 전원 차단·클라이언트 미응답을 구분합니다.</li><li>BEGIN·FILE·COMMIT의 길이·CRC·revision을 검증합니다.</li><li>미커밋 변경을 버리고 커밋된 afterimage만 REDO합니다.</li><li>flock 잠금과 checkpoint로 재시작 가능한 SQL 저장소를 만듭니다.</li></ul></div></header>
+<nav class="toc"><b>목차</b><ol><li><a href="#s1">힙과 색인이 서로 다른 순간에 저장된다</a></li><li><a href="#s2">미커밋 변경은 home에 쓰지 않는다</a></li><li><a href="#s3">프레임은 길이와 본문을 따로 검증한다</a></li><li><a href="#s4">어느 시점에 종료됐는가</a></li><li><a href="#s5">체크포인트는 revision을 지우지 않는다</a></li><li><a href="#s6">잠금·경로·크기 경계를 고정한다</a></li><li><a href="#s7">구현 가이드와 실제 SQL crash 검사</a></li><li><a href="#s8">이 복구 구조가 못 하는 것</a></li></ol></nav>
+<section id="s1"><h2>1. 힙과 색인이 서로 다른 순간에 저장된다</h2><p>6장의 INSERT는 힙 행과 기본키 색인을 모두 바꿉니다. 힙만 저장하고 종료되면 색인으로 그 행을 찾지 못할 수 있습니다. 반대로 새 색인만 저장되면 아직 존재하지 않는 위치를 가리킬 수 있습니다. 파일별 sync 성공만으로 여러 파일의 커밋을 하나로 만들 수는 없습니다.</p>
+<p>WAL의 기본 규칙은 <b>데이터 파일에 변경을 쓰기 전에 그 변경의 로그를 durable storage에 반영</b>하는 것입니다. 재시작하면 로그에서 커밋된 변경을 찾아 데이터 파일에 다시 적용합니다. 이 REDO 원칙은 <a href="https://www.postgresql.org/docs/current/wal-intro.html">PostgreSQL WAL 소개</a>에서도 설명합니다.</p>
+<figure><svg class="diagram" viewBox="0 0 800 180" role="img" aria-label="private workspace에서 WAL을 먼저 동기화하고 home의 힙과 색인을 설치하는 순서"><rect x="10" y="45" width="225" height="80" rx="7" class="w7-box"/><text x="122" y="76" text-anchor="middle" class="w7-text">private workspace</text><text x="122" y="102" text-anchor="middle" class="w7-small">실제 6장 SQL + 변경된 파일</text><rect x="290" y="45" width="220" height="80" rx="7" class="w7-box"/><text x="400" y="76" text-anchor="middle" class="w7-text">WAL sync_all</text><text x="400" y="102" text-anchor="middle" class="w7-small">BEGIN / FILE / COMMIT</text><rect x="565" y="45" width="225" height="80" rx="7" class="w7-box"/><text x="677" y="76" text-anchor="middle" class="w7-text">home afterimages</text><text x="677" y="102" text-anchor="middle" class="w7-small">heap + index 설치 / sync</text><path d="M235 85H290 m-7 -5 l7 5 -7 5 M510 85H565 m-7 -5 l7 5 -7 5" class="w7-link"/></svg><figcaption>home 변경보다 WAL 동기화가 먼저입니다. 클라이언트 응답은 그 뒤입니다.</figcaption></figure></section>
+<section id="s2"><h2>2. 미커밋 변경은 home에 쓰지 않는다</h2><p>이 장은 <b>no-steal</b> 방식입니다. transaction마다 현재 데이터 파일을 private 디렉터리에 복사하고 그 안에서 6장의 실제 SQL 엔진을 실행합니다. 성공한 INSERT도 아직 home에 반영하지 않습니다. COMMIT이 없는 workspace는 재시작 때 소유가 확인된 경우 정리합니다.</p>
+<p>WAL에는 변경된 페이지가 아니라 허용된 데이터 파일 전체의 <b>afterimage</b>를 저장합니다. 예를 들어 tables.pages와 people.idx의 새 바이트를 함께 기록합니다. 복구는 INSERT SQL을 다시 실행하지 않고 같은 바이트를 다시 설치하므로, 복구를 반복해도 행이 중복 삽입되지 않습니다.</p>
+<figure><svg class="diagram" viewBox="0 0 800 220" role="img" aria-label="no-steal은 미커밋 workspace를 버리며 steal이면 home에 흘러간 변경을 UNDO할 필요가 있는 비교"><rect x="10" y="30" width="370" height="150" rx="7" class="w7-box"/><text x="195" y="60" text-anchor="middle" class="w7-text">이 예제: no-steal</text><text x="35" y="95" class="w7-small">미커밋 → private workspace에만 존재</text><text x="35" y="124" class="w7-small">종료 → workspace 폐기, home은 이전 커밋</text><text x="35" y="153" class="w7-small">커밋 → WAL afterimage로 REDO</text><rect x="420" y="30" width="370" height="150" rx="7" class="w7-box"/><text x="605" y="60" text-anchor="middle" class="w7-text">개념 비교: steal</text><text x="445" y="95" class="w7-small">미커밋 변경이 home까지 쓰일 수 있음</text><text x="445" y="124" class="w7-small">종료 → 미커밋 변경을 되돌릴 UNDO 필요</text><text x="445" y="153" class="w7-small">이 장은 UNDO / ARIES를 구현하지 않음</text></svg><figcaption>이 예제의 REDO만으로 일반적인 steal 버퍼 풀을 복구할 수는 없습니다.</figcaption></figure>
+<div class="callout"><span class="title">앞 장의 실제 저장 파일을 사용합니다</span><code>examples/engine.rs</code>가 6장의 테이블·파서·실행기를 연결합니다. WAL은 그 파일의 바이트를 보호합니다. 기존 6장 DB는 revision 0 baseline으로 채택할 수 있지만, WAL 도입 전의 크래시까지 복구했다고 주장할 수는 없습니다.</div></section>
+<div class="callout tip"><span class="title">초기화 도중 종료된 workspace는 보존하고 복구를 계속합니다</span><p>workspace 디렉터리 생성 뒤 소유 marker를 게시하기 전에 프로세스가 종료될 수 있습니다. marker는 임시 파일에 전체 기록·동기화한 뒤 rename으로 게시합니다. 재시작 시 <code>.wal-work-&lt;pid&gt;-&lt;sequence&gt;</code>의 정규 이름, DB와 같은 UID, 완전한 marker, 허용된 private regular 파일만 확인된 디렉터리를 정리합니다.</p><p>marker가 없거나 비어 있거나 부분 기록됐거나 내용·소유가 불명확하면 해당 디렉터리를 삭제하지 않고 커밋 복구 대상에서 제외합니다. 따라서 미표식 orphan 하나가 정상 DB의 재열기를 막지 않습니다. 보존된 디렉터리는 디스크에 남으므로 관리자가 내용을 확인한 뒤 수동 정리해야 합니다. marker·데이터의 symlink/hardlink는 역참조하거나 삭제하지 않고 오류로 거부합니다.</p></div>
+<section id="s3"><h2>3. 프레임은 길이와 본문을 따로 검증한다</h2><p>WAL 헤더는 20바이트입니다. magic 8바이트 <code>MYWAL07&#92;0</code>, checkpoint revision u64 LE, 앞 16바이트의 CRC-32 u32 LE입니다. 프레임은 <code>length:u32 + CRC(length):u32 + CRC(body):u32 + body</code>입니다. CRC는 IEEE CRC-32이며 보안 인증용 해시가 아닙니다.</p><p>길이 자체를 검증하는 이유가 있습니다. 길이 필드가 커진 것을 단순한 ‘불완전 EOF’로 오인하면, 뒤에 있는 커밋을 조용히 버릴 수 있습니다. 완전한 헤더의 길이 CRC가 다르면 복구를 중단합니다. 12바이트 프레임 헤더나 그 뒤 본문이 실제 EOF에서 덜 쓰인 경우만 미완성 꼬리로 취급합니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>종류</th><th>본문 바이트</th><th>검사</th></tr></thead><tbody><tr><td>BEGIN=1</td><td>kind u8 + revision u64 LE</td><td>현재 커밋 revision + 1, 중첩 BEGIN 금지</td></tr><tr><td>FILE=2</td><td>kind + revision + 이름 길이 u8 + ASCII 이름 + 파일 길이 u32 LE + afterimage</td><td>활성 BEGIN과 같은 revision, 이름 오름차순·중복 금지, 크기 제한</td></tr><tr><td>COMMIT=3</td><td>kind + revision + FILE 개수 u32 LE</td><td>활성 revision과 FILE 개수 일치</td></tr></tbody></table></div>
+<div class="widget w7-widget" id="wal-byte-lab"><div class="w-title">EOF 꼬리와 완전한 CRC 오류 구분하기</div><div class="w-desc">헤더와 BEGIN·FILE·COMMIT을 실제 형식/CRC로 인코딩했습니다. FILE 본문은 설명용 4바이트이며 실제 tables.pages 파일은 아닙니다. 손상 위치나 남길 길이를 바꾸고 복구 결과를 예상하세요.</div><div class="controls"><label>실험 <select id="wal-byte-mode"><option value="none">정상</option><option value="cut">EOF에서 자르기</option><option value="flip">선택 바이트 1비트 손상</option><option value="length">FILE 길이 필드 손상</option><option value="sequence">CRC가 맞는 잘못된 revision</option></select></label><label>위치 <input id="wal-byte-position" type="range" min="0" max="108" value="90"><output id="wal-byte-position-label"></output></label></div><div class="controls"><label>예상 <select id="wal-byte-predict"><option value="redo">redo: 새 값</option><option value="old">old: 이전 값</option><option value="error">error: 복구 중단</option></select></label><button class="btn" id="wal-byte-check">예측 확인</button></div><output id="wal-byte-feedback" class="w7-feedback" aria-live="polite"></output><div id="wal-byte-grid" class="w7-bytes" aria-label="WAL 바이트와 손상·읽기 경계"></div><output id="wal-byte-state" class="w7-state" aria-live="polite"></output><div id="wal-byte-player"></div><p class="w7-note">미완성 EOF는 미커밋 변경만 버립니다. 완전한 잘못된 CRC·레코드 순서·파일 경로는 fail-closed로 중단합니다. 이전 커밋 파일과 WAL을 보존하고, 임의로 새 헤더를 만들지 않습니다.</p></div></section>
+<section id="s4"><h2>4. 어느 시점에 종료됐는가</h2><p>커밋은 afterimage 집합을 WAL에 쓰고 COMMIT까지 동기화한 뒤, 각 home 파일을 새 임시 파일로 쓰고 sync·rename·부모 디렉터리 sync 순서로 설치합니다. 모든 파일 설치가 끝나면 revision을 보존한 WAL 헤더로 checkpoint합니다. SQL 성공 응답은 이 과정이 성공한 뒤 반환합니다.</p>
+<p><b>WAL sync 뒤 응답 전 종료</b>면 클라이언트는 성공을 못 받았어도 복구 후 새 값이 있을 수 있습니다. 반대로 sync 전 바이트가 프로세스 종료 뒤 보이는 경우도 있습니다. ‘프로세스를 죽였으니 미동기화 바이트가 사라졌다’고 가정하지 마세요. 장치 전원 차단의 보장은 별도 문제입니다.</p>
+<div class="widget w7-widget" id="wal-crash-lab"><div class="w-title">쓰기 순서에서 crash를 넣고 REDO 추적하기</div><div class="w-desc">아래 값은 파일 버전을 표시하는 모형입니다. 중단 지점을 바꾸고 재열기 후 어떤 값을 읽을지 예상하세요. 실제 별도 프로세스 crash는 Rust check.sh에서 검사합니다.</div><div class="controls"><label>이전 값 <input id="wal-old-value" type="text" value="10" maxlength="20" inputmode="numeric"></label><label>새 값 <input id="wal-new-value" type="text" value="20" maxlength="20" inputmode="numeric"></label><label>종료 지점 <select id="wal-crash-point"><option value="before">COMMIT 쓰기 전</option><option value="unsynced">COMMIT 썼지만 sync 전</option><option value="synced" selected>WAL sync 직후</option><option value="apply">첫 home 파일 설치 후</option><option value="data">home 모두 sync 후</option><option value="checkpoint">checkpoint 후</option></select></label><label><input id="wal-unsynced-survives" type="checkbox"> sync 전 COMMIT이 복구 때 보인다고 가정</label></div><div class="controls"><label>재열기 값 예상 <select id="wal-crash-predict"><option value="new">새 값</option><option value="old">이전 값</option></select></label><button class="btn primary" id="wal-crash-check">예측 확인</button></div><output id="wal-crash-feedback" class="w7-feedback" aria-live="polite"></output><div class="w7-stage"><svg id="wal-crash-svg" class="diagram" viewBox="0 0 780 200" role="img" aria-label="private workspace, WAL, home 힙/색인의 쓰기와 복구 순서"></svg></div><p class="w7-note">도식은 좌우로 스크롤할 수 있습니다. sync 전 바이트 존재 여부는 실험의 가정이며 장치 내구성 측정 결과가 아닙니다.</p><output id="wal-crash-state" class="w7-state" aria-live="polite"></output><div id="wal-crash-player"></div></div>
+<div class="callout warn"><span class="title">durable WAL 뒤 설치 실패는 일반 abort가 아닙니다</span>COMMIT이 이미 WAL에 있으면 다음 재열기에서 적용될 수 있습니다. 실행 중 설치·동기화 오류가 나면 Database를 poisoned로 표시하고 새 snapshot·commit·checkpoint를 거부합니다. 닫고 다시 열어 복구해야 합니다. 오류를 무시하고 다음 SQL을 계속 실행하지 않습니다.</div></section>
+<section id="s5"><h2>5. 체크포인트는 revision을 지우지 않는다</h2><p>checkpoint는 복구에 필요한 afterimage를 줄이지만 가장 최근의 커밋 revision은 남깁니다. 이 구현은 home을 동기화한 뒤 20바이트 헤더를 새 파일로 써서 원자적으로 교체합니다. 쓰던 wal.log를 먼저 truncate하지 않습니다. checkpoint 도중 종료돼도 이전 WAL 또는 새 헤더 중 하나로 시작합니다.</p><p>Snapshot은 만든 순간의 base revision을 기억합니다. dirty commit에서 base와 현재 revision이 다르면 WAL에 아무것도 쓰기 전에 충돌을 반환합니다. 읽기만 한 snapshot은 오래된 base여도 새 WAL·revision 없이 종료할 수 있습니다. 실패한 query가 있는 snapshot은 둘 다 거부합니다.</p>
+<div class="widget w7-widget" id="wal-revision-lab"><div class="w-title">checkpoint 뒤 오래된 snapshot을 커밋하면?</div><div class="w-desc">첫 CREATE가 끝난 revision 1에서 A와 B를 만듭니다. 두 snapshot의 쓰기 여부와 커밋 순서를 바꾸세요. checkpoint는 이 예제에서 각 dirty commit 뒤 자동으로 실행됩니다.</div><div class="controls"><label><input id="wal-a-write" type="checkbox" checked>A가 쓰기 성공</label><label><input id="wal-b-write" type="checkbox" checked>B가 쓰기 성공</label><label>먼저 commit <select id="wal-first-commit"><option>A</option><option>B</option></select></label><label><input id="wal-second-failed" type="checkbox">두 번째 snapshot에 query 오류 발생</label></div><div class="controls"><label>두 번째 commit 예상 <select id="wal-revision-predict"><option value="conflict">conflict</option><option value="ok">ok</option><option value="failed">failed</option></select></label><button class="btn" id="wal-revision-check">예측 확인</button></div><output id="wal-revision-feedback" class="w7-feedback" aria-live="polite"></output><div class="w7-stage"><svg id="wal-revision-svg" class="diagram" viewBox="0 0 790 175" role="img" aria-label="snapshot base revision과 DB checkpoint revision의 비교"></svg></div><p class="w7-note">도식은 좌우로 스크롤할 수 있습니다. 다음 장은 이 Snapshot API 위에 BEGIN·COMMIT·ROLLBACK과 트랜잭션 상태를 연결합니다.</p><output id="wal-revision-state" class="w7-state" aria-live="polite"></output><div id="wal-revision-player"></div></div></section>
+<section id="s6"><h2>6. 잠금·경로·크기 경계를 고정한다</h2><p>Database가 열려 있는 동안 전용 <code>.wal.lock</code> 파일의 inode에 <code>flock(LOCK_EX | LOCK_NB)</code>를 잡습니다. 같은 DB의 두 번째 프로세스는 즉시 실패합니다. 종료하면 OS가 잠금을 해제합니다. lock 파일을 삭제해 새 inode로 바꾸면 두 잠금이 생길 수 있으므로 파일은 unlink하지 않습니다. 아래 작은 FFI는 macOS/Linux Unix용입니다.</p><p>afterimage 파일명은 <code>tables.pages</code>와 영문자로 시작하는 32바이트 이하 테이블 이름의 <code>TABLE.idx</code>만 허용합니다. 심볼릭 링크·하드 링크·경로 구분자·임의 파일은 거부합니다. 한 파일 16MiB, 데이터 집합과 WAL 각각 64MiB로 제한합니다. SQL 엔진에 없는 DROP/DELETE는 지원하지 않습니다.</p><p>전용 DB 디렉터리에는 DB 파일만 넣으세요. private workspace는 marker가 있는 소유 디렉터리로 분리하고 Snapshot Drop 또는 다음 open에서 정리합니다. 동일 디렉터리를 앞 장 CLI로 직접 수정하면 WAL과 flock 계약을 우회합니다. 모든 변경은 이 Database API로 실행해야 합니다.</p><p>동기화는 Rust <code>sync_all</code>과 부모 디렉터리 sync를 사용합니다. Linux fsync 계열 호출과 macOS F_FULLFSYNC의 장치 캐시 보장 차이는 2장의 설명을 참고하세요. macOS에서 실제 프로세스 crash를 검사했으며 Linux 실행과 실제 장치 전원 차단은 검증하지 않았습니다.</p></section>
+<section id="s7"><h2>7. 구현 가이드와 실제 SQL crash 검사</h2>
+<h3>A. workspace에서만 SQL 실행하기</h3><pre><code data-language="rust">#[path = "../engine.rs"]
+pub mod engine;
+// Database::snapshot: committed 파일 복사 + owner/base revision 기록
+// Snapshot::query_with: engine::is_write와 CREATE 정책 먼저 검사
+// callback은 private path에서 실행. 성공한 write만 dirty=true
+// 어떤 query 오류든 failed=true. 이후 query/commit 거부.</code></pre><details class="deep"><summary>힌트 A: 실패한 스냅샷과 외부 소유자</summary><div><p>commit은 Snapshot owner, failed/finished, dirty base revision을 WAL 변경 전에 검사합니다. 일부 INSERT가 workspace에서 성공했더라도 나중 query가 실패하면 그 snapshot 전체를 commit하지 않습니다.</p></div></details>
+<h3>B. WAL을 동기화한 뒤 설치하기</h3><pre><code data-language="rust">// TODO: 파일 크기/이름과 전체 WAL 크기를 메모리에서 먼저 검사한다.
+// BEGIN + FILE afterimages를 append한다.
+// COMMIT을 append하고 WAL sync_all을 호출한다.
+// TODO: 새 임시 파일 write_all → sync_all → rename → 부모 dir sync
+// TODO: 완료한 revision으로 새 WAL 헤더를 쓰고 원자 교체한다.
+// durable WAL 뒤 오류는 poisoned/recovery-required로 처리한다.</code></pre><details class="deep"><summary>힌트 B: 복구를 두 번 해도 같게 만들기</summary><div><p>REDO가 SQL INSERT를 다시 실행하면 중복 기본키 오류나 중복 행을 만들 수 있습니다. afterimage는 정확한 파일 바이트를 교체하므로 반복 적용해도 같은 결과입니다. FILE 이름과 revision 순서를 먼저 모두 검증한 뒤 설치하세요.</p></div></details>
+<h3>C. 실행 파일 만들기</h3><pre><code data-language="bash">rustc --edition=2024 examples/ch07/wal.rs -o wal
+printf '%s\n' "CREATE TABLE people (id INT NOT NULL, name TEXT NOT NULL, age INT)" | ./wal demo-db
+MYDB_CRASH_POINT=after-wal-sync ./wal demo-db &lt;&lt;'SQL'
+INSERT INTO people VALUES (1,'Roy',35)
+SQL
+# 종료 코드 86: 성공 응답 없이 프로세스가 종료된다.
+./wal demo-db --recover
+# revision=2
+printf '%s\n' 'SELECT id,name,age FROM people ORDER BY id' | ./wal demo-db</code></pre><p>지원 crash hook은 before-commit-record, after-wal-sync, during-apply, after-data-sync, after-checkpoint입니다. 정상 실행에서는 이 환경 변수를 지정하지 마세요. 테스트는 새 DB마다 한 지점을 골라 별도 프로세스를 종료하고 재열기로 확인합니다.</p>
+<h3>D. 실제 checkpoint 헤더 바이트</h3><p>새 DB에서 CREATE 하나를 커밋한 뒤 WAL은 다음 20바이트입니다. 마지막 네 바이트는 앞 16바이트의 CRC입니다.</p><pre><code data-language="bash">od -An -tx1 demo-db/wal.log
+# 4d 59 57 41 4c 30 37 00 01 00 00 00 00 00 00 00
+# 6a 0d 3f 4a</code></pre><p>첫 8바이트는 magic, 다음 8바이트의 <code>01 00 …</code>는 checkpoint revision 1입니다. 위 crash 실습에서 INSERT까지 복구하면 revision은 2가 되므로 헤더 바이트도 달라집니다.</p>
+<details class="deep"><summary>접힌 참조 구현: wal.rs</summary><div><p><a href="examples/ch07/wal.rs" download>wal.rs 저장</a> · <a href="examples/engine.rs" download>공유 engine.rs</a>. engine.rs가 6장과 앞 장 코드를 상대 경로로 포함하므로 examples 디렉터리 구조를 유지하세요. Unix 전용 표준 라이브러리 + 작은 flock FFI이며 외부 crate는 없습니다.</p><pre><code data-language="rust">//! Bounded whole-file REDO afterimages, private workspaces, one cooperating writer.
+//! This is a teaching WAL, not page-LSN/ARIES, and does not make external writers safe.
+#[path = &quot;../engine.rs&quot;]
+pub mod engine;
+use std::{
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
+    os::fd::AsRawFd,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
+const MAGIC: &amp;[u8; 8] = b&quot;MYWAL07\0&quot;;
+const HEADER: usize = 20;
+const MAX_FILE: usize = 16 * 1024 * 1024;
+const MAX_TOTAL: usize = 64 * 1024 * 1024;
+const WAL: &amp;str = &quot;wal.log&quot;;
+const LOCK: &amp;str = &quot;.wal.lock&quot;;
+const MARKER: &amp;str = &quot;.wal-owner&quot;;
+static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+#[cfg(target_os = &quot;macos&quot;)]
+const NOFOLLOW: i32 = 0x100;
+#[cfg(not(target_os = &quot;macos&quot;))]
+const NOFOLLOW: i32 = 0x20000;
+unsafe extern &quot;C&quot; {
+    fn flock(fd: i32, operation: i32) -&gt; i32;
+}
+fn bad(message: &amp;str) -&gt; io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+fn unique() -&gt; String {
+    format!(
+        &quot;{}-{}&quot;,
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+fn regular(path: &amp;Path) -&gt; io::Result&lt;()&gt; {
+    let m = fs::symlink_metadata(path)?;
+    if !m.is_file() || m.file_type().is_symlink() || m.nlink() != 1 {
+        return Err(bad(&quot;expected private regular file (no symlink/hardlink)&quot;));
+    }
+    Ok(())
+}
+fn open_read(path: &amp;Path) -&gt; io::Result&lt;File&gt; {
+    regular(path)?;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(NOFOLLOW)
+        .open(path)
+}
+fn bounded_read(path: &amp;Path, limit: usize) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    let file = open_read(path)?;
+    if file.metadata()?.len() &gt; limit as u64 {
+        return Err(bad(&quot;file size limit exceeded&quot;));
+    }
+    let mut b = vec![];
+    file.take((limit + 1) as u64).read_to_end(&amp;mut b)?;
+    if b.len() &gt; limit {
+        return Err(bad(&quot;file grew beyond limit&quot;));
+    }
+    Ok(b)
+}
+fn sync_dir(path: &amp;Path) -&gt; io::Result&lt;()&gt; {
+    File::open(path)?.sync_all()
+}
+fn valid_data_name(name: &amp;str) -&gt; bool {
+    if name == &quot;tables.pages&quot; {
+        return true;
+    }
+    let Some(table) = name.strip_suffix(&quot;.idx&quot;) else {
+        return false;
+    };
+    !table.is_empty()
+        &amp;&amp; table.len() &lt;= 32
+        &amp;&amp; table.as_bytes()[0].is_ascii_alphabetic()
+        &amp;&amp; table
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b&#x27;_&#x27;)
+}
+fn images(dir: &amp;Path) -&gt; io::Result&lt;BTreeMap&lt;String, Vec&lt;u8&gt;&gt;&gt; {
+    let mut out = BTreeMap::new();
+    let mut total = 0usize;
+    for item in fs::read_dir(dir)? {
+        let item = item?;
+        let name = item
+            .file_name()
+            .into_string()
+            .map_err(|_| bad(&quot;non-UTF8 database file name&quot;))?;
+        let kind = item.file_type()?;
+        if kind.is_symlink() {
+            return Err(bad(&quot;symlinks are not database files&quot;));
+        }
+        if name == WAL
+            || name == LOCK
+            || name == MARKER
+            || name.starts_with(&quot;.wal-work-&quot;)
+            || name.starts_with(&quot;.wal-install-&quot;)
+            || name.starts_with(&quot;.wal-checkpoint-&quot;)
+        {
+            continue;
+        }
+        if !valid_data_name(&amp;name) || !kind.is_file() {
+            return Err(bad(&quot;unrecognized file in database directory&quot;));
+        }
+        let b = bounded_read(&amp;item.path(), MAX_FILE)?;
+        total = total
+            .checked_add(b.len())
+            .ok_or_else(|| bad(&quot;database size overflow&quot;))?;
+        if total &gt; MAX_TOTAL {
+            return Err(bad(&quot;database exceeds 64 MiB&quot;));
+        }
+        out.insert(name, b);
+    }
+    Ok(out)
+}
+fn crc32(bytes: &amp;[u8]) -&gt; u32 {
+    let mut c = 0xffff_ffffu32;
+    for &amp;b in bytes {
+        c ^= b as u32;
+        for _ in 0..8 {
+            c = if c &amp; 1 != 0 {
+                0xedb8_8320 ^ (c &gt;&gt; 1)
+            } else {
+                c &gt;&gt; 1
+            };
+        }
+    }
+    !c
+}
+fn header(revision: u64) -&gt; Vec&lt;u8&gt; {
+    let mut b = MAGIC.to_vec();
+    b.extend_from_slice(&amp;revision.to_le_bytes());
+    let crc = crc32(&amp;b);
+    b.extend_from_slice(&amp;crc.to_le_bytes());
+    b
+}
+fn frame(body: &amp;[u8]) -&gt; Vec&lt;u8&gt; {
+    let mut b = (body.len() as u32).to_le_bytes().to_vec();
+    b.extend_from_slice(&amp;crc32(&amp;b[..4]).to_le_bytes());
+    b.extend_from_slice(&amp;crc32(body).to_le_bytes());
+    b.extend_from_slice(body);
+    b
+}
+fn record(kind: u8, revision: u64) -&gt; Vec&lt;u8&gt; {
+    let mut b = vec![kind];
+    b.extend_from_slice(&amp;revision.to_le_bytes());
+    b
+}
+fn transaction(revision: u64, files: &amp;BTreeMap&lt;String, Vec&lt;u8&gt;&gt;) -&gt; io::Result&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt; {
+    let mut prefix = frame(&amp;record(1, revision));
+    for (name, data) in files {
+        if !valid_data_name(name) || data.len() &gt; MAX_FILE {
+            return Err(bad(&quot;invalid afterimage&quot;));
+        }
+        let mut b = record(2, revision);
+        b.push(name.len() as u8);
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&amp;(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(data);
+        prefix.extend_from_slice(&amp;frame(&amp;b));
+        if prefix.len() + HEADER + 29 &gt; MAX_TOTAL {
+            return Err(bad(&quot;WAL exceeds 64 MiB&quot;));
+        }
+    }
+    let mut commit = record(3, revision);
+    commit.extend_from_slice(&amp;(files.len() as u32).to_le_bytes());
+    Ok((prefix, frame(&amp;commit)))
+}
+#[derive(Debug)]
+struct Recovery {
+    revision: u64,
+    committed: Vec&lt;BTreeMap&lt;String, Vec&lt;u8&gt;&gt;&gt;,
+    #[allow(dead_code)]
+    valid_end: usize,
+}
+fn decode_wal(bytes: &amp;[u8]) -&gt; io::Result&lt;Recovery&gt; {
+    if bytes.len() &lt; HEADER || &amp;bytes[..8] != MAGIC {
+        return Err(bad(&quot;invalid WAL header&quot;));
+    }
+    if crc32(&amp;bytes[..16]) != u32::from_le_bytes(bytes[16..20].try_into().unwrap()) {
+        return Err(bad(&quot;bad WAL header CRC&quot;));
+    }
+    let mut revision = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+    let mut committed = vec![];
+    let mut pending: Option&lt;(u64, BTreeMap&lt;String, Vec&lt;u8&gt;&gt;)&gt; = None;
+    let mut at = HEADER;
+    let mut valid_end = HEADER;
+    while at &lt; bytes.len() {
+        if bytes.len() - at &lt; 12 {
+            break;
+        }
+        let len = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        if crc32(&amp;bytes[at..at + 4])
+            != u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap())
+        {
+            return Err(bad(&quot;bad WAL length CRC&quot;));
+        }
+        if len &lt; 9 || len &gt; MAX_FILE + 64 {
+            return Err(bad(&quot;invalid WAL frame length&quot;));
+        }
+        let end = at
+            .checked_add(12 + len)
+            .ok_or_else(|| bad(&quot;WAL frame overflow&quot;))?;
+        if end &gt; bytes.len() {
+            break;
+        }
+        let body = &amp;bytes[at + 12..end];
+        if crc32(body) != u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) {
+            return Err(bad(&quot;complete WAL frame has bad CRC&quot;));
+        }
+        let tx = u64::from_le_bytes(body[1..9].try_into().unwrap());
+        match body[0] {
+            1 =&gt; {
+                if len != 9 || pending.is_some() || Some(tx) != revision.checked_add(1) {
+                    return Err(bad(&quot;invalid BEGIN sequence&quot;));
+                }
+                pending = Some((tx, BTreeMap::new()));
+            }
+            2 =&gt; {
+                let Some((active, files)) = &amp;mut pending else {
+                    return Err(bad(&quot;FILE without BEGIN&quot;));
+                };
+                if *active != tx || len &lt; 14 {
+                    return Err(bad(&quot;invalid FILE sequence&quot;));
+                }
+                let n = body[9] as usize;
+                if 10 + n + 4 &gt; body.len() {
+                    return Err(bad(&quot;short FILE name&quot;));
+                }
+                let name =
+                    std::str::from_utf8(&amp;body[10..10 + n]).map_err(|_| bad(&quot;invalid FILE name&quot;))?;
+                if !valid_data_name(name)
+                    || files
+                        .last_key_value()
+                        .is_some_and(|(last, _)| last.as_str() &gt;= name)
+                {
+                    return Err(bad(&quot;noncanonical FILE name/order&quot;));
+                }
+                let size = u32::from_le_bytes(body[10 + n..14 + n].try_into().unwrap()) as usize;
+                if size &gt; MAX_FILE || body.len() != 14 + n + size {
+                    return Err(bad(&quot;invalid FILE size&quot;));
+                }
+                files.insert(name.to_owned(), body[14 + n..].to_vec());
+            }
+            3 =&gt; {
+                let Some((active, files)) = pending.take() else {
+                    return Err(bad(&quot;COMMIT without BEGIN&quot;));
+                };
+                if active != tx
+                    || len != 13
+                    || u32::from_le_bytes(body[9..13].try_into().unwrap()) as usize != files.len()
+                {
+                    return Err(bad(&quot;invalid COMMIT sequence/count&quot;));
+                }
+                revision = tx;
+                committed.push(files);
+                valid_end = end;
+            }
+            _ =&gt; return Err(bad(&quot;unknown WAL record type&quot;)),
+        }
+        at = end;
+    }
+    // Incomplete EOF and complete uncommitted records never become published state.
+    Ok(Recovery {
+        revision,
+        committed,
+        valid_end,
+    })
+}
+fn crash(point: &amp;str) {
+    if std::env::var(&quot;MYDB_CRASH_POINT&quot;).ok().as_deref() == Some(point) {
+        std::process::exit(86);
+    }
+}
+fn atomic_file(dir: &amp;Path, name: &amp;str, data: &amp;[u8], prefix: &amp;str) -&gt; io::Result&lt;()&gt; {
+    let target = dir.join(name);
+    if target.exists() {
+        regular(&amp;target)?;
+    }
+    let tmp = dir.join(format!(&quot;{prefix}{}&quot;, unique()));
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(NOFOLLOW)
+        .open(&amp;tmp)?;
+    let result = (|| {
+        f.write_all(data)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&amp;tmp, &amp;target)?;
+        sync_dir(dir)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&amp;tmp);
+    }
+    result
+}
+fn install(dir: &amp;Path, files: &amp;BTreeMap&lt;String, Vec&lt;u8&gt;&gt;, hooks: bool) -&gt; io::Result&lt;()&gt; {
+    for (i, (name, data)) in files.iter().enumerate() {
+        if !valid_data_name(name) {
+            return Err(bad(&quot;unsafe installation path&quot;));
+        }
+        atomic_file(dir, name, data, &quot;.wal-install-&quot;)?;
+        if hooks &amp;&amp; i == 0 {
+            crash(&quot;during-apply&quot;);
+        }
+    }
+    sync_dir(dir)
+}
+fn checkpoint_file(dir: &amp;Path, revision: u64) -&gt; io::Result&lt;()&gt; {
+    atomic_file(dir, WAL, &amp;header(revision), &quot;.wal-checkpoint-&quot;)
+}
+// A prefix alone never grants permission to delete somebody else&#x27;s directory.
+fn workspace_name(name: &amp;str) -&gt; bool {
+    let Some(tail) = name.strip_prefix(&quot;.wal-work-&quot;) else {
+        return false;
+    };
+    let Some((pid, sequence)) = tail.split_once(&#x27;-&#x27;) else {
+        return false;
+    };
+    matches!(pid.parse::&lt;u32&gt;(), Ok(n) if n &gt; 0 &amp;&amp; n.to_string() == pid)
+        &amp;&amp; matches!(sequence.parse::&lt;u64&gt;(), Ok(n) if n &gt; 0 &amp;&amp; n.to_string() == sequence)
+}
+fn complete_marker(bytes: &amp;[u8]) -&gt; bool {
+    let Some(owner) = bytes.strip_prefix(b&quot;MYDB_WORK07 &quot;) else {
+        return false;
+    };
+    let Ok(owner) = std::str::from_utf8(owner) else {
+        return false;
+    };
+    matches!(owner.parse::&lt;u64&gt;(), Ok(n) if n &gt; 0 &amp;&amp; n.to_string() == owner)
+}
+fn owned_workspace(path: &amp;Path, name: &amp;str, database_uid: u32) -&gt; io::Result&lt;bool&gt; {
+    if !workspace_name(name) {
+        return Ok(false);
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(bad(&quot;workspace is not a private directory&quot;));
+    }
+    let mut eligible = metadata.uid() == database_uid;
+    let mut marker = None;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let m = fs::symlink_metadata(entry.path())?;
+        if m.file_type().is_symlink() || (m.is_file() &amp;&amp; m.nlink() != 1) {
+            return Err(bad(&quot;workspace contains a symlink/hardlink&quot;));
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            eligible = false;
+            continue;
+        };
+        if !m.is_file() || m.uid() != metadata.uid() {
+            eligible = false;
+            continue;
+        }
+        if name == MARKER {
+            if m.len() &gt; 128 {
+                eligible = false;
+                continue;
+            }
+            marker = Some(bounded_read(&amp;entry.path(), 128)?);
+        } else if !valid_data_name(&amp;name) || m.len() &gt; MAX_FILE as u64 {
+            eligible = false;
+        }
+    }
+    // An unmarked/partially initialized directory is a possible crash remnant,
+    // but not proven owned. Preserve it without blocking committed-WAL recovery.
+    Ok(eligible &amp;&amp; marker.as_deref().is_some_and(complete_marker))
+}
+fn clean_workspaces(dir: &amp;Path) -&gt; io::Result&lt;()&gt; {
+    let database_uid = fs::symlink_metadata(dir)?.uid();
+    for item in fs::read_dir(dir)? {
+        let item = item?;
+        let name = item.file_name();
+        if !name.to_string_lossy().starts_with(&quot;.wal-work-&quot;) {
+            continue;
+        }
+        if !item.file_type()?.is_dir() {
+            return Err(bad(&quot;workspace is not an owned directory&quot;));
+        }
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if owned_workspace(&amp;item.path(), name, database_uid)? {
+            fs::remove_dir_all(item.path())?;
+        }
+    }
+    Ok(())
+}
+pub struct Database {
+    home: PathBuf,
+    _lock: File,
+    owner: u64,
+    revision: u64,
+    poisoned: bool,
+}
+pub struct Snapshot {
+    workspace: PathBuf,
+    owner: u64,
+    base: u64,
+    failed: bool,
+    dirty: bool,
+    finished: bool,
+}
+impl Snapshot {
+    pub fn base_revision(&amp;self) -&gt; u64 {
+        self.base
+    }
+    pub fn is_failed(&amp;self) -&gt; bool {
+        self.failed
+    }
+    pub fn is_dirty(&amp;self) -&gt; bool {
+        self.dirty
+    }
+    pub fn path(&amp;self) -&gt; &amp;Path {
+        &amp;self.workspace
+    }
+    pub fn query(&amp;mut self, sql: &amp;str) -&gt; io::Result&lt;engine::SqlReply&gt; {
+        self.query_with(sql, engine::run_sql)
+    }
+    pub fn query_with&lt;T, F&gt;(&amp;mut self, sql: &amp;str, callback: F) -&gt; io::Result&lt;T&gt;
+    where
+        F: FnOnce(&amp;Path, &amp;str) -&gt; io::Result&lt;T&gt;,
+    {
+        if self.failed || self.finished {
+            return Err(bad(&quot;snapshot failed or finished&quot;));
+        }
+        let result = (|| {
+            let write = engine::is_write(sql)?;
+            let out = callback(&amp;self.workspace, sql)?;
+            if write {
+                self.dirty = true;
+            }
+            Ok(out)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+}
+impl Drop for Snapshot {
+    fn drop(&amp;mut self) {
+        let _ = fs::remove_dir_all(&amp;self.workspace);
+    }
+}
+impl Database {
+    pub fn open(path: &amp;Path) -&gt; io::Result&lt;Self&gt; {
+        fs::create_dir_all(path)?;
+        if fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(bad(&quot;database root cannot be a symlink&quot;));
+        }
+        let home = fs::canonicalize(path)?;
+        let lockpath = home.join(LOCK);
+        if lockpath.exists() {
+            regular(&amp;lockpath)?;
+        }
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .custom_flags(NOFOLLOW)
+            .open(lockpath)?;
+        // LOCK_EX=2, LOCK_NB=4 on macOS and Linux. Keep this inode for the DB lifetime.
+        if unsafe { flock(lock.as_raw_fd(), 2 | 4) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        clean_workspaces(&amp;home)?;
+        images(&amp;home)?;
+        if !home.join(WAL).exists() {
+            checkpoint_file(&amp;home, 0)?;
+        }
+        let log = bounded_read(&amp;home.join(WAL), MAX_TOTAL)?;
+        let recovery = decode_wal(&amp;log)?;
+        for tx in &amp;recovery.committed {
+            install(&amp;home, tx, false)?;
+        }
+        // Atomic replacement drops uncommitted EOF tail only after committed data is synced.
+        checkpoint_file(&amp;home, recovery.revision)?;
+        Ok(Self {
+            home,
+            _lock: lock,
+            owner: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            revision: recovery.revision,
+            poisoned: false,
+        })
+    }
+    fn healthy(&amp;self) -&gt; io::Result&lt;()&gt; {
+        if self.poisoned {
+            Err(bad(&quot;database poisoned: close and reopen for recovery&quot;))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn revision(&amp;self) -&gt; u64 {
+        self.revision
+    }
+    pub fn is_poisoned(&amp;self) -&gt; bool {
+        self.poisoned
+    }
+    pub fn snapshot(&amp;mut self) -&gt; io::Result&lt;Snapshot&gt; {
+        self.healthy()?;
+        let workspace = self.home.join(format!(&quot;.wal-work-{}&quot;, unique()));
+        fs::create_dir(&amp;workspace)?;
+        let mut snapshot = Snapshot {
+            workspace,
+            owner: self.owner,
+            base: self.revision,
+            failed: false,
+            dirty: false,
+            finished: false,
+        };
+        let result = (|| {
+            // Publish only a fully written marker. A kill before rename leaves
+            // an unproven staging file, which restart preserves rather than deletes.
+            atomic_file(
+                &amp;snapshot.workspace,
+                MARKER,
+                format!(&quot;MYDB_WORK07 {}&quot;, self.owner).as_bytes(),
+                &quot;.wal-marker-&quot;,
+            )?;
+            for (name, b) in images(&amp;self.home)? {
+                let mut f = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(snapshot.workspace.join(name))?;
+                f.write_all(&amp;b)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            snapshot.failed = true;
+            return Err(e);
+        }
+        Ok(snapshot)
+    }
+    pub fn commit(&amp;mut self, snapshot: &amp;mut Snapshot) -&gt; io::Result&lt;u64&gt; {
+        self.healthy()?;
+        if snapshot.owner != self.owner || snapshot.failed || snapshot.finished {
+            snapshot.failed = true;
+            return Err(bad(&quot;snapshot owner/status mismatch&quot;));
+        }
+        if !snapshot.dirty {
+            snapshot.finished = true;
+            return Ok(self.revision);
+        }
+        if snapshot.base != self.revision {
+            snapshot.failed = true;
+            return Err(bad(&quot;serialization conflict: base revision changed&quot;));
+        }
+        let prepared = (|| {
+            let revision = self
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| bad(&quot;revision exhausted&quot;))?;
+            let files = images(&amp;snapshot.workspace)?;
+            let (prefix, commit) = transaction(revision, &amp;files)?;
+            Ok((revision, files, prefix, commit))
+        })();
+        let (revision, files, prefix, commit) = match prepared {
+            Ok(v) =&gt; v,
+            Err(e) =&gt; {
+                snapshot.failed = true;
+                return Err(e);
+            }
+        };
+        let result = (|| {
+            let mut log = OpenOptions::new()
+                .append(true)
+                .custom_flags(NOFOLLOW)
+                .open(self.home.join(WAL))?;
+            log.write_all(&amp;prefix)?;
+            crash(&quot;before-commit-record&quot;);
+            log.write_all(&amp;commit)?;
+            log.sync_all()?;
+            self.revision = revision;
+            snapshot.finished = true;
+            crash(&quot;after-wal-sync&quot;);
+            install(&amp;self.home, &amp;files, true)?;
+            crash(&quot;after-data-sync&quot;);
+            checkpoint_file(&amp;self.home, revision)?;
+            crash(&quot;after-checkpoint&quot;);
+            Ok(revision)
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+            snapshot.failed = true;
+        }
+        result
+    }
+    pub fn execute(&amp;mut self, sql: &amp;str) -&gt; io::Result&lt;engine::SqlReply&gt; {
+        let mut snapshot = self.snapshot()?;
+        let result = snapshot.query(sql)?;
+        self.commit(&amp;mut snapshot)?;
+        Ok(result)
+    }
+    pub fn checkpoint(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+        self.healthy()?;
+        let result = checkpoint_file(&amp;self.home, self.revision);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result?;
+        crash(&quot;after-checkpoint&quot;);
+        Ok(())
+    }
+}
+fn main() -&gt; io::Result&lt;()&gt; {
+    let args: Vec&lt;_&gt; = std::env::args().skip(1).collect();
+    let Some(path) = args.first() else {
+        return Err(bad(
+            &quot;usage: wal DIRECTORY [--recover|--checkpoint] &lt; input.sql&quot;,
+        ));
+    };
+    let mut db = Database::open(Path::new(path))?;
+    if args.get(1).map(String::as_str) == Some(&quot;--recover&quot;) {
+        println!(&quot;revision={}&quot;, db.revision());
+        return Ok(());
+    }
+    if args.get(1).map(String::as_str) == Some(&quot;--checkpoint&quot;) {
+        db.checkpoint()?;
+        println!(&quot;revision={}&quot;, db.revision());
+        return Ok(());
+    }
+    if args.len() != 1 {
+        return Err(bad(&quot;unknown option&quot;));
+    }
+    let mut sql = String::new();
+    io::stdin().take(16385).read_to_string(&amp;mut sql)?;
+    let reply = db.execute(&amp;sql)?;
+    println!(&quot;{}&quot;, reply.json);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -&gt; Self {
+            Self(std::env::temp_dir().join(format!(&quot;mydb-wal07-{}&quot;, unique())))
+        }
+        fn db(&amp;self) -&gt; Database {
+            Database::open(&amp;self.0).unwrap()
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&amp;mut self) {
+            let _ = fs::remove_dir_all(&amp;self.0);
+        }
+    }
+    const CREATE: &amp;str = &quot;CREATE TABLE people (id INT NOT NULL, name TEXT NOT NULL, age INT)&quot;;
+    const INSERT: &amp;str = &quot;INSERT INTO people VALUES (1,&#x27;Roy&#x27;,35)&quot;;
+    fn seeded(t: &amp;Temp) -&gt; Database {
+        let mut db = t.db();
+        db.execute(CREATE).unwrap();
+        db
+    }
+    fn count(db: &amp;mut Database) -&gt; usize {
+        db.execute(&quot;SELECT * FROM people&quot;).unwrap().rows.len()
+    }
+    fn append(dir: &amp;Path, b: &amp;[u8]) {
+        let mut f = OpenOptions::new().append(true).open(dir.join(WAL)).unwrap();
+        f.write_all(b).unwrap();
+        f.sync_all().unwrap();
+    }
+    #[test]
+    fn workspace_no_steal_and_actual_sql_commit() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let before = images(&amp;t.0).unwrap();
+        let mut s = db.snapshot().unwrap();
+        s.query(INSERT).unwrap();
+        assert!(s.is_dirty());
+        assert_eq!(images(&amp;t.0).unwrap(), before);
+        assert_eq!(s.query(&quot;SELECT * FROM people&quot;).unwrap().rows.len(), 1);
+        assert_eq!(count(&amp;mut db), 0);
+        assert_eq!(db.commit(&amp;mut s).unwrap(), 2);
+        assert_eq!(count(&amp;mut db), 1);
+        assert!(s.query(&quot;SELECT * FROM people&quot;).is_err());
+    }
+    #[test]
+    fn committed_afterimages_replay_idempotently() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let mut s = db.snapshot().unwrap();
+        s.query(INSERT).unwrap();
+        let files = images(s.path()).unwrap();
+        let (p, c) = transaction(2, &amp;files).unwrap();
+        append(&amp;t.0, &amp;p);
+        append(&amp;t.0, &amp;c);
+        drop(s);
+        drop(db);
+        let mut db = t.db();
+        assert_eq!(db.revision(), 2);
+        assert_eq!(count(&amp;mut db), 1);
+        db.checkpoint().unwrap();
+        drop(db);
+        let mut db = t.db();
+        assert_eq!(count(&amp;mut db), 1);
+        assert_eq!(bounded_read(&amp;t.0.join(WAL), MAX_TOTAL).unwrap(), header(2));
+    }
+    #[test]
+    fn uncommitted_and_partial_eof_do_not_publish() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let mut s = db.snapshot().unwrap();
+        s.query(INSERT).unwrap();
+        let files = images(s.path()).unwrap();
+        let (mut p, c) = transaction(2, &amp;files).unwrap();
+        p.extend_from_slice(&amp;c[..7]);
+        append(&amp;t.0, &amp;p);
+        drop(s);
+        drop(db);
+        let mut db = t.db();
+        assert_eq!(db.revision(), 1);
+        assert_eq!(count(&amp;mut db), 0);
+        assert_eq!(fs::read(t.0.join(WAL)).unwrap(), header(1));
+    }
+    #[test]
+    fn complete_bad_crc_and_bad_length_fail_closed() {
+        let (p, c) = transaction(1, &amp;BTreeMap::new()).unwrap();
+        let mut b = header(0);
+        b.extend_from_slice(&amp;p);
+        b.extend_from_slice(&amp;c);
+        let mut bad_body = b.clone();
+        *bad_body.last_mut().unwrap() ^= 1;
+        assert!(
+            decode_wal(&amp;bad_body)
+                .unwrap_err()
+                .to_string()
+                .contains(&quot;CRC&quot;)
+        );
+        let mut bad_length = b;
+        bad_length[HEADER] ^= 1;
+        assert!(
+            decode_wal(&amp;bad_length)
+                .unwrap_err()
+                .to_string()
+                .contains(&quot;length CRC&quot;)
+        );
+    }
+    #[test]
+    fn invalid_sequence_count_and_path_are_rejected() {
+        let mut b = header(0);
+        b.extend_from_slice(&amp;frame(&amp;record(1, 2)));
+        assert!(decode_wal(&amp;b).is_err());
+        let mut b = header(0);
+        b.extend_from_slice(&amp;frame(&amp;record(1, 1)));
+        let mut f = record(2, 1);
+        let name = b&quot;../x.idx&quot;;
+        f.push(name.len() as u8);
+        f.extend_from_slice(name);
+        f.extend_from_slice(&amp;0u32.to_le_bytes());
+        b.extend_from_slice(&amp;frame(&amp;f));
+        assert!(decode_wal(&amp;b).is_err());
+        let mut b = header(0);
+        b.extend_from_slice(&amp;frame(&amp;record(1, 1)));
+        let mut c = record(3, 1);
+        c.extend_from_slice(&amp;1u32.to_le_bytes());
+        b.extend_from_slice(&amp;frame(&amp;c));
+        assert!(decode_wal(&amp;b).is_err());
+    }
+    #[test]
+    fn status_and_owner_checked_before_wal_mutation() {
+        let a = Temp::new();
+        let b = Temp::new();
+        let mut first = seeded(&amp;a);
+        let mut second = seeded(&amp;b);
+        let mut s = first.snapshot().unwrap();
+        s.query(INSERT).unwrap();
+        let before = fs::read(b.0.join(WAL)).unwrap();
+        assert!(second.commit(&amp;mut s).is_err());
+        assert!(s.is_failed());
+        assert_eq!(fs::read(b.0.join(WAL)).unwrap(), before);
+        let mut s = first.snapshot().unwrap();
+        assert!(s.query(&quot;SELECT absent FROM people&quot;).is_err());
+        assert!(s.is_failed());
+        assert!(s.query(INSERT).is_err());
+        let before = fs::read(a.0.join(WAL)).unwrap();
+        assert!(first.commit(&amp;mut s).is_err());
+        assert_eq!(fs::read(a.0.join(WAL)).unwrap(), before);
+    }
+    #[test]
+    fn write_conflict_and_old_readonly_commit() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let mut winner = db.snapshot().unwrap();
+        let mut loser = db.snapshot().unwrap();
+        let mut reader = db.snapshot().unwrap();
+        winner.query(INSERT).unwrap();
+        loser
+            .query(&quot;INSERT INTO people VALUES (2,&#x27;Ana&#x27;,20)&quot;)
+            .unwrap();
+        reader.query(&quot;SELECT * FROM people&quot;).unwrap();
+        db.commit(&amp;mut winner).unwrap();
+        let before = fs::read(t.0.join(WAL)).unwrap();
+        assert!(db.commit(&amp;mut loser).is_err());
+        assert!(loser.is_failed());
+        assert_eq!(db.commit(&amp;mut reader).unwrap(), 2);
+        assert_eq!(fs::read(t.0.join(WAL)).unwrap(), before);
+        assert_eq!(count(&amp;mut db), 1);
+    }
+    #[test]
+    fn callback_and_create_policy_errors_fail_snapshot() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let mut s = db.snapshot().unwrap();
+        let result: io::Result&lt;()&gt; =
+            s.query_with(&quot;SELECT * FROM people&quot;, |_, _| Err(bad(&quot;callback failed&quot;)));
+        assert!(result.is_err());
+        assert!(s.is_failed());
+        let mut s = db.snapshot().unwrap();
+        assert!(s.query(&quot;CREATE TABLE bad (id TEXT)&quot;).is_err());
+        assert!(s.is_failed());
+        assert_eq!(db.revision(), 1);
+    }
+    #[test]
+    fn size_and_symlink_rejected_before_wal() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let before = fs::read(t.0.join(WAL)).unwrap();
+        let mut s = db.snapshot().unwrap();
+        s.query_with(INSERT, |path, _| {
+            OpenOptions::new()
+                .write(true)
+                .open(path.join(&quot;tables.pages&quot;))?
+                .set_len(MAX_FILE as u64 + 1)
+        })
+        .unwrap();
+        assert!(db.commit(&amp;mut s).is_err());
+        assert!(!db.is_poisoned());
+        assert_eq!(fs::read(t.0.join(WAL)).unwrap(), before);
+        let mut s = db.snapshot().unwrap();
+        let external = Temp::new();
+        fs::create_dir(&amp;external.0).unwrap();
+        let sentinel = external.0.join(&quot;sentinel&quot;);
+        fs::write(&amp;sentinel, b&quot;keep&quot;).unwrap();
+        s.query_with(INSERT, |path, _| {
+            std::os::unix::fs::symlink(&amp;sentinel, path.join(&quot;evil.idx&quot;))
+        })
+        .unwrap();
+        assert!(db.commit(&amp;mut s).is_err());
+        assert_eq!(fs::read(&amp;sentinel).unwrap(), b&quot;keep&quot;);
+        drop(s);
+        let mut linked = db.snapshot().unwrap();
+        linked
+            .query_with(INSERT, |path, _| {
+                fs::hard_link(&amp;sentinel, path.join(&quot;evil.idx&quot;))
+            })
+            .unwrap();
+        assert!(db.commit(&amp;mut linked).is_err());
+        assert_eq!(fs::read(&amp;sentinel).unwrap(), b&quot;keep&quot;);
+    }
+    #[test]
+    fn durable_apply_failure_poison_requires_recovery() {
+        let t = Temp::new();
+        let mut db = seeded(&amp;t);
+        let mut s = db.snapshot().unwrap();
+        s.query(INSERT).unwrap();
+        fs::remove_file(t.0.join(&quot;people.idx&quot;)).unwrap();
+        fs::create_dir(t.0.join(&quot;people.idx&quot;)).unwrap();
+        assert!(db.commit(&amp;mut s).is_err());
+        assert!(db.is_poisoned());
+        assert!(db.snapshot().is_err());
+        assert!(db.checkpoint().is_err());
+        drop(db);
+        fs::remove_dir(t.0.join(&quot;people.idx&quot;)).unwrap();
+        let mut db = t.db();
+        assert_eq!(count(&amp;mut db), 1);
+        assert_eq!(db.revision(), 2);
+    }
+    #[test]
+    fn lock_is_exclusive_and_released_on_drop() {
+        let t = Temp::new();
+        let db = t.db();
+        assert!(Database::open(&amp;t.0).is_err());
+        drop(db);
+        assert!(Database::open(&amp;t.0).is_ok());
+        assert!(t.0.join(LOCK).exists());
+    }
+    #[test]
+    fn baseline_adoption_and_checkpoint_preserve_revision() {
+        let t = Temp::new();
+        engine::run_sql(&amp;t.0, CREATE).unwrap();
+        engine::run_sql(&amp;t.0, INSERT).unwrap();
+        let mut db = t.db();
+        assert_eq!(db.revision(), 0);
+        assert_eq!(count(&amp;mut db), 1);
+        db.execute(&quot;INSERT INTO people VALUES (2,&#x27;Ana&#x27;,20)&quot;)
+            .unwrap();
+        db.checkpoint().unwrap();
+        assert_eq!(fs::read(t.0.join(WAL)).unwrap(), header(1));
+    }
+    #[test]
+    fn crc_reference_and_header_damage() {
+        assert_eq!(crc32(b&quot;123456789&quot;), 0xcbf43926);
+        let mut b = header(9);
+        b[8] ^= 1;
+        assert!(decode_wal(&amp;b).is_err());
+        let mut log = header(9);
+        log.extend_from_slice(&amp;[9, 0, 0]);
+        let r = decode_wal(&amp;log).unwrap();
+        assert_eq!(r.revision, 9);
+        assert_eq!(r.valid_end, HEADER);
+    }
+}
+
+#[cfg(test)]
+mod workspace_restart_tests {
+    use super::*;
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -&gt; Self {
+            Self(std::env::temp_dir().join(format!(&quot;mydb-workspace-restart-{}&quot;, unique())))
+        }
+        fn seeded(&amp;self) -&gt; Database {
+            let mut db = Database::open(&amp;self.0).unwrap();
+            db.execute(&quot;CREATE TABLE people(id INT NOT NULL,name TEXT)&quot;)
+                .unwrap();
+            db.execute(&quot;INSERT INTO people VALUES(1,&#x27;committed&#x27;)&quot;)
+                .unwrap();
+            db
+        }
+        fn directory(&amp;self, sequence: u64) -&gt; PathBuf {
+            let path = self
+                .0
+                .join(format!(&quot;.wal-work-{}-{sequence}&quot;, std::process::id()));
+            fs::create_dir(&amp;path).unwrap();
+            path
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&amp;mut self) {
+            let _ = fs::remove_dir_all(&amp;self.0);
+        }
+    }
+    #[test]
+    fn unmarked_partial_and_staged_workspaces_do_not_block_recovery() {
+        let t = Temp::new();
+        drop(t.seeded());
+        let empty = t.directory(1001);
+        let mut preserved = vec![empty];
+        for (i, bytes) in [
+            b&quot;&quot;.as_slice(),
+            b&quot;MYDB_W&quot;,
+            b&quot;MYDB_WORK07 &quot;,
+            b&quot;foreign marker&quot;,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir = t.directory(1002 + i as u64);
+            fs::write(dir.join(MARKER), bytes).unwrap();
+            preserved.push(dir);
+        }
+        let staged = t.directory(1006);
+        fs::write(staged.join(&quot;.wal-marker-1-2&quot;), b&quot;MYDB_W&quot;).unwrap();
+        preserved.push(staged);
+        let mut recovered = Database::open(&amp;t.0).unwrap();
+        assert_eq!(recovered.revision(), 2);
+        assert_eq!(
+            recovered
+                .execute(&quot;SELECT name FROM people WHERE id=1&quot;)
+                .unwrap()
+                .rows,
+            vec![vec![engine::SqlCell::Text(&quot;committed&quot;.into())]]
+        );
+        recovered
+            .execute(&quot;INSERT INTO people VALUES(2,&#x27;after recovery&#x27;)&quot;)
+            .unwrap();
+        for path in &amp;preserved {
+            assert!(path.is_dir(), &quot;unproven directory was deleted: {path:?}&quot;);
+        }
+        drop(recovered);
+        assert_eq!(Database::open(&amp;t.0).unwrap().revision(), 3);
+    }
+    #[test]
+    fn complete_owned_orphan_is_removed_but_unknown_content_is_preserved() {
+        let t = Temp::new();
+        let mut db = t.seeded();
+        let snapshot = db.snapshot().unwrap();
+        let owned = snapshot.path().to_owned();
+        std::mem::forget(snapshot);
+        let foreign = t.directory(2001);
+        fs::write(foreign.join(MARKER), b&quot;MYDB_WORK07 17&quot;).unwrap();
+        fs::write(foreign.join(&quot;notes.txt&quot;), b&quot;do not delete&quot;).unwrap();
+        let odd = t.0.join(&quot;.wal-work-user-notes&quot;);
+        fs::create_dir(&amp;odd).unwrap();
+        fs::write(odd.join(MARKER), b&quot;MYDB_WORK07 17&quot;).unwrap();
+        let legacy = t.directory(2002);
+        fs::write(legacy.join(MARKER), b&quot;MYDB_WORK07 17&quot;).unwrap();
+        drop(db);
+        let _recovered = Database::open(&amp;t.0).unwrap();
+        assert!(!owned.exists());
+        assert!(!legacy.exists());
+        assert_eq!(
+            fs::read(foreign.join(&quot;notes.txt&quot;)).unwrap(),
+            b&quot;do not delete&quot;
+        );
+        assert!(odd.exists());
+    }
+    #[test]
+    fn cleanup_checks_names_uid_and_never_follows_links() {
+        assert!(workspace_name(&quot;.wal-work-12-34&quot;));
+        for name in [
+            &quot;.wal-work-not-mine&quot;,
+            &quot;.wal-work-0-1&quot;,
+            &quot;.wal-work-1-0&quot;,
+            &quot;.wal-work-01-2&quot;,
+            &quot;.wal-work-1-2-more&quot;,
+        ] {
+            assert!(!workspace_name(name));
+        }
+        assert!(complete_marker(b&quot;MYDB_WORK07 12&quot;));
+        for marker in [
+            b&quot;&quot;.as_slice(),
+            b&quot;MYDB_WORK07 &quot;,
+            b&quot;MYDB_WORK07 0&quot;,
+            b&quot;MYDB_WORK07 12 extra&quot;,
+        ] {
+            assert!(!complete_marker(marker));
+        }
+        let t = Temp::new();
+        drop(t.seeded());
+        let dir = t.directory(3001);
+        fs::write(dir.join(MARKER), b&quot;MYDB_WORK07 17&quot;).unwrap();
+        let uid = fs::symlink_metadata(&amp;t.0).unwrap().uid();
+        assert!(
+            !owned_workspace(
+                &amp;dir,
+                dir.file_name().unwrap().to_str().unwrap(),
+                uid.wrapping_add(1)
+            )
+            .unwrap()
+        );
+        let external = Temp::new();
+        fs::create_dir_all(&amp;external.0).unwrap();
+        let sentinel = external.0.join(&quot;sentinel&quot;);
+        fs::write(&amp;sentinel, b&quot;keep&quot;).unwrap();
+        fs::remove_file(dir.join(MARKER)).unwrap();
+        std::os::unix::fs::symlink(&amp;sentinel, dir.join(MARKER)).unwrap();
+        assert!(Database::open(&amp;t.0).is_err());
+        assert_eq!(fs::read(&amp;sentinel).unwrap(), b&quot;keep&quot;);
+        fs::remove_file(dir.join(MARKER)).unwrap();
+        fs::write(dir.join(MARKER), b&quot;MYDB_WORK07 17&quot;).unwrap();
+        fs::hard_link(&amp;sentinel, dir.join(&quot;people.idx&quot;)).unwrap();
+        assert!(Database::open(&amp;t.0).is_err());
+        assert_eq!(fs::read(&amp;sentinel).unwrap(), b&quot;keep&quot;);
+    }
+}
+</code></pre></div></details>
+<h3>E. 완료 기준</h3><p><a href="examples/ch07/check.sh" download>check.sh 저장</a> 후 <code>bash examples/ch07/check.sh</code>를 실행합니다. 7장 전용 네이티브 검사 16개와 공유 SQL 엔진의 회귀 검사를 함께 실행합니다. 별도 Python 표준 라이브러리 검사는 5개 crash 경계·실제 SELECT의 힙/색인 정합성·flock·CRC·checkpoint 헤더와 미표식/부분 marker orphan의 비파괴 재열기를 확인합니다. 이는 실제 분리 프로세스 종료 검사이며 전원 차단 시험이 아닙니다.</p><pre><code data-language="bash">#!/usr/bin/env bash
+set -eu
+HERE=$(CDPATH= cd -- &quot;$(dirname -- &quot;$0&quot;)&quot; &amp;&amp; pwd)
+D=$(mktemp -d)
+trap &#x27;rm -rf &quot;$D&quot;&#x27; EXIT
+rustc --edition=2024 --test &quot;$HERE/wal.rs&quot; -o &quot;$D/tests&quot;
+&quot;$D/tests&quot; --quiet
+rustc --edition=2024 &quot;$HERE/wal.rs&quot; -o &quot;$D/wal&quot;
+python3 - &quot;$D/wal&quot; &quot;$D&quot; &lt;&lt;&#x27;PY&#x27;
+import json, os, pathlib, struct, subprocess, sys, zlib
+binary, root = sys.argv[1], pathlib.Path(sys.argv[2])
+CREATE = &quot;CREATE TABLE people (id INT NOT NULL, name TEXT NOT NULL, age INT)&quot;
+INSERT = &quot;INSERT INTO people VALUES (1,&#x27;Roy&#x27;,35)&quot;
+SELECT = &quot;SELECT id,name,age FROM people ORDER BY id&quot;
+def run(db, sql=&#x27;&#x27;, point=None, option=None):
+    env = os.environ.copy()
+    env.pop(&#x27;MYDB_CRASH_POINT&#x27;, None)
+    if point: env[&#x27;MYDB_CRASH_POINT&#x27;] = point
+    args = [binary, str(db)] + ([option] if option else [])
+    return subprocess.run(args, input=sql, text=True, capture_output=True, env=env)
+def ok(result):
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    return result
+def rows(db): return json.loads(ok(run(db, SELECT)).stdout)[&#x27;rows&#x27;]
+# Each crash is a fresh process. Process exit is not a simulated device power loss.
+for point in [&#x27;before-commit-record&#x27;,&#x27;after-wal-sync&#x27;,&#x27;during-apply&#x27;,&#x27;after-data-sync&#x27;,&#x27;after-checkpoint&#x27;]:
+    db = root / (&#x27;crash-&#x27; + point)
+    ok(run(db, CREATE))
+    result = run(db, INSERT, point=point)
+    assert result.returncode == 86, (point, result.stderr)
+    # OS must release the stable-inode flock when the process exits.
+    recovered = ok(run(db, option=&#x27;--recover&#x27;)).stdout.strip()
+    expected_revision = 1 if point == &#x27;before-commit-record&#x27; else 2
+    assert recovered == &#x27;revision=&#x27; + str(expected_revision), (point, recovered)
+    result_rows = rows(db)
+    assert len(result_rows) == (0 if point == &#x27;before-commit-record&#x27; else 1), (point, result_rows)
+    if result_rows:
+        # The heap and primary index are both restored, not only one afterimage.
+        found = json.loads(ok(run(db, &#x27;SELECT name FROM people WHERE id=1&#x27;)).stdout)[&#x27;rows&#x27;]
+        assert found and &#x27;Roy&#x27; in json.dumps(found), found
+    assert rows(db) == result_rows  # repeated recovery is idempotent
+    assert not list(db.glob(&#x27;.wal-work-*&#x27;)), point
+    assert (db / &#x27;.wal.lock&#x27;).is_file(), point
+# Keep a committed WAL before installation, then corrupt a COMPLETE frame.
+db = root / &#x27;bad-crc&#x27;
+ok(run(db, CREATE))
+assert run(db, INSERT, point=&#x27;after-wal-sync&#x27;).returncode == 86
+wal = db / &#x27;wal.log&#x27;
+log = bytearray(wal.read_bytes())
+assert len(log) &gt; 32
+log[-1] ^= 1
+wal.write_bytes(log)
+before = (db / &#x27;tables.pages&#x27;).read_bytes()
+assert run(db, option=&#x27;--recover&#x27;).returncode != 0
+assert (db / &#x27;tables.pages&#x27;).read_bytes() == before
+assert wal.read_bytes() == log  # fail closed, do not silently erase acknowledged data
+# Complete invalid length CRC also fails, rather than being mistaken for an EOF tail.
+db = root / &#x27;bad-length&#x27;
+ok(run(db, CREATE))
+assert run(db, INSERT, point=&#x27;after-wal-sync&#x27;).returncode == 86
+log = bytearray((db / &#x27;wal.log&#x27;).read_bytes()); log[20] ^= 1
+(db / &#x27;wal.log&#x27;).write_bytes(log)
+assert run(db, option=&#x27;--recover&#x27;).returncode != 0
+# Actual OS lock contention against another live process (macOS/Linux flock).
+db = root / &#x27;locked&#x27;
+ok(run(db, CREATE))
+import fcntl
+with open(db / &#x27;.wal.lock&#x27;,&#x27;r+b&#x27;) as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert run(db, option=&#x27;--recover&#x27;).returncode != 0
+ok(run(db, option=&#x27;--recover&#x27;))
+# A successful checkpoint is just the CRC-protected header, revision preserved.
+header = (db / &#x27;wal.log&#x27;).read_bytes()
+assert len(header) == 20 and header[:8] == b&#x27;MYWAL07\0&#x27;
+assert struct.unpack(&#x27;&lt;Q&#x27;, header[8:16])[0] == 1
+assert struct.unpack(&#x27;&lt;I&#x27;, header[16:20])[0] == zlib.crc32(header[:16])
+# A crash may leave the reserved workspace directory before marker publication.
+# Such unproven directories are retained, never recursively deleted, and ignored
+# while committed WAL/data recovery continues.
+for i, marker in enumerate([None,b&#x27;&#x27;,b&#x27;MYDB_W&#x27;,b&#x27;MYDB_WORK07 &#x27;,b&#x27;foreign marker&#x27;]):
+    db=root / (&#x27;bootstrap-orphan-&#x27;+str(i));ok(run(db,CREATE));ok(run(db,INSERT))
+    orphan=db / (&#x27;.wal-work-12345-&#x27;+str(i+1));orphan.mkdir()
+    if marker is not None:(orphan / &#x27;.wal-owner&#x27;).write_bytes(marker)
+    assert ok(run(db,option=&#x27;--recover&#x27;)).stdout.strip()==&#x27;revision=2&#x27;
+    assert len(rows(db))==1 and orphan.is_dir()
+    if marker is not None:assert (orphan / &#x27;.wal-owner&#x27;).read_bytes()==marker
+# Complete canonical, same-UID ownership evidence still permits orphan cleanup.
+db=root / &#x27;owned-orphan&#x27;;ok(run(db,CREATE));orphan=db / &#x27;.wal-work-12345-99&#x27;;orphan.mkdir()
+(orphan / &#x27;.wal-owner&#x27;).write_bytes(b&#x27;MYDB_WORK07 17&#x27;)
+ok(run(db,option=&#x27;--recover&#x27;));assert not orphan.exists()
+# Unknown content is retained even when it carries a marker, and symlinks fail closed.
+orphan=db / &#x27;.wal-work-12345-100&#x27;;orphan.mkdir();(orphan / &#x27;.wal-owner&#x27;).write_bytes(b&#x27;MYDB_WORK07 17&#x27;);(orphan / &#x27;notes.txt&#x27;).write_text(&#x27;keep&#x27;)
+ok(run(db,option=&#x27;--recover&#x27;));assert (orphan / &#x27;notes.txt&#x27;).read_text()==&#x27;keep&#x27;
+sentinel=root / &#x27;marker-sentinel&#x27;;sentinel.write_text(&#x27;untouched&#x27;)
+linked=db / &#x27;.wal-work-12345-101&#x27;;linked.mkdir();(linked / &#x27;.wal-owner&#x27;).symlink_to(sentinel)
+assert run(db,option=&#x27;--recover&#x27;).returncode!=0 and sentinel.read_text()==&#x27;untouched&#x27;
+print(&#x27;PASS: 5 separate-process crash boundaries, REDO/idempotence, no uncommitted publish, real heap/index SELECT, flock release/contention, CRC fail-closed, checkpoint bytes, bootstrap-orphan recovery and ownership/link-safe cleanup&#x27;)
+PY
+</code></pre></section>
+<div class="summary"><h3>핵심 요약</h3><ul><li>미커밋 변경은 private workspace에만 둡니다.</li><li>COMMIT까지 WAL sync한 뒤 home 파일을 설치합니다.</li><li>복구는 검증한 커밋 afterimage만 반복 적용합니다.</li><li>완전한 손상 프레임은 복구를 중단하고 원본을 보존합니다.</li><li>checkpoint는 로그를 줄여도 committed revision을 유지합니다.</li></ul></div>
+<h2>확인 문제</h2><div class="quiz" data-answer="1"><div class="q">home 파일에 새 바이트를 설치할 수 있는 시점은?</div><button class="opt">workspace의 INSERT가 성공한 직후</button><button class="opt">COMMIT까지 WAL sync가 성공한 뒤</button><button class="opt">BEGIN을 쓰기 전</button><div class="explain">home보다 WAL의 durable commit이 먼저입니다.</div></div><div class="quiz" data-answer="2"><div class="q">완전한 COMMIT 프레임의 CRC가 다르면?</div><button class="opt">그 레코드만 지우고 계속한다</button><button class="opt">새 WAL 헤더로 덮어쓴다</button><button class="opt">복구를 중단하고 원본을 보존한다</button><div class="explain">완전한 손상을 EOF 꼬리처럼 버리면 커밋을 잃을 수 있습니다.</div></div><div class="quiz" data-answer="1"><div class="q">응답 전 after-wal-sync에서 프로세스가 종료됐습니다. 복구 결과는?</div><button class="opt">응답을 못 받았으므로 반드시 abort</button><button class="opt">유효한 COMMIT의 새 afterimage를 REDO</button><button class="opt">항상 빈 테이블</button><div class="explain">클라이언트 응답과 durable commit은 서로 다른 경계입니다.</div></div><div class="quiz" data-answer="0"><div class="q">checkpoint 뒤에도 유지해야 하는 값은?</div><button class="opt">최신 committed revision</button><button class="opt">private workspace의 임시 이름</button><button class="opt">이전 플레이어 단계</button><div class="explain">base revision 비교와 다음 WAL transaction 번호에 필요합니다.</div></div><div class="quiz" data-answer="1"><div class="q">이 예제에서 미커밋 workspace에 대한 UNDO가 필요 없는 이유는?</div><button class="opt">CRC가 모든 오류를 자동 수정해서</button><button class="opt">미커밋 변경을 home에 쓰지 않아서</button><button class="opt">INSERT가 항상 한 바이트라서</button><div class="explain">no-steal이므로 미커밋 workspace를 버릴 수 있습니다. 일반 steal 시스템은 다릅니다.</div></div>
+<h2>실습 과제</h2><ol><li><b>다섯 crash 지점을 비교하세요.</b> before-commit-record에서는 이전 값, after-wal-sync 이후에서는 새 값이 복구돼야 합니다. 재열기를 두 번 실행해 행이 하나만 남는지 확인하세요.</li><li><b>EOF와 CRC를 분리하세요.</b> 마지막 COMMIT 본문을 중간에서 자른 파일과, 완전한 COMMIT의 한 비트를 뒤집은 파일을 각각 만드세요. 전자는 미커밋 꼬리, 후자는 복구 중단이어야 합니다. 원본 DB는 복사해 실험하세요.</li><li><b>afterimage 비용을 설명하세요.</b> 작은 INSERT가 큰 파일 전체를 WAL에 복사하는 이유와 한계를 적으세요. 페이지별 WAL·LSN으로 확장하려면 어떤 페이지 식별자·반영 순서·checkpoint 정보가 추가로 필요한지 설계하되 이 장의 파일 형식을 임의로 섞지 마세요.</li></ol>
+<section id="s8"><h2>8. 이 복구 구조가 못 하는 것</h2><p>실제 SQL의 힙과 색인을 한 커밋 상태로 복원할 수 있게 됐습니다. 하지만 전체 파일 복사는 크기에 비례해 비용이 커지고, 한 프로세스가 DB 잠금을 보유합니다. 행 단위 MVCC, ARIES UNDO, 여러 프로세스 동시 쓰기, 로그 아카이빙·시점 복원은 제공하지 않습니다. 다음 장에서는 이 Snapshot API 위에 명시적 BEGIN·COMMIT·ROLLBACK과 충돌 정책을 연결합니다.</p></section>
+</main><script src="assets/wal-recovery.js"></script></body></html>

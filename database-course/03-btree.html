@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B+트리</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/ch03-04-visuals.css"><script src="assets/common.js"></script>
+<style>
+.controls input{width:100px}.route-children{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0}.route-child{border:2px solid var(--border);border-radius:6px;padding:10px;text-align:center;background:var(--surface-2);font-family:var(--mono);font-size:13px}.route-child.selected{border-color:var(--accent);color:var(--accent)}
+.tree-node rect{fill:var(--surface-2);stroke:var(--border);stroke-width:2}.tree-node.active rect{stroke:var(--accent);stroke-width:3}.tree-node text{font-family:var(--mono);font-size:14px}.tree-node .node-caption{font-size:12px;fill:var(--muted)}
+#tree-svg{max-width:none;width:100%;height:auto}#leaf-chain{overflow-wrap:anywhere;font-family:var(--mono);font-size:13px}output{display:block;overflow-wrap:anywhere}figure svg{width:100%;height:auto}.diagram .emphasis{fill:var(--surface-2);stroke:var(--accent);stroke-width:2}.tree-stage{max-height:650px}#tree-log{min-height:80px}
+@media(max-width:480px){.route-children{grid-template-columns:1fr}}
+</style><link rel="stylesheet" href="assets/syntax.css">
+<script src="assets/syntax.js"></script>
+</head><body data-chapter="03"><main>
+<header class="chapter-head"><span class="label">저장 엔진 · Chapter 03</span><h1>B+트리</h1>
+<p class="lead">페이지마다 키의 범위를 맡깁니다. 키 하나를 찾을 때는 루트에서 리프로 내려가고, 범위를 읽을 때는 리프의 옆 페이지로 이동합니다. 키가 늘어나면 페이지를 나눠 균형을 유지합니다.</p>
+<div class="objectives"><h4>학습 목표</h4><ul><li>구분 키와 같을 때 어느 자식으로 내려가는지 결정합니다.</li><li>리프 분할의 복사와 내부 노드 분할의 이동을 구분합니다.</li><li>분할을 부모로 전파하고 새 루트의 페이지 번호를 저장합니다.</li><li>리프 연결로 범위를 조회하고 flush 후 다시 열어 결과를 확인합니다.</li></ul></div></header>
+<nav class="toc"><b>목차</b><ol><li><a href="#s1">읽을 페이지를 고르는 규칙</a></li><li><a href="#s2">4KB 페이지 위에 노드 올리기</a></li><li><a href="#s3">리프를 나눌 때는 구분 키를 복사한다</a></li><li><a href="#s4">내부 노드 분할은 부모까지 이어진다</a></li><li><a href="#s5">범위를 읽을 때는 리프를 연결해서 간다</a></li><li><a href="#s6">삭제 후 빌리기와 병합</a></li><li><a href="#s7">구현 가이드</a></li><li><a href="#s8">이 저장 구조가 못 하는 것</a></li></ol></nav>
+<section id="s1"><h2>1. 읽을 페이지를 고르는 규칙</h2>
+<p>2장은 페이지 번호를 알아야 레코드를 읽을 수 있었습니다. 이제 키를 보고 다음 페이지를 선택하는 색인을 만듭니다. 이 장의 B+트리는 내부 노드에 구분 키와 자식 페이지 번호를 저장하고, 실제 키·값은 리프에만 저장합니다. 모든 리프의 깊이는 같습니다.</p>
+<p>이 코스에서는 구분 키를 <b>오른쪽 하위 트리의 최소 키</b>로 정합니다. 내부 노드에 <code>[20, 40]</code>이 있으면 자식은 세 개입니다. 왼쪽부터 <code>key &lt; 20</code>, <code>20 ≤ key &lt; 40</code>, <code>40 ≤ key</code>를 맡습니다. 이 경계 규칙을 검색과 삽입에 똑같이 사용해야 합니다.</p>
+<figure><svg class="diagram" viewBox="0 0 800 235" role="img" aria-label="루트 구분 키 20과 40 아래에 세 리프가 연결된 B+트리">
+<rect x="290" y="15" width="220" height="45" rx="6" class="emphasis"/><text x="400" y="44" text-anchor="middle">내부 노드 [20 | 40]</text>
+<path d="M330 60L130 145 M400 60V145 M470 60L670 145" class="line"/>
+<text x="160" y="95">&lt;20</text><text x="410" y="108">20 이상, 40 미만</text><text x="615" y="95">40 이상</text>
+<rect x="25" y="145" width="210" height="45" rx="6" class="box"/><rect x="295" y="145" width="210" height="45" rx="6" class="box"/><rect x="565" y="145" width="210" height="45" rx="6" class="box"/>
+<text x="130" y="173" text-anchor="middle">[5:50 | 10:100]</text><text x="400" y="173" text-anchor="middle">[20:200 | 30:300]</text><text x="670" y="173" text-anchor="middle">[40:400 | 50:500]</text>
+<path d="M235 167H295 m-7 -5 l7 5 -7 5 M505 167H565 m-7 -5 l7 5 -7 5" class="line"/><text x="400" y="225" text-anchor="middle" class="muted">리프에만 값이 있습니다. next는 오른쪽 리프를 가리킵니다.</text></svg><figcaption>구분 키가 두 개이면 자식 페이지 번호는 세 개입니다.</figcaption></figure>
+<div class="widget"><div class="w-title">경계와 같은 키는 어디로 갈까?</div><div class="w-desc">구분 키는 20, 40입니다. 19 → 20 → 39 → 40을 입력해 비교하세요.</div><div class="controls"><label>찾을 키 <input id="route-key" type="number" value="20" min="-999" max="999" step="1"></label></div><div class="route-children"><div class="route-child" data-route="0">child[0]<br>[5, 10]</div><div class="route-child" data-route="1">child[1]<br>[20, 30]</div><div class="route-child" data-route="2">child[2]<br>[40, 50]</div></div><output id="route-result" aria-live="polite"></output></div>
+<p>Rust에서는 <code>keys.partition_point(|&amp;s| s &lt;= key)</code>가 자식 인덱스입니다. 이 결과는 key 이하인 구분 키의 개수입니다. <code>&lt;</code>만 사용하면 경계와 같은 키가 왼쪽으로 내려가므로 실제 리프에 있어도 찾지 못합니다. 이 장에서는 중복 키를 추가하지 않고 기존 값을 갱신합니다.</p>
+<details class="deep"><summary>왜 이진 트리 대신 한 페이지에 여러 키를 넣나요?</summary><div><p>자식이 두 개뿐인 트리는 키가 늘수록 깊어집니다. 페이지 하나에 구분 키와 자식 번호를 여러 개 넣으면 한 번 내려갈 때 검색 범위를 더 크게 줄입니다. 다만 높이가 곧 물리 디스크 읽기 횟수는 아닙니다. 상위 노드는 버퍼 풀에 남을 수 있고 파일 읽기는 OS 캐시가 처리할 수 있습니다.</p></div></details></section>
+<section id="s2"><h2>2. 4KB 페이지 위에 노드 올리기</h2>
+<p>2장의 <code>PG02</code> 페이지 형식을 그대로 사용합니다. 페이지의 슬롯 0에 노드 전체를 하나의 레코드로 저장합니다. 삽입으로 정렬 순서가 바뀌면 슬롯 0을 새 노드 바이트로 다시 만듭니다. 키마다 슬롯을 따로 두는 방식보다 낭비가 있지만, 이번 장에서는 트리 규칙을 먼저 확인할 수 있습니다.</p>
+<p>페이지 0의 슬롯 0은 메타데이터입니다. 루트 번호를 여기에 저장하므로 다시 열어도 새 루트를 찾습니다. 노드 페이지는 1번부터 할당합니다. 리프의 <code>next=0</code>은 다음 리프가 없다는 뜻입니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>레코드</th><th>상대 오프셋</th><th>내용</th></tr></thead><tbody>
+<tr><td rowspan="4">메타데이터 16바이트</td><td>0..4</td><td>magic <code>BT03</code></td></tr><tr><td>4..6</td><td>max_keys: u16 LE</td></tr><tr><td>6..8</td><td>예약 2바이트, 0</td></tr><tr><td>8..16</td><td>root_page_id: u64 LE</td></tr>
+<tr><td rowspan="4">리프: 11 + 16n바이트</td><td>0</td><td>kind=1</td></tr><tr><td>1..3</td><td>키 수 n: u16 LE</td></tr><tr><td>3..11</td><td>next_leaf: u64 LE</td></tr><tr><td>11..</td><td>(key: i64 LE, value: i64 LE) × n</td></tr>
+<tr><td rowspan="4">내부 노드: 11 + 16n바이트</td><td>0</td><td>kind=2</td></tr><tr><td>1..3</td><td>구분 키 수 n: u16 LE</td></tr><tr><td>3..11</td><td>첫 자식: u64 LE</td></tr><tr><td>11..</td><td>(구분 키: i64 LE, 오른쪽 자식: u64 LE) × n</td></tr>
+</tbody></table></div>
+<p>위 오프셋은 페이지 시작이 아니라 <b>슬롯 0 레코드의 시작</b>을 기준으로 합니다. 2장의 페이지 헤더와 슬롯은 그대로 남습니다. 체크섬은 없습니다. 디코더는 노드 종류, 길이, 키의 정렬, 페이지 번호 범위를 검사합니다. 전체 트리의 균형과 구분 키는 별도의 테스트로 확인합니다.</p>
+<div class="callout"><span class="title">화면에서는 최대 3키로 분할을 관찰합니다</span>참조 구현은 max_keys를 3~200으로 받습니다. 최댓값 200일 때 노드 크기는 3211바이트로 슬롯 0의 최대 크기 4084바이트 안에 들어갑니다. 기본값 3은 학습용입니다. 실제 페이지 용량을 모두 쓰는 설정이나 성능 측정 결과가 아닙니다.</div>
+<p>키는 부호 있는 64비트 정수입니다. 바이트 배열을 사전순으로 비교하지 않고 <code data-language="rust">i64::from_le_bytes</code>로 읽은 숫자를 비교합니다. 웹 시뮬레이터는 정수 −999~999로 제한하지만 Rust 예제는 i64 전체 범위를 받습니다.</p></section>
+<section id="s3"><h2>3. 리프를 나눌 때는 구분 키를 복사한다</h2>
+<p>최대 3개 키를 담는 리프 <code>[10, 20, 30]</code>에 40을 넣으면 네 개가 됩니다. 정렬한 뒤 가운데에서 나눠 왼쪽은 <code>[10, 20]</code>, 오른쪽은 <code>[30, 40]</code>으로 만듭니다. 부모에는 오른쪽의 첫 키 30과 새 페이지 번호를 넣습니다. <b>30의 실제 값은 오른쪽 리프에 그대로 남습니다.</b></p>
+<figure><svg class="diagram" viewBox="0 0 800 250" role="img" aria-label="리프의 30은 복사하고 내부 노드의 30은 부모로 이동하는 분할 비교">
+<text x="200" y="24" text-anchor="middle">리프 분할: 복사</text><text x="600" y="24" text-anchor="middle">내부 분할: 이동</text>
+<rect x="135" y="48" width="130" height="38" rx="5" class="emphasis"/><text x="200" y="73" text-anchor="middle">부모 [30]</text><path d="M170 86L105 132 M230 86L300 132" class="line"/>
+<rect x="25" y="132" width="150" height="40" rx="5" class="box"/><rect x="225" y="132" width="150" height="40" rx="5" class="box"/><text x="100" y="158" text-anchor="middle">[10 | 20]</text><text x="300" y="158" text-anchor="middle">[30 | 40]</text><path d="M175 151H225 m-7 -5 l7 5 -7 5" class="line"/>
+<rect x="535" y="48" width="130" height="38" rx="5" class="emphasis"/><text x="600" y="73" text-anchor="middle">부모 [30]</text><path d="M570 86L500 132 M630 86L700 132" class="line"/>
+<rect x="425" y="132" width="150" height="40" rx="5" class="box"/><rect x="625" y="132" width="150" height="40" rx="5" class="box"/><text x="500" y="158" text-anchor="middle">[10 | 20]</text><text x="700" y="158" text-anchor="middle">[40]</text>
+<text x="200" y="207" text-anchor="middle">next: 왼쪽 → 오른쪽 → 기존 next</text><text x="600" y="207" text-anchor="middle">기존 [10 | 20 | 30 | 40]</text><text x="200" y="231" text-anchor="middle" class="muted">30은 리프에도 존재</text><text x="600" y="231" text-anchor="middle" class="muted">30은 나뉜 내부 노드에서 제거</text></svg><figcaption>내부 노드는 구분 키를 올리고 자식 배열도 함께 나눕니다.</figcaption></figure>
+<p>리프 연결은 <code>right.next = old.next</code>를 먼저 정하고 <code>left.next = right_id</code>로 바꿉니다. 오른쪽 끝이 아닌 리프를 나눌 때도 기존의 다음 리프를 잃으면 안 됩니다. 코드에서는 새 오른쪽 노드를 저장한 뒤 왼쪽 노드를 갱신합니다. 이 순서는 정상 실행의 연결을 지키지만 크래시 원자성을 보장하지는 않습니다.</p></section>
+<div class="widget process-widget" id="split-process">
+  <div class="w-title">분할을 멈춰 보며 비교하기</div>
+  <div class="w-desc">넘친 노드의 키 4개를 입력하세요. 값은 리프에만 있으며, 내부 노드 그림은 구분 키와 자식 개수만 보여 줍니다. 모드를 바꾸면 같은 키가 어디에 남는지 비교할 수 있습니다.</div>
+  <div class="controls"><label>노드 종류 <select id="split-kind"><option value="leaf">리프: 키 복사</option><option value="inner">내부: 키 이동</option></select></label><label>정렬할 네 키 <input id="split-keys" type="text" value="10,20,30,40" aria-label="분할할 네 정수 키"></label><button class="btn" id="split-apply">새 입력 적용</button></div>
+  <div class="controls"><label>예측: 올라간 키가 오른쪽 노드에 남나? <select id="split-prediction"><option value="yes">남는다</option><option value="no">남지 않는다</option></select></label><button class="btn" id="split-check">예측 확인</button></div>
+  <output class="process-feedback" id="split-feedback" aria-live="polite"></output>
+  <div class="process-visual" id="split-drawing"></div><p class="process-source">도식이 넓으면 좌우로 스크롤해 연결을 확인하세요.</p><div class="process-facts" id="split-facts"></div><div id="split-player"></div>
+</div>
+
+<section id="s4"><h2>4. 내부 노드 분할은 부모까지 이어진다</h2>
+<p>자식의 분할로 부모에도 키가 하나 늘어납니다. 부모가 넘치면 내부 노드도 나눕니다. <code>[10, 20, 30, 40]</code>을 나눌 때 가운데 인덱스를 2로 잡으면 30을 부모로 올리고 왼쪽에는 <code>[10, 20]</code>, 오른쪽에는 <code>[40]</code>을 남깁니다. 자식 다섯 개는 왼쪽 세 개, 오른쪽 두 개로 나눕니다.</p>
+<p>내부 노드의 30은 <b>부모로 이동</b>하므로 분할 후 내부 노드 양쪽에 남기지 않습니다. 리프에 저장된 실제 키 30과 값은 그대로입니다. 루트까지 분할되면 기존 루트와 새 오른쪽 노드를 자식으로 갖는 새 루트를 만들고, 페이지 0의 루트 번호를 바꿉니다. 높이는 이때만 1 증가합니다.</p>
+<div class="widget"><div class="w-title">직접 키를 넣고 트리를 나누기</div><div class="w-desc">최대 3키, 값은 key × 10입니다. 각 버튼은 삽입 하나를 끝까지 실행합니다. 로그에서 분할 순서를 확인하세요. 화면은 24개 키까지 표시합니다. 트리가 넓어지면 도식을 좌우로 스크롤하세요.</div><div class="controls"><label>키 <input id="tree-key" type="number" value="10" min="-999" max="999"></label><button id="tree-insert" class="btn primary">삽입·갱신</button><button id="tree-find" class="btn">검색</button><button id="tree-demo" class="btn">예제 10~120</button><button id="tree-reset" class="btn">초기화</button></div><div class="stage tree-stage"><svg id="tree-svg" class="diagram" role="img" aria-label="삽입한 키로 만든 B+트리"></svg></div><p id="tree-stats" aria-live="polite"></p><div id="tree-log" class="log" aria-live="polite"></div></div>
+<div class="callout tip"><span class="title">10 → 20 → 30 → 40을 순서대로 넣으세요</span>네 번째 삽입 후 루트는 p3의 [30], 리프는 p1의 [10, 20]과 p2의 [30, 40]입니다. 30을 검색하면 오른쪽으로 갑니다. ‘예제 10~120’을 누르면 내부 노드 분할까지 이어져 높이가 3이 됩니다.</div>
+<p>참조 구현은 내려갈 때 <code>(부모 페이지 번호, 선택한 자식 인덱스)</code>를 경로에 저장합니다. 리프를 수정한 뒤 이 경로를 거꾸로 올라가며 분할 결과를 반영합니다. 노드를 메모리의 값으로 읽은 직후 pin을 반납하므로 부모에서 자식으로 내려가는 동안 여러 프레임을 계속 pin하지 않습니다. 프레임 하나로도 동작하는지 검사합니다.</p></section>
+<section id="s5"><h2>5. 범위를 읽을 때는 리프를 연결해서 간다</h2>
+<p><code>range(25, 65)</code>는 먼저 25가 들어갈 리프를 찾습니다. 그 리프에서 25 이상인 키를 모으고, next를 따라 오른쪽 리프를 읽습니다. 65보다 큰 키를 만나거나 next가 0이면 끝냅니다. 이 장의 범위는 <b>양 끝을 포함</b>합니다. 하한이 상한보다 크면 빈 결과입니다.</p>
+<div class="widget"><div class="w-title">리프를 하나씩 읽는 범위 스캔</div><div class="w-desc">위 트리를 그대로 사용합니다. ‘예제 10~120’을 만든 뒤 25~65를 조회해 보세요. 키를 삽입하거나 트리를 초기화하면 진행 중인 스캔을 취소합니다.</div><p id="leaf-chain"></p><div class="controls"><label>하한 <input id="range-lo" type="number" value="25" min="-999" max="999"></label><label>상한 <input id="range-hi" type="number" value="65" min="-999" max="999"></label><button id="range-start" class="btn primary">범위 시작</button><button id="range-next" class="btn" disabled>다음 리프 읽기</button></div><output id="range-result" aria-live="polite"></output><div id="range-log" class="log" aria-live="polite"></div></div>
+<p>키마다 루트에서 다시 내려갈 필요가 없습니다. 초기 경로 검색 이후에는 리프 연결을 따라 읽습니다. 예제는 결과를 Vec에 모읍니다. 큰 결과를 다루는 서버에서는 한 행씩 반환하는 iterator나 배치 API로 바꾸는 편이 적합합니다.</p></section>
+<section id="s6"><h2>6. 삭제 후 빌리기와 병합</h2>
+<p>분할만 있으면 삭제 후 비어 가는 페이지를 정리하지 못합니다. 이 장에서는 병합 원리를 설명하고, <code>delete</code> 구현은 실습 확장으로 둡니다. 기본 참조 구현과 위 시뮬레이터는 검색·삽입·갱신·범위 조회까지만 제공합니다.</p>
+<p>최대 3키인 리프의 최소 키 수를 2로 정해 보겠습니다. 같은 부모 아래 <code>[10, 20]</code>과 <code>[30, 40, 50]</code>이 있을 때 10을 삭제하면 왼쪽에 20만 남습니다. 오른쪽에서 30을 빌리면 <code>[20, 30]</code>, <code>[40, 50]</code>이 됩니다. 부모의 경계도 30에서 40으로 바꿉니다.</p>
+<p>오른쪽도 최소 개수뿐이라 빌릴 수 없으면 합칩니다. <code>[20]</code>과 <code>[30, 40]</code>은 <code>[20, 30, 40]</code>이 되고, 왼쪽의 next를 오른쪽의 next로 바꿉니다. 부모에서는 오른쪽 자식 번호와 그 앞의 구분 키를 제거합니다. 부모까지 부족해지면 같은 과정을 반복합니다. 루트에 자식이 하나만 남으면 그 자식을 새 루트로 정합니다.</p>
+<details class="deep"><summary>내부 노드 병합에서 빠뜨리기 쉬운 것</summary><div><p>내부 노드를 합칠 때는 부모에서 제거한 구분 키를 두 내부 노드의 키 사이에 내려 넣어야 합니다. 리프 병합은 실제 키·값을 합치는 작업이므로 부모의 구분 키를 별도 레코드로 넣지 않습니다. 또한 이 장의 ‘오른쪽 최소 키’ 규칙을 유지하려면 최소 키 삭제가 상위 경계에 미치는 영향도 확인해야 합니다.</p></div></details>
+<p>삭제 구현에는 분리된 페이지의 재사용 목록도 필요합니다. 페이지 연결에서만 제거하고 파일 공간을 반환하지 않으면 파일 크기는 줄지 않습니다. 이 예제에는 재사용 목록이 없으므로 삽입 때 새 페이지를 파일 끝에 할당합니다.</p></section>
+<div class="widget process-widget" id="rebalance-process">
+  <div class="w-title">삭제 뒤에는 빌릴까, 합칠까?</div>
+  <div class="w-desc">최대 3키·최소 2키인 리프를 가정합니다. 루트의 두 자식 중 왼쪽 [10,20]에서 10을 삭제합니다. 오른쪽의 여유에 따라 부모 경계와 next 연결이 어떻게 바뀌는지 예측하세요. 이 위젯은 병합 원리 실습이며 Rust 참조 코드에 delete를 추가하지 않습니다.</div>
+  <div class="controls"><label>오른쪽 형제 <select id="rebalance-case"><option value="borrow">[30,40,50] · 빌려줄 여유 있음</option><option value="merge">[30,40] · 최소 개수</option></select></label><label>예측 <select id="rebalance-prediction"><option value="borrow">30을 빌리고 부모 경계를 40으로</option><option value="merge">합치고 자식 하나인 루트를 축소</option></select></label><button id="rebalance-check" class="btn">예측 확인</button></div>
+  <output id="rebalance-feedback" class="process-feedback" aria-live="polite"></output><div class="process-visual" id="rebalance-drawing"></div><p class="process-source">도식이 넓으면 좌우로 스크롤해 연결을 확인하세요.</p><div class="process-facts" id="rebalance-facts"></div><div id="rebalance-player"></div>
+</div>
+
+<section id="s7"><h2>7. 구현 가이드</h2>
+<p>2장의 <code>pages.rs</code>를 그대로 두고 같은 <code>examples</code> 아래 <code>ch03/btree.rs</code>를 추가합니다. 아래 Pager 어댑터가 기존 버퍼 풀을 감쌉니다. read는 슬롯 0을 Vec로 복사한 뒤 unpin하고, write는 새 페이지에 슬롯 0을 만든 뒤 프레임에 넣고 dirty로 표시합니다. 트리 코드는 프레임 번호를 다루지 않습니다.</p>
+<h3>A. 노드 형식과 경계 검색</h3><pre><code data-language="rust">enum Node {
+    Leaf { rows: Vec&lt;(i64, i64)&gt;, next: u64 },
+    Branch { keys: Vec&lt;i64&gt;, children: Vec&lt;u64&gt; },
+}
+// TODO: encode/decode. 노드 크기 = 11 + 16 × 키 개수
+// TODO: 내부 노드의 children.len() == keys.len() + 1
+// TODO: partition_point(|&amp;s| s &lt;= key)로 내려갈 자식을 고른다.</code></pre>
+<details class="deep"><summary>힌트 A: 정렬과 부호</summary><div><p>키는 엄격한 오름차순이어야 합니다. 디스크에서 읽은 바이트는 i64로 디코딩한 뒤 비교하세요. 빈 리프는 허용하지만 자식이 하나뿐인 내부 노드는 이 삽입 전용 구현에서는 만들지 않습니다. 메타데이터의 루트 번호는 0이 아니며 파일의 페이지 수보다 작아야 합니다.</p></div></details>
+<h3>B. 분할 결과를 부모로 올리기</h3><pre><code data-language="rust">// 리프에서 새 키를 넣거나 기존 값을 갱신한다.
+// TODO: 넘치면 split_off(len / 2). 오른쪽 첫 키를 separator로 복사한다.
+// TODO: right.next = old.next; left.next = right_id
+// 부모의 선택했던 자식 인덱스가 i라면:
+// TODO: keys.insert(i, separator); children.insert(i + 1, right_id)
+// 내부 노드가 넘치면:
+// TODO: mid = keys.len() / 2; keys[mid]는 부모로 이동한다.
+// TODO: 왼쪽 자식 수 = 왼쪽 키 수 + 1. 오른쪽도 같다.
+// 경로를 다 올라와도 분할 결과가 남으면 새 루트를 만들고 page 0을 갱신한다.</code></pre>
+<details class="deep"><summary>힌트 B: 같은 키와 새 루트</summary><div><p>같은 키는 기존 값을 갱신하고 바로 저장합니다. 키 수가 늘지 않으므로 분할하지 않습니다. 새 루트의 왼쪽 자식은 이전 루트입니다. 루트 번호를 메모리에서만 바꾸면 재시작 후 예전 루트를 읽게 됩니다.</p></div></details>
+<h3>C. 범위 조회와 재시작</h3><pre><code data-language="rust">// TODO: 하한이 들어갈 리프를 찾는다.
+// TODO: lo 이상 hi 이하의 키·값을 모으고 next로 이동한다.
+// TODO: key &gt; hi 또는 next == 0이면 끝낸다.
+// TODO: 잘못된 파일의 next 순환은 오류로 끝낸다.
+// TODO: 명시적 flush 시 버퍼 풀의 flush를 호출한다.</code></pre>
+<details class="deep"><summary>힌트 C: 실패한 읽기와 pin</summary><div><p>Pager.read에서 슬롯 0이 없더라도 얻었던 pin은 반납해야 합니다. 참조 구현은 결과를 먼저 변수에 담고 unpin한 뒤 반환합니다. write는 레코드가 새 페이지에 들어가는지 먼저 확인하므로 공간 부족으로 실패했을 때 pin이 남지 않습니다.</p></div></details>
+<h3>D. 실행과 실제 파일 바이트</h3><p>외부 크레이트 없이 Rust 2024 표준 라이브러리만 사용합니다. 다음 폴더 구조를 유지하세요. 저장 파일은 <code>tree.pages</code>를 사용합니다. 2장의 <code>data.pages</code>는 B+트리 메타데이터가 없어 열 수 없습니다.</p><pre><code data-language="text">examples/
+  ch02/pages.rs
+  ch03/btree.rs
+  ch03/check.sh
+
+</code></pre>
+<pre><code data-language="bash">rustc --edition=2024 examples/ch03/btree.rs -o btree
+printf '%s\n' 'set 10 100' 'set 20 200' 'set 30 300' 'set 40 400' \
+  'get 30' 'range 15 40' '.exit' | ./btree tree.pages
+# OK (네 번)
+# 300
+# 20:200 30:300 40:400
+printf '%s\n' 'get 40' '.exit' | ./btree tree.pages
+# 400</code></pre>
+
+<pre><code data-language="bash">od -An -tx1 -N12 tree.pages
+# 50 47 30 32 01 00 f0 0f f0 0f 10 00
+dd if=tree.pages bs=1 skip=4080 count=16 2&gt;/dev/null | od -An -tx1
+# 42 54 30 33 03 00 00 00 03 00 00 00 00 00 00 00</code></pre>
+<p><code>set</code>의 OK는 메모리 변경의 성공입니다. <code>.flush</code>, <code>.exit</code> 또는 정상 EOF에서 dirty 페이지를 쓰고 sync_all을 호출합니다. 명령 파싱 오류나 I/O 오류로 종료하면 자동 flush하지 않습니다. 기존 파일을 열 때도 생성할 때와 같은 max_keys를 지정하세요.</p>
+<p>페이지 0의 슬롯 0은 16바이트라 오프셋 4080에서 시작합니다. 메타데이터의 마지막 8바이트가 <code>03 00 …</code>이므로 루트는 p3입니다. 파일은 메타데이터 p0, 리프 p1·p2, 루트 p3의 총 4페이지로 16384바이트입니다. 위 값은 검사 스크립트가 실제로 만든 파일에서 확인합니다.</p>
+<details class="deep"><summary>접힌 참조 구현: btree.rs</summary><div><p><a href="examples/ch03/btree.rs" download>btree.rs 저장</a> · <a href="examples/ch02/pages.rs" download>2장 pages.rs 저장</a>. 경로 <code>../ch02/pages.rs</code>를 include하므로 두 파일의 상대 위치를 유지하세요. <code>storage</code> 모듈 안의 2장 main은 별도 함수이며 실행 진입점은 바깥의 main입니다.</p><pre><code data-language="rust">use std::{
+    io::{self, BufRead},
+    path::Path,
+};
+
+// Reuse Chapter 02 unchanged. This adapter owns every pin it obtains.
+#[allow(dead_code)]
+mod storage {
+    include!(&quot;../ch02/pages.rs&quot;);
+    pub struct Pager(Pool);
+    impl Pager {
+        pub fn open(path: &amp;Path, capacity: usize) -&gt; io::Result&lt;Self&gt; {
+            Ok(Self(Pool::new(Disk::open(path)?, capacity)?))
+        }
+        pub fn len(&amp;self) -&gt; u64 {
+            self.0.disk.pages
+        }
+        pub fn allocate(&amp;mut self) -&gt; io::Result&lt;u64&gt; {
+            self.0.disk.allocate()
+        }
+        pub fn read(&amp;mut self, id: u64) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+            let f = self.0.fetch(id)?;
+            let result = self.0.get(f, 0).and_then(|record| {
+                record
+                    .map(&lt;[u8]&gt;::to_vec)
+                    .ok_or_else(|| invalid(&quot;missing slot zero&quot;))
+            });
+            self.0.unpin(f)?;
+            result
+        }
+        pub fn write(&amp;mut self, id: u64, bytes: &amp;[u8]) -&gt; io::Result&lt;()&gt; {
+            let mut page = Page::new();
+            page.insert(bytes)?;
+            let f = self.0.fetch(id)?;
+            let frame = self.0.frames[f].as_mut().unwrap();
+            frame.page = page;
+            frame.dirty = true;
+            self.0.unpin(f)
+        }
+        pub fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+            self.0.flush()
+        }
+    }
+}
+fn bad(message: &amp;str) -&gt; io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+#[derive(Debug, Clone, PartialEq)]
+enum Node {
+    Leaf { rows: Vec&lt;(i64, i64)&gt;, next: u64 },
+    Branch { keys: Vec&lt;i64&gt;, children: Vec&lt;u64&gt; },
+}
+impl Node {
+    fn encode(&amp;self) -&gt; Vec&lt;u8&gt; {
+        let mut b = Vec::new();
+        match self {
+            Self::Leaf { rows, next } =&gt; {
+                b.push(1);
+                b.extend_from_slice(&amp;(rows.len() as u16).to_le_bytes());
+                b.extend_from_slice(&amp;next.to_le_bytes());
+                for (key, value) in rows {
+                    b.extend_from_slice(&amp;key.to_le_bytes());
+                    b.extend_from_slice(&amp;value.to_le_bytes());
+                }
+            }
+            Self::Branch { keys, children } =&gt; {
+                b.push(2);
+                b.extend_from_slice(&amp;(keys.len() as u16).to_le_bytes());
+                b.extend_from_slice(&amp;children[0].to_le_bytes());
+                for (key, child) in keys.iter().zip(&amp;children[1..]) {
+                    b.extend_from_slice(&amp;key.to_le_bytes());
+                    b.extend_from_slice(&amp;child.to_le_bytes());
+                }
+            }
+        }
+        b
+    }
+    fn decode(b: &amp;[u8], max: usize, pages: u64) -&gt; io::Result&lt;Self&gt; {
+        if b.len() &lt; 11 {
+            return Err(bad(&quot;short node&quot;));
+        }
+        let n = u16::from_le_bytes([b[1], b[2]]) as usize;
+        if n &gt; max || b.len() != 11 + 16 * n {
+            return Err(bad(&quot;bad node size&quot;));
+        }
+        let u64_at = |at| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let i64_at = |at| i64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let valid_id = |id| id &gt; 0 &amp;&amp; id &lt; pages;
+        let keys: Vec&lt;_&gt; = (0..n).map(|i| i64_at(11 + i * 16)).collect();
+        if keys.windows(2).any(|w| w[0] &gt;= w[1]) {
+            return Err(bad(&quot;unsorted node&quot;));
+        }
+        match b[0] {
+            1 =&gt; {
+                let next = u64_at(3);
+                if next != 0 &amp;&amp; !valid_id(next) {
+                    return Err(bad(&quot;bad next leaf&quot;));
+                }
+                let rows = keys
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, k)| (k, i64_at(19 + i * 16)))
+                    .collect();
+                Ok(Self::Leaf { rows, next })
+            }
+            2 =&gt; {
+                let mut children = vec![u64_at(3)];
+                children.extend((0..n).map(|i| u64_at(19 + i * 16)));
+                if n == 0 || children.iter().any(|&amp;id| !valid_id(id)) {
+                    return Err(bad(&quot;bad branch&quot;));
+                }
+                Ok(Self::Branch { keys, children })
+            }
+            _ =&gt; Err(bad(&quot;unknown node kind&quot;)),
+        }
+    }
+}
+struct Tree {
+    pager: storage::Pager,
+    root: u64,
+    max: usize,
+}
+impl Tree {
+    fn open(path: &amp;Path, max: usize, capacity: usize) -&gt; io::Result&lt;Self&gt; {
+        if !(3..=200).contains(&amp;max) {
+            return Err(bad(&quot;max_keys must be 3..200&quot;));
+        }
+        let mut pager = storage::Pager::open(path, capacity)?;
+        if pager.len() == 0 {
+            pager.allocate()?; // page 0: metadata
+            let root = pager.allocate()?;
+            let mut t = Self { pager, root, max };
+            t.save(
+                root,
+                &amp;Node::Leaf {
+                    rows: vec![],
+                    next: 0,
+                },
+            )?;
+            t.save_meta()?;
+            t.flush()?;
+            Ok(t)
+        } else {
+            let b = pager.read(0)?;
+            if b.len() != 16 || &amp;b[..4] != b&quot;BT03&quot; || b[6..8] != [0, 0] {
+                return Err(bad(&quot;bad metadata&quot;));
+            }
+            if u16::from_le_bytes([b[4], b[5]]) as usize != max {
+                return Err(bad(&quot;max_keys mismatch&quot;));
+            }
+            let root = u64::from_le_bytes(b[8..16].try_into().unwrap());
+            if root == 0 || root &gt;= pager.len() {
+                return Err(bad(&quot;bad root&quot;));
+            }
+            let mut t = Self { pager, root, max };
+            t.load(root)?;
+            Ok(t)
+        }
+    }
+    fn save_meta(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+        let mut b = b&quot;BT03&quot;.to_vec();
+        b.extend_from_slice(&amp;(self.max as u16).to_le_bytes());
+        b.extend_from_slice(&amp;[0, 0]);
+        b.extend_from_slice(&amp;self.root.to_le_bytes());
+        self.pager.write(0, &amp;b)
+    }
+    fn load(&amp;mut self, id: u64) -&gt; io::Result&lt;Node&gt; {
+        if id == 0 {
+            return Err(bad(&quot;metadata is not a node&quot;));
+        }
+        Node::decode(&amp;self.pager.read(id)?, self.max, self.pager.len())
+    }
+    fn save(&amp;mut self, id: u64, node: &amp;Node) -&gt; io::Result&lt;()&gt; {
+        self.pager.write(id, &amp;node.encode())
+    }
+    fn new_node(&amp;mut self, node: &amp;Node) -&gt; io::Result&lt;u64&gt; {
+        let id = self.pager.allocate()?;
+        self.save(id, node)?;
+        Ok(id)
+    }
+    // Equality goes right: separators are lower bounds of right subtrees.
+    fn leaf(&amp;mut self, key: i64) -&gt; io::Result&lt;(u64, Vec&lt;(u64, usize)&gt;)&gt; {
+        let mut path = Vec::new();
+        let mut id = self.root;
+        for _ in 0..self.pager.len() {
+            match self.load(id)? {
+                Node::Leaf { .. } =&gt; return Ok((id, path)),
+                Node::Branch { keys, children } =&gt; {
+                    let i = keys.partition_point(|&amp;separator| separator &lt;= key);
+                    path.push((id, i));
+                    id = children[i];
+                }
+            }
+        }
+        Err(bad(&quot;cycle in tree&quot;))
+    }
+    fn get(&amp;mut self, key: i64) -&gt; io::Result&lt;Option&lt;i64&gt;&gt; {
+        let (id, _) = self.leaf(key)?;
+        let Node::Leaf { rows, .. } = self.load(id)? else {
+            unreachable!()
+        };
+        Ok(rows
+            .binary_search_by_key(&amp;key, |r| r.0)
+            .ok()
+            .map(|i| rows[i].1))
+    }
+    fn set(&amp;mut self, key: i64, value: i64) -&gt; io::Result&lt;()&gt; {
+        let (id, mut path) = self.leaf(key)?;
+        let Node::Leaf { mut rows, next } = self.load(id)? else {
+            unreachable!()
+        };
+        match rows.binary_search_by_key(&amp;key, |r| r.0) {
+            Ok(i) =&gt; rows[i].1 = value,
+            Err(i) =&gt; rows.insert(i, (key, value)),
+        }
+        if rows.len() &lt;= self.max {
+            return self.save(id, &amp;Node::Leaf { rows, next });
+        }
+        let right_rows = rows.split_off(rows.len() / 2);
+        let mut separator = right_rows[0].0;
+        let mut right = self.new_node(&amp;Node::Leaf {
+            rows: right_rows,
+            next,
+        })?;
+        self.save(id, &amp;Node::Leaf { rows, next: right })?;
+        while let Some((parent, i)) = path.pop() {
+            let Node::Branch {
+                mut keys,
+                mut children,
+            } = self.load(parent)?
+            else {
+                return Err(bad(&quot;bad insertion path&quot;));
+            };
+            keys.insert(i, separator);
+            children.insert(i + 1, right);
+            if keys.len() &lt;= self.max {
+                return self.save(parent, &amp;Node::Branch { keys, children });
+            }
+            let mid = keys.len() / 2;
+            let right_keys = keys.split_off(mid + 1);
+            separator = keys.pop().unwrap();
+            let right_children = children.split_off(mid + 1);
+            right = self.new_node(&amp;Node::Branch {
+                keys: right_keys,
+                children: right_children,
+            })?;
+            self.save(parent, &amp;Node::Branch { keys, children })?;
+        }
+        self.root = self.new_node(&amp;Node::Branch {
+            keys: vec![separator],
+            children: vec![self.root, right],
+        })?;
+        self.save_meta()
+    }
+    fn range(&amp;mut self, lo: i64, hi: i64) -&gt; io::Result&lt;Vec&lt;(i64, i64)&gt;&gt; {
+        if lo &gt; hi {
+            return Ok(vec![]);
+        }
+        let (mut id, _) = self.leaf(lo)?;
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(id) {
+                return Err(bad(&quot;cycle in leaf chain&quot;));
+            }
+            let Node::Leaf { rows, next } = self.load(id)? else {
+                return Err(bad(&quot;next points to branch&quot;));
+            };
+            for (k, v) in rows {
+                if k &gt; hi {
+                    return Ok(result);
+                }
+                if k &gt;= lo {
+                    result.push((k, v));
+                }
+            }
+            if next == 0 {
+                return Ok(result);
+            }
+            id = next;
+        }
+    }
+    fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+        self.pager.flush()
+    }
+}
+fn main() -&gt; io::Result&lt;()&gt; {
+    let args: Vec&lt;_&gt; = std::env::args().collect();
+    let path = args
+        .get(1)
+        .ok_or_else(|| bad(&quot;usage: btree FILE [MAX_KEYS]&quot;))?;
+    let max = args
+        .get(2)
+        .map(|s| s.parse::&lt;usize&gt;())
+        .transpose()
+        .map_err(|_| bad(&quot;bad max_keys&quot;))?
+        .unwrap_or(3);
+    let mut t = Tree::open(Path::new(path), max, 3)?;
+    for line in io::stdin().lock().lines() {
+        let line = line?;
+        let words: Vec&lt;_&gt; = line.split_whitespace().collect();
+        let integer = |s: &amp;str| s.parse::&lt;i64&gt;().map_err(|_| bad(&quot;expected i64&quot;));
+        match words.as_slice() {
+            [&quot;set&quot;, k, v] =&gt; {
+                t.set(integer(k)?, integer(v)?)?;
+                println!(&quot;OK&quot;);
+            }
+            [&quot;get&quot;, k] =&gt; match t.get(integer(k)?)? {
+                Some(v) =&gt; println!(&quot;{v}&quot;),
+                None =&gt; println!(&quot;(nil)&quot;),
+            },
+            [&quot;range&quot;, lo, hi] =&gt; {
+                let rows = t.range(integer(lo)?, integer(hi)?)?;
+                println!(
+                    &quot;{}&quot;,
+                    rows.iter()
+                        .map(|(k, v)| format!(&quot;{k}:{v}&quot;))
+                        .collect::&lt;Vec&lt;_&gt;&gt;()
+                        .join(&quot; &quot;)
+                );
+            }
+            [&quot;.flush&quot;] =&gt; {
+                t.flush()?;
+                println!(&quot;FLUSHED&quot;);
+            }
+            [&quot;.exit&quot;] =&gt; break,
+            [] =&gt; {}
+            _ =&gt; {
+                return Err(bad(
+                    &quot;commands: set K V | get K | range LO HI | .flush | .exit&quot;,
+                ));
+            }
+        }
+    }
+    t.flush()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        collections::BTreeMap,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    struct Temp(std::path::PathBuf);
+    impl Temp {
+        fn new() -&gt; Self {
+            Self(std::env::temp_dir().join(format!(
+                &quot;mydb-ch03-{}-{}.db&quot;,
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            )))
+        }
+        fn tree(&amp;self, max: usize) -&gt; Tree {
+            Tree::open(&amp;self.0, max, 1).unwrap()
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&amp;mut self) {
+            let _ = std::fs::remove_file(&amp;self.0);
+        }
+    }
+    // Verify balance, separator meaning, occupancy and the complete leaf chain.
+    fn verify(t: &amp;mut Tree) {
+        fn walk(
+            t: &amp;mut Tree,
+            id: u64,
+            root: bool,
+            level: usize,
+            depths: &amp;mut Vec&lt;usize&gt;,
+            leaves: &amp;mut Vec&lt;u64&gt;,
+        ) -&gt; Option&lt;(i64, i64)&gt; {
+            match t.load(id).unwrap() {
+                Node::Leaf { rows, .. } =&gt; {
+                    assert!(rows.len() &lt;= t.max);
+                    if !root {
+                        assert!(rows.len() &gt;= t.max.div_ceil(2));
+                    }
+                    depths.push(level);
+                    leaves.push(id);
+                    rows.first().zip(rows.last()).map(|(a, b)| (a.0, b.0))
+                }
+                Node::Branch { keys, children } =&gt; {
+                    assert_eq!(children.len(), keys.len() + 1);
+                    assert!(!keys.is_empty() &amp;&amp; keys.len() &lt;= t.max);
+                    if !root {
+                        assert!(keys.len() &gt;= t.max / 2);
+                    }
+                    let ranges: Vec&lt;_&gt; = children
+                        .into_iter()
+                        .map(|c| walk(t, c, false, level + 1, depths, leaves).unwrap())
+                        .collect();
+                    for i in 0..keys.len() {
+                        assert!(ranges[i].1 &lt; keys[i]);
+                        assert_eq!(keys[i], ranges[i + 1].0);
+                    }
+                    Some((ranges[0].0, ranges.last().unwrap().1))
+                }
+            }
+        }
+        let mut depths = vec![];
+        let mut leaves = vec![];
+        walk(t, t.root, true, 0, &amp;mut depths, &amp;mut leaves);
+        assert!(depths.iter().all(|d| *d == depths[0]));
+        for (i, &amp;id) in leaves.iter().enumerate() {
+            let Node::Leaf { next, .. } = t.load(id).unwrap() else {
+                unreachable!()
+            };
+            assert_eq!(next, leaves.get(i + 1).copied().unwrap_or(0));
+        }
+    }
+    #[test]
+    fn empty_and_missing() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        assert_eq!(t.get(7).unwrap(), None);
+        assert!(t.range(-9, 9).unwrap().is_empty());
+        verify(&amp;mut t);
+    }
+    #[test]
+    fn duplicate_updates_without_allocating() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        t.set(10, 1).unwrap();
+        let n = t.pager.len();
+        t.set(10, 2).unwrap();
+        assert_eq!(t.pager.len(), n);
+        assert_eq!(t.get(10).unwrap(), Some(2));
+    }
+    #[test]
+    fn leaf_split_copies_separator() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        for k in [10, 20, 30, 40] {
+            t.set(k, k * 10).unwrap();
+        }
+        let Node::Branch { keys, .. } = t.load(t.root).unwrap() else {
+            panic!()
+        };
+        assert_eq!(keys, vec![30]);
+        assert_eq!(t.get(30).unwrap(), Some(300));
+        verify(&amp;mut t);
+    }
+    #[test]
+    fn ascending_cascades_and_reopen() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        for k in 0..180 {
+            t.set(k, -k).unwrap();
+        }
+        verify(&amp;mut t);
+        let root = t.root;
+        t.flush().unwrap();
+        drop(t);
+        let mut t = f.tree(3);
+        assert_eq!(t.root, root);
+        for k in 0..180 {
+            assert_eq!(t.get(k).unwrap(), Some(-k));
+        }
+        // Continue growing a tree loaded from disk, including further splits.
+        for k in 180..260 {
+            t.set(k, -k).unwrap();
+        }
+        assert_eq!(t.get(259).unwrap(), Some(-259));
+        assert_eq!(t.range(175, 185).unwrap().len(), 11);
+        verify(&amp;mut t);
+    }
+    #[test]
+    fn descending_and_even_capacity() {
+        let f = Temp::new();
+        let mut t = f.tree(4);
+        for k in (0..100).rev() {
+            t.set(k, k + 1).unwrap();
+        }
+        verify(&amp;mut t);
+        assert_eq!(
+            t.range(20, 25).unwrap(),
+            (20..=25).map(|k| (k, k + 1)).collect::&lt;Vec&lt;_&gt;&gt;()
+        );
+    }
+    #[test]
+    fn range_boundaries_and_gaps() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        for k in [10, 20, 30, 40, 50, 60, 70] {
+            t.set(k, k).unwrap();
+        }
+        assert_eq!(
+            t.range(21, 60).unwrap(),
+            vec![(30, 30), (40, 40), (50, 50), (60, 60)]
+        );
+        assert!(t.range(22, 29).unwrap().is_empty());
+        assert!(t.range(60, 20).unwrap().is_empty());
+        assert_eq!(t.range(30, 30).unwrap(), vec![(30, 30)]);
+    }
+    #[test]
+    fn signed_extremes() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        for k in [i64::MIN, -1, 0, 1, i64::MAX] {
+            t.set(k, k).unwrap();
+        }
+        assert_eq!(t.range(i64::MIN, i64::MAX).unwrap().len(), 5);
+        assert_eq!(t.get(i64::MAX).unwrap(), Some(i64::MAX));
+        verify(&amp;mut t);
+    }
+    #[test]
+    fn deterministic_mixed_updates_match_btreemap() {
+        let f = Temp::new();
+        let mut t = f.tree(5);
+        let mut model = BTreeMap::new();
+        let mut seed = 17u64;
+        for v in 0..700 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let k = ((seed &gt;&gt; 32) % 401) as i64 - 200;
+            t.set(k, v).unwrap();
+            model.insert(k, v);
+        }
+        assert_eq!(
+            t.range(i64::MIN, i64::MAX).unwrap(),
+            model.iter().map(|(&amp;k, &amp;v)| (k, v)).collect::&lt;Vec&lt;_&gt;&gt;()
+        );
+        for k in -210..210 {
+            assert_eq!(t.get(k).unwrap(), model.get(&amp;k).copied());
+        }
+        verify(&amp;mut t);
+    }
+    #[test]
+    fn upper_capacity() {
+        let f = Temp::new();
+        let mut t = f.tree(200);
+        for k in 0..420 {
+            t.set(k, k).unwrap();
+        }
+        verify(&amp;mut t);
+        assert_eq!(t.range(0, 500).unwrap().len(), 420);
+    }
+    #[test]
+    fn codec_and_byte_order() {
+        let n = Node::Leaf {
+            rows: vec![(10, 100)],
+            next: 0,
+        };
+        let b = n.encode();
+        assert_eq!(&amp;b[..11], &amp;[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&amp;b[11..19], &amp;10i64.to_le_bytes());
+        assert_eq!(Node::decode(&amp;b, 3, 2).unwrap(), n);
+        let b = Node::Branch {
+            keys: vec![30],
+            children: vec![1, 2],
+        };
+        assert_eq!(Node::decode(&amp;b.encode(), 3, 4).unwrap(), b);
+        assert!(Node::decode(&amp;[1, 1], 3, 4).is_err());
+        assert!(Node::decode(&amp;[9; 11], 3, 4).is_err());
+        assert!(
+            Node::decode(
+                &amp;Node::Leaf {
+                    rows: vec![(2, 0), (1, 0)],
+                    next: 0
+                }
+                .encode(),
+                3,
+                4
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn cycles_and_bad_metadata_are_errors() {
+        let f = Temp::new();
+        let mut t = f.tree(3);
+        let root = t.root;
+        t.save(
+            root,
+            &amp;Node::Branch {
+                keys: vec![0],
+                children: vec![root, root],
+            },
+        )
+        .unwrap();
+        assert!(t.get(1).is_err());
+        t.save(
+            root,
+            &amp;Node::Leaf {
+                rows: vec![(1, 1)],
+                next: root,
+            },
+        )
+        .unwrap();
+        assert!(t.range(0, 10).is_err());
+        t.pager.write(0, b&quot;wrong metadata&quot;).unwrap();
+        t.flush().unwrap();
+        drop(t);
+        assert!(Tree::open(&amp;f.0, 3, 1).is_err());
+    }
+    #[test]
+    fn mismatched_order_and_legacy_file_rejected() {
+        let f = Temp::new();
+        let t = f.tree(3);
+        drop(t);
+        assert!(Tree::open(&amp;f.0, 4, 1).is_err());
+        assert!(Tree::open(&amp;f.0, 2, 1).is_err());
+        let f = Temp::new();
+        let mut p = storage::Pager::open(&amp;f.0, 1).unwrap();
+        p.allocate().unwrap();
+        assert!(p.read(0).is_err()); // A failed read must still release its pin.
+        p.write(0, b&quot;abc&quot;).unwrap();
+        p.flush().unwrap();
+        drop(p);
+        assert!(Tree::open(&amp;f.0, 3, 1).is_err());
+    }
+}
+</code></pre></div></details>
+<h3>E. 완료 기준</h3><p><a href="examples/ch03/check.sh" download>check.sh 저장</a> 후 <code>bash examples/ch03/check.sh</code>를 실행하세요. B+트리 검사 12개와 재사용한 2장 검사 12개를 실행합니다. CLI의 경계 검색·범위·재시작과 실제 파일의 크기·메타데이터 바이트도 확인합니다. macOS에서 실행했으며 Linux 실행 검증은 별도입니다.</p><pre><code data-language="bash">#!/usr/bin/env bash
+set -eu
+HERE=$(CDPATH= cd -- &quot;$(dirname -- &quot;$0&quot;)&quot; &amp;&amp; pwd)
+D=$(mktemp -d)
+trap &#x27;rm -rf &quot;$D&quot;&#x27; EXIT
+rustc --edition=2024 --test &quot;$HERE/btree.rs&quot; -o &quot;$D/tests&quot;
+&quot;$D/tests&quot;
+rustc --edition=2024 &quot;$HERE/btree.rs&quot; -o &quot;$D/btree&quot;
+first=$(printf &#x27;%s\n&#x27; &#x27;set 10 100&#x27; &#x27;set 20 200&#x27; &#x27;set 30 300&#x27; &#x27;set 40 400&#x27; &#x27;get 30&#x27; &#x27;range 15 40&#x27; &#x27;.exit&#x27; | &quot;$D/btree&quot; &quot;$D/tree.pages&quot;)
+[ &quot;$first&quot; = &quot;$(printf &#x27;OK\nOK\nOK\nOK\n300\n20:200 30:300 40:400&#x27;)&quot; ]
+second=$(printf &#x27;%s\n&#x27; &#x27;get 10&#x27; &#x27;get 40&#x27; &#x27;get 99&#x27; &#x27;range 30 30&#x27; &#x27;.exit&#x27; | &quot;$D/btree&quot; &quot;$D/tree.pages&quot;)
+[ &quot;$second&quot; = &quot;$(printf &#x27;100\n400\n(nil)\n30:300&#x27;)&quot; ]
+[ &quot;$(wc -c &lt; &quot;$D/tree.pages&quot; | tr -d &#x27;[:space:]&#x27;)&quot; = 16384 ]
+[ &quot;$(od -An -tx1 -N12 &quot;$D/tree.pages&quot; | tr -d &#x27;[:space:]&#x27;)&quot; = 504730320100f00ff00f1000 ]
+meta=$(dd if=&quot;$D/tree.pages&quot; bs=1 skip=4080 count=16 2&gt;/dev/null | od -An -tx1 | tr -d &#x27;[:space:]&#x27;)
+[ &quot;$meta&quot; = 42543033030000000300000000000000 ]
+printf &#x27;%s\n&#x27; &#x27;PASS: CLI, separator equality, range, reopen, size, actual metadata bytes&#x27;
+</code></pre>
+<ul class="checklist"><li>빈 트리, 없는 키, 같은 키의 값 갱신이 맞습니다.</li><li>오름차순·내림차순·섞인 삽입 후 모든 리프의 깊이가 같습니다.</li><li>각 구분 키는 오른쪽 하위 트리의 최소 키이고 왼쪽 범위와 겹치지 않습니다.</li><li>모든 리프가 next로 한 번씩 연결되고 마지막 next는 0입니다.</li><li>프레임 하나로도 분할·조회·flush가 성공합니다.</li><li>분할 후 다시 열어도 새 루트와 모든 값을 읽을 수 있습니다.</li></ul></section>
+<div class="summary"><h3>핵심 요약</h3><ul><li>경계와 같은 키는 오른쪽 자식으로 내려갑니다.</li><li>리프 분할은 오른쪽 첫 키를 복사하고, 내부 분할은 가운데 키를 부모로 이동합니다.</li><li>범위 조회는 하한을 찾은 뒤 리프의 next를 따라갑니다.</li><li>새 루트의 번호도 파일에 기록해야 합니다.</li></ul></div>
+<h2>확인 문제</h2><div class="quiz" data-answer="2"><div class="q">구분 키가 [20,40]일 때 키 40이 내려갈 자식은?</div><button class="opt">child[0]</button><button class="opt">child[1]</button><button class="opt">child[2]</button><div class="explain">자식 인덱스는 40 이하인 구분 키의 개수인 2입니다.</div></div><div class="quiz" data-answer="0"><div class="q">리프 [10,20,30,40]을 분할하고 30을 부모에 넣었습니다. 실제 키 30은?</div><button class="opt">오른쪽 리프에도 남습니다</button><button class="opt">부모에만 있습니다</button><button class="opt">왼쪽 리프 끝에 남습니다</button><div class="explain">값은 리프에만 저장합니다. 구분 키는 오른쪽 첫 키의 복사입니다.</div></div><div class="quiz" data-answer="1"><div class="q">내부 노드의 가운데 키를 부모로 올릴 때는?</div><button class="opt">양쪽 내부 노드에도 복사합니다</button><button class="opt">분할한 내부 노드에서는 제거합니다</button><button class="opt">해당 키의 실제 값을 지웁니다</button><div class="explain">내부 노드에서는 가운데 구분 키를 이동합니다. 리프의 실제 값은 지우지 않습니다.</div></div><div class="quiz" data-answer="1"><div class="q">새 루트를 만든 뒤 재시작을 위해 함께 저장할 정보는?</div><button class="opt">브라우저 학습 진도</button><button class="opt">메타데이터의 루트 페이지 번호</button><button class="opt">CLOCK의 현재 손 위치</button><div class="explain">트리를 다시 열 때 페이지 0에서 루트 번호를 읽습니다.</div></div><div class="quiz" data-answer="1"><div class="q">range(25,65)가 반환하는 키는? 저장된 키는 10,20,…,120입니다.</div><button class="opt">20,30,40,50,60</button><button class="opt">30,40,50,60</button><button class="opt">30,40,50,60,70</button><div class="explain">하한 이상, 상한 이하를 반환합니다. 양 끝을 포함합니다.</div></div>
+<h2>실습 과제</h2><ol><li><b>분할 순서를 기록하세요.</b> 10~120을 10씩 올려 넣고 각 단계의 루트·리프 연결을 적으세요. 최종 높이는 3이고 range(25,65)는 30,40,50,60의 값만 반환해야 합니다. 30의 값을 다시 바꿔도 노드 수는 늘지 않아야 합니다.</li><li><b>삭제·빌리기·병합을 추가하세요.</b> 같은 부모 아래 리프 [10,20], [30,40,50]에서 10을 지우고 오른쪽에서 빌리세요. 결과는 [20,30], [40,50]이고 부모 경계는 40이어야 합니다. 다시 삭제해 병합하는 경우에도 next 연결, 검색 결과, 새 루트 번호를 검사하세요.</li><li><b>분할된 파일을 다시 여세요.</b> 오름차순과 내림차순으로 각각 180개를 넣고 flush한 뒤 프로세스를 종료하세요. 두 파일의 페이지 배치는 달라도 get과 전체 range 결과는 같아야 합니다. BTreeMap과 비교하는 검사에 키 갱신도 섞으세요.</li></ol>
+<p class="legend">더 읽기: <a href="https://15445.courses.cs.cmu.edu/fall2024/slides/08-indexes1.pdf">CMU 15-445 B+트리 강의</a>는 리프와 내부 노드의 분할을 비교합니다. <a href="https://www.sqlite.org/fileformat.html#b_tree_pages">SQLite 파일 형식</a>은 실제 페이지 배치를 살펴볼 자료입니다. 이 코스의 PG02/BT03 형식은 별도 학습용 설계이며 SQLite 파일과 호환되지 않습니다.</p>
+<section id="s8"><h2>8. 이 저장 구조가 못 하는 것</h2><p>키로 페이지를 고르고 범위 조회도 할 수 있게 됐습니다. 하지만 키와 값은 정수 두 개뿐입니다. 이름·날짜·NULL·가변 길이 문자열을 가진 행도, 열 정의와 테이블 목록도 없습니다. 다음 장에서는 테이블과 레코드 형식을 만들어 이 저장 엔진 위에 관계형 데이터를 올립니다.</p>
+<div class="callout warn"><span class="title">분할의 여러 페이지 쓰기는 아직 원자적이지 않습니다</span>flush 성공 후 정상 재시작만 검증했습니다. 분할 중 I/O 오류나 프로세스 종료가 발생하면 일부 노드와 메타데이터만 바뀔 수 있습니다. 쓰기 오류 후에는 작업을 중단해야 합니다. 이 예제에는 WAL, 트랜잭션, 다중 프로세스 잠금과 자동 복구가 없습니다. Linux의 fsync 계열 동기화와 macOS의 F_FULLFSYNC 차이는 2장의 동기화 설명을 참고하세요. 7장에서 WAL과 복구 순서를 다룹니다.</div></section>
+</main><script>(function () {
+  const $ = id => document.getElementById(id);
+  function input(id) {
+    const raw=$(id).value, n=Number(raw);
+    return raw.trim() && Number.isInteger(n) && n>=-999 && n<=999 ? n : null;
+  }
+  function route() {
+    const key=input('route-key');
+    if(key===null){$('route-result').textContent='−999~999의 정수를 입력하세요.';return;}
+    const i=[20,40].filter(s=>s<=key).length;
+    $('route-result').textContent=`키 ${key}: child[${i}] 선택. ${['key < 20','20 ≤ key < 40','40 ≤ key'][i]}. 경계와 같으면 오른쪽입니다.`;
+    document.querySelectorAll('[data-route]').forEach(e=>e.classList.toggle('selected',Number(e.dataset.route)===i));
+  }
+  $('route-key').oninput=route;route();
+  let nodes,root,serial,trace,rangeState;
+  const leaf=(rows=[],next=0)=>({leaf:true,rows,next});
+  function allocate(node){const id=serial++;nodes.set(id,node);return id;}
+  function descend(key) {
+    let id=root;const path=[];
+    while(!nodes.get(id).leaf){const n=nodes.get(id),i=n.keys.filter(s=>s<=key).length;path.push(id);id=n.children[i];}
+    return {id,path:path.concat(id)};
+  }
+  function insertNode(id,key) {
+    const n=nodes.get(id);
+    if(n.leaf){
+      let i=n.rows.findIndex(r=>r[0]>=key);if(i<0)i=n.rows.length;
+      if(n.rows[i]?.[0]===key){n.rows[i][1]=key*10;trace.push(`page ${id}: 기존 키 ${key} 갱신`);return null;}
+      n.rows.splice(i,0,[key,key*10]);trace.push(`page ${id}: ${key} 삽입`);
+      if(n.rows.length<=3)return null;
+      const rows=n.rows.splice(Math.floor(n.rows.length/2));
+      const right=allocate(leaf(rows,n.next));n.next=right;
+      trace.push(`리프 분할 p${id} → p${id}, p${right}; ${rows[0][0]}을 부모에 복사`);
+      return {key:rows[0][0],right};
+    }
+    const i=n.keys.filter(s=>s<=key).length,split=insertNode(n.children[i],key);
+    if(!split)return null;
+    n.keys.splice(i,0,split.key);n.children.splice(i+1,0,split.right);
+    if(n.keys.length<=3)return null;
+    const mid=Math.floor(n.keys.length/2),rightKeys=n.keys.splice(mid+1),separator=n.keys.pop();
+    const children=n.children.splice(mid+1),right=allocate({leaf:false,keys:rightKeys,children});
+    trace.push(`내부 분할 p${id}; ${separator}을 부모로 이동`);return {key:separator,right};
+  }
+  function insert(key){const split=insertNode(root,key);if(split){root=allocate({leaf:false,keys:[split.key],children:[root,split.right]});trace.push(`새 루트 p${root}`);}}
+  function leaves(){let id=descend(-999).id;const out=[];while(id){out.push(id);id=nodes.get(id).next;}return out;}
+  function draw(highlights=[]) {
+    let cursor=0,maxDepth=0;const pos=new Map();
+    function place(id,depth){const n=nodes.get(id);maxDepth=Math.max(maxDepth,depth);let x;
+      if(n.leaf){x=cursor+85;cursor+=180;}else{const xs=n.children.map(c=>place(c,depth+1));x=(xs[0]+xs.at(-1))/2;}
+      pos.set(id,{x,y:30+depth*110});return x;
+    }
+    place(root,0);const width=Math.max(360,cursor),height=125+maxDepth*110;
+    let svg='';
+    for(const [id,n] of nodes){const p=pos.get(id);if(!p)continue;
+      if(!n.leaf)for(const child of n.children){const c=pos.get(child);svg+=`<path d="M${p.x} ${p.y+44}L${c.x} ${c.y}" class="line"/>`;}
+      else if(n.next){const c=pos.get(n.next);svg+=`<path d="M${p.x+79} ${p.y+22}H${c.x-79} m-6 -4 l6 4 -6 4" class="line"/>`;}
+    }
+    for(const [id,p] of pos){const n=nodes.get(id),labels=n.leaf?n.rows.map(r=>r[0]):n.keys;
+      svg+=`<g class="tree-node${highlights.includes(id)?' active':''}"><rect x="${p.x-78}" y="${p.y}" width="156" height="44" rx="5"/><text x="${p.x}" y="${p.y+27}" text-anchor="middle">${labels.length?labels.join(' | '):'비어 있음'}</text><text x="${p.x}" y="${p.y+66}" text-anchor="middle" class="node-caption">p${id} · ${n.leaf?'리프':'내부'}</text></g>`;
+    }
+    $('tree-svg').setAttribute('viewBox',`0 0 ${width} ${height}`);$('tree-svg').style.minWidth=width+'px';$('tree-svg').innerHTML=svg;
+    const count=[...nodes.values()].filter(n=>n.leaf).reduce((sum,n)=>sum+n.rows.length,0);
+    $('tree-stats').textContent=`키 ${count}개 · 노드 ${nodes.size}개 · 높이 ${maxDepth+1} · root=p${root}`;
+    $('tree-log').textContent=trace.slice(-25).join('\n');
+    $('leaf-chain').textContent=leaves().map(id=>`p${id} [${nodes.get(id).rows.map(r=>r[0]).join(', ')}]`).join(' → ');
+  }
+  function cancelRange(){rangeState=null;$('range-next').disabled=true;$('range-result').textContent='범위를 입력하고 시작하세요.';$('range-log').textContent='';}
+  function reset(){nodes=new Map();root=1;serial=2;nodes.set(1,leaf());trace=['빈 루트 리프 p1'];cancelRange();draw();}
+  $('tree-insert').onclick=()=>{
+    const k=input('tree-key');if(k===null){$('tree-log').textContent='−999~999의 정수를 입력하세요.';return;}
+    const count=[...nodes.values()].filter(n=>n.leaf).reduce((s,n)=>s+n.rows.length,0);
+    if(count>=24&&!nodes.get(descend(k).id).rows.some(r=>r[0]===k)){$('tree-log').textContent='화면 예제는 24개 키까지입니다. 초기화 후 다시 시도하세요.';return;}
+    cancelRange();insert(k);draw();
+  };
+  $('tree-find').onclick=()=>{
+    const k=input('tree-key');if(k===null){$('tree-log').textContent='−999~999의 정수를 입력하세요.';return;}
+    const {id,path}=descend(k),row=nodes.get(id).rows.find(r=>r[0]===k);trace.push(`검색 ${k}: ${path.map(id=>'p'+id).join(' → ')}; ${row?'값='+row[1]:'없음'}`);draw(path);
+  };
+  $('tree-demo').onclick=()=>{reset();for(let k=10;k<=120;k+=10)insert(k);draw();};
+  $('tree-reset').onclick=reset;
+  $('range-start').onclick=()=>{
+    const lo=input('range-lo'),hi=input('range-hi');cancelRange();
+    if(lo===null||hi===null){$('range-result').textContent='양쪽 모두 −999~999의 정수를 입력하세요.';return;}
+    if(lo>hi){$('range-result').textContent='빈 결과: 하한이 상한보다 큽니다.';return;}
+    const {id,path}=descend(lo);rangeState={lo,hi,id,rows:[],visited:[]};$('range-next').disabled=false;
+    $('range-log').textContent=`하한 ${lo} 검색: ${path.map(id=>'p'+id).join(' → ')}. 이제 리프를 읽습니다.`;$('range-result').textContent='결과: 아직 읽지 않음';draw(path);
+  };
+  $('range-next').onclick=()=>{
+    if(!rangeState)return;const s=rangeState,n=nodes.get(s.id);s.visited.push(s.id);let stop=false;
+    for(const row of n.rows){if(row[0]>s.hi){stop=true;break;}if(row[0]>=s.lo)s.rows.push(row);}
+    $('range-log').textContent+=`\np${s.id} 방문${stop?': 상한을 넘어 종료':n.next?' → next=p'+n.next:': 마지막 리프'}`;
+    $('range-result').textContent='결과: '+(s.rows.map(r=>r.join(':')).join(' ')||'(없음)');draw(s.visited);
+    if(stop||!n.next){$('range-next').disabled=true;rangeState=null;}else{s.id=n.next;}
+  };
+  reset();
+})();
+</script><script src="assets/ch03-04-visuals.js"></script></body></html>

@@ -1,0 +1,1078 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>테이블과 레코드</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/ch03-04-visuals.css"><script src="assets/common.js"></script>
+<style>
+.controls input[type="text"]{width:140px}.controls input[type="checkbox"]{accent-color:var(--accent)}.controls label{max-width:100%}.byte-map{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin:14px 0}.byte-map span{padding:8px;border:1px solid var(--border);border-radius:5px;font-size:12px;text-align:center;background:var(--surface-2)}.byte-map .null-map{border-color:var(--accent);color:var(--accent)}
+#heap-pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:10px;max-height:460px;overflow:auto}.heap-page{background:var(--surface-2);border:1px solid var(--border);padding:12px;border-radius:8px;font-size:13px}.heap-page b{font-size:16px}.space-meter{height:8px;background:var(--surface);border:1px solid var(--border);margin:8px 0}.space-meter span{display:block;height:100%;background:var(--accent)}
+#row-bytes,#catalog-bytes{overflow-wrap:anywhere;white-space:pre-wrap;font-size:12px}#lookup-result{min-height:90px;white-space:pre-wrap}output{display:block;overflow-wrap:anywhere}figure svg{width:100%;height:auto}.diagram .highlight{fill:var(--surface-2);stroke:var(--accent);stroke-width:2}.hint{font-size:13px;color:var(--muted)}
+@media(max-width:480px){.byte-map{grid-template-columns:repeat(2,minmax(0,1fr))}#heap-pages{grid-template-columns:1fr}.controls label{flex-wrap:wrap}}
+</style><link rel="stylesheet" href="assets/syntax.css">
+<script src="assets/syntax.js"></script>
+</head><body data-chapter="04"><main>
+<header class="chapter-head"><span class="label adv">관계형 계층 · Chapter 04</span><h1>테이블과 레코드</h1><p class="lead">정수 키·값 저장소에 열의 이름과 타입을 붙입니다. 문자열과 NULL을 바이트로 저장하고, B+트리의 RID를 따라 실제 행을 읽는 테이블 계층을 만듭니다.</p>
+<div class="objectives"><h4>학습 목표</h4><ul><li>스키마로 행의 타입과 NOT NULL을 검사합니다.</li><li>NULL 비트맵과 문자열의 오프셋·바이트 길이를 인코딩합니다.</li><li>힙 페이지에 여러 행을 넣고 RID로 다시 읽습니다.</li><li>카탈로그·힙·기본키 색인을 저장하고 재시작 후 조회합니다.</li></ul></div></header>
+<nav class="toc"><b>목차</b><ol><li><a href="#s1">행의 바이트를 해석할 스키마</a></li><li><a href="#s2">NULL과 빈 값은 다른 바이트다</a></li><li><a href="#s3">문자열 길이는 UTF-8 바이트로 센다</a></li><li><a href="#s4">힙 페이지와 RID</a></li><li><a href="#s5">B+트리는 기본키에서 RID를 찾는다</a></li><li><a href="#s6">재시작 후에도 스키마를 찾는 카탈로그</a></li><li><a href="#s7">구현 가이드</a></li><li><a href="#s8">이 저장 구조가 못 하는 것</a></li></ol></nav>
+<section id="s1"><h2>1. 행의 바이트를 해석할 스키마</h2>
+<p>3장의 B+트리는 i64 키와 i64 값만 저장했습니다. 이번에는 값 자리에 실제 행의 위치인 <b>RID</b>를 넣습니다. 이름이나 나이 같은 데이터는 별도의 힙 페이지에 저장합니다. B+트리는 기본키로 위치를 찾고, 테이블 계층은 스키마에 따라 행을 해석합니다.</p>
+<p>스키마는 열의 이름·타입·NULL 허용 여부를 순서대로 정의합니다. 예제 테이블 <code>people(id:int, name:text?, age:int?)</code>에서 물음표는 NULL 허용입니다. 첫 열은 NULL을 허용하지 않는 정수 기본키로 고정합니다. 같은 기본키를 다시 insert하면 갱신하지 않고 오류를 반환합니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>열</th><th>타입</th><th>제약</th></tr></thead><tbody><tr><td>id</td><td>i64</td><td>NOT NULL, 기본키, 중복 거부</td></tr><tr><td>name</td><td>UTF-8 문자열</td><td>NULL 허용</td></tr><tr><td>age</td><td>i64</td><td>NULL 허용</td></tr></tbody></table></div>
+<p>행마다 열 이름과 타입을 반복 저장하지 않습니다. 카탈로그에 있는 스키마가 각 셀의 해석 방법을 정합니다. 행에 저장한 열 개수도 스키마와 맞아야 합니다. 이 장은 타입을 Int와 Text로 제한하고 열 변경은 지원하지 않습니다.</p>
+<div class="callout"><span class="title">이전 장의 코드는 그대로 재사용합니다</span>2장의 페이지·버퍼 풀 위에 힙 어댑터를 추가하고, 3장의 B+트리를 기본키 색인으로 감쌉니다. 새 데이터는 디렉터리의 <code>tables.pages</code>와 테이블별 <code>people.idx</code>에 저장합니다. 이전 장의 실습 파일을 덮어쓰지 마세요.</div></section>
+<section id="s2"><h2>2. NULL과 빈 값은 다른 바이트다</h2>
+<p>NULL을 숫자 0이나 빈 문자열로 표현하면 실제 값과 구분할 수 없습니다. 이 코스는 열마다 한 비트를 두고 <b>1이면 NULL</b>로 정합니다. 열 i의 비트는 <code>bitmap[i / 8] &amp; (1 &lt;&lt; (i % 8))</code>로 확인합니다. 비트 0부터 열 순서대로 사용하며 남는 상위 비트는 0입니다.</p>
+<p>세 열이면 비트맵은 한 바이트입니다. <code>(1, "Roy", NULL)</code>은 age가 세 번째 열이므로 <code>00000100</code>입니다. <code>(1, "", 0)</code>은 NULL이 하나도 없어 <code>00000000</code>입니다. 빈 문자열의 길이는 0이지만 NULL 비트는 0입니다.</p>
+<p>행의 시작에는 열 개수 u16을 두고, 비트맵 다음에 열마다 8바이트 셀을 둡니다. 정수는 셀에 직접 쓰고, 문자열은 <code>offset:u32 + length:u32</code>로 표현합니다. NULL인 열의 셀은 8바이트 모두 0으로 둡니다. 따라서 이 형식에서는 NULL도 고정 셀 공간을 차지합니다.</p>
+<figure><svg class="diagram" viewBox="0 0 800 205" role="img" aria-label="세 열 행의 고정 영역 27바이트와 문자열 본문 3바이트">
+<rect x="10" y="50" width="80" height="58" rx="5" class="box"/><rect x="90" y="50" width="100" height="58" class="highlight"/><rect x="190" y="50" width="180" height="58" class="box"/><rect x="370" y="50" width="180" height="58" class="box"/><rect x="550" y="50" width="160" height="58" class="box"/><rect x="710" y="50" width="80" height="58" rx="5" class="box"/>
+<text x="50" y="75" text-anchor="middle">열 수</text><text x="50" y="96" text-anchor="middle">3</text><text x="140" y="75" text-anchor="middle">NULL 비트</text><text x="140" y="96" text-anchor="middle">04</text><text x="280" y="75" text-anchor="middle">id</text><text x="280" y="96" text-anchor="middle">i64: 1</text><text x="460" y="75" text-anchor="middle">name</text><text x="460" y="96" text-anchor="middle">offset 27, len 3</text><text x="630" y="75" text-anchor="middle">age NULL</text><text x="630" y="96" text-anchor="middle">셀 0</text><text x="750" y="86" text-anchor="middle">Roy</text>
+<text x="10" y="35">0</text><text x="90" y="35">2</text><text x="190" y="35">3</text><text x="370" y="35">11</text><text x="550" y="35">19</text><text x="710" y="35">27</text><text x="790" y="35" text-anchor="end">30</text>
+<path d="M460 108V145H750V108" class="line"/><text x="400" y="180" text-anchor="middle" class="muted">오프셋 기준은 페이지가 아닌 행의 시작입니다. 가로 폭은 실제 비율과 다릅니다.</text></svg><figcaption>열 수 2 + 비트맵 1 + 고정 셀 24 + 본문 3 = 30바이트.</figcaption></figure></section>
+<section id="s3"><h2>3. 문자열 길이는 UTF-8 바이트로 센다</h2>
+<p>문자열의 본문은 고정 셀 뒤에 열 순서대로 붙입니다. 첫 문자열의 offset은 <code>2 + ceil(열 수 / 8) + 8 × 열 수</code>입니다. 이 예제에서는 27입니다. 길이는 글자 수가 아니라 UTF-8 바이트 수입니다. <code>Roy</code>는 3바이트, <code>한글</code>은 6바이트입니다.</p>
+<p>모든 다중 바이트 정수는 little-endian입니다. 레코드 길이는 페이지 슬롯이 이미 저장하므로 행 앞에 전체 길이를 반복하지 않습니다. 각 문자열이 이전 본문의 끝에서 시작하는지, 범위를 넘지 않는지, UTF-8이 맞는지도 디코딩할 때 검사합니다. 끝에 남는 바이트도 거부합니다.</p>
+<div class="widget"><div class="w-title">행을 바이트로 바꾸기</div><div class="w-desc">스키마는 id:int, name:text?, age:int?입니다. 이름을 지우는 것과 NULL을 체크하는 것을 비교하세요. 정수는 i64 전체 범위를 받습니다.</div>
+<div class="controls"><label>id <input id="row-id" type="text" inputmode="numeric" value="1"></label><label>name <input id="row-name" type="text" value="Roy" maxlength="5000"></label><label><input id="name-null" type="checkbox"> name NULL</label><label>age <input id="row-age" type="text" inputmode="numeric" value="25"></label><label><input id="age-null" type="checkbox" checked> age NULL</label></div>
+<div class="byte-map"><span>열 수<br>0..2</span><span class="null-map">NULL 비트<br>2..3</span><span>id 셀<br>3..11</span><span>name 셀<br>11..19</span><span>age 셀<br>19..27</span></div><output id="row-stats" aria-live="polite"></output><div id="row-fields" class="log"></div><pre id="row-bytes" aria-label="인코딩한 행의 16진수 바이트"></pre></div>
+<details class="deep"><summary>왜 문자열 셀에도 8바이트를 주나요?</summary><div><p>모든 셀의 폭을 같게 두면 i번째 셀의 위치를 바로 계산할 수 있습니다. 타입과 NULL 개수에 따라 뒤의 셀 위치가 달라지지 않습니다. 공간 효율은 낮습니다. 문자열 오프셋만 저장하거나 NULL 셀을 생략하는 형식은 더 작지만 디코더가 복잡해집니다. 실제 제품의 행 형식과 이 학습용 형식은 다릅니다.</p></div></details></section>
+<div class="widget process-widget" id="encoding-process">
+  <div class="w-title">행 인코딩을 한 단계씩 실행하기</div><div class="w-desc">바로 위 id·name·age 입력을 바꾸고 ‘현재 입력 가져오기’를 누르세요. NULL 비트 → 정수 셀 → 문자열 셀 → UTF-8 본문 순서로 행을 조립합니다. 이전 단계로 돌아가면 그때까지 쓴 바이트만 보입니다.</div>
+  <div class="controls"><button id="encoding-capture" class="btn primary">현재 입력 가져오기</button><label>예측: name 본문 바이트 <input id="encoding-guess" type="number" min="0" value="3" style="width:90px"></label><button id="encoding-check" class="btn">길이 예측 확인</button></div>
+  <output id="encoding-feedback" class="process-feedback" aria-live="polite"></output><div class="process-visual" id="encoding-drawing"></div><p class="process-source">도식이 넓으면 좌우로 스크롤해 연결을 확인하세요.</p><div class="process-facts" id="encoding-facts"></div><pre id="encoding-bytes" aria-label="단계별로 작성한 행 바이트"></pre><div id="encoding-player"></div>
+</div>
+
+<section id="s4"><h2>4. 힙 페이지와 RID</h2>
+<p>힙은 행을 기본키 순서로 정렬하지 않고 빈 공간에 넣는 저장 방식입니다. 여기서는 테이블마다 연결된 페이지 목록을 사용하고 마지막 페이지에만 삽입합니다. 앞 페이지의 빈 공간을 다시 탐색하지 않습니다. 페이지가 부족하면 새 페이지를 할당하고 마지막 페이지의 next를 바꿉니다.</p>
+<p>2장의 페이지 헤더·슬롯 디렉터리는 그대로 사용합니다. <b>슬롯 0은 다음 페이지 번호 u64</b>이며 실제 행은 슬롯 1부터 넣습니다. 따라서 RID는 <code>(page_id, slot_id)</code>입니다. 페이지가 바뀌어도 같은 슬롯 번호를 재사용할 수 있으므로 두 번호가 모두 필요합니다.</p>
+<p>빈 힙 페이지가 쓰는 공간은 헤더 8 + 슬롯 0 디렉터리 4 + next 8 = 20바이트입니다. 행 하나를 추가할 때는 행 바이트 외에 슬롯 디렉터리 4바이트가 필요합니다. 한 페이지에 담을 수 있는 최대 행은 <code>4096 − 20 − 4 = 4072</code>바이트입니다. 더 큰 행을 위한 overflow 페이지는 구현하지 않습니다.</p>
+<div class="widget"><div class="w-title">현재 행을 힙 페이지에 넣기</div><div class="w-desc">위에서 만든 바이트를 복사해 저장합니다. id를 바꿔 여러 번 넣으세요. 중복 기본키는 거부합니다. 페이지는 실제 4096바이트로 계산하며 디렉터리 4바이트도 포함합니다. 화면 예제는 30행까지입니다.</div><div class="controls"><button class="btn primary" id="heap-insert">현재 행 삽입</button><button class="btn" id="heap-reset">힙 초기화</button></div><output id="heap-stats" aria-live="polite"></output><div id="heap-pages"></div></div>
+<p>행의 바이트 오프셋이 아니라 슬롯 번호를 RID에 사용합니다. 나중에 페이지 내부에서 행을 옮기더라도 슬롯이 가리키는 오프셋만 바꾸면 됩니다. 이 장은 삽입과 조회만 제공하므로 삭제·슬롯 재사용·행 갱신에 따른 RID 수명 문제는 다루지 않습니다.</p></section>
+<section id="s5"><h2>5. B+트리는 기본키에서 RID를 찾는다</h2>
+<p>3장의 B+트리 값은 i64입니다. 이를 바꾸지 않고 양수 범위에 RID를 패킹합니다. <code>rid = (page_id &lt;&lt; 16) | slot_id</code>이며 읽을 때는 <code>page = rid &gt;&gt; 16</code>, <code>slot = rid &amp; 65535</code>로 나눕니다. p1의 slot1은 정수 65537입니다.</p>
+<p>부호 비트를 사용하지 않으므로 page_id는 최대 <code>2^47 − 1</code>입니다. 페이지 0과 슬롯 0은 데이터 행 RID에서 거부합니다. 숫자 범위를 검사한 뒤에만 패킹합니다. 같은 기본키를 넣기 전에는 색인에서 중복을 검사하고, 색인 조회로 읽은 행의 첫 열이 요청한 키와 같은지도 확인합니다.</p>
+<figure><svg class="diagram" viewBox="0 0 800 260" role="img" aria-label="카탈로그가 스키마와 힙 목록을 제공하고 B+트리가 RID로 힙 행을 찾는 구조">
+<rect x="15" y="20" width="260" height="65" rx="6" class="highlight"/><text x="145" y="47" text-anchor="middle">tables.pages · page 0</text><text x="145" y="69" text-anchor="middle">스키마 + first / last</text>
+<rect x="15" y="145" width="260" height="70" rx="6" class="box"/><text x="145" y="172" text-anchor="middle">people.idx · B+트리</text><text x="145" y="195" text-anchor="middle">기본키 1 → RID 1:1</text>
+<rect x="475" y="115" width="310" height="125" rx="6" class="box"/><text x="630" y="142" text-anchor="middle">tables.pages · heap page 1</text><text x="630" y="170" text-anchor="middle">slot 0: next</text><text x="630" y="195" text-anchor="middle">slot 1: (1, Roy, NULL)</text><text x="630" y="220" text-anchor="middle">slot 2: (2, 빈 문자열, 25)</text>
+<path d="M275 55H630V115 M275 180H475 m-8 -5 l8 5 -8 5" class="line"/><text x="370" y="165" text-anchor="middle">RID로 읽기</text><text x="450" y="42" text-anchor="middle" class="muted">스키마로 해석</text></svg><figcaption>색인 파일과 힙·카탈로그 파일은 별개입니다. 동기화와 원자적 커밋도 구분해야 합니다.</figcaption></figure></section>
+<section id="s6"><h2>6. 재시작 후에도 스키마를 찾는 카탈로그</h2>
+<p>카탈로그는 테이블 이름, 열 정의, 저장 위치를 기록하는 메타데이터입니다. 이 예제는 page 0의 슬롯 0에 카탈로그 전체를 한 레코드로 넣습니다. 크기가 4084바이트를 넘으면 테이블 생성을 거부합니다. 테이블은 최대 32개, 테이블당 열은 1~16개입니다. 공간이 먼저 부족해질 수도 있습니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>순서</th><th>카탈로그 레코드 형식</th></tr></thead><tbody><tr><td>헤더</td><td>magic TB04: 4바이트 + 테이블 수: u16 LE</td></tr><tr><td>테이블 이름</td><td>길이: u8 + ASCII 이름 바이트</td></tr><tr><td>열 목록</td><td>열 수: u8. 각 열은 이름 길이 u8 + 이름 + 타입 u8 + NULL 허용 u8</td></tr><tr><td>힙 위치</td><td>first_page_id: u64 LE + last_page_id: u64 LE</td></tr><tr><td>다음 테이블</td><td>테이블 수만큼 반복</td></tr></tbody></table></div>
+<p>타입 번호는 Int=1, Text=2이며 NULL 허용 값은 0 또는 1입니다. 이름은 영문자로 시작하고 영숫자·밑줄만 허용하며 최대 32바이트입니다. 색인 파일명은 테이블 이름에 <code>.idx</code>를 붙여 정합니다. 재시작 때 카탈로그를 읽어 테이블별 색인을 열며, 색인 파일이 없거나 비어 있으면 오류로 끝냅니다.</p>
+<div class="widget"><div class="w-title">카탈로그 → 기본키 색인 → 행 읽기</div><div class="w-desc">앞의 힙 시뮬레이터에 삽입한 행을 조회합니다. 카탈로그 바이트를 먼저 읽어 스키마를 복원하세요. B+트리 검색 단계는 여기서는 키→RID 매핑으로 축약했습니다. 전체 트리 과정은 3장에서 확인할 수 있습니다.</div><div class="controls"><label>기본키 <input id="lookup-key" type="text" inputmode="numeric" value="1"></label><button id="lookup-catalog" class="btn primary">1. 카탈로그 읽기</button><button id="lookup-rid" class="btn" disabled>2. RID 찾기</button><button id="lookup-row" class="btn" disabled>3. 행 읽기</button><button id="lookup-reopen" class="btn">모의 재열기</button></div><output id="lookup-result" class="log" aria-live="polite"></output><details class="deep"><summary>저장된 카탈로그 바이트</summary><div><pre id="catalog-bytes"></pre></div></details><p class="hint">모의 재열기는 해석한 스키마만 지웁니다. 메모리의 카탈로그 바이트·행·키 매핑은 유지하며 실제 파일 I/O는 하지 않습니다. 실제 프로세스 재시작은 아래 Rust 검사로 확인합니다.</p></div>
+<p>실제 DB에서는 카탈로그도 일반 테이블로 관리할 수 있습니다. 여기서는 카탈로그를 읽어야 테이블을 열 수 있는 시작 과정을 단순하게 만들기 위해 단일 페이지를 사용했습니다. PostgreSQL의 카탈로그는 테이블과 열 같은 스키마 메타데이터를 저장합니다. <a href="https://www.postgresql.org/docs/current/catalogs.html">PostgreSQL 시스템 카탈로그</a>와 비교해 보세요.</p></section>
+<div class="widget process-widget" id="rid-process">
+  <div class="w-title">조회가 지나가는 위치를 따라가기</div><div class="w-desc">위 인코딩 애니메이션에서 가져온 행 하나를 p1의 slot1에 저장했다고 가정합니다. 기본키를 맞추면 카탈로그 → 색인 → 슬롯 → 행으로 이동하고, 없는 키이면 색인 단계에서 종료합니다. 실제 파일 I/O와 B+트리 탐색은 생략한 경로 모형입니다.</div>
+  <div class="controls"><label>조회 기본키 <input id="rid-query" type="text" inputmode="numeric" value="1"></label><button id="rid-apply" class="btn primary">경로 다시 준비</button><button id="rid-missing" class="btn">없는 키로 비교</button></div>
+  <output id="rid-feedback" class="process-feedback" aria-live="polite"></output><div class="process-visual" id="rid-drawing"></div><p class="process-source">도식이 넓으면 좌우로 스크롤해 연결을 확인하세요.</p><div class="process-facts" id="rid-facts"></div><div id="rid-player"></div>
+</div>
+
+<section id="s7"><h2>7. 구현 가이드</h2>
+<p>표준 라이브러리만 사용하는 Rust 2024 예제입니다. <code>tables.rs</code>는 이전 두 장을 include하고 각 계층의 작은 API만 밖으로 내보냅니다. 원래 파일 안의 main은 모듈 내부 함수가 되고, 실행 진입점은 tables.rs의 바깥 main입니다.</p>
+<h3>A. 행 코덱을 먼저 작성하기</h3><pre><code data-language="rust">enum Kind { Int, Text }
+struct Column { name: String, kind: Kind, nullable: bool }
+enum Value { Int(i64), Text(String), Null }
+type Row = Vec&lt;Value&gt;;
+fn encode(schema: &amp;[Column], row: &amp;[Value]) -&gt; std::io::Result&lt;Vec&lt;u8&gt;&gt; {
+    // TODO: 열 개수와 타입, NOT NULL을 검사한다.
+    // TODO: 고정 영역을 0으로 만들고 NULL 비트를 설정한다.
+    // TODO: Int는 8바이트 LE, Text는 offset/length와 UTF-8 본문을 쓴다.
+    todo!()
+}</code></pre>
+<details class="deep"><summary>힌트 A: 쓰기 전에 크기와 타입 확인</summary><div><p>빈 문자열과 NULL의 셀은 다릅니다. 빈 문자열은 offset이 본문 끝을 가리키고 length가 0입니다. NULL 셀은 모두 0입니다. encode를 먼저 끝내고 나서 힙을 바꿔야 타입 오류나 너무 큰 행 때문에 이미 일부 데이터가 쓰이는 일을 줄일 수 있습니다.</p></div></details>
+<h3>B. 힙 페이지와 카탈로그 연결하기</h3><pre><code data-language="rust">// TODO: 새 힙 페이지 slot 0에 next=0의 8바이트를 저장한다.
+// TODO: append는 충분한 공간이 없으면 페이지를 바꾸지 않고 None을 반환한다.
+// TODO: 다음 페이지 할당 → 행 삽입 → 이전 last의 next 연결 → 카탈로그 last 갱신.
+// TODO: 카탈로그 직렬화가 4084바이트 안에 드는지 할당 전에 확인한다.
+// TODO: read가 없는 슬롯으로 실패해도 fetch에서 얻은 pin을 반납한다.</code></pre>
+<details class="deep"><summary>힌트 B: 슬롯 번호를 지키기</summary><div><p>페이지를 매번 새로 만들면 기존 행의 슬롯이 사라집니다. 새 페이지 생성과 카탈로그 교체만 replace를 사용하세요. 힙에 행을 추가할 때는 기존 페이지에 insert하고, next를 바꿀 때는 슬롯 0이 가리키는 8바이트만 수정합니다.</p></div></details>
+<h3>C. 기본키 색인에서 행 조회하기</h3><pre><code data-language="rust">// insert: encode → 기본키 중복 검사 → 힙 append → RID 패킹 → B+트리 set
+// get: 테이블 스키마 확인 → B+트리 get → RID 분해 → 힙 slot 읽기 → decode
+// scan: first 페이지부터 모든 행 슬롯을 읽고 next로 이동한다.
+// scan 결과는 저장 순서다. 기본키 정렬 순서를 보장하지 않는다.</code></pre>
+<details class="deep"><summary>힌트 C: 정상 실행과 트랜잭션의 차이</summary><div><p>이 예제는 하나의 insert에서 힙과 색인을 순서대로 바꿉니다. 중간 I/O 오류 후에는 중단해야 합니다. 앞 단계의 변경을 되돌리지 않으므로 에러를 무시하고 다음 요청을 처리하지 마세요. 메모리에서 성공한 행과 정상 flush한 행도 구분해야 합니다.</p></div></details>
+<h3>D. 실행하기</h3><p>다음 폴더 구조를 유지하세요. 명령은 아직 SQL이 아니라 <code>|</code>로 구분한 실습용 형식입니다. 5장에서 SQL 파서를 만듭니다. 텍스트는 공백과 한글, 빈 문자열을 지원하지만 CLI에서는 <code>|</code>·줄바꿈·문자열 그대로의 NULL 토큰을 표현할 이스케이프를 제공하지 않습니다. Rust API의 Text 값은 NULL이라는 문자열도 표현할 수 있습니다.</p><pre><code data-language="text">examples/
+  ch02/pages.rs
+  ch03/btree.rs
+  ch04/tables.rs
+  ch04/check.sh
+
+</code></pre>
+<pre><code data-language="bash">rustc --edition=2024 examples/ch04/tables.rs -o tables
+printf '%s\n' 'create|people|id:int|name:text?|age:int?' \
+  'insert|people|1|Roy|NULL' 'get|people|1' '.exit' | ./tables demo-db
+# CREATED
+# RID 1:1
+# 1|Roy|NULL
+printf '%s\n' 'insert|people|2||25' 'scan|people' '.exit' | ./tables demo-db
+# RID 1:2
+# 1|Roy|NULL
+# 2||25</code></pre>
+<p>처음 실행할 때는 새 디렉터리 이름을 사용하세요. RID 출력은 메모리 삽입 성공입니다. <code>.flush</code>, <code>.exit</code>, 정상 EOF에서 힙과 색인을 동기화합니다. 명령 오류나 I/O 오류로 종료하면 자동 flush하지 않습니다.</p>
+<h3>E. 실제 바이트 확인하기</h3><p>행 하나 <code>(1, "Roy", NULL)</code>만 넣고 종료한 새 DB의 힙 페이지를 확인합니다.</p><pre><code data-language="bash">dd if=demo-db/tables.pages bs=1 skip=4096 count=16 2&gt;/dev/null | od -An -tx1
+# 50 47 30 32 02 00 da 0f f8 0f 08 00 da 0f 1e 00
+dd if=demo-db/tables.pages bs=1 skip=8154 count=30 2&gt;/dev/null | od -An -tx1
+# 03 00 04 01 00 00 00 00 00 00 00 1b 00 00 00 03
+# 00 00 00 00 00 00 00 00 00 00 00 52 6f 79</code></pre>
+<p>헤더의 슬롯 수는 2입니다. slot 0은 offset=4088, length=8로 next를 담고, slot 1은 offset=4058, length=30으로 행을 담습니다. 파일 전체에서 행 시작은 <code>4096 + 4058 = 8154</code>입니다. 위 명령은 두 번째 행을 넣기 전에 실행해야 합니다. 아래 검사 스크립트가 같은 파일을 생성해 실제 바이트를 비교합니다.</p>
+<details class="deep"><summary>접힌 참조 구현: tables.rs</summary><div><p><a href="examples/ch04/tables.rs" download>tables.rs 저장</a> · <a href="examples/ch03/btree.rs" download>3장 btree.rs</a> · <a href="examples/ch02/pages.rs" download>2장 pages.rs</a>. 상대 경로를 유지하세요.</p><pre><code data-language="rust">use std::{
+    collections::{HashMap, HashSet},
+    io::{self, BufRead},
+    path::{Path, PathBuf},
+};
+// Keep the previous chapters unchanged; expose only the operations this layer needs.
+#[allow(dead_code)]
+mod index {
+    include!(&quot;../ch03/btree.rs&quot;);
+    pub struct Index(Tree);
+    impl Index {
+        pub fn open(path: &amp;Path) -&gt; io::Result&lt;Self&gt; {
+            Ok(Self(Tree::open(path, 3, 3)?))
+        }
+        pub fn get(&amp;mut self, key: i64) -&gt; io::Result&lt;Option&lt;i64&gt;&gt; {
+            self.0.get(key)
+        }
+        pub fn set(&amp;mut self, key: i64, rid: i64) -&gt; io::Result&lt;()&gt; {
+            self.0.set(key, rid)
+        }
+        pub fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+            self.0.flush()
+        }
+    }
+}
+#[allow(dead_code)]
+mod heap {
+    include!(&quot;../ch02/pages.rs&quot;);
+    pub struct Heap(Pool);
+    impl Heap {
+        pub fn open(path: &amp;Path) -&gt; io::Result&lt;Self&gt; {
+            Ok(Self(Pool::new(Disk::open(path)?, 3)?))
+        }
+        pub fn len(&amp;self) -&gt; u64 {
+            self.0.disk.pages
+        }
+        pub fn allocate(&amp;mut self, metadata: &amp;[u8]) -&gt; io::Result&lt;u64&gt; {
+            let id = self.0.disk.allocate()?;
+            self.replace(id, metadata)?;
+            Ok(id)
+        }
+        pub fn replace(&amp;mut self, id: u64, metadata: &amp;[u8]) -&gt; io::Result&lt;()&gt; {
+            let mut p = Page::new();
+            p.insert(metadata)?;
+            let f = self.0.fetch(id)?;
+            let frame = self.0.frames[f].as_mut().unwrap();
+            frame.page = p;
+            frame.dirty = true;
+            self.0.unpin(f)
+        }
+        pub fn read(&amp;mut self, id: u64, slot: u16) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+            let f = self.0.fetch(id)?;
+            let result = self
+                .0
+                .get(f, slot)
+                .and_then(|b| b.map(&lt;[u8]&gt;::to_vec).ok_or_else(|| invalid(&quot;missing slot&quot;)));
+            self.0.unpin(f)?;
+            result
+        }
+        pub fn append(&amp;mut self, id: u64, bytes: &amp;[u8]) -&gt; io::Result&lt;Option&lt;u16&gt;&gt; {
+            let f = self.0.fetch(id)?;
+            let free = self.0.frames[f].as_ref().unwrap().page.free();
+            let result = if bytes.len() + 4 &gt; free {
+                Ok(None)
+            } else {
+                self.0.insert(f, bytes).map(Some)
+            };
+            self.0.unpin(f)?;
+            result
+        }
+        pub fn count(&amp;mut self, id: u64) -&gt; io::Result&lt;usize&gt; {
+            let f = self.0.fetch(id)?;
+            let n = self.0.frames[f].as_ref().unwrap().page.count();
+            self.0.unpin(f)?;
+            Ok(n)
+        }
+        pub fn next(&amp;mut self, id: u64) -&gt; io::Result&lt;u64&gt; {
+            let b = self.read(id, 0)?;
+            if b.len() != 8 {
+                return Err(invalid(&quot;bad heap header&quot;));
+            }
+            let next = u64::from_le_bytes(b.try_into().unwrap());
+            if next &gt;= self.len() &amp;&amp; next != 0 {
+                return Err(invalid(&quot;bad next page&quot;));
+            }
+            Ok(next)
+        }
+        pub fn link(&amp;mut self, id: u64, next: u64) -&gt; io::Result&lt;()&gt; {
+            self.next(id)?;
+            let f = self.0.fetch(id)?;
+            let frame = self.0.frames[f].as_mut().unwrap();
+            let start = frame.page.u16(8);
+            frame.page.0[start..start + 8].copy_from_slice(&amp;next.to_le_bytes());
+            frame.dirty = true;
+            self.0.unpin(f)
+        }
+        pub fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+            self.0.flush()
+        }
+    }
+}
+const MAX_ROW: usize = 4072;
+fn bad(message: &amp;str) -&gt; io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+#[derive(Debug, Clone, PartialEq)]
+enum Kind {
+    Int,
+    Text,
+}
+#[derive(Debug, Clone, PartialEq)]
+struct Column {
+    name: String,
+    kind: Kind,
+    nullable: bool,
+}
+#[derive(Debug, Clone, PartialEq)]
+enum Value {
+    Int(i64),
+    Text(String),
+    Null,
+}
+type Row = Vec&lt;Value&gt;;
+fn identifier(s: &amp;str) -&gt; bool {
+    !s.is_empty()
+        &amp;&amp; s.len() &lt;= 32
+        &amp;&amp; s.as_bytes()[0].is_ascii_alphabetic()
+        &amp;&amp; s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b&#x27;_&#x27;)
+}
+fn validate_schema(schema: &amp;[Column]) -&gt; io::Result&lt;()&gt; {
+    if schema.is_empty() || schema.len() &gt; 16 || schema[0].kind != Kind::Int || schema[0].nullable {
+        return Err(bad(&quot;first column must be non-null int; 1..16 columns&quot;));
+    }
+    let mut names = HashSet::new();
+    for c in schema {
+        if !identifier(&amp;c.name) || !names.insert(&amp;c.name) {
+            return Err(bad(&quot;bad or duplicate column name&quot;));
+        }
+    }
+    Ok(())
+}
+fn encode(schema: &amp;[Column], row: &amp;[Value]) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    if row.len() != schema.len() {
+        return Err(bad(&quot;column count mismatch&quot;));
+    }
+    let bitmap = schema.len().div_ceil(8);
+    let fixed = 2 + bitmap + 8 * schema.len();
+    let mut b = vec![0; fixed];
+    b[..2].copy_from_slice(&amp;(schema.len() as u16).to_le_bytes());
+    for (i, (c, v)) in schema.iter().zip(row).enumerate() {
+        let at = 2 + bitmap + i * 8;
+        match (&amp;c.kind, v) {
+            (_, Value::Null) if c.nullable =&gt; b[2 + i / 8] |= 1 &lt;&lt; (i % 8),
+            (Kind::Int, Value::Int(n)) =&gt; b[at..at + 8].copy_from_slice(&amp;n.to_le_bytes()),
+            (Kind::Text, Value::Text(s)) =&gt; {
+                if b.len() + s.len() &gt; MAX_ROW {
+                    return Err(bad(&quot;row too large&quot;));
+                }
+                let offset = b.len() as u32;
+                b[at..at + 4].copy_from_slice(&amp;offset.to_le_bytes());
+                b[at + 4..at + 8].copy_from_slice(&amp;(s.len() as u32).to_le_bytes());
+                b.extend_from_slice(s.as_bytes());
+            }
+            _ =&gt; return Err(bad(&quot;type or NOT NULL constraint&quot;)),
+        }
+    }
+    if b.len() &gt; MAX_ROW {
+        return Err(bad(&quot;row too large&quot;));
+    }
+    Ok(b)
+}
+fn decode(schema: &amp;[Column], b: &amp;[u8]) -&gt; io::Result&lt;Row&gt; {
+    let n = schema.len();
+    let bitmap = n.div_ceil(8);
+    let fixed = 2 + bitmap + 8 * n;
+    if b.len() &lt; fixed || b.len() &gt; MAX_ROW || u16::from_le_bytes([b[0], b[1]]) as usize != n {
+        return Err(bad(&quot;bad row size&quot;));
+    }
+    if n % 8 != 0 &amp;&amp; b[2 + bitmap - 1] &gt;&gt; (n % 8) != 0 {
+        return Err(bad(&quot;unused NULL bits&quot;));
+    }
+    let mut row = vec![];
+    let mut end = fixed;
+    for (i, c) in schema.iter().enumerate() {
+        let at = 2 + bitmap + 8 * i;
+        let cell = &amp;b[at..at + 8];
+        if b[2 + i / 8] &amp; (1 &lt;&lt; (i % 8)) != 0 {
+            if !c.nullable || cell.iter().any(|&amp;v| v != 0) {
+                return Err(bad(&quot;bad NULL field&quot;));
+            }
+            row.push(Value::Null);
+            continue;
+        }
+        row.push(match c.kind {
+            Kind::Int =&gt; Value::Int(i64::from_le_bytes(cell.try_into().unwrap())),
+            Kind::Text =&gt; {
+                let start = u32::from_le_bytes(cell[..4].try_into().unwrap()) as usize;
+                let len = u32::from_le_bytes(cell[4..].try_into().unwrap()) as usize;
+                let limit = start.checked_add(len).ok_or_else(|| bad(&quot;text overflow&quot;))?;
+                if start != end || limit &gt; b.len() {
+                    return Err(bad(&quot;bad text range&quot;));
+                }
+                let s = std::str::from_utf8(&amp;b[start..limit]).map_err(|_| bad(&quot;bad UTF-8&quot;))?;
+                end = limit;
+                Value::Text(s.to_owned())
+            }
+        });
+    }
+    if end != b.len() {
+        return Err(bad(&quot;trailing row bytes&quot;));
+    }
+    Ok(row)
+}
+#[derive(Debug, Clone, PartialEq)]
+struct Table {
+    name: String,
+    schema: Vec&lt;Column&gt;,
+    first: u64,
+    last: u64,
+}
+fn catalog(tables: &amp;[Table]) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    if tables.len() &gt; 32 {
+        return Err(bad(&quot;at most 32 tables&quot;));
+    }
+    let mut b = b&quot;TB04&quot;.to_vec();
+    b.extend_from_slice(&amp;(tables.len() as u16).to_le_bytes());
+    for t in tables {
+        if !identifier(&amp;t.name) {
+            return Err(bad(&quot;bad table name&quot;));
+        }
+        validate_schema(&amp;t.schema)?;
+        b.push(t.name.len() as u8);
+        b.extend_from_slice(t.name.as_bytes());
+        b.push(t.schema.len() as u8);
+        for c in &amp;t.schema {
+            b.push(c.name.len() as u8);
+            b.extend_from_slice(c.name.as_bytes());
+            b.push(if c.kind == Kind::Int { 1 } else { 2 });
+            b.push(c.nullable as u8);
+        }
+        b.extend_from_slice(&amp;t.first.to_le_bytes());
+        b.extend_from_slice(&amp;t.last.to_le_bytes());
+    }
+    if b.len() &gt; 4084 {
+        return Err(bad(&quot;catalog page full&quot;));
+    }
+    Ok(b)
+}
+struct Reader&lt;&#x27;a&gt; {
+    bytes: &amp;&#x27;a [u8],
+    at: usize,
+}
+impl&lt;&#x27;a&gt; Reader&lt;&#x27;a&gt; {
+    fn take(&amp;mut self, n: usize) -&gt; io::Result&lt;&amp;&#x27;a [u8]&gt; {
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or_else(|| bad(&quot;catalog overflow&quot;))?;
+        let out = self
+            .bytes
+            .get(self.at..end)
+            .ok_or_else(|| bad(&quot;truncated catalog&quot;))?;
+        self.at = end;
+        Ok(out)
+    }
+    fn byte(&amp;mut self) -&gt; io::Result&lt;u8&gt; {
+        Ok(self.take(1)?[0])
+    }
+    fn name(&amp;mut self) -&gt; io::Result&lt;String&gt; {
+        let len = self.byte()? as usize;
+        Ok(std::str::from_utf8(self.take(len)?)
+            .map_err(|_| bad(&quot;bad name&quot;))?
+            .to_owned())
+    }
+    fn id(&amp;mut self) -&gt; io::Result&lt;u64&gt; {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+}
+fn read_catalog(b: &amp;[u8], pages: u64) -&gt; io::Result&lt;Vec&lt;Table&gt;&gt; {
+    let mut r = Reader { bytes: b, at: 0 };
+    if r.take(4)? != b&quot;TB04&quot; {
+        return Err(bad(&quot;bad catalog magic&quot;));
+    }
+    let n = u16::from_le_bytes(r.take(2)?.try_into().unwrap());
+    if n &gt; 32 {
+        return Err(bad(&quot;too many tables&quot;));
+    }
+    let mut tables = vec![];
+    let mut names = HashSet::new();
+    for _ in 0..n {
+        let name = r.name()?;
+        if !identifier(&amp;name) || !names.insert(name.clone()) {
+            return Err(bad(&quot;bad table name&quot;));
+        }
+        let count = r.byte()?;
+        if !(1..=16).contains(&amp;count) {
+            return Err(bad(&quot;bad column count&quot;));
+        }
+        let mut schema = vec![];
+        for _ in 0..count {
+            let name = r.name()?;
+            let kind = match r.byte()? {
+                1 =&gt; Kind::Int,
+                2 =&gt; Kind::Text,
+                _ =&gt; return Err(bad(&quot;bad type&quot;)),
+            };
+            let nullable = match r.byte()? {
+                0 =&gt; false,
+                1 =&gt; true,
+                _ =&gt; return Err(bad(&quot;bad nullability&quot;)),
+            };
+            schema.push(Column {
+                name,
+                kind,
+                nullable,
+            });
+        }
+        validate_schema(&amp;schema)?;
+        let first = r.id()?;
+        let last = r.id()?;
+        if first == 0 || last == 0 || first &gt;= pages || last &gt;= pages {
+            return Err(bad(&quot;bad heap page id&quot;));
+        }
+        tables.push(Table {
+            name,
+            schema,
+            first,
+            last,
+        });
+    }
+    if r.at != b.len() {
+        return Err(bad(&quot;trailing catalog bytes&quot;));
+    }
+    Ok(tables)
+}
+fn pack(page: u64, slot: u16) -&gt; io::Result&lt;i64&gt; {
+    if page == 0 || page &gt; (i64::MAX as u64 &gt;&gt; 16) || slot == 0 {
+        return Err(bad(&quot;RID overflow or reserved slot&quot;));
+    }
+    Ok(((page &lt;&lt; 16) | slot as u64) as i64)
+}
+fn unpack(rid: i64) -&gt; io::Result&lt;(u64, u16)&gt; {
+    if rid &lt; 0 {
+        return Err(bad(&quot;negative RID&quot;));
+    }
+    let page = rid as u64 &gt;&gt; 16;
+    let slot = rid as u16;
+    pack(page, slot)?;
+    Ok((page, slot))
+}
+struct Db {
+    dir: PathBuf,
+    heap: heap::Heap,
+    tables: Vec&lt;Table&gt;,
+    indexes: HashMap&lt;String, index::Index&gt;,
+}
+impl Db {
+    fn open(dir: &amp;Path) -&gt; io::Result&lt;Self&gt; {
+        std::fs::create_dir_all(dir)?;
+        let mut heap = heap::Heap::open(&amp;dir.join(&quot;tables.pages&quot;))?;
+        if heap.len() == 0 {
+            heap.allocate(&amp;catalog(&amp;[])?)?;
+            heap.flush()?;
+        }
+        let tables = read_catalog(&amp;heap.read(0, 0)?, heap.len())?;
+        let mut indexes = HashMap::new();
+        for t in &amp;tables {
+            let path = dir.join(format!(&quot;{}.idx&quot;, t.name));
+            if !path.exists() || path.metadata()?.len() == 0 {
+                return Err(bad(&quot;missing or empty index file&quot;));
+            }
+            indexes.insert(t.name.clone(), index::Index::open(&amp;path)?);
+        }
+        Ok(Self {
+            dir: dir.to_owned(),
+            heap,
+            tables,
+            indexes,
+        })
+    }
+    fn table(&amp;self, name: &amp;str) -&gt; io::Result&lt;usize&gt; {
+        self.tables
+            .iter()
+            .position(|t| t.name == name)
+            .ok_or_else(|| bad(&quot;unknown table&quot;))
+    }
+    fn create(&amp;mut self, name: &amp;str, schema: Vec&lt;Column&gt;) -&gt; io::Result&lt;()&gt; {
+        if !identifier(name) || self.tables.iter().any(|t| t.name == name) {
+            return Err(bad(&quot;bad or duplicate table name&quot;));
+        }
+        validate_schema(&amp;schema)?;
+        let mut tables = self.tables.clone();
+        tables.push(Table {
+            name: name.to_owned(),
+            schema,
+            first: 1,
+            last: 1,
+        });
+        catalog(&amp;tables)?;
+        let path = self.dir.join(format!(&quot;{name}.idx&quot;));
+        if path.exists() {
+            return Err(bad(&quot;index file already exists&quot;));
+        }
+        let id = self.heap.allocate(&amp;0u64.to_le_bytes())?;
+        let t = tables.last_mut().unwrap();
+        t.first = id;
+        t.last = id;
+        let idx = index::Index::open(&amp;path)?;
+        self.heap.replace(0, &amp;catalog(&amp;tables)?)?;
+        self.tables = tables;
+        self.indexes.insert(name.to_owned(), idx);
+        Ok(())
+    }
+    fn insert(&amp;mut self, name: &amp;str, row: Row) -&gt; io::Result&lt;(u64, u16)&gt; {
+        let i = self.table(name)?;
+        let bytes = encode(&amp;self.tables[i].schema, &amp;row)?;
+        let Value::Int(key) = row[0] else {
+            return Err(bad(&quot;int primary key required&quot;));
+        };
+        if self.indexes.get_mut(name).unwrap().get(key)?.is_some() {
+            return Err(bad(&quot;duplicate primary key&quot;));
+        }
+        let mut page = self.tables[i].last;
+        let slot = match self.heap.append(page, &amp;bytes)? {
+            Some(slot) =&gt; slot,
+            None =&gt; {
+                let new = self.heap.allocate(&amp;0u64.to_le_bytes())?;
+                let slot = self
+                    .heap
+                    .append(new, &amp;bytes)?
+                    .ok_or_else(|| bad(&quot;row does not fit&quot;))?;
+                self.heap.link(page, new)?;
+                self.tables[i].last = new;
+                self.heap.replace(0, &amp;catalog(&amp;self.tables)?)?;
+                page = new;
+                slot
+            }
+        };
+        self.indexes
+            .get_mut(name)
+            .unwrap()
+            .set(key, pack(page, slot)?)?;
+        Ok((page, slot))
+    }
+    fn get(&amp;mut self, name: &amp;str, key: i64) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        let i = self.table(name)?;
+        let Some(rid) = self.indexes.get_mut(name).unwrap().get(key)? else {
+            return Ok(None);
+        };
+        let (page, slot) = unpack(rid)?;
+        let row = decode(&amp;self.tables[i].schema, &amp;self.heap.read(page, slot)?)?;
+        if row.first() != Some(&amp;Value::Int(key)) {
+            return Err(bad(&quot;index key and heap row disagree&quot;));
+        }
+        Ok(Some(row))
+    }
+    fn scan(&amp;mut self, name: &amp;str) -&gt; io::Result&lt;Vec&lt;Row&gt;&gt; {
+        let i = self.table(name)?;
+        let t = self.tables[i].clone();
+        let mut page = t.first;
+        let mut seen = HashSet::new();
+        let mut rows = vec![];
+        loop {
+            if !seen.insert(page) {
+                return Err(bad(&quot;cycle in heap chain&quot;));
+            }
+            for slot in 1..self.heap.count(page)? {
+                rows.push(decode(&amp;t.schema, &amp;self.heap.read(page, slot as u16)?)?);
+            }
+            let next = self.heap.next(page)?;
+            if next == 0 {
+                if page != t.last {
+                    return Err(bad(&quot;bad last page&quot;));
+                }
+                return Ok(rows);
+            }
+            page = next;
+        }
+    }
+    fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+        self.heap.flush()?;
+        for idx in self.indexes.values_mut() {
+            idx.flush()?;
+        }
+        Ok(())
+    }
+}
+fn parse_schema(fields: &amp;[&amp;str]) -&gt; io::Result&lt;Vec&lt;Column&gt;&gt; {
+    let mut schema = vec![];
+    for f in fields {
+        let (name, ty) = f
+            .split_once(&#x27;:&#x27;)
+            .ok_or_else(|| bad(&quot;column syntax: name:int or name:text?&quot;))?;
+        let nullable = ty.ends_with(&#x27;?&#x27;);
+        let ty = ty.strip_suffix(&#x27;?&#x27;).unwrap_or(ty);
+        let kind = match ty {
+            &quot;int&quot; =&gt; Kind::Int,
+            &quot;text&quot; =&gt; Kind::Text,
+            _ =&gt; return Err(bad(&quot;unknown type&quot;)),
+        };
+        schema.push(Column {
+            name: name.to_owned(),
+            kind,
+            nullable,
+        });
+    }
+    validate_schema(&amp;schema)?;
+    Ok(schema)
+}
+fn display(row: &amp;[Value]) -&gt; String {
+    row.iter()
+        .map(|v| match v {
+            Value::Int(n) =&gt; n.to_string(),
+            Value::Text(s) =&gt; s.clone(),
+            Value::Null =&gt; &quot;NULL&quot;.into(),
+        })
+        .collect::&lt;Vec&lt;_&gt;&gt;()
+        .join(&quot;|&quot;)
+}
+fn main() -&gt; io::Result&lt;()&gt; {
+    let dir = std::env::args()
+        .nth(1)
+        .ok_or_else(|| bad(&quot;usage: tables DIRECTORY&quot;))?;
+    let mut db = Db::open(Path::new(&amp;dir))?;
+    for line in io::stdin().lock().lines() {
+        let line = line?;
+        let parts: Vec&lt;_&gt; = line.split(&#x27;|&#x27;).collect();
+        match parts.as_slice() {
+            [&quot;create&quot;, name, fields @ ..] =&gt; {
+                db.create(name, parse_schema(fields)?)?;
+                println!(&quot;CREATED&quot;);
+            }
+            [&quot;insert&quot;, name, fields @ ..] =&gt; {
+                let i = db.table(name)?;
+                if fields.len() != db.tables[i].schema.len() {
+                    return Err(bad(&quot;column count mismatch&quot;));
+                }
+                let mut row = vec![];
+                for (s, c) in fields.iter().zip(&amp;db.tables[i].schema) {
+                    row.push(if *s == &quot;NULL&quot; {
+                        Value::Null
+                    } else {
+                        match c.kind {
+                            Kind::Int =&gt; Value::Int(s.parse().map_err(|_| bad(&quot;expected i64&quot;))?),
+                            Kind::Text =&gt; Value::Text((*s).to_owned()),
+                        }
+                    });
+                }
+                let (page, slot) = db.insert(name, row)?;
+                println!(&quot;RID {page}:{slot}&quot;);
+            }
+            [&quot;get&quot;, name, key] =&gt; {
+                let key = key.parse().map_err(|_| bad(&quot;expected i64&quot;))?;
+                println!(
+                    &quot;{}&quot;,
+                    db.get(name, key)?
+                        .map(|r| display(&amp;r))
+                        .unwrap_or_else(|| &quot;(nil)&quot;.into())
+                );
+            }
+            [&quot;scan&quot;, name] =&gt; {
+                for row in db.scan(name)? {
+                    println!(&quot;{}&quot;, display(&amp;row));
+                }
+            }
+            [&quot;.flush&quot;] =&gt; {
+                db.flush()?;
+                println!(&quot;FLUSHED&quot;);
+            }
+            [&quot;.exit&quot;] =&gt; break,
+            [&quot;&quot;] =&gt; {}
+            _ =&gt; {
+                return Err(bad(
+                    &quot;commands: create|TABLE|COL:TYPE...; insert|TABLE|VALUE...; get|TABLE|KEY; scan|TABLE; .flush; .exit&quot;,
+                ));
+            }
+        }
+    }
+    db.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -&gt; Self {
+            Self(std::env::temp_dir().join(format!(
+                &quot;mydb-ch04-{}-{}&quot;,
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            )))
+        }
+        fn db(&amp;self) -&gt; Db {
+            Db::open(&amp;self.0).unwrap()
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&amp;mut self) {
+            let _ = std::fs::remove_dir_all(&amp;self.0);
+        }
+    }
+    fn schema() -&gt; Vec&lt;Column&gt; {
+        parse_schema(&amp;[&quot;id:int&quot;, &quot;name:text&quot;, &quot;age:int?&quot;]).unwrap()
+    }
+    fn row(id: i64, name: &amp;str) -&gt; Row {
+        vec![Value::Int(id), Value::Text(name.into()), Value::Null]
+    }
+    #[test]
+    fn exact_row_bytes() {
+        let b = encode(&amp;schema(), &amp;row(1, &quot;Roy&quot;)).unwrap();
+        assert_eq!(b.len(), 30);
+        assert_eq!(&amp;b[..3], &amp;[3, 0, 4]);
+        assert_eq!(&amp;b[3..11], &amp;1i64.to_le_bytes());
+        assert_eq!(&amp;b[11..19], &amp;[27, 0, 0, 0, 3, 0, 0, 0]);
+        assert_eq!(&amp;b[19..27], &amp;[0; 8]);
+        assert_eq!(&amp;b[27..], b&quot;Roy&quot;);
+        assert_eq!(decode(&amp;schema(), &amp;b).unwrap(), row(1, &quot;Roy&quot;));
+    }
+    #[test]
+    fn empty_text_null_and_unicode_are_distinct() {
+        let s = parse_schema(&amp;[&quot;id:int&quot;, &quot;text:text?&quot;]).unwrap();
+        for v in [
+            Value::Text(String::new()),
+            Value::Text(&quot;한글🙂&quot;.into()),
+            Value::Text(&quot;NULL&quot;.into()),
+            Value::Null,
+        ] {
+            let r = vec![Value::Int(-1), v];
+            let b = encode(&amp;s, &amp;r).unwrap();
+            assert_eq!(decode(&amp;s, &amp;b).unwrap(), r);
+        }
+        let null = encode(&amp;s, &amp;[Value::Int(1), Value::Null]).unwrap();
+        let empty = encode(&amp;s, &amp;[Value::Int(1), Value::Text(String::new())]).unwrap();
+        assert_ne!(null, empty);
+        assert_eq!(null.len(), empty.len());
+    }
+    #[test]
+    fn bitmap_crosses_byte_boundary() {
+        let mut s = parse_schema(&amp;[&quot;id:int&quot;]).unwrap();
+        for i in 1..10 {
+            s.push(Column {
+                name: format!(&quot;v{i}&quot;),
+                kind: Kind::Text,
+                nullable: true,
+            });
+        }
+        let mut r = vec![Value::Int(i64::MIN)];
+        r.extend(vec![Value::Null; 9]);
+        let b = encode(&amp;s, &amp;r).unwrap();
+        assert_eq!(&amp;b[2..4], &amp;[0xfe, 3]);
+        assert_eq!(decode(&amp;s, &amp;b).unwrap(), r);
+    }
+    #[test]
+    fn invalid_rows_and_names_rejected() {
+        assert!(encode(&amp;schema(), &amp;row(1, &amp;&quot;x&quot;.repeat(5000))).is_err());
+        assert!(encode(&amp;schema(), &amp;[]).is_err());
+        assert!(
+            encode(
+                &amp;schema(),
+                &amp;[Value::Null, Value::Text(&quot;x&quot;.into()), Value::Null]
+            )
+            .is_err()
+        );
+        assert!(encode(&amp;schema(), &amp;[Value::Int(1), Value::Int(2), Value::Null]).is_err());
+        for fields in [
+            vec![&quot;id:int?&quot;],
+            vec![&quot;id:text&quot;],
+            vec![&quot;id:int&quot;, &quot;id:text&quot;],
+            vec![&quot;../id:int&quot;],
+        ] {
+            assert!(parse_schema(&amp;fields).is_err());
+        }
+    }
+    #[test]
+    fn corrupt_rows_return_errors() {
+        let s = schema();
+        let b = encode(&amp;s, &amp;row(1, &quot;Roy&quot;)).unwrap();
+        for len in 0..b.len() {
+            assert!(decode(&amp;s, &amp;b[..len]).is_err());
+        }
+        let mut x = b.clone();
+        x[2] |= 0x80;
+        assert!(decode(&amp;s, &amp;x).is_err());
+        let mut x = b.clone();
+        x[11..15].copy_from_slice(&amp;u32::MAX.to_le_bytes());
+        assert!(decode(&amp;s, &amp;x).is_err());
+        let mut x = b.clone();
+        x[27] = 0xff;
+        assert!(decode(&amp;s, &amp;x).is_err());
+        let mut x = b.clone();
+        x[19] = 1;
+        assert!(decode(&amp;s, &amp;x).is_err());
+        let mut x = b;
+        x.push(0);
+        assert!(decode(&amp;s, &amp;x).is_err());
+    }
+    #[test]
+    fn catalog_roundtrip_and_truncation() {
+        let tables = vec![Table {
+            name: &quot;people&quot;.into(),
+            schema: schema(),
+            first: 1,
+            last: 3,
+        }];
+        let b = catalog(&amp;tables).unwrap();
+        assert_eq!(&amp;b[..6], b&quot;TB04\x01\x00&quot;);
+        assert_eq!(read_catalog(&amp;b, 4).unwrap(), tables);
+        for len in 0..b.len() {
+            assert!(read_catalog(&amp;b[..len], 4).is_err());
+        }
+        assert!(read_catalog(&amp;b, 3).is_err());
+        let mut dup = tables.clone();
+        dup.push(tables[0].clone());
+        assert!(read_catalog(&amp;catalog(&amp;dup).unwrap(), 4).is_err());
+    }
+    #[test]
+    fn rid_roundtrip_and_limits() {
+        assert_eq!(pack(1, 1).unwrap(), 65537);
+        assert_eq!(unpack(65537).unwrap(), (1, 1));
+        let page = i64::MAX as u64 &gt;&gt; 16;
+        assert_eq!(
+            unpack(pack(page, u16::MAX).unwrap()).unwrap(),
+            (page, u16::MAX)
+        );
+        assert!(pack(page + 1, 1).is_err());
+        assert!(pack(0, 1).is_err());
+        assert!(pack(1, 0).is_err());
+        assert!(unpack(-1).is_err());
+    }
+    #[test]
+    fn duplicate_primary_key_does_not_append() {
+        let f = Temp::new();
+        let mut db = f.db();
+        db.create(&quot;people&quot;, schema()).unwrap();
+        assert_eq!(db.insert(&quot;people&quot;, row(1, &quot;Roy&quot;)).unwrap(), (1, 1));
+        assert!(db.insert(&quot;people&quot;, row(1, &quot;Changed&quot;)).is_err());
+        assert_eq!(db.scan(&quot;people&quot;).unwrap(), vec![row(1, &quot;Roy&quot;)]);
+        assert_eq!(db.heap.count(1).unwrap(), 2);
+        assert!(db.get(&quot;people&quot;, 999).unwrap().is_none());
+    }
+    #[test]
+    fn heap_growth_and_index_splits_survive_reopen() {
+        let f = Temp::new();
+        let mut db = f.db();
+        db.create(&quot;people&quot;, schema()).unwrap();
+        let text = &quot;x&quot;.repeat(90);
+        for id in (0..150).rev() {
+            db.insert(&quot;people&quot;, row(id, &amp;text)).unwrap();
+        }
+        assert!(db.tables[0].last &gt; db.tables[0].first);
+        assert_eq!(db.scan(&quot;people&quot;).unwrap().len(), 150);
+        db.flush().unwrap();
+        drop(db);
+        let mut db = f.db();
+        for id in 0..150 {
+            assert_eq!(db.get(&quot;people&quot;, id).unwrap(), Some(row(id, &amp;text)));
+        }
+        db.insert(&quot;people&quot;, row(200, &quot;after reopen&quot;)).unwrap();
+        assert_eq!(db.scan(&quot;people&quot;).unwrap().len(), 151);
+        db.flush().unwrap();
+    }
+    #[test]
+    fn independent_table_schemas_and_indexes() {
+        let f = Temp::new();
+        let mut db = f.db();
+        db.create(&quot;people&quot;, schema()).unwrap();
+        db.create(&quot;jobs&quot;, parse_schema(&amp;[&quot;id:int&quot;, &quot;cost:int&quot;]).unwrap())
+            .unwrap();
+        db.insert(&quot;people&quot;, row(1, &quot;Roy&quot;)).unwrap();
+        db.insert(&quot;jobs&quot;, vec![Value::Int(1), Value::Int(800)])
+            .unwrap();
+        db.flush().unwrap();
+        drop(db);
+        let mut db = f.db();
+        assert_eq!(db.tables.len(), 2);
+        assert_eq!(db.get(&quot;people&quot;, 1).unwrap(), Some(row(1, &quot;Roy&quot;)));
+        assert_eq!(
+            db.get(&quot;jobs&quot;, 1).unwrap(),
+            Some(vec![Value::Int(1), Value::Int(800)])
+        );
+    }
+    #[test]
+    fn max_row_fits_empty_heap_page() {
+        let f = Temp::new();
+        let mut db = f.db();
+        db.create(&quot;people&quot;, schema()).unwrap();
+        let r = row(1, &amp;&quot;x&quot;.repeat(MAX_ROW - 27));
+        assert_eq!(encode(&amp;schema(), &amp;r).unwrap().len(), MAX_ROW);
+        db.insert(&quot;people&quot;, r.clone()).unwrap();
+        assert_eq!(db.get(&quot;people&quot;, 1).unwrap(), Some(r));
+        db.insert(&quot;people&quot;, row(2, &quot;next page&quot;)).unwrap();
+        assert_eq!(db.tables[0].last, 2);
+    }
+    #[test]
+    fn missing_index_and_cyclic_chain_are_errors() {
+        let f = Temp::new();
+        let mut db = f.db();
+        db.create(&quot;people&quot;, schema()).unwrap();
+        db.heap.link(1, 1).unwrap();
+        assert!(db.scan(&quot;people&quot;).is_err());
+        db.flush().unwrap();
+        drop(db);
+        std::fs::remove_file(f.0.join(&quot;people.idx&quot;)).unwrap();
+        assert!(Db::open(&amp;f.0).is_err());
+    }
+    #[test]
+    fn catalog_limit_rejects_before_allocation() {
+        let f = Temp::new();
+        let mut db = f.db();
+        let mut s = parse_schema(&amp;[&quot;id:int&quot;]).unwrap();
+        for i in 1..16 {
+            s.push(Column {
+                name: format!(&quot;long_column_name_{i:02}&quot;),
+                kind: Kind::Text,
+                nullable: true,
+            });
+        }
+        let mut rejected = false;
+        for i in 0..33 {
+            let before = db.heap.len();
+            if db.create(&amp;format!(&quot;table{i}&quot;), s.clone()).is_err() {
+                assert_eq!(db.heap.len(), before);
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected);
+        db.flush().unwrap();
+    }
+    #[test]
+    fn failed_heap_read_releases_pin() {
+        let f = Temp::new();
+        std::fs::create_dir_all(&amp;f.0).unwrap();
+        let mut h = heap::Heap::open(&amp;f.0.join(&quot;heap&quot;)).unwrap();
+        let id = h.allocate(&amp;0u64.to_le_bytes()).unwrap();
+        for _ in 0..5 {
+            assert!(h.read(id, 1).is_err());
+        }
+        h.flush().unwrap();
+        for _ in 0..5 {
+            let id = h.allocate(&amp;0u64.to_le_bytes()).unwrap();
+            h.append(id, b&quot;ok&quot;).unwrap();
+        }
+        h.flush().unwrap();
+    }
+}
+</code></pre></div></details>
+<h3>F. 완료 기준</h3><p><a href="examples/ch04/check.sh" download>check.sh 저장</a> 후 <code>bash examples/ch04/check.sh</code>를 실행합니다. 4장 검사 14개와 재사용한 앞 장의 검사를 포함해 총 50개를 실행합니다. 페이지 모듈 검사는 힙과 색인 각각에서 실행되므로 중복을 포함한 실행 수입니다. CLI 재시작·중복키 거부·실제 행 바이트도 확인합니다. macOS에서 검증했으며 Linux 실행 검증은 별도입니다.</p><pre><code data-language="bash">#!/usr/bin/env bash
+set -eu
+HERE=$(CDPATH= cd -- &quot;$(dirname -- &quot;$0&quot;)&quot; &amp;&amp; pwd)
+D=$(mktemp -d)
+trap &#x27;rm -rf &quot;$D&quot;&#x27; EXIT
+rustc --edition=2024 --test &quot;$HERE/tables.rs&quot; -o &quot;$D/tests&quot;
+&quot;$D/tests&quot; --quiet
+rustc --edition=2024 &quot;$HERE/tables.rs&quot; -o &quot;$D/tables&quot;
+first=$(printf &#x27;%s\n&#x27; &#x27;create|people|id:int|name:text?|age:int?&#x27; &#x27;insert|people|1|Roy|NULL&#x27; &#x27;get|people|1&#x27; &#x27;.exit&#x27; | &quot;$D/tables&quot; &quot;$D/db&quot;)
+[ &quot;$first&quot; = &quot;$(printf &#x27;CREATED\nRID 1:1\n1|Roy|NULL&#x27;)&quot; ]
+# One catalog page and one heap page. Index pages are in a separate file.
+[ &quot;$(wc -c &lt; &quot;$D/db/tables.pages&quot; | tr -d &#x27;[:space:]&#x27;)&quot; = 8192 ]
+head=$(dd if=&quot;$D/db/tables.pages&quot; bs=1 skip=4096 count=16 2&gt;/dev/null | od -An -tx1 | tr -d &#x27;[:space:]&#x27;)
+[ &quot;$head&quot; = 504730320200da0ff80f0800da0f1e00 ]
+row=$(dd if=&quot;$D/db/tables.pages&quot; bs=1 skip=8154 count=30 2&gt;/dev/null | od -An -tx1 | tr -d &#x27;[:space:]&#x27;)
+[ &quot;$row&quot; = 03000401000000000000001b000000030000000000000000000000526f79 ]
+second=$(printf &#x27;%s\n&#x27; &#x27;insert|people|2||25&#x27; &#x27;insert|people|3|NULL|NULL&#x27; &#x27;get|people|1&#x27; &#x27;scan|people&#x27; &#x27;.exit&#x27; | &quot;$D/tables&quot; &quot;$D/db&quot;)
+[ &quot;$second&quot; = &quot;$(printf &#x27;RID 1:2\nRID 1:3\n1|Roy|NULL\n1|Roy|NULL\n2||25\n3|NULL|NULL&#x27;)&quot; ]
+if printf &#x27;%s\n&#x27; &#x27;insert|people|1|duplicate|NULL&#x27; | &quot;$D/tables&quot; &quot;$D/db&quot; &gt;&quot;$D/out&quot; 2&gt;&quot;$D/error&quot;; then
+  echo &#x27;FAIL: duplicate primary key was accepted&#x27;; exit 1
+fi
+third=$(printf &#x27;%s\n&#x27; &#x27;scan|people&#x27; &#x27;.exit&#x27; | &quot;$D/tables&quot; &quot;$D/db&quot;)
+[ &quot;$third&quot; = &quot;$(printf &#x27;1|Roy|NULL\n2||25\n3|NULL|NULL&#x27;)&quot; ]
+printf &#x27;%s\n&#x27; &#x27;PASS: CLI, catalog/index reopen, NULL vs empty text, duplicate rejection, actual heap and row bytes&#x27;
+</code></pre>
+<ul class="checklist"><li>NULL·빈 문자열·0·한글·i64 경계값을 구분합니다.</li><li>타입·NOT NULL·중복 기본키·큰 행을 거부합니다.</li><li>행이 페이지를 넘으면 새 페이지와 카탈로그 last를 연결합니다.</li><li>서로 다른 테이블의 스키마와 기본키 색인이 섞이지 않습니다.</li><li>재시작 후 스키마·색인·힙을 다시 읽고 추가 삽입할 수 있습니다.</li><li>잘린 행·잘못된 UTF-8·오프셋·카탈로그·페이지 순환을 오류로 반환합니다.</li></ul></section>
+<div class="summary"><h3>핵심 요약</h3><ul><li>스키마는 타입을 정하고 NULL 비트맵은 값의 유무를 정합니다.</li><li>문자열은 UTF-8 바이트 길이와 행 내부 오프셋으로 찾습니다.</li><li>기본키 색인은 RID를 저장하고 실제 행은 힙 페이지에 있습니다.</li><li>재시작에는 행뿐 아니라 카탈로그와 색인도 필요합니다.</li></ul></div>
+<h2>확인 문제</h2><div class="quiz" data-answer="1"><div class="q">열 id, name, age 중 name과 age가 NULL이면 비트맵은?</div><button class="opt">00000011</button><button class="opt">00000110</button><button class="opt">00000101</button><div class="explain">열 1과 열 2의 비트를 켜므로 2 + 4 = 6입니다.</div></div><div class="quiz" data-answer="1"><div class="q">name이 빈 문자열일 때 올바른 표현은?</div><button class="opt">NULL 비트=1, 셀은 0</button><button class="opt">NULL 비트=0, length=0, offset은 본문 위치</button><button class="opt">행 전체를 저장하지 않는다</button><div class="explain">빈 문자열도 실제 값입니다. NULL과 구분합니다.</div></div><div class="quiz" data-answer="2"><div class="q">문자열 "한글"의 UTF-8 저장 길이는?</div><button class="opt">2바이트</button><button class="opt">4바이트</button><button class="opt">6바이트</button><div class="explain">이 문자열의 한글 음절은 각각 UTF-8 3바이트입니다.</div></div><div class="quiz" data-answer="2"><div class="q">3장의 B+트리 값에 이번 장이 저장하는 것은?</div><button class="opt">문자열 전체</button><button class="opt">열 이름</button><button class="opt">RID를 패킹한 정수</button><div class="explain">실제 행은 힙에 저장하고 색인은 페이지·슬롯 위치를 저장합니다.</div></div><div class="quiz" data-answer="0"><div class="q">새 힙 페이지의 최대 행 크기가 4072인 이유는?</div><button class="opt">4096에서 헤더·next·두 슬롯 디렉터리 크기를 뺀다</button><button class="opt">모든 DB가 같은 규격을 쓴다</button><button class="opt">문자열은 항상 4072바이트다</button><div class="explain">헤더 8 + next 8 + slot 0과 새 행의 디렉터리 8 = 24바이트입니다.</div></div>
+<h2>실습 과제</h2><ol><li><b>NULL과 빈 문자열을 비교하세요.</b> name이 NULL인 행, 빈 문자열인 행, "한글"인 행을 각각 인코딩하세요. 첫 두 행은 길이가 같아도 비트맵과 셀 내용이 달라야 합니다. "한글"의 payload 길이는 6이어야 합니다.</li><li><b>페이지 경계와 재시작을 검사하세요.</b> 3열 스키마에서 이름 길이를 4045 ASCII 바이트로 만들면 행 길이는 4072입니다. 그 행 하나가 빈 페이지에 들어가고 다음 행은 새 페이지로 가야 합니다. flush 후 재시작해 두 행의 기본키 조회와 scan이 같아야 합니다.</li><li><b>카탈로그를 여러 페이지로 확장하세요.</b> 현재의 4084바이트 제한을 넘는 테이블 정의를 만들고 먼저 거부를 확인하세요. 그다음 카탈로그 페이지 연결을 추가하고, 첫 페이지를 어디서 찾을지 정하세요. 모든 테이블 정의를 재시작 후 복원하는 검사까지 작성하세요.</li></ol>
+<p class="hint">더 읽기: <a href="https://www.postgresql.org/docs/current/storage-page-layout.html">PostgreSQL 행과 페이지 형식</a>은 NULL 정보와 가변 길이 데이터의 실제 설계를 살펴볼 자료입니다. 이 코스의 행·카탈로그 형식은 학습용이며 PostgreSQL과 호환되지 않습니다.</p>
+<section id="s8"><h2>8. 이 저장 구조가 못 하는 것</h2><p>이제 열 정의가 있는 테이블에 행을 저장하고, 기본키로 찾아 복원할 수 있습니다. 하지만 <code data-language="sql">SELECT name FROM people WHERE id = 1</code>을 이해하지 못합니다. 현재 CLI는 구분자로 나눈 문자열을 직접 API에 전달합니다. 다음 장에서는 토큰·문법·AST를 만들어 SQL을 구조화합니다.</p>
+<div class="callout warn"><span class="title">여러 파일의 flush는 원자적 커밋이 아닙니다</span>힙·카탈로그와 테이블별 색인을 차례로 동기화합니다. 중간 종료나 I/O 오류가 나면 서로 다른 시점의 상태가 남을 수 있습니다. 이 장에는 WAL·롤백·동시 접근 잠금·업데이트·삭제가 없습니다. Linux의 fsync 계열 호출과 macOS의 F_FULLFSYNC 차이는 2장을 참고하세요. 7장에서 복구와 쓰기 순서를 다룹니다.</div></section>
+</main><script>(function () {
+  const $=id=>document.getElementById(id), utf8=new TextEncoder();
+  const schema=[{name:'id',kind:1,nullable:false},{name:'name',kind:2,nullable:true},{name:'age',kind:1,nullable:true}];
+  function integer(raw){if(!/^-?\d+$/.test(raw))throw Error('정수 형식이 아닙니다.');const n=BigInt(raw);if(n<-(1n<<63n)||n>(1n<<63n)-1n)throw Error('i64 범위를 벗어났습니다.');return n;}
+  const hex=b=>Array.from(b,v=>v.toString(16).padStart(2,'0')).join(' ');
+  let current;
+  function updateRow(){
+    $('row-name').disabled=$('name-null').checked;$('row-age').disabled=$('age-null').checked;
+    try{
+      const key=integer($('row-id').value), name=$('name-null').checked?null:$('row-name').value,age=$('age-null').checked?null:integer($('row-age').value);
+      const text=name===null?new Uint8Array():utf8.encode(name),b=new Uint8Array(27+text.length),view=new DataView(b.buffer);
+      if(b.length>4072)throw Error('행이 4072바이트를 넘습니다.');
+      view.setUint16(0,3,true);b[2]=(name===null?2:0)|(age===null?4:0);view.setBigInt64(3,key,true);
+      if(name!==null){view.setUint32(11,27,true);view.setUint32(15,text.length,true);b.set(text,27);}
+      if(age!==null)view.setBigInt64(19,age,true);
+      current={key,bytes:b};$('row-stats').textContent=`행 ${b.length}바이트 = 고정 영역 27 + UTF-8 본문 ${text.length}. NULL 비트맵 ${b[2].toString(2).padStart(8,'0')} (1=NULL)`;
+      $('row-bytes').textContent=hex(b.slice(0,128))+(b.length>128?' … (앞 128바이트)':'');
+      $('row-fields').textContent=`0..2: 열 수 3\n2..3: NULL 비트맵 ${hex(b.slice(2,3))}\n3..11: id = ${key}\n11..19: name ${name===null?'NULL, 셀 0':`offset=27, length=${text.length}`}\n19..27: age = ${age===null?'NULL, 셀 0':age}\n27..${b.length}: UTF-8 본문`;
+    }catch(e){current=null;$('row-stats').textContent='오류: '+e.message;$('row-bytes').textContent='';$('row-fields').textContent='';}
+    $('heap-insert').disabled=!current;
+  }
+  for(const id of ['row-id','row-name','row-age','name-null','age-null'])$(id).oninput=updateRow;
+  let pages,index,storedCatalog,cachedCatalog,chosen;
+  function catalogBytes(){
+    const out=[...utf8.encode('TB04'),1,0];
+    function name(s){const b=utf8.encode(s);out.push(b.length,...b);}
+    function u64(n){const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(n),true);out.push(...b);}
+    name('people');out.push(3);for(const c of schema){name(c.name);out.push(c.kind,+c.nullable);}u64(1);u64(pages.length);
+    return new Uint8Array(out);
+  }
+  function readCatalog(){
+    const b=storedCatalog,v=new DataView(b.buffer);let at=6;
+    function name(){const n=b[at++],s=new TextDecoder().decode(b.slice(at,at+n));at+=n;return s;}
+    const table=name(),count=b[at++],cols=[];
+    for(let i=0;i<count;i++){const col=name(),kind=b[at++],nullable=!!b[at++];cols.push({name:col,kind,nullable});}
+    const first=Number(v.getBigUint64(at,true));at+=8;const last=Number(v.getBigUint64(at,true));
+    return {table,cols,first,last};
+  }
+  function resetLookup(message='카탈로그부터 읽으세요.'){
+    cachedCatalog=null;chosen=null;$('lookup-rid').disabled=true;$('lookup-row').disabled=true;$('lookup-result').textContent=message;
+  }
+  function drawHeap(message){
+    $('heap-pages').innerHTML=pages.map((p,i)=>`<div class="heap-page"><b>page ${i+1}</b><div>next=${p.next} · 슬롯 ${p.rows.length+1}개</div><div class="space-meter"><span style="width:${p.used/4096*100}%"></span></div><div>사용 ${p.used} / 4096 · free ${4096-p.used}</div><div>${p.rows.map((r,j)=>`slot ${j+1} · ${r.bytes.length}바이트 · id=${r.key}`).join('<br>')||'아직 행 없음'}</div></div>`).join('');
+    $('heap-stats').textContent=message||`페이지 ${pages.length}개 · 행 ${index.size}개`;
+    storedCatalog=catalogBytes();$('catalog-bytes').textContent=hex(storedCatalog);resetLookup();
+  }
+  function resetHeap(){pages=[{used:20,next:0,rows:[]}];index=new Map();drawHeap('people 테이블의 빈 힙 페이지 1개를 만들었습니다.');}
+  $('heap-insert').onclick=()=>{
+    updateRow();if(!current)return;
+    const k=current.key.toString();if(index.has(k)){$('heap-stats').textContent='중복 기본키: 페이지를 바꾸지 않았습니다.';return;}
+    if(index.size>=30){$('heap-stats').textContent='화면 예제는 30행까지입니다.';return;}
+    let p=pages.at(-1);if(4096-p.used<current.bytes.length+4){p.next=pages.length+1;p={used:20,next:0,rows:[]};pages.push(p);}
+    p.rows.push({key:k,bytes:current.bytes.slice()});p.used+=current.bytes.length+4;index.set(k,{page:pages.length,slot:p.rows.length});
+    drawHeap(`삽입 완료: RID ${pages.length}:${p.rows.length}. 슬롯 디렉터리 4바이트 포함.`);
+  };
+  $('heap-reset').onclick=resetHeap;
+  $('lookup-key').oninput=()=>resetLookup();
+  $('lookup-catalog').onclick=()=>{
+    cachedCatalog=readCatalog();chosen=null;$('lookup-rid').disabled=false;$('lookup-row').disabled=true;
+    $('lookup-result').textContent=`page 0 → ${cachedCatalog.table}\n`+cachedCatalog.cols.map(c=>`${c.name}: ${c.kind===1?'int':'text'}${c.nullable?'?':''}`).join(', ')+`\nfirst=${cachedCatalog.first}, last=${cachedCatalog.last}`;
+  };
+  $('lookup-rid').onclick=()=>{
+    if(!cachedCatalog)return;
+    try{const key=integer($('lookup-key').value).toString();chosen=index.get(key);$('lookup-row').disabled=!chosen;
+      $('lookup-result').textContent+=chosen?`\n기본키 ${key} → RID ${chosen.page}:${chosen.slot} (패킹 값 ${((BigInt(chosen.page)<<16n)|BigInt(chosen.slot))})`:`\n기본키 ${key}: (nil)`;
+    }catch(e){chosen=null;$('lookup-row').disabled=true;$('lookup-result').textContent='오류: '+e.message;}
+  };
+  $('lookup-row').onclick=()=>{
+    if(!chosen||!cachedCatalog)return;const b=pages[chosen.page-1].rows[chosen.slot-1].bytes,v=new DataView(b.buffer),n=cachedCatalog.cols.length,bitmap=Math.ceil(n/8),values=[];
+    for(let i=0;i<n;i++){
+      const at=2+bitmap+i*8;if(b[2+Math.floor(i/8)]&(1<<(i%8))){values.push('NULL');continue;}
+      if(cachedCatalog.cols[i].kind===1)values.push(v.getBigInt64(at,true).toString());
+      else{const start=v.getUint32(at,true),len=v.getUint32(at+4,true);values.push(JSON.stringify(new TextDecoder().decode(b.slice(start,start+len))));}
+    }
+    $('lookup-result').textContent+=`\npage ${chosen.page} slot ${chosen.slot} 디코딩 → ${values.join(' | ')}`;
+  };
+  $('lookup-reopen').onclick=()=>resetLookup('모의 재열기: 해석한 스키마를 지웠습니다. 카탈로그 바이트·힙·색인은 유지합니다.');
+  updateRow();resetHeap();
+})();
+</script><script src="assets/ch03-04-visuals.js"></script></body></html>

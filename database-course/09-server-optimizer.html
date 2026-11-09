@@ -1,0 +1,1011 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>서버와 최적화 · 데이터베이스 만들기</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/syntax.css"><link rel="stylesheet" href="assets/server-optimizer.css"><script src="assets/common.js"></script><script src="assets/syntax.js"></script><script src="assets/sql-parser.js"></script><script src="assets/query-executor.js"></script></head><body data-chapter="09"><main>
+<header class="chapter-head"><span class="label adv">신뢰성과 동시성 · Chapter 09</span><h1>서버와 최적화</h1><p class="lead">psql이 보낸 SQL을 받아, 페이지·B+트리·실행기·WAL·트랜잭션을 거쳐 결과를 돌려줍니다. 같은 결과를 보존하면서 접근 경로를 바꾸고, EXPLAIN으로 선택 이유와 실제 논리 행 수를 확인합니다.</p><div class="objectives"><h4>학습 목표</h4><ul><li>PostgreSQL v3 simple-query 메시지를 길이와 바이트 단위로 읽습니다.</li><li>연결마다 I/T/E 상태를 유지하고 끊어진 거래를 정리합니다.</li><li>전체 바인딩 뒤 안전한 기본키 equality만 색인 후보로 삼습니다.</li><li>비용 추정과 실제 논리 통계, 디스크 I/O를 구분합니다.</li><li>실제 psql로 SQL 실행·트랜잭션·재시작을 검증합니다.</li></ul></div></header>
+<nav class="toc"><b>목차</b><ol><li><a href="#s1">SQL 엔진에 네트워크 경계를 붙이기</a></li><li><a href="#s2">길이가 있는 메시지</a></li><li><a href="#s3">같은 결과, 다른 접근 경로</a></li><li><a href="#s4">연결과 트랜잭션은 수명이 다르다</a></li><li><a href="#s5">구현 가이드와 psql 실습</a></li><li><a href="#s6">완료 기준과 확인 문제</a></li><li><a href="#s7">완성한 엔진의 경계</a></li></ol></nav>
+<section id="s1"><h2>1. SQL 엔진에 네트워크 경계를 붙이기</h2><p>서버는 SQL을 새로 해석하지 않습니다. 5장의 파서, 6장의 바인딩·연산자, 4장의 테이블과 3장의 기본키 색인을 재사용합니다. 7장은 파일 사본의 변경을 WAL로 커밋하고 8장은 세션별 사본과 전역 revision을 관리합니다. 이 장은 그 위에 메시지 인코더와 접근 경로 선택을 추가합니다.</p>
+<figure><div class="stage"><svg viewBox="0 0 800 245" style="min-width:680px" role="img" aria-label="psql에서 프로토콜, 세션, SQL 실행, WAL을 거쳐 파일까지 이어지는 최종 엔진"><g fill="var(--surface-2)" stroke="var(--border)"><rect x="10" y="40" width="130" height="65" rx="6"/><rect x="175" y="40" width="130" height="65" rx="6"/><rect x="340" y="40" width="130" height="65" rx="6"/><rect x="505" y="40" width="130" height="65" rx="6"/><rect x="670" y="40" width="120" height="65" rx="6"/></g><g fill="var(--text)" text-anchor="middle" font-size="15"><text x="75" y="78">psql</text><text x="240" y="68">v3 simple</text><text x="240" y="89">query</text><text x="405" y="68">8장 세션</text><text x="405" y="89">I / T / E</text><text x="570" y="68">5·6장 SQL</text><text x="570" y="89">계획·연산자</text><text x="730" y="68">7장 WAL</text><text x="730" y="89">2~4장 파일</text><text x="400" y="160">Arc&lt;Mutex&lt;Transactions&gt;&gt;: 명령 실행·커밋만 직렬화</text><text x="400" y="195">네트워크 read/write 중에는 DB Mutex를 보유하지 않습니다.</text></g><path d="M140 73h35 M305 73h35 M470 73h35 M635 73h35" fill="none" stroke="var(--accent)" stroke-width="2"/></svg></div><figcaption>서버 스레드는 연결마다 하나, DB 관리자는 하나입니다. 거래 전체에 Mutex를 잡아 두지 않으므로 A와 B의 명령을 교차 실행할 수 있습니다.</figcaption></figure>
+<div class="callout"><span class="title">호환 범위를 먼저 고정합니다</span>PostgreSQL 제품 서버의 전체 구현이 아닙니다. 프로토콜 3.0의 simple Query, UTF-8·텍스트 결과, BEGIN/COMMIT/ROLLBACK과 기존 SQL 부분집합만 지원합니다. TLS·암호 인증·prepared statement·extended query·COPY·CancelRequest·psql의 역슬래시 메타 명령은 지원하지 않습니다. 수치 IP의 loopback 주소만 바인딩합니다.</div></section>
+<section id="s2"><h2>2. 길이가 있는 메시지</h2><p>TCP는 메시지가 아니라 바이트 스트림입니다. 한 번의 read가 헤더 전체나 한 쿼리 전체를 반환한다고 가정하면 안 됩니다. <code data-language="rust">read_exact</code>로 길이를 먼저 읽고, 범위를 검사한 뒤 본문만 할당합니다. 여기서는 길이 필드 4바이트를 포함하여 4~65536바이트만 허용합니다. 정수는 디스크 페이지의 little endian과 달리 네트워크의 <b>big endian</b>입니다.</p>
+<div class="stage"><table><thead><tr><th>메시지</th><th>순서</th><th>중요한 경계</th></tr></thead><tbody><tr><td>Startup</td><td>length:u32 → protocol:u32 → key/value NUL 쌍 → NUL</td><td>type byte 없음, protocol=196608</td></tr><tr><td>Query</td><td>'Q':u8 → length:u32 → UTF8 SQL → NUL</td><td>length는 type을 제외, 한 SQL 문장</td></tr><tr><td>DataRow</td><td>'D' → length → 열 수:u16 → 각 셀 길이:i32 + bytes</td><td>NULL 길이=-1, 빈 문자열=0</td></tr><tr><td>ReadyForQuery</td><td>'Z' → 00 00 00 05 → 'I' 또는 'T' 또는 'E'</td><td>명령이 끝난 세션 상태</td></tr></tbody></table></div>
+<p>연결 시작 시 SSLRequest에는 한 바이트 N으로 답하고, AuthenticationOk·ParameterStatus·ReadyForQuery를 보냅니다. 조회는 RowDescription → DataRow들 → CommandComplete → ReadyForQuery 순서입니다. 열 타입은 실제 스키마에서 가져옵니다. 0행 조회에서도 id의 OID=20(INT8), TEXT의 OID=25를 알 수 있습니다.</p>
+<pre><code data-language="rust">// ReadyForQuery I의 실제 6바이트
+// type        length=5 (길이필드 4 + 상태 1)       status
+// 0x5a        0x00 0x00 0x00 0x05                 0x49
+frame(&amp;mut out, b'Z', b"I");
+// DataRow 셀: NULL=-1=ff ff ff ff; 빈 TEXT=00 00 00 00
+// 한글 2자는 UTF-8 6바이트입니다. 문자열 문자 수를 길이로 쓰지 않습니다.</code></pre>
+<div class="widget sv-widget" id="wire-lab"><div class="w-title">실험 1 · SQL이 패킷 바이트가 되는 과정</div><p class="sv-note">오프라인 인코딩 모델입니다. people의 6장 기본 데이터 5행에 SELECT를 실행하며 실제 소켓은 아래 Rust 서버로 확인합니다. RowDescription 단계는 필드 설명만 표시합니다.</p><label for="wire-sql">전송할 SQL</label><textarea id="wire-sql" spellcheck="false">SELECT id, name FROM people WHERE id = 3</textarea><div class="controls"><button class="btn primary" id="wire-apply">패킷 생성</button><button class="btn" id="wire-reset">기본 입력</button></div><label>Query length 예측 <input id="wire-predict" type="number" min="4" value="4"></label><button class="btn" id="wire-check">예측 확인</button><output id="wire-feedback" aria-live="polite"></output><output id="wire-status" aria-live="polite"></output><div class="stage"><svg id="wire-svg" viewBox="0 0 650 125" role="img" aria-label="프로토콜 단계의 현재 위치"></svg></div><output id="wire-state" aria-live="polite"></output><pre id="wire-bytes" aria-label="현재 메시지 hex bytes"></pre><p id="wire-size" class="sv-note"></p><div id="wire-player"></div></div>
+<p>오류 응답은 'E' 메시지 안에 severity·SQLSTATE·message를 넣습니다. ReadyForQuery의 상태 E와 ErrorResponse의 type E는 위치가 다릅니다. 잘못된 UTF-8, NUL 경계, 큰 프레임은 실행 전에 거부합니다. 공유 실행기는 결과를 모으는 중 보수적인 8MiB 바이트 예산과 10000행 상한을 검사합니다. 서버도 전송 결과를 8MiB로 제한하고, libpq 텍스트 형식으로 표현할 수 없는 NUL 포함 TEXT는 응답을 보내기 전에 거부합니다.</p><p class="sv-note">메시지 정의와 흐름: <a href="https://www.postgresql.org/docs/current/protocol-message-formats.html">PostgreSQL Message Formats</a>, <a href="https://www.postgresql.org/docs/current/protocol-flow.html">Protocol Flow</a>.</p></section>
+<section id="s3"><h2>3. 같은 결과, 다른 접근 경로</h2><p>6장에서는 모든 SELECT가 SeqScan이었습니다. 이제 <code data-language="sql">WHERE id = 3</code>처럼 기본키의 정수 상수 비교가 반드시 참이어야 하는 조건을 찾습니다. <code data-language="sql">id = 3 AND age IS NULL</code>은 id=3 한 행을 찾고 남은 조건을 검사해도 됩니다. <code data-language="sql">id = 3 OR age IS NULL</code>에서 id=3만 찾으면 다른 행이 사라지므로 허용하지 않습니다. NOT 안에서도 추출하지 않습니다.</p>
+<figure><div class="stage"><svg viewBox="0 0 800 225" style="min-width:680px" role="img" aria-label="전체 바인딩 뒤 SeqScan 또는 PrimaryKeyLookup을 선택하고 Filter Sort Limit Project를 재사용"><g fill="var(--surface-2)" stroke="var(--border)"><rect x="10" y="65" width="140" height="65" rx="6"/><rect x="210" y="15" width="200" height="65" rx="6"/><rect x="210" y="125" width="200" height="65" rx="6"/><rect x="470" y="65" width="320" height="65" rx="6"/></g><g fill="var(--text)" font-size="15" text-anchor="middle"><text x="80" y="102">전체 바인딩</text><text x="310" y="53">SeqScan</text><text x="310" y="163">PrimaryKeyLookup</text><text x="630" y="94">Filter → Sort → Limit → Project</text><text x="630" y="118">기존 next() 연산자 재사용</text><text x="400" y="218">색인도 Filter를 건너뛰지 않습니다. LIMIT 0은 source를 pull하지 않습니다.</text></g><path d="M150 97L210 47 M150 97L210 157 M410 47L470 97 M410 157L470 97" fill="none" stroke="var(--accent)" stroke-width="2"/></svg></div></figure>
+<p>비용 모델은 의도적으로 작습니다. DB 전체 힙 데이터 페이지 수 × 8을 추정 행 수와 Seq 비용으로 쓰고 기본키 조회 비용은 3으로 둡니다. 안전한 equality가 있고 Seq 비용 &gt; 3일 때 실제 B+트리 get을 선택합니다. 테이블별 통계나 분포 추정은 없으므로 정확한 성능 예측이 아닙니다. 순차·색인 경로 모두 전체 바인딩을 통과하고 같은 Filter·Sort·Limit·Project를 거칩니다.</p>
+<div class="widget sv-widget" id="plan-lab"><div class="w-title">실험 2 · 후보를 고르고 결과 동등성 확인</div><label>예제 <select id="plan-case"><option value="point">AND 아래 기본키</option><option value="or">OR의 함정</option><option value="not">NOT 조건</option><option value="zero">LIMIT 0도 바인딩 오류</option></select></label><label>모델의 전역 힙 페이지 <input type="number" id="plan-pages" value="1" min="0" max="100000"></label><label>접근 정책 <select id="plan-mode"><option value="auto">자동 선택</option><option value="seq">순차 강제</option></select></label><textarea id="plan-sql" spellcheck="false" aria-label="최적화할 SELECT">SELECT name FROM people WHERE id = 3 AND age IS NULL</textarea><div class="controls"><button class="btn primary" id="plan-apply">바인딩·계획 생성</button><button class="btn" id="plan-reset">기본 입력</button></div><p>실행 전에 선택 경로와 scan_rows를 예상하세요. 페이지 입력은 추정치만 바꾸며, 조회 데이터는 people 5행으로 고정됩니다. 브라우저의 색인 경로는 키로 고른 메모리 후보이며 Rust는 3장의 실제 B+트리를 조회합니다.</p><output id="plan-status" aria-live="polite"></output><pre id="plan-view"></pre><div class="stage"><svg id="plan-svg" viewBox="0 0 650 125" role="img" aria-label="바인딩 접근 선택 실행 단계"></svg></div><pre id="plan-result" data-language="json"></pre><div id="plan-player"></div><output id="plan-answer"></output></div>
+<p><code data-language="sql">EXPLAIN SELECT ...</code>은 선택 경로·모델 비용·이유를 반환합니다. <code data-language="sql">EXPLAIN ANALYZE SELECT ...</code>은 실제 실행 후 통계도 반환합니다. 이 구현의 scan_rows는 source가 반환한 논리 행 수입니다. 거래 스냅샷의 전체 파일 복사 비용은 빠져 있으므로 “1행 조회 = 물리 I/O 1회” 또는 “전체 쿼리가 N배 빨라짐”으로 읽으면 안 됩니다. EXPLAIN은 SELECT만 받습니다.</p></section>
+<section id="s4"><h2>4. 연결과 트랜잭션은 수명이 다르다</h2><p>각 연결은 현재 txid 하나를 가집니다. BEGIN이면 8장의 private snapshot을 만들고 T, 오류가 나면 E, ROLLBACK이나 정상 COMMIT 뒤에는 I입니다. 거래 밖의 SQL은 autocommit입니다. 응답 바이트를 만드는 과정도 성공한 뒤 커밋하므로 응답 상한이나 NUL 오류로 거부된 쓰기가 먼저 공개되지 않습니다.</p><p>쓰기 커밋은 7장의 durable WAL 순서를 따릅니다. 커밋 후 네트워크가 끊기면 클라이언트는 성공 여부를 모를 수 있습니다. 연결의 Drop은 남은 사본을 버리지만 이미 durable commit된 변경은 되돌리지 않습니다. 같은 INSERT를 무조건 재시도하면 중복 키를 만날 수 있습니다.</p>
+<div class="widget sv-widget" id="session-lab"><div class="w-title">실험 3 · 두 연결을 교차 실행하기</div><p>8장의 전체 DB snapshot + 전역 revision OCC를 재현하는 결정적 모델입니다. 이 위젯은 명시적 거래만 조작합니다. A/B가 다른 키를 써도 사이에 쓰기 커밋이 있으면 뒤의 쓰기 커밋은 충돌합니다.</p><label>시나리오 <select id="session-preset"><option value="conflict">쓰기 충돌</option><option value="readonly">오래된 읽기 전용 커밋</option><option value="error">오류 후 전체 롤백</option></select></label><button class="btn" id="session-reset">거래·기록 초기화</button><label>세션 <select id="session-target"><option>A</option><option>B</option></select></label><label>INSERT 키 <input id="session-key" type="number" value="2" min="0"></label><div class="controls"><button class="btn" data-session-op="BEGIN">BEGIN</button><button class="btn" data-session-op="SELECT">SELECT</button><button class="btn" data-session-op="INSERT">INSERT</button><button class="btn" data-session-op="COMMIT">COMMIT</button><button class="btn" data-session-op="ROLLBACK">ROLLBACK</button><button class="btn" data-session-op="ERROR">ERROR</button><button class="btn" data-session-op="DISCONNECT">DISCONNECT</button></div><div class="sv-grid"><div class="sv-panel"><b>A 연결</b><output id="session-A"></output></div><div class="sv-panel"><b>공개 DB</b><output id="session-shared"></output></div><div class="sv-panel"><b>B 연결</b><output id="session-B"></output></div></div><div class="stage"><svg id="session-svg" viewBox="0 0 650 125" role="img" aria-label="두 세션 사본과 공개 revision"></svg></div><output id="session-note" aria-live="polite"></output><pre id="session-history"></pre><div id="session-player"></div><p class="sv-note">시나리오를 선택하거나 명령을 추가하세요. 이전·초기화는 기록을 재현해 중간 상태를 되돌려 봅니다. 브라우저 모델의 키는 안전한 정수, Rust SQL은 정확한 i64 범위입니다.</p></div>
+<p>네트워크 서버는 최대 16연결, 30초 read/write timeout, 관리자는 최대 32활성 거래로 제한합니다. 소켓 대기 중 Mutex를 풀어 느린 연결이 다른 연결의 SQL 실행을 막지 않게 합니다. 명령 실행 자체는 직렬화되며 병렬 쿼리 실행기는 아닙니다. DB 디렉터리는 7장의 프로세스 잠금으로 보호되므로 같은 경로를 별도 CLI로 동시에 열지 않습니다.</p></section>
+<section id="s5"><h2>5. 구현 가이드와 psql 실습</h2><p>Rust 2024 표준 라이브러리만 사용합니다. 2~9장의 상대 경로 구조를 유지하세요. macOS/Linux의 flock과 디렉터리 동기화를 사용하므로 Windows는 이번 참조 구현 범위 밖입니다. psql은 별도 설치된 클라이언트를 사용합니다.</p>
+<pre><code data-language="bash">cd database-course/examples/ch09
+rustc --edition=2024 server.rs -o /tmp/mydb-server
+/tmp/mydb-server serve /tmp/mydb-final 127.0.0.1:55432
+# 다른 터미널: 한 -c에는 SQL 한 문장만 넣습니다.
+psql -X -At 'host=127.0.0.1 port=55432 user=mydb dbname=mydb sslmode=disable' \
+  -c 'CREATE TABLE people (id INT NOT NULL, name TEXT)'
+psql -X -At 'host=127.0.0.1 port=55432 user=mydb dbname=mydb sslmode=disable' &lt;&lt;'SQL'
+BEGIN;
+INSERT INTO people VALUES (1, 'Roy');
+INSERT INTO people VALUES (2, NULL);
+COMMIT;
+SELECT * FROM people ORDER BY id;
+EXPLAIN ANALYZE SELECT * FROM people WHERE id = 1;
+SQL
+# 표준 입력은 psql이 세미콜론마다 각각 Q를 전송합니다.
+# 서버 종료 후 같은 디렉터리로 다시 실행해 SELECT 결과를 확인하세요.
+./check.sh</code></pre>
+<p>검증에 사용한 클라이언트는 기존 PostgreSQL 17 Alpine 이미지의 psql 17입니다. 이미지가 이미 있는 환경에서는 다음과 같이 호스트 서버에 접속할 수도 있습니다. 아래 명령은 이미지를 받지 않습니다.</p><pre><code data-language="bash">docker run --rm --pull=never postgres:17-alpine psql -X -At \
+ 'host=host.docker.internal port=55432 user=mydb dbname=mydb sslmode=disable' \
+ -c 'SELECT * FROM people'
+# Docker Desktop의 호스트 접속 주소입니다. Linux 기본 네트워크와는 다릅니다.</code></pre>
+<h3>먼저 작성할 뼈대</h3><pre><code data-language="rust">fn read_message(stream: &amp;mut TcpStream) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    // TODO 1: 길이 4B를 read_exact하고 big endian으로 해석
+    // TODO 2: 4..=65536 검사 뒤 len-4 바이트만 할당
+    todo!()
+}
+fn choose_access(ast: &amp;Expr) -&gt; Option&lt;i64&gt; {
+    // TODO 3: PK equality를 찾고 AND만 재귀 탐색
+    // TODO 4: 전체 바인딩과 나머지 Filter 유지
+    todo!()
+}
+// TODO 5: Session Drop에서 남은 txid rollback
+// TODO 6: RowDescription/NULL/빈 TEXT/ReadyForQuery I,T,E 검증</code></pre>
+<details class="deep"><summary>힌트 · SQL과 프로토콜 사이에 typed Reply를 둡니다</summary><p>JSON을 다시 파싱하지 말고 열의 이름·타입과 SqlCell::Int/Text/Null을 전달하세요. 행이 0개인 경우에도 스키마는 남아 있어야 합니다. BEGIN/COMMIT/ROLLBACK은 세션 계층이 맡고 나머지 SQL은 기존 파서가 문장 전체를 검사합니다. 프레임 오류와 SQL 오류의 연결 종료 정책도 구분하세요.</p></details><details class="deep"><summary>힌트 · index 경로도 lazy source입니다</summary><p>PointScan의 첫 next에서 Store.lookup을 호출하고 그 뒤에는 None을 반환합니다. LIMIT 0은 source를 한 번도 호출하지 않습니다. 바인딩은 source를 만들기 전에 끝내므로 없는 열을 포함한 LIMIT 0은 오류입니다. 조건이 AND로 연결되면 필수 equality 하나를 골라도 나머지 Filter가 모순 조건을 제거합니다.</p></details>
+<details class="deep"><summary>서버 전체 참조 구현</summary><p><a href="examples/ch09/server.rs">원본 파일</a></p><pre class="sv-source"><code data-language="rust">//! PostgreSQL v3 simple-query teaching server. Loopback only; no authentication/TLS.
+use std::{
+    io::{self, Read, Write},
+    net::{TcpListener, TcpStream},
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+#[allow(dead_code)]
+#[path = &quot;../ch08/transactions.rs&quot;]
+mod transactions;
+use transactions::{
+    Transactions,
+    wal::engine::{self, AccessMode, SqlCell, SqlReply, SqlType},
+};
+const MAX_MESSAGE: usize = 65536;
+const MAX_REPLY: usize = 8 * 1024 * 1024;
+fn bad(s: &amp;str) -&gt; io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, s)
+}
+fn frame(out: &amp;mut Vec&lt;u8&gt;, kind: u8, payload: &amp;[u8]) {
+    out.push(kind);
+    out.extend_from_slice(&amp;((payload.len() + 4) as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+}
+fn cstr(out: &amp;mut Vec&lt;u8&gt;, s: &amp;str) {
+    out.extend_from_slice(s.as_bytes());
+    out.push(0);
+}
+fn error(out: &amp;mut Vec&lt;u8&gt;, message: &amp;str) {
+    let code = if message.starts_with(&quot;serialization conflict:&quot;) {
+        &quot;40001&quot;
+    } else if message.starts_with(&quot;database requires recovery&quot;) {
+        &quot;40003&quot;
+    } else if message == &quot;transaction is failed; ROLLBACK required&quot; {
+        &quot;25P02&quot;
+    } else {
+        &quot;42601&quot;
+    };
+    let mut p = vec![b&#x27;S&#x27;];
+    cstr(&amp;mut p, &quot;ERROR&quot;);
+    p.push(b&#x27;C&#x27;);
+    cstr(&amp;mut p, code);
+    p.push(b&#x27;M&#x27;);
+    cstr(&amp;mut p, &amp;message.replace(&#x27;\0&#x27;, &quot;?&quot;));
+    p.push(0);
+    frame(out, b&#x27;E&#x27;, &amp;p);
+}
+fn encode(reply: &amp;SqlReply) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    let mut out = Vec::new();
+    if !reply.columns.is_empty() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&amp;(reply.columns.len() as u16).to_be_bytes());
+        for c in &amp;reply.columns {
+            if c.name.contains(&#x27;\0&#x27;) {
+                return Err(bad(&quot;NUL in column name&quot;));
+            }
+            cstr(&amp;mut p, &amp;c.name);
+            p.extend_from_slice(&amp;0u32.to_be_bytes());
+            p.extend_from_slice(&amp;0u16.to_be_bytes());
+            p.extend_from_slice(&amp;(if c.kind == SqlType::Int { 20u32 } else { 25 }).to_be_bytes());
+            p.extend_from_slice(&amp;(if c.kind == SqlType::Int { 8i16 } else { -1 }).to_be_bytes());
+            p.extend_from_slice(&amp;(-1i32).to_be_bytes());
+            p.extend_from_slice(&amp;0u16.to_be_bytes());
+        }
+        frame(&amp;mut out, b&#x27;T&#x27;, &amp;p);
+        for row in &amp;reply.rows {
+            let mut p = Vec::new();
+            p.extend_from_slice(&amp;(row.len() as u16).to_be_bytes());
+            for c in row {
+                let s = match c {
+                    SqlCell::Null =&gt; {
+                        p.extend_from_slice(&amp;(-1i32).to_be_bytes());
+                        continue;
+                    }
+                    SqlCell::Int(v) =&gt; v.to_string(),
+                    SqlCell::Text(v) =&gt; v.clone(),
+                };
+                if s.contains(&#x27;\0&#x27;) {
+                    return Err(bad(&quot;NUL text cannot be sent through libpq text format&quot;));
+                }
+                p.extend_from_slice(&amp;(s.len() as u32).to_be_bytes());
+                p.extend_from_slice(s.as_bytes());
+            }
+            frame(&amp;mut out, b&#x27;D&#x27;, &amp;p);
+            if out.len() &gt; MAX_REPLY {
+                return Err(bad(&quot;result exceeds 8 MiB wire limit&quot;));
+            }
+        }
+    }
+    let mut p = Vec::new();
+    cstr(&amp;mut p, &amp;reply.tag);
+    frame(&amp;mut out, b&#x27;C&#x27;, &amp;p);
+    Ok(out)
+}
+fn command(tag: &amp;str) -&gt; SqlReply {
+    SqlReply {
+        columns: vec![],
+        rows: vec![],
+        tag: tag.into(),
+        json: format!(&quot;{{\&quot;command\&quot;:\&quot;{tag}\&quot;}}&quot;),
+    }
+}
+fn words_prefix&lt;&#x27;a&gt;(s: &amp;&#x27;a str, keyword: &amp;str) -&gt; Option&lt;&amp;&#x27;a str&gt; {
+    let s = s.trim_start();
+    if s.len() &gt;= keyword.len()
+        &amp;&amp; s.get(..keyword.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(keyword))
+        &amp;&amp; s[keyword.len()..].starts_with(char::is_whitespace)
+    {
+        Some(s[keyword.len()..].trim_start())
+    } else {
+        None
+    }
+}
+fn query(manager: &amp;mut Transactions, tx: &amp;mut Option&lt;u64&gt;, sql: &amp;str) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    let control = sql
+        .trim()
+        .strip_suffix(&#x27;;&#x27;)
+        .unwrap_or(sql.trim())
+        .trim()
+        .to_ascii_uppercase();
+    let result = (|| {
+        match control.as_str() {
+            &quot;BEGIN&quot; =&gt; {
+                if tx.is_some() {
+                    return Err(bad(&quot;transaction already active&quot;));
+                }
+                *tx = Some(manager.begin()?);
+                return encode(&amp;command(&quot;BEGIN&quot;));
+            }
+            &quot;COMMIT&quot; =&gt; {
+                if let Some(id) = *tx {
+                    manager.commit(id)?;
+                    *tx = None;
+                }
+                return encode(&amp;command(&quot;COMMIT&quot;));
+            }
+            &quot;ROLLBACK&quot; =&gt; {
+                if let Some(id) = tx.take() {
+                    manager.rollback(id)?;
+                }
+                return encode(&amp;command(&quot;ROLLBACK&quot;));
+            }
+            &quot;&quot; =&gt; {
+                let mut out = vec![];
+                frame(&amp;mut out, b&#x27;I&#x27;, &amp;[]);
+                return Ok(out);
+            }
+            _ =&gt; {}
+        }
+        let (inner, explain, analyze) = if let Some(rest) = words_prefix(sql, &quot;EXPLAIN&quot;) {
+            if let Some(rest) = words_prefix(rest, &quot;ANALYZE&quot;) {
+                (rest, true, true)
+            } else {
+                (rest, true, false)
+            }
+        } else {
+            (sql, false, false)
+        };
+        // Snapshot::query_with validates the complete inner statement before the callback.
+        let runner = |path: &amp;Path, statement: &amp;str| {
+            let reply = if explain {
+                engine::explain(path, statement, analyze)?
+            } else {
+                engine::run_optimized(path, statement)?
+            };
+            encode(&amp;reply)
+        };
+        if let Some(id) = *tx {
+            manager.query_with(id, inner, runner)
+        } else {
+            manager.autocommit_with(inner, runner)
+        }
+    })();
+    if result.is_err() {
+        if let Some(id) = *tx {
+            let _ = manager.mark_failed(id);
+        }
+    }
+    result
+}
+fn read_length(stream: &amp;mut TcpStream) -&gt; io::Result&lt;usize&gt; {
+    let mut b = [0; 4];
+    stream.read_exact(&amp;mut b)?;
+    let n = u32::from_be_bytes(b) as usize;
+    if !(4..=MAX_MESSAGE).contains(&amp;n) {
+        return Err(bad(&quot;message length outside 4..65536&quot;));
+    }
+    Ok(n - 4)
+}
+fn startup(stream: &amp;mut TcpStream) -&gt; io::Result&lt;()&gt; {
+    for _ in 0..3 {
+        let len = read_length(stream)?;
+        let mut p = vec![0; len];
+        stream.read_exact(&amp;mut p)?;
+        if p.len() &lt; 4 {
+            return Err(bad(&quot;short startup&quot;));
+        }
+        let code = u32::from_be_bytes(p[..4].try_into().unwrap());
+        if code == 80877103 || code == 80877104 {
+            if p.len() != 4 {
+                return Err(bad(&quot;invalid negotiation&quot;));
+            }
+            stream.write_all(b&quot;N&quot;)?;
+            continue;
+        }
+        if code != 196608 {
+            return Err(bad(&quot;only PostgreSQL protocol 3.0 supported&quot;));
+        }
+        if p.last() != Some(&amp;0) {
+            return Err(bad(&quot;unterminated startup&quot;));
+        }
+        let fields = p[4..].split(|b| *b == 0).collect::&lt;Vec&lt;_&gt;&gt;();
+        if fields.len() &lt; 2 || !fields[fields.len() - 2].is_empty() || (fields.len() - 2) % 2 != 0 {
+            return Err(bad(&quot;invalid startup key/value pairs&quot;));
+        }
+        for pair in fields[..fields.len() - 2].chunks(2) {
+            let key = std::str::from_utf8(pair[0]).map_err(|_| bad(&quot;startup UTF-8&quot;))?;
+            let value = std::str::from_utf8(pair[1]).map_err(|_| bad(&quot;startup UTF-8&quot;))?;
+            if key == &quot;client_encoding&quot;
+                &amp;&amp; !value.eq_ignore_ascii_case(&quot;UTF8&quot;)
+                &amp;&amp; !value.eq_ignore_ascii_case(&quot;UTF-8&quot;)
+            {
+                return Err(bad(&quot;UTF8 client encoding required&quot;));
+            }
+        }
+        let mut out = vec![];
+        frame(&amp;mut out, b&#x27;R&#x27;, &amp;0u32.to_be_bytes());
+        for (k, v) in [
+            (&quot;server_version&quot;, &quot;16.0&quot;),
+            (&quot;client_encoding&quot;, &quot;UTF8&quot;),
+            (&quot;server_encoding&quot;, &quot;UTF8&quot;),
+            (&quot;standard_conforming_strings&quot;, &quot;on&quot;),
+            (&quot;integer_datetimes&quot;, &quot;on&quot;),
+        ] {
+            let mut p = vec![];
+            cstr(&amp;mut p, k);
+            cstr(&amp;mut p, v);
+            frame(&amp;mut out, b&#x27;S&#x27;, &amp;p);
+        }
+        frame(&amp;mut out, b&#x27;Z&#x27;, b&quot;I&quot;);
+        stream.write_all(&amp;out)?;
+        return Ok(());
+    }
+    Err(bad(&quot;too many startup negotiations&quot;))
+}
+struct Session {
+    manager: Arc&lt;Mutex&lt;Transactions&gt;&gt;,
+    tx: Option&lt;u64&gt;,
+}
+impl Drop for Session {
+    fn drop(&amp;mut self) {
+        if let Some(id) = self.tx.take() {
+            if let Ok(mut m) = self.manager.lock() {
+                let _ = m.rollback(id);
+            }
+        }
+    }
+}
+fn serve_client(mut stream: TcpStream, manager: Arc&lt;Mutex&lt;Transactions&gt;&gt;) -&gt; io::Result&lt;()&gt; {
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    startup(&amp;mut stream)?;
+    let mut session = Session { manager, tx: None };
+    loop {
+        let mut kind = [0];
+        match stream.read_exact(&amp;mut kind) {
+            Ok(()) =&gt; {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof =&gt; return Ok(()),
+            Err(e) =&gt; return Err(e),
+        }
+        let len = read_length(&amp;mut stream)?;
+        let mut p = vec![0; len];
+        stream.read_exact(&amp;mut p)?;
+        if kind[0] == b&#x27;X&#x27; {
+            if !p.is_empty() {
+                return Err(bad(&quot;invalid Terminate&quot;));
+            }
+            return Ok(());
+        }
+        if kind[0] != b&#x27;Q&#x27; {
+            let mut out = vec![];
+            error(
+                &amp;mut out,
+                &quot;only simple Query is supported; extended protocol closes connection&quot;,
+            );
+            stream.write_all(&amp;out)?;
+            return Ok(());
+        }
+        let mut out = vec![];
+        {
+            let mut m = session
+                .manager
+                .lock()
+                .map_err(|_| bad(&quot;database mutex poisoned&quot;))?;
+            let result = if p.last() != Some(&amp;0) || p[..p.len().saturating_sub(1)].contains(&amp;0) {
+                Err(bad(&quot;Query requires exactly one trailing NUL&quot;))
+            } else {
+                std::str::from_utf8(&amp;p[..p.len() - 1])
+                    .map_err(|_| bad(&quot;Query requires UTF-8&quot;))
+                    .and_then(|s| query(&amp;mut m, &amp;mut session.tx, s))
+            };
+            match result {
+                Ok(reply) =&gt; out = reply,
+                Err(e) =&gt; {
+                    if let Some(id) = session.tx {
+                        let _ = m.mark_failed(id);
+                    }
+                    error(&amp;mut out, &amp;e.to_string());
+                }
+            }
+            let status = session.tx.and_then(|id| m.status(id)).unwrap_or(&#x27;I&#x27;);
+            frame(&amp;mut out, b&#x27;Z&#x27;, &amp;[status as u8]);
+        }
+        stream.write_all(&amp;out)?;
+    }
+}
+struct Permit(Arc&lt;AtomicUsize&gt;);
+impl Drop for Permit {
+    fn drop(&amp;mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+const MAX_SQL_BYTES: usize = 16 * 1024;
+fn read_sql(input: impl Read) -&gt; io::Result&lt;String&gt; {
+    let mut bytes = Vec::new();
+    input
+        .take((MAX_SQL_BYTES + 1) as u64)
+        .read_to_end(&amp;mut bytes)?;
+    if bytes.len() &gt; MAX_SQL_BYTES {
+        return Err(bad(&quot;SQL exceeds 16384 bytes&quot;));
+    }
+    String::from_utf8(bytes).map_err(|_| bad(&quot;SQL requires UTF-8&quot;))
+}
+fn main() -&gt; io::Result&lt;()&gt; {
+    let args = std::env::args().skip(1).collect::&lt;Vec&lt;_&gt;&gt;();
+    if args.len() &lt; 2 {
+        return Err(bad(
+            &quot;usage: server serve DIRECTORY [127.0.0.1:55432] | server sql DIRECTORY [--seq|--index]&quot;,
+        ));
+    }
+    if args[0] == &quot;serve&quot; {
+        let addr = args
+            .get(2)
+            .map(String::as_str)
+            .unwrap_or(&quot;127.0.0.1:55432&quot;)
+            .parse::&lt;std::net::SocketAddr&gt;()
+            .map_err(|_| bad(&quot;numeric socket address required&quot;))?;
+        if !addr.ip().is_loopback() {
+            return Err(bad(&quot;loopback binding required&quot;));
+        }
+        let manager = Arc::new(Mutex::new(Transactions::open(Path::new(&amp;args[1]))?));
+        let listener = TcpListener::bind(addr)?;
+        println!(&quot;LISTEN {}&quot;, listener.local_addr()?);
+        io::stdout().flush()?;
+        let active = Arc::new(AtomicUsize::new(0));
+        for incoming in listener.incoming() {
+            let stream = incoming?;
+            if active.fetch_add(1, Ordering::SeqCst) &gt;= 16 {
+                active.fetch_sub(1, Ordering::SeqCst);
+                drop(stream);
+                continue;
+            }
+            let permit = Permit(active.clone());
+            let m = manager.clone();
+            std::thread::spawn(move || {
+                let _permit = permit;
+                if let Err(e) = serve_client(stream, m) {
+                    eprintln!(&quot;session: {e}&quot;);
+                }
+            });
+        }
+        Ok(())
+    } else if args[0] == &quot;sql&quot; {
+        let sql = read_sql(io::stdin().lock())?;
+        let mut m = Transactions::open(Path::new(&amp;args[1]))?;
+        let mode = match args.get(2).map(String::as_str) {
+            None =&gt; AccessMode::Auto,
+            Some(&quot;--seq&quot;) =&gt; AccessMode::Sequential,
+            Some(&quot;--index&quot;) =&gt; AccessMode::ForceIndex,
+            _ =&gt; return Err(bad(&quot;unknown access mode&quot;)),
+        };
+        let reply = m.autocommit_with(&amp;sql, |p, s| engine::run_mode(p, s, mode))?;
+        println!(&quot;{}&quot;, reply.json);
+        Ok(())
+    } else {
+        Err(bad(&quot;unknown command&quot;))
+    }
+}
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    #[test]
+    fn cli_sql_reader_is_bounded_before_parsing() {
+        let mut input = io::Cursor::new(vec![b&#x27; &#x27;; 1024 * 1024]);
+        assert!(
+            read_sql(&amp;mut input)
+                .unwrap_err()
+                .to_string()
+                .contains(&quot;16384&quot;)
+        );
+        assert_eq!(input.position(), (MAX_SQL_BYTES + 1) as u64);
+        assert!(read_sql(io::repeat(b&#x27; &#x27;)).is_err());
+        assert_eq!(
+            read_sql(io::Cursor::new(vec![b&#x27; &#x27;; MAX_SQL_BYTES]))
+                .unwrap()
+                .len(),
+            MAX_SQL_BYTES
+        );
+        assert!(read_sql(io::Cursor::new(vec![0xff])).is_err());
+        assert_eq!(
+            read_sql(&quot;SELECT &#x27;한글&#x27;&quot;.as_bytes()).unwrap(),
+            &quot;SELECT &#x27;한글&#x27;&quot;
+        );
+    }
+    #[test]
+    fn user_identifiers_cannot_choose_transaction_sqlstate() {
+        for message in [&quot;unknown column: conflict&quot;, &quot;unknown column: recovery&quot;] {
+            let mut out = vec![];
+            error(&amp;mut out, message);
+            assert!(out.windows(6).any(|bytes| bytes == b&quot;42601\0&quot;));
+        }
+    }
+    #[test]
+    fn recovery_error_reports_unknown_completion() {
+        let mut out = vec![];
+        error(
+            &amp;mut out,
+            &quot;database requires recovery; commit outcome unknown: install failed&quot;,
+        );
+        assert!(out.windows(6).any(|bytes| bytes == b&quot;40003\0&quot;));
+    }
+    #[test]
+    fn frame_big_endian() {
+        let mut b = vec![];
+        frame(&amp;mut b, b&#x27;Z&#x27;, b&quot;I&quot;);
+        assert_eq!(b, b&quot;Z\0\0\0\x05I&quot;);
+    }
+    #[test]
+    fn null_and_empty_differ() {
+        let r = SqlReply {
+            columns: vec![engine::SqlColumn {
+                name: &quot;v&quot;.into(),
+                kind: SqlType::Text,
+            }],
+            rows: vec![vec![SqlCell::Null], vec![SqlCell::Text(&quot;&quot;.into())]],
+            tag: &quot;SELECT 2&quot;.into(),
+            json: String::new(),
+        };
+        let b = encode(&amp;r).unwrap();
+        assert!(b.windows(6).any(|s| s == [0, 1, 255, 255, 255, 255]));
+        assert!(b.windows(6).any(|s| s == [0, 1, 0, 0, 0, 0]));
+    }
+    #[test]
+    fn reject_nul_text() {
+        let r = SqlReply {
+            columns: vec![engine::SqlColumn {
+                name: &quot;v&quot;.into(),
+                kind: SqlType::Text,
+            }],
+            rows: vec![vec![SqlCell::Text(&quot;a\0b&quot;.into())]],
+            tag: &quot;SELECT 1&quot;.into(),
+            json: String::new(),
+        };
+        assert!(encode(&amp;r).is_err());
+    }
+    #[test]
+    fn unicode_prefix_does_not_panic() {
+        assert!(words_prefix(&quot;선택가나&quot;, &quot;EXPLAIN&quot;).is_none());
+    }
+}
+</code></pre></details><details class="deep"><summary>공유 SQL·계획 선택 브리지</summary><p><a href="examples/engine.rs">원본 파일</a></p><pre class="sv-source"><code data-language="rust">//! Shared SQL bridge for Chapters 07-09. Earlier implementations stay the execution core.
+#![allow(dead_code)]
+include!(&quot;ch06/executor.rs&quot;);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlType {
+    Int,
+    Text,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlCell {
+    Int(i64),
+    Text(String),
+    Null,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlColumn {
+    pub name: String,
+    pub kind: SqlType,
+}
+#[derive(Debug, Clone)]
+pub struct SqlReply {
+    pub columns: Vec&lt;SqlColumn&gt;,
+    pub rows: Vec&lt;Vec&lt;SqlCell&gt;&gt;,
+    pub tag: String,
+    pub json: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessMode {
+    Sequential,
+    Auto,
+    ForceIndex,
+}
+#[derive(Debug, Clone)]
+pub struct PlanReport {
+    pub access: String,
+    pub estimated_rows: u64,
+    pub estimated_cost: u64,
+    pub seq_cost: u64,
+    pub index_cost: Option&lt;u64&gt;,
+    pub lookup_key: Option&lt;i64&gt;,
+    pub reason: String,
+}
+fn sql_cell(v: &amp;Datum) -&gt; SqlCell {
+    match v {
+        Datum::Int(n) =&gt; SqlCell::Int(*n),
+        Datum::Text(s) =&gt; SqlCell::Text(s.clone()),
+        Datum::Null =&gt; SqlCell::Null,
+    }
+}
+pub fn is_write(sql: &amp;str) -&gt; io::Result&lt;bool&gt; {
+    let stmt = language::ast(sql)?;
+    if let Stmt::Create { table, fields } = &amp;stmt {
+        validate_create(table, fields)?;
+    }
+    Ok(!matches!(stmt, Stmt::Select { .. }))
+}
+// A necessary PK equality is safe under AND, never inferred through OR or NOT.
+fn necessary_key(e: &amp;Expr, pk: &amp;str) -&gt; Option&lt;i64&gt; {
+    match e {
+        Expr::Compare(Operand::Column(c), Cmp::Eq, Operand::Value(Datum::Int(n)))
+        | Expr::Compare(Operand::Value(Datum::Int(n)), Cmp::Eq, Operand::Column(c))
+            if c == pk =&gt;
+        {
+            Some(*n)
+        }
+        Expr::And(a, b) =&gt; necessary_key(a, pk).or_else(|| necessary_key(b, pk)),
+        _ =&gt; None,
+    }
+}
+fn report(
+    store: &amp;storage::Store,
+    fields: &amp;[Field],
+    filter: &amp;Option&lt;Expr&gt;,
+    mode: AccessMode,
+) -&gt; io::Result&lt;PlanReport&gt; {
+    let estimate = store.heap_pages().saturating_mul(8).max(1);
+    let key = filter
+        .as_ref()
+        .and_then(|e| necessary_key(e, &amp;fields[0].name));
+    let index_cost = key.map(|_| 3);
+    let choose = key.is_some()
+        &amp;&amp; mode != AccessMode::Sequential
+        &amp;&amp; (mode == AccessMode::ForceIndex || estimate &gt; 3);
+    if mode == AccessMode::ForceIndex &amp;&amp; key.is_none() {
+        return Err(bad(&quot;no necessary primary-key equality for index lookup&quot;));
+    }
+    Ok(PlanReport {
+        access: if choose {
+            &quot;PrimaryKeyLookup&quot;
+        } else {
+            &quot;SeqScan&quot;
+        }
+        .into(),
+        estimated_rows: estimate,
+        estimated_cost: if choose { 3 } else { estimate },
+        seq_cost: estimate,
+        index_cost,
+        lookup_key: key,
+        reason: if choose {
+            &quot;necessary primary-key equality; index model cost is lower&quot;
+        } else if key.is_none() {
+            &quot;no safe primary-key point predicate&quot;
+        } else {
+            &quot;sequential access requested or estimated scan is cheaper&quot;
+        }
+        .into(),
+    })
+}
+struct PointScan&lt;&#x27;a&gt; {
+    store: &amp;&#x27;a mut storage::Store,
+    table: String,
+    key: i64,
+    done: bool,
+    stats: Counters,
+}
+impl Op for PointScan&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        if self.done {
+            return Ok(None);
+        }
+        self.done = true;
+        let row = self.store.lookup(&amp;self.table, self.key)?;
+        if row.is_some() {
+            self.stats.borrow_mut().scan_rows += 1;
+        }
+        Ok(row)
+    }
+}
+pub fn inspect(dir: &amp;Path, sql: &amp;str, mode: AccessMode) -&gt; io::Result&lt;PlanReport&gt; {
+    let Stmt::Select {
+        table,
+        columns,
+        filter,
+        order,
+        limit,
+    } = language::ast(sql)?
+    else {
+        return Err(bad(&quot;EXPLAIN supports SELECT only&quot;));
+    };
+    let store = storage::Store::open(dir, false)?;
+    let fields = store.fields(&amp;table)?;
+    bind_select(&amp;fields, columns, filter.clone(), order, limit)?;
+    report(&amp;store, &amp;fields, &amp;filter, mode)
+}
+// Bound bytes while collecting, before JSON and typed-response copies are built.
+// Six bytes per UTF-8 byte covers JSON control escaping; per-cell overhead covers
+// both JSON type wrappers and wire lengths. The budget is intentionally conservative.
+fn collect_bounded(mut op: Box&lt;dyn Op + &#x27;_&gt;, stats: &amp;Counters) -&gt; io::Result&lt;Vec&lt;Row&gt;&gt; {
+    let mut rows = Vec::new();
+    let mut bytes = 4096usize;
+    while let Some(row) = op.next()? {
+        let row_bytes = row.iter().fold(0usize, |sum, value| {
+            sum.saturating_add(64).saturating_add(match value {
+                Datum::Text(s) =&gt; s.len().saturating_mul(6),
+                Datum::Int(_) =&gt; 20,
+                Datum::Null =&gt; 0,
+            })
+        });
+        bytes = bytes.saturating_add(row_bytes);
+        if bytes &gt; 8 * 1024 * 1024 || rows.len() &gt;= BUFFER_ROWS {
+            return Err(bad(
+                &quot;result exceeds conservative 8 MiB or 10000 row buffer limit&quot;,
+            ));
+        }
+        stats.borrow_mut().output_rows += 1;
+        rows.push(row);
+    }
+    Ok(rows)
+}
+pub fn run_sql(dir: &amp;Path, sql: &amp;str) -&gt; io::Result&lt;SqlReply&gt; {
+    run_mode(dir, sql, AccessMode::Sequential)
+}
+pub fn run_optimized(dir: &amp;Path, sql: &amp;str) -&gt; io::Result&lt;SqlReply&gt; {
+    run_mode(dir, sql, AccessMode::Auto)
+}
+pub fn run_mode(dir: &amp;Path, sql: &amp;str, mode: AccessMode) -&gt; io::Result&lt;SqlReply&gt; {
+    let stmt = language::ast(sql)?;
+    if let Stmt::Create { table, fields } = &amp;stmt {
+        validate_create(table, fields)?;
+    }
+    let mut store = storage::Store::open(dir, matches!(stmt, Stmt::Create { .. }))?;
+    match stmt {
+        Stmt::Select {
+            table,
+            columns,
+            filter,
+            order,
+            limit,
+        } =&gt; {
+            let fields = store.fields(&amp;table)?;
+            let plan = bind_select(&amp;fields, columns, filter.clone(), order, limit)?;
+            let access = report(&amp;store, &amp;fields, &amp;filter, mode)?;
+            let stats = counters();
+            let output_columns = plan
+                .columns
+                .iter()
+                .map(|&amp;i| SqlColumn {
+                    name: fields[i].name.clone(),
+                    kind: if fields[i].kind == Type::Int {
+                        SqlType::Int
+                    } else {
+                        SqlType::Text
+                    },
+                })
+                .collect();
+            let source: Box&lt;dyn Op + &#x27;_&gt; = if access.access == &quot;PrimaryKeyLookup&quot; {
+                Box::new(PointScan {
+                    store: &amp;mut store,
+                    table,
+                    key: access.lookup_key.unwrap(),
+                    done: false,
+                    stats: stats.clone(),
+                })
+            } else {
+                Box::new(store.scan(&amp;table, stats.clone())?)
+            };
+            let rows = collect_bounded(pipeline(source, &amp;plan, stats.clone()), &amp;stats)?;
+            let json = output(&amp;plan.names, &amp;rows, &amp;stats.borrow());
+            Ok(SqlReply {
+                columns: output_columns,
+                rows: rows
+                    .iter()
+                    .map(|r| r.iter().map(sql_cell).collect())
+                    .collect(),
+                tag: format!(&quot;SELECT {}&quot;, rows.len()),
+                json,
+            })
+        }
+        s =&gt; {
+            let tag = if matches!(&amp;s, Stmt::Create { .. }) {
+                &quot;CREATE TABLE&quot;
+            } else {
+                &quot;INSERT 0 1&quot;
+            };
+            let json = execute(&amp;mut store, s)?;
+            Ok(SqlReply {
+                columns: vec![],
+                rows: vec![],
+                tag: tag.into(),
+                json,
+            })
+        }
+    }
+}
+pub fn explain(dir: &amp;Path, sql: &amp;str, analyze: bool) -&gt; io::Result&lt;SqlReply&gt; {
+    let p = inspect(dir, sql, AccessMode::Auto)?;
+    let mut lines = vec![
+        format!(
+            &quot;{} (estimated cost={}, rows={})&quot;,
+            p.access, p.estimated_cost, p.estimated_rows
+        ),
+        format!(&quot;Reason: {}&quot;, p.reason),
+        &quot;Estimate: global heap pages × 8; model units, not measured I/O or time&quot;.into(),
+    ];
+    if analyze {
+        let result = run_optimized(dir, sql)?;
+        lines.push(format!(&quot;Actual output rows: {}&quot;, result.rows.len()));
+        lines.push(result.json);
+    }
+    let rows = lines
+        .iter()
+        .map(|s| vec![SqlCell::Text(s.clone())])
+        .collect::&lt;Vec&lt;_&gt;&gt;();
+    let json = format!(
+        &quot;{{\&quot;columns\&quot;:[\&quot;QUERY PLAN\&quot;],\&quot;rows\&quot;:[{}]}}&quot;,
+        lines
+            .iter()
+            .map(|s| format!(&quot;[{{\&quot;type\&quot;:\&quot;text\&quot;,\&quot;value\&quot;:{}}}]&quot;, q(s)))
+            .collect::&lt;Vec&lt;_&gt;&gt;()
+            .join(&quot;,&quot;)
+    );
+    Ok(SqlReply {
+        columns: vec![SqlColumn {
+            name: &quot;QUERY PLAN&quot;.into(),
+            kind: SqlType::Text,
+        }],
+        rows,
+        tag: &quot;EXPLAIN&quot;.into(),
+        json,
+    })
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    fn database(name: &amp;str) -&gt; std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(&quot;mydb-bridge-{}-{name}&quot;, std::process::id()));
+        let _ = std::fs::remove_dir_all(&amp;p);
+        std::fs::create_dir_all(&amp;p).unwrap();
+        run_sql(&amp;p, &quot;CREATE TABLE t (id INT NOT NULL, name TEXT)&quot;).unwrap();
+        for i in 0..12 {
+            run_sql(&amp;p, &amp;format!(&quot;INSERT INTO t VALUES ({i}, &#x27;한글&#x27;)&quot;)).unwrap();
+        }
+        p
+    }
+    #[test]
+    fn response_byte_limit_is_checked_during_collection() {
+        struct Wide {
+            count: usize,
+        }
+        impl Op for Wide {
+            fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+                self.count += 1;
+                if self.count &gt; 100 {
+                    return Ok(None);
+                }
+                Ok(Some(vec![Datum::Text(&quot;x&quot;.repeat(1000)); 200]))
+            }
+        }
+        let stats = counters();
+        let err = collect_bounded(Box::new(Wide { count: 0 }), &amp;stats).unwrap_err();
+        assert!(err.to_string().contains(&quot;8 MiB&quot;));
+        assert!(stats.borrow().output_rows &lt; 10);
+    }
+    #[test]
+    fn point_and_scan_match() {
+        let p = database(&quot;point&quot;);
+        for sql in [
+            &quot;SELECT * FROM t WHERE id = 7&quot;,
+            &quot;SELECT name FROM t WHERE 7 = id AND name = &#x27;한글&#x27;&quot;,
+            &quot;SELECT * FROM t WHERE id = 100&quot;,
+            &quot;SELECT * FROM t WHERE id = 7 AND id = 8&quot;,
+            &quot;SELECT * FROM t WHERE id = 7 LIMIT 0&quot;,
+        ] {
+            let a = run_mode(&amp;p, sql, AccessMode::Sequential).unwrap();
+            let b = run_mode(&amp;p, sql, AccessMode::ForceIndex).unwrap();
+            assert_eq!(a.rows, b.rows);
+            assert_eq!(a.columns, b.columns);
+        }
+        std::fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn unsafe_or_and_not_use_scan() {
+        let p = database(&quot;or&quot;);
+        for sql in [
+            &quot;SELECT * FROM t WHERE id = 1 OR id = 2&quot;,
+            &quot;SELECT * FROM t WHERE NOT id = 1&quot;,
+        ] {
+            assert_eq!(
+                inspect(&amp;p, sql, AccessMode::Auto).unwrap().access,
+                &quot;SeqScan&quot;
+            );
+            assert!(run_mode(&amp;p, sql, AccessMode::ForceIndex).is_err());
+        }
+        std::fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn bind_before_choice_and_empty_metadata() {
+        let p = database(&quot;bind&quot;);
+        assert!(run_optimized(&amp;p, &quot;SELECT missing FROM t WHERE id = 999&quot;).is_err());
+        assert!(run_optimized(&amp;p, &quot;SELECT * FROM t WHERE id = 999 AND name = 4&quot;).is_err());
+        let r = run_optimized(&amp;p, &quot;SELECT id, name FROM t LIMIT 0&quot;).unwrap();
+        assert!(r.rows.is_empty());
+        assert_eq!(r.columns[0].kind, SqlType::Int);
+        assert_eq!(r.columns[1].kind, SqlType::Text);
+        assert!(r.json.contains(&quot;\&quot;scan_rows\&quot;:0&quot;));
+        std::fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn explain_uses_actual_path() {
+        let p = database(&quot;explain&quot;);
+        let r = explain(&amp;p, &quot;SELECT * FROM t WHERE id = 4&quot;, true).unwrap();
+        assert!(format!(&quot;{:?}&quot;, r.rows).contains(&quot;PrimaryKeyLookup&quot;));
+        assert!(format!(&quot;{:?}&quot;, r.rows).contains(&quot;scan_rows&quot;));
+        assert!(explain(&amp;p, &quot;INSERT INTO t VALUES (90, NULL)&quot;, true).is_err());
+        std::fs::remove_dir_all(p).unwrap();
+    }
+}
+</code></pre></details><details class="deep"><summary>검증 스크립트</summary><p><a href="examples/ch09/check.sh">원본 파일</a></p><pre class="sv-source"><code data-language="bash">#!/bin/sh
+set -eu
+cd &quot;$(dirname &quot;$0&quot;)&quot;
+work=$(mktemp -d)
+trap &#x27;rm -rf &quot;$work&quot;&#x27; EXIT HUP INT TERM
+rustc --edition=2024 --test server.rs -o &quot;$work/tests&quot;
+&quot;$work/tests&quot;
+rustc --edition=2024 server.rs -o &quot;$work/server&quot;
+python3 check_wire.py &quot;$work/server&quot;
+</code></pre></details><details class="deep"><summary>실제 소켓 통합 검사</summary><p><a href="examples/ch09/check_wire.py">원본 파일</a></p><pre class="sv-source"><code data-language="python">&quot;&quot;&quot;Dependency-free PostgreSQL simple-query integration checks against the real server.&quot;&quot;&quot;
+import os, socket, struct, subprocess, sys, tempfile
+BIN=sys.argv[1]
+def exact(s,n):
+    b=b&#x27;&#x27;
+    while len(b)&lt;n:
+        p=s.recv(n-len(b))
+        if not p: raise EOFError(&#x27;socket closed&#x27;)
+        b+=p
+    return b
+def receive(s):
+    k=exact(s,1); n=struct.unpack(&#x27;!I&#x27;,exact(s,4))[0]
+    assert 4&lt;=n&lt;=9*1024*1024
+    return k,exact(s,n-4)
+def connect(addr):
+    s=socket.create_connection(addr,timeout=5)
+    s.sendall(struct.pack(&#x27;!II&#x27;,8,80877103)); assert exact(s,1)==b&#x27;N&#x27;
+    p=struct.pack(&#x27;!I&#x27;,196608)+b&#x27;user\0mydb\0database\0mydb\0client_encoding\0UTF8\0\0&#x27;
+    s.sendall(struct.pack(&#x27;!I&#x27;,len(p)+4)+p)
+    while receive(s)!=(b&#x27;Z&#x27;,b&#x27;I&#x27;):pass
+    return s
+def query(s,sql):
+    p=sql.encode()+b&#x27;\0&#x27;;s.sendall(b&#x27;Q&#x27;+struct.pack(&#x27;!I&#x27;,len(p)+4)+p);msgs=[]
+    while True:
+        k,p=receive(s);msgs.append((k,p))
+        if k==b&#x27;Z&#x27;: return msgs
+def rows(msgs):
+    out=[]
+    for k,p in msgs:
+        if k!=b&#x27;D&#x27;:continue
+        n=struct.unpack(&#x27;!H&#x27;,p[:2])[0];offset=2;row=[]
+        for _ in range(n):
+            size=struct.unpack(&#x27;!i&#x27;,p[offset:offset+4])[0];offset+=4
+            row.append(None if size==-1 else p[offset:offset+size].decode());offset+=max(size,0)
+        out.append(row)
+    return out
+def ok(s,sql,state=b&#x27;I&#x27;):
+    msgs=query(s,sql);assert not any(k==b&#x27;E&#x27; for k,p in msgs),(sql,msgs)
+    assert msgs[-1]==(b&#x27;Z&#x27;,state),msgs
+    return msgs
+def fail(s,sql,state=b&#x27;E&#x27;):
+    msgs=query(s,sql);assert any(k==b&#x27;E&#x27; for k,p in msgs),(sql,msgs)
+    assert msgs[-1]==(b&#x27;Z&#x27;,state),msgs
+    return msgs
+with tempfile.TemporaryDirectory(prefix=&#x27;mydb-wire-&#x27;) as home:
+    def start():
+        p=subprocess.Popen([BIN,&#x27;serve&#x27;,home,&#x27;127.0.0.1:0&#x27;],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        line=p.stdout.readline().strip();assert line.startswith(&#x27;LISTEN &#x27;),line
+        host,port=line[7:].rsplit(&#x27;:&#x27;,1);return p,(host,int(port))
+    p,addr=start()
+    try:
+        a,b=connect(addr),connect(addr)
+        # TCP delivers arbitrary chunks: both Query header and body are fragmented.
+        fragmented=connect(addr)
+        statement=b&#x27;SELECT * FROM absent\0&#x27;
+        for byte in b&#x27;Q&#x27;+struct.pack(&#x27;!I&#x27;,len(statement)+4)+statement:
+            fragmented.sendall(bytes([byte]))
+        seen=[]
+        while True:
+            message=receive(fragmented);seen.append(message)
+            if message[0]==b&#x27;Z&#x27;:break
+        assert any(k==b&#x27;E&#x27; for k,v in seen) and seen[-1]==(b&#x27;Z&#x27;,b&#x27;I&#x27;)
+        fragmented.close()
+        ok(a,&#x27;CREATE TABLE t (id INT NOT NULL, name TEXT)&#x27;)
+        ok(a,&quot;INSERT INTO t VALUES (1, &#x27;한글&#x27;)&quot;)
+        ok(a,&quot;INSERT INTO t VALUES (2, &#x27;&#x27;)&quot;)
+        ok(a,&#x27;INSERT INTO t VALUES (3, NULL)&#x27;)
+        assert rows(ok(a,&#x27;SELECT * FROM t ORDER BY id&#x27;))==[[&#x27;1&#x27;,&#x27;한글&#x27;],[&#x27;2&#x27;,&#x27;&#x27;],[&#x27;3&#x27;,None]]
+        assert any(k==b&#x27;T&#x27; for k,v in ok(a,&#x27;SELECT * FROM t LIMIT 0&#x27;))
+        ok(a,&#x27;BEGIN&#x27;,b&#x27;T&#x27;);ok(b,&#x27;BEGIN&#x27;,b&#x27;T&#x27;)
+        ok(a,&quot;INSERT INTO t VALUES (4, &#x27;a&#x27;)&quot;,b&#x27;T&#x27;);ok(a,&#x27;COMMIT&#x27;)
+        assert rows(ok(b,&#x27;SELECT * FROM t WHERE id = 4&#x27;,b&#x27;T&#x27;))==[]
+        ok(b,&quot;INSERT INTO t VALUES (5, &#x27;b&#x27;)&quot;,b&#x27;T&#x27;);fail(b,&#x27;COMMIT&#x27;);fail(b,&#x27;SELECT * FROM t&#x27;);ok(b,&#x27;ROLLBACK&#x27;)
+        assert rows(ok(a,&#x27;SELECT * FROM t WHERE id = 5&#x27;))==[]
+        ok(a,&#x27;BEGIN&#x27;,b&#x27;T&#x27;);fail(a,&#x27;SELECT missing FROM t&#x27;);fail(a,&#x27;COMMIT&#x27;);ok(a,&#x27;ROLLBACK&#x27;)
+        ok(a,&#x27;BEGIN&#x27;,b&#x27;T&#x27;);fail(a,&#x27;BEGIN&#x27;);ok(a,&#x27;ROLLBACK&#x27;)
+        fail(a,&quot;INSERT INTO t VALUES (6, &#x27;bad&#x27;); INSERT INTO t VALUES (7, &#x27;bad&#x27;)&quot;,b&#x27;I&#x27;)
+        assert rows(ok(a,&#x27;SELECT * FROM t WHERE id = 6&#x27;))==[]
+        fail(a,&#x27;SELECT 이름 FROM t&#x27;,b&#x27;I&#x27;)
+        assert any(&#x27;PrimaryKeyLookup&#x27; in r[0] for r in rows(ok(a,&#x27;EXPLAIN ANALYZE SELECT * FROM t WHERE id = 1&#x27;)))
+        ok(a,&#x27;BEGIN&#x27;,b&#x27;T&#x27;);ok(a,&quot;INSERT INTO t VALUES (8, &#x27;disconnect&#x27;)&quot;,b&#x27;T&#x27;);a.close()
+        # Server cleanup is asynchronous; no future write depends on it.
+        assert rows(ok(b,&#x27;SELECT * FROM t WHERE id = 8&#x27;))==[]
+        bad=connect(addr);bad.sendall(b&#x27;Q&#x27;+struct.pack(&#x27;!I&#x27;,MAX:=65537));assert bad.recv(1)==b&#x27;&#x27;;bad.close()
+        bad=connect(addr);bad.sendall(b&#x27;P&#x27;+struct.pack(&#x27;!I&#x27;,4));assert receive(bad)[0]==b&#x27;E&#x27;;assert bad.recv(1)==b&#x27;&#x27;;bad.close()
+        b.close();p.kill();p.wait()
+        p,addr=start();a=connect(addr)
+        assert rows(ok(a,&#x27;SELECT id FROM t ORDER BY id&#x27;))==[[&#x27;1&#x27;],[&#x27;2&#x27;],[&#x27;3&#x27;],[&#x27;4&#x27;]]
+        a.close()
+        print(&#x27;wire PASS: UTF8 / NULL / metadata / I-T-E / conflict / no partial batch / EXPLAIN / disconnect / malformed / restart&#x27;)
+    finally:
+        p.kill();p.wait()
+</code></pre></details></section><section id="s6"><h2>6. 완료 기준과 확인 문제</h2><ul class="checklist"><li>SSLRequest N 응답 뒤 psql이 UTF-8·NULL·빈 TEXT·0행 결과를 읽습니다.</li><li>한 Q의 여러 SQL은 일부 실행 없이 거부합니다.</li><li>두 세션의 반복 읽기·쓰기 충돌·오류 후 E·ROLLBACK·연결 종료를 검사합니다.</li><li>기본키 조회와 강제 SeqScan 결과가 같고 OR/NOT은 안전하게 SeqScan입니다.</li><li>LIMIT 0에서 바인딩은 수행하고 source pull은 생략합니다.</li><li>ACK 후 서버를 종료·재시작해 커밋 데이터만 남는지 확인합니다.</li><li>WAL 동기화 후 설치 실패는 복구가 필요하며 일반 rollback으로 성공 취소를 주장하지 않습니다.</li></ul><div class="quiz" data-answer="1"><div class="q">Query의 length가 9이면 type을 포함한 프레임 길이는?</div><button class="opt">9바이트</button><button class="opt">10바이트</button><button class="opt">13바이트</button><div class="explain">length에는 자신의 4바이트를 포함하지만 맨 앞의 type 1바이트는 포함하지 않습니다.</div></div><div class="quiz" data-answer="0"><div class="q">id = 3 OR age IS NULL에서 id=3만 조회해도 되나요?</div><button class="opt">아니요. 다른 id의 NULL 행이 사라집니다</button><button class="opt">네. 기본키 색인이 항상 우선입니다</button><div class="explain">색인 후보는 반드시 충족해야 하는 조건이어야 합니다.</div></div><div class="quiz" data-answer="2"><div class="q">거래 안에서 SQL 오류 뒤 ReadyForQuery 상태는?</div><button class="opt">I</button><button class="opt">T</button><button class="opt">E</button><div class="explain">ROLLBACK 전에는 E이며 일반 SQL과 COMMIT을 거부합니다.</div></div><div class="quiz" data-answer="0"><div class="q">scan_rows가 1이면 물리 디스크 읽기도 1회인가요?</div><button class="opt">아니요. 논리 source 행 수입니다</button><button class="opt">네. 페이지 하나를 뜻합니다</button><div class="explain">스냅샷 파일 복사와 버퍼·색인 I/O는 이 카운터에 포함되지 않습니다.</div></div><div class="quiz" data-answer="1"><div class="q">COMMIT 뒤 응답이 도착하기 전에 연결이 끊겼다면?</div><button class="opt">항상 rollback됐다</button><button class="opt">이미 커밋됐을 수도 있어 결과를 재확인한다</button><div class="explain">durable commit 이후 네트워크 전달은 별도 경계입니다.</div></div><h3 id="capstone">마지막 통합 실습 · 커밋에서 복구까지</h3><p>이미 설치된 psql과 이 장의 서버 바이너리로 실행하세요. <a href="examples/ch09/capstone.py">capstone.py</a>는 임시 DB를 만들고 실제 psql 접속·COMMIT·ROLLBACK을 실행합니다. COMMIT 응답 뒤 서버를 강제 종료하고 같은 DB를 재시작한 다음, 기본키 조회와 순차 조회 결과를 비교합니다.</p><pre><code data-language="bash">cd database-course/examples/ch09
+rustc --edition=2024 server.rs -o /tmp/mydb-server
+python3 capstone.py /tmp/mydb-server
+# psql 경로를 직접 지정할 수도 있습니다.
+# python3 capstone.py /tmp/mydb-server --psql /path/to/psql</code></pre><p>예상 결과: 복구 후 id=1의 Roy와 id=2의 NULL만 남고, ROLLBACK한 id=3은 없습니다. 같은 id=1 조회는 두 경로에서 동일한 행을 반환하며 논리 scan_rows는 Seq=2, Index=1입니다. CLI 비교 전에 서버를 종료해 같은 디렉터리 잠금이 충돌하지 않게 합니다. 마지막 PASS까지 확인하고 실제 출력·선택 경로·복구 순서를 실습 결과로 남기세요.</p><p class="sv-note">이 스크립트는 psql 설치가 필요해 기본 check-all에서는 실행하지 않습니다. 기본 검사는 의존성 없는 실제 소켓 프로토콜 검사를 포함합니다. 여기서 측정하는 scan_rows는 물리 I/O나 속도가 아닙니다.</p><h3>실습 과제</h3><ol><li><b>반례부터 찾으세요.</b> id=1 OR id=3을 기본키 단건으로 실행했을 때 잃는 행을 기록하고 실제 경로가 SeqScan인지 확인하세요.</li><li><b>추정과 실행을 분리하세요.</b> 페이지 추정치를 바꾸어도 결과가 같은지 확인하고, 실제 source 행 수를 강제 순차·색인 경로에서 비교하세요.</li><li><b>네트워크 경계를 흔드세요.</b> 헤더를 한 바이트씩 보내도 처리되는 검사와 잘못된 길이·UTF-8·내부 NUL 검사에 성공해야 합니다.</li><li><b>다음 통계를 설계하세요.</b> 테이블별 행 수·NDV·NULL 비율을 카탈로그에 저장하고, 같은 조건에서 결과 동등성을 먼저 검사한 뒤 비용 모델을 확장하세요.</li></ol></section>
+<section id="s7"><h2>7. 완성한 엔진의 경계</h2><p>9장까지 이어지는 작은 DB를 완성했습니다. psql → SQL 파서 → 바인딩 → 기본키 조회 또는 순차 실행 → 페이지·B+트리 → private snapshot → WAL 커밋과 복구가 하나의 코드 경로로 연결됩니다. 전체 소스와 <a href="examples/README.md">실행 안내</a>, <a href="examples/check-all.sh">1~9장 통합 검사</a>, <a href="examples/mydb-source.zip" download>소스 ZIP</a>을 함께 제공합니다.</p><p>SQL UPDATE·DELETE·JOIN 문법, 집계·보조 색인·통계 기반 다중 계획 탐색, 행 버전 MVCC·세밀한 잠금, 외부 정렬, 복제, 인증·암호화는 구현하지 않았습니다. 전체 파일 사본과 afterimage WAL은 작은 학습 데이터용입니다. fsync·rename 순서와 프로세스 크래시는 검사하지만 실제 전원 차단·장치 캐시의 내구성 보장은 별도입니다. Linux fsync와 macOS F_FULLFSYNC의 차이도 2·7장의 설명을 참고하세요.</p><p>다음 확장은 “기능 하나 → 경계 조건 → 실제 파일·프로토콜 검사” 순서로 진행하세요. 지금 얻은 결과 동등성·복구·세션 상태 검사를 유지하는 것이 엔진을 키우는 기준입니다.</p></section></main><script src="assets/server-optimizer.js"></script></body></html>

@@ -1,0 +1,1887 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>쿼리 실행기</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/syntax.css"><link rel="stylesheet" href="assets/ast-viewer.css"><link rel="stylesheet" href="assets/query-executor.css"><script src="assets/common.js"></script><script src="assets/syntax.js"></script><script src="assets/ast-viewer.js"></script><script src="assets/sql-parser.js"></script>
+<style>figure .diagram{min-width:680px;width:100%;height:auto}.diagram .focus{fill:var(--surface-2);stroke:var(--accent);stroke-width:2}.hint{font-size:13px;color:var(--muted)}.operator-contract{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}.operator-contract>div{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:14px}.operator-contract b{display:block}.result-sample td{font-family:var(--mono)}output{overflow-wrap:anywhere}</style>
+</head><body data-chapter="06"><main>
+<header class="chapter-head"><span class="label adv">관계형 계층 · Chapter 06</span><h1>쿼리 실행기</h1><p class="lead">5장의 AST가 4장의 테이블을 읽도록 연결합니다. 부모가 next()로 행을 요청하면 자식이 한 행 또는 끝을 반환합니다. 필터·정렬·LIMIT·열 선택, 그리고 두 조인 알고리즘의 중간 상태를 직접 확인합니다.</p><div class="objectives"><h4>학습 목표</h4><ul><li>카탈로그의 열 이름과 타입을 확인하고 실행 전에 오류를 잡습니다.</li><li>pull 방식의 Scan·Filter·Sort·Limit·Project를 합성합니다.</li><li>NULL의 UNKNOWN과 WHERE의 TRUE 통과 규칙을 구분합니다.</li><li>정렬의 blocking 동작과 LIMIT의 상위 요청 중단을 비교합니다.</li><li>중복 키와 NULL을 포함한 nested-loop·hash inner join 결과를 비교합니다.</li></ul></div></header>
+<nav class="toc"><b>목차</b><ol><li><a href="#s1">AST의 이름을 실제 열에 묶기</a></li><li><a href="#s2">next()가 아래로 내려가고 행은 위로 올라온다</a></li><li><a href="#s3">NULL을 비교한 결과는 UNKNOWN이다</a></li><li><a href="#s4">정렬은 첫 행을 내기 전에 입력을 모은다</a></li><li><a href="#s5">조인은 중복을 보존하고 NULL 키를 제외한다</a></li><li><a href="#s6">구현 가이드</a></li><li><a href="#s7">완료 기준과 실습</a></li><li><a href="#s8">이 실행기가 못 하는 것</a></li></ol></nav>
+<section id="s1"><h2>1. AST의 이름을 실제 열에 묶기</h2><p>5장의 파서는 <code data-language="sql">SELECT unknown FROM absent</code>도 문법이 맞으면 AST로 만들었습니다. 실행하려면 먼저 카탈로그에서 테이블과 열을 찾아야 합니다. 이 과정을 <b>바인딩</b>이라고 부릅니다. 열 이름은 입력 행의 몇 번째 값인지 나타내는 인덱스로 바꿉니다.</p>
+<p>people의 스키마가 <code>id, name, age, dept</code>이면 age는 인덱스 2입니다. <code data-language="sql">WHERE age &gt;= 25</code>는 행의 값 2와 정수 리터럴 25를 비교하는 조건으로 바뀝니다. 나이는 정수인데 <code data-language="sql">age &gt;= '25'</code>를 쓰면 타입 불일치를 반환합니다. 문자열을 숫자로 자동 변환하지 않습니다.</p>
+<figure><div class="stage"><svg class="diagram" viewBox="0 0 800 225" role="img" aria-label="원문 AST의 열 이름을 카탈로그로 바인딩하고 열 번호가 들어간 실행 계획을 만드는 과정"><rect x="15" y="35" width="210" height="85" rx="6" class="box"/><text x="120" y="67" text-anchor="middle">5장 AST</text><text x="120" y="94" text-anchor="middle">Column(age) ≥ Int(25)</text><rect x="295" y="35" width="210" height="85" rx="6" class="focus"/><text x="400" y="67" text-anchor="middle">카탈로그로 확인</text><text x="400" y="94" text-anchor="middle">age → 열 2 · INT</text><rect x="575" y="35" width="210" height="85" rx="6" class="box"/><text x="680" y="67" text-anchor="middle">바인딩된 조건</text><text x="680" y="94" text-anchor="middle">row[2] ≥ 25</text><path d="M225 77H295 m-8 -5 l8 5 -8 5 M505 77H575 m-8 -5 l8 5 -8 5" class="line"/><text x="400" y="165" text-anchor="middle">없는 테이블·열, 비교 타입 불일치는 여기서 실패합니다.</text><text x="400" y="195" text-anchor="middle" class="muted">빈 테이블이나 LIMIT 0도 이름·타입 검사를 생략하지 않습니다.</text></svg></div><figcaption>작은 화면은 도식을 좌우로 스크롤하세요. 실행 중 매 행마다 열 이름을 검색하지 않습니다.</figcaption></figure>
+<p>INSERT도 바인딩합니다. 열 목록을 지정했으면 테이블 순서로 값을 재배열하고 생략한 열에는 NULL을 채웁니다. 없는 열, 중복 입력 열, 값 개수, 타입과 NOT NULL을 쓰기 전에 검사합니다. SELECT에서 같은 열을 두 번 선택하는 것은 허용합니다. 이름이 중복된 스키마를 만드는 것과는 다릅니다.</p>
+<div class="callout"><span class="title">이번 장의 SQL 범위</span>5장의 CREATE TABLE·INSERT 한 행·단일 테이블 SELECT 문법을 실제 저장소에 연결합니다. 첫 열은 4장과 같이 NOT NULL INT 기본키입니다. SQL JOIN 문법은 아직 없습니다. 조인은 별도 연산자 API와 <code data-language="bash">--join-demo nested|hash</code>에서 다룹니다. 브라우저 실험은 미리 넣은 메모리 데이터에 SELECT만 실행하며 파일을 읽거나 쓰지 않습니다.</div></section>
+<section id="s2"><h2>2. next()가 아래로 내려가고 행은 위로 올라온다</h2><p>Volcano 모델의 각 연산자는 같은 인터페이스를 구현합니다. 부모가 <code data-language="rust">next()</code>를 호출하면 자식에게 다음 행을 요청합니다. <code data-language="rust">Some(row)</code>는 한 행, <code data-language="rust">None</code>은 끝입니다. 오류는 이 둘과 구분해 반환합니다.</p>
+<pre><code data-language="rust">trait Op {
+    fn next(&amp;mut self) -&gt; std::io::Result&lt;Option&lt;Row&gt;&gt;;
+}
+// Scan: 다음 힙 슬롯을 읽어 한 행 반환
+// Filter: 자식에게서 받은 행 중 조건이 TRUE인 행만 반환
+// Sort: 첫 호출에서 자식을 끝까지 읽고 정렬한 뒤 한 행씩 반환
+// Limit: 남은 개수가 0이면 자식을 호출하지 않고 끝 반환
+// Project: 행에서 지정한 열만 골라 반환</code></pre>
+<figure><div class="stage"><svg class="diagram" viewBox="0 0 800 300" role="img" aria-label="Project에서 Limit Sort Filter Scan으로 요청이 내려가고 행이 반대로 올라오는 실행 계획"><text x="400" y="25" text-anchor="middle">기본 예제의 합성 순서: Scan → Filter → Sort → Limit → Project</text>
+<rect x="10" y="65" width="140" height="85" rx="6" class="box"/><text x="80" y="97" text-anchor="middle">Scan</text><text x="80" y="123" text-anchor="middle">힙 페이지·슬롯</text><rect x="170" y="65" width="140" height="85" rx="6" class="box"/><text x="240" y="97" text-anchor="middle">Filter</text><text x="240" y="123" text-anchor="middle">조건 TRUE만</text><rect x="330" y="65" width="140" height="85" rx="6" class="focus"/><text x="400" y="97" text-anchor="middle">Sort</text><text x="400" y="123" text-anchor="middle">age DESC</text><rect x="490" y="65" width="140" height="85" rx="6" class="box"/><text x="560" y="97" text-anchor="middle">Limit</text><text x="560" y="123" text-anchor="middle">3행</text><rect x="650" y="65" width="140" height="85" rx="6" class="box"/><text x="720" y="97" text-anchor="middle">Project</text><text x="720" y="123" text-anchor="middle">name, age</text>
+<path d="M720 185H80 m8 -5 l-8 5 8 5 M80 235H720 m-8 -5 l8 5 -8 5" class="line"/><text x="400" y="177" text-anchor="middle">← next() 요청</text><text x="400" y="263" text-anchor="middle">한 행 또는 끝 반환 →</text></svg></div><figcaption>오른쪽의 최상위 Project가 실행기의 결과를 만듭니다. Filter는 행을 여러 번 요청한 뒤 한 번 반환할 수 있습니다.</figcaption></figure>
+<p>참조 구현의 Scan은 4장의 모든 행을 Vec로 만드는 <code data-language="rust">Db::scan()</code>을 사용하지 않습니다. 테이블의 first 페이지와 현재 슬롯을 기억하고, <code data-language="rust">next()</code>를 호출할 때 필요한 힙 행을 읽습니다. 같은 페이지의 여러 행은 버퍼 풀의 페이지를 재사용할 수 있습니다.</p>
+<p>아래에서 SQL을 바꾸고 한 단계씩 실행하세요. AST는 개선한 트리 목록·도식 뷰로 확인합니다. 통계의 scan_rows는 Scan이 반환한 행 수이며 파일 읽기 횟수나 물리 디스크 I/O 횟수가 아닙니다.</p>
+
+<div class="widget qx-widget" id="execution-lab">
+ <div class="w-title">next()를 요청하고 한 행씩 결과 받기</div>
+ <div class="w-desc">people 테이블의 메모리 복사본으로 SELECT를 실행합니다. 실제 파서의 AST를 바인딩한 뒤 Scan → Filter → Sort → Limit → Project의 호출과 반환을 추적합니다. 브라우저는 실제 DB 파일을 읽지 않습니다. CREATE·INSERT 실행은 아래 Rust CLI에서 다룹니다.</div>
+ <div class="controls"><label>실험 <select id="exec-sample"><option value="sort">정렬 뒤 3행</option><option value="stream">정렬 없이 2행</option><option value="zero">LIMIT 0</option><option value="error">타입 오류</option></select></label><button class="btn primary" id="exec-apply">SQL 적용</button><button class="btn" id="exec-finish" disabled>최종 결과 보기</button></div>
+ <label for="exec-sql">분석·실행할 SELECT</label><textarea id="exec-sql" rows="4" spellcheck="false">SELECT name, age FROM people WHERE age &gt;= 25 OR age IS NULL ORDER BY age DESC LIMIT 3;</textarea>
+ <pre id="exec-source" data-language="sql"></pre><output id="exec-status" aria-live="polite"></output>
+ <details class="deep"><summary>입력 people 행 보기</summary><div><div id="exec-source-rows" class="table-scroll"></div></div></details>
+ <details class="deep"><summary>파서가 만든 SELECT AST 펼쳐 보기</summary><div><div><svg id="exec-ast" role="img" aria-label="실행할 SQL의 실제 AST"></svg></div></div></details>
+ <div class="stage qx-pipeline-stage"><svg id="exec-pipeline" class="diagram" viewBox="0 0 850 170" role="img" aria-label="Scan Filter Sort Limit Project의 현재 호출 또는 행 반환"></svg></div><p class="qx-note qx-scroll-hint">도식은 좌우로 스크롤할 수 있습니다. 작은 화면에서는 내부 영역을 옆으로 밀어 전체 연결을 확인하세요.</p>
+ <output id="exec-step" class="qx-note" aria-live="polite"></output><div id="exec-counters" class="qx-counters"></div>
+ <div class="qx-panes"><div><b>Sort 버퍼</b><div id="exec-buffer" class="table-scroll"></div></div><div><b>호출자가 받은 결과</b><div id="exec-results" class="table-scroll"></div></div></div>
+ <div id="exec-player"></div>
+ <p class="qx-note">작은 화면에서는 넓은 도식과 표를 내부에서 좌우로 스크롤하세요. 정렬은 하위 행을 전부 모으는 blocking 연산입니다. 정렬 없는 LIMIT는 필요한 행을 받은 뒤 추가 Scan을 하지 않습니다. LIMIT 0도 열·타입 바인딩은 먼저 검사하지만 Scan은 호출하지 않습니다.</p>
+</div>
+
+
+</section>
+<section id="s3"><h2>3. NULL을 비교한 결과는 UNKNOWN이다</h2><p>값이 없는 NULL과 조건 결과 UNKNOWN은 다른 층의 개념입니다. <code data-language="sql">age &gt;= 25</code>에서 age가 NULL이면 조건은 FALSE가 아니라 UNKNOWN입니다. WHERE는 TRUE만 통과시키므로 FALSE와 UNKNOWN은 둘 다 버립니다. <code data-language="sql">age = NULL</code>도 UNKNOWN이며, NULL 여부를 찾으려면 <code data-language="sql">age IS NULL</code>을 사용합니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>A</th><th>B</th><th>A AND B</th><th>A OR B</th></tr></thead><tbody><tr><td>TRUE</td><td>TRUE</td><td>TRUE</td><td>TRUE</td></tr><tr><td>TRUE</td><td>FALSE</td><td>FALSE</td><td>TRUE</td></tr><tr><td>TRUE</td><td>UNKNOWN</td><td>UNKNOWN</td><td>TRUE</td></tr><tr><td>FALSE</td><td>FALSE</td><td>FALSE</td><td>FALSE</td></tr><tr><td>FALSE</td><td>UNKNOWN</td><td>FALSE</td><td>UNKNOWN</td></tr><tr><td>UNKNOWN</td><td>UNKNOWN</td><td>UNKNOWN</td><td>UNKNOWN</td></tr></tbody></table></div>
+<p>AND와 OR는 좌우를 바꿔도 표의 결과가 같습니다. <code data-language="sql">NOT UNKNOWN</code>은 UNKNOWN입니다. UNKNOWN을 JavaScript의 <code>false</code>나 Rust의 bool로 바꾸면 이 규칙이 깨집니다. 내부 조건 결과는 세 상태를 명시적으로 표현합니다. <a href="https://www.postgresql.org/docs/current/functions-logical.html">PostgreSQL 논리 연산자 설명</a>에서 같은 진리표를 확인할 수 있습니다.</p>
+
+<div class="widget qx-widget" id="null-truth-lab">
+ <div class="w-title">NULL 조건의 TRUE·FALSE·UNKNOWN 예측하기</div>
+ <div class="w-desc">UNKNOWN은 FALSE와 다른 논리값입니다. AND·OR·NOT을 계산한 다음 WHERE가 어떤 결과만 통과시키는지 단계별로 확인하세요.</div>
+ <div class="controls"><label>A <select id="truth-left"><option value="true">TRUE</option><option value="false">FALSE</option><option value="unknown">UNKNOWN</option></select></label><label>연산 <select id="truth-op"><option value="or">OR</option><option value="and">AND</option><option value="not">NOT A</option></select></label><label>B <select id="truth-right"><option value="unknown">UNKNOWN</option><option value="true">TRUE</option><option value="false">FALSE</option></select></label></div>
+ <div class="controls"><button class="btn" data-truth-case="or">TRUE OR UNKNOWN</button><button class="btn" data-truth-case="and">FALSE AND UNKNOWN</button><button class="btn" data-truth-case="not">NOT UNKNOWN</button><label>예상 결과 <select id="truth-predict"><option value="true">TRUE</option><option value="false">FALSE</option><option value="unknown">UNKNOWN</option></select></label><button class="btn primary" id="truth-check">예측 확인</button></div>
+ <pre id="truth-expression" data-language="sql"></pre><div class="stage"><svg id="truth-diagram" class="diagram" viewBox="0 0 720 175" role="img" aria-label="논리 연산 결과와 WHERE 통과 여부"></svg></div><p class="qx-note qx-scroll-hint">도식은 좌우로 스크롤할 수 있습니다. 작은 화면에서는 내부 영역을 옆으로 밀어 전체 연결을 확인하세요.</p><output id="truth-feedback" aria-live="polite"></output><div id="truth-player"></div>
+ <details class="deep"><summary>현재 연산의 진리표</summary><div id="truth-table" class="table-scroll"></div></details>
+</div>
+
+
+</section>
+<section id="s4"><h2>4. 정렬은 첫 행을 내기 전에 입력을 모은다</h2><p>Filter와 Project는 자식에게서 행 하나를 받아 다음 단계로 넘길 수 있습니다. Sort는 뒤에서 더 작은 값이 나올지 알 수 없으므로 첫 출력 전에 입력을 끝까지 읽어야 합니다. 이 때문에 같은 pull 인터페이스여도 <b>blocking 연산자</b>입니다. 부모의 첫 next 한 번이 여러 Scan·Filter 호출을 일으킵니다.</p>
+<p>기본 실험의 조건은 <code data-language="sql">age &gt;= 25 OR age IS NULL</code>입니다. 다섯 행 중 네 행이 남고, <code data-language="sql">ORDER BY age DESC LIMIT 3</code>의 결과는 아래와 같습니다. 정렬이 있으므로 LIMIT가 3이어도 원본 다섯 행을 읽습니다.</p>
+<div class="tbl-wrap"><table class="result-sample"><thead><tr><th>name</th><th>age</th></tr></thead><tbody><tr><td>Bo</td><td>NULL</td></tr><tr><td>Eli</td><td>40</td></tr><tr><td>Roy</td><td>35</td></tr></tbody></table></div>
+<p>이 예제는 NULL을 큰 값처럼 취급해 ASC에서는 마지막, DESC에서는 처음에 둡니다. 같은 정렬 키는 입력 순서를 유지하는 안정 정렬을 사용합니다. 이것이 정렬 없는 SQL 결과 순서를 보장한다는 뜻은 아닙니다. 문자열은 UTF-8 바이트 순서로 비교하고 언어별 사전식 정렬은 구현하지 않습니다. NULL 정렬 기본값은 <a href="https://www.postgresql.org/docs/current/queries-order.html">PostgreSQL ORDER BY 설명</a>과 같습니다.</p>
+<p>정렬 열은 출력에 없어도 됩니다. <code data-language="sql">SELECT name FROM people ORDER BY age</code>를 위해 전체 원본 행을 정렬·제한한 뒤 Project가 name만 고릅니다. 이 장의 실행 순서는 논리 SQL 구문 순서의 유일한 정의가 아니라 해당 예제의 물리 계획입니다.</p>
+<div class="callout tip"><span class="title">LIMIT가 읽기를 줄이는 경우를 비교하세요</span>실험 SQL에서 ORDER BY를 빼고 LIMIT 2로 바꾸세요. Roy는 통과, Ana는 탈락, Bo는 통과하므로 원본 세 행을 읽고 멈춥니다. LIMIT 0은 데이터 행을 요청하지 않습니다. 다만 테이블·열 바인딩과 카탈로그를 여는 작업은 여전히 수행합니다.</div>
+<p>메모리에 모으는 Sort 입력은 10000행으로 제한합니다. 큰 정렬을 임시 파일에 나눠 쓰는 외부 정렬은 지원하지 않습니다. 이 제한은 행 수 기준이며 메모리 바이트 예산이나 성능 보장은 아닙니다.</p></section>
+<section id="s5"><h2>5. 조인은 중복을 보존하고 NULL 키를 제외한다</h2><p>inner equijoin은 두 입력의 키가 같은 행 쌍을 만듭니다. 왼쪽에 키 10인 두 행, 오른쪽에도 키 10인 두 행이 있으면 결과는 네 행입니다. HashMap에 키마다 행 하나만 저장하면 결과가 사라집니다. 값은 행 목록이어야 합니다.</p>
+<div class="operator-contract"><div><b>Buffered nested-loop</b>오른쪽 입력을 한 번 모읍니다. 왼쪽 각 행마다 오른쪽의 모든 행과 후보 쌍을 검사합니다. 오른쪽을 다시 읽을 수 있도록 버퍼링하는 버전입니다.</div><div><b>Hash inner join</b>오른쪽의 NULL이 아닌 키를 버킷에 넣습니다. 왼쪽의 NULL이 아닌 키로 버킷을 찾고 해당 목록의 모든 행과 결과를 만듭니다.</div></div>
+<p>NULL = NULL도 UNKNOWN이므로 어느 조인에서도 매칭하지 않습니다. 기본 데이터의 후보 쌍은 nested-loop에서 5 × 5 = 25개입니다. Hash는 오른쪽 비NULL 엔트리 4개를 build하고 왼쪽 비NULL 키 4개를 probe합니다. 둘 다 결과는 다섯 행입니다. HashMap 내부의 해시·동등성 비교 횟수를 이 수치에 포함하지 않습니다.</p>
+
+<div class="widget qx-widget" id="join-operator-lab">
+ <div class="w-title">중첩 루프와 해시 조인의 실제 후보 비교</div>
+ <div class="w-desc">people.dept = departments.dept_key의 INNER equijoin 연산자 실험입니다. 5장 SQL 파서는 JOIN 문법을 아직 받지 않으므로 SQL 실행으로 표시하지 않습니다. 중복 키의 모든 조합을 내보내고 NULL 키끼리는 연결하지 않습니다.</div>
+ <div class="controls"><label>연산자 <select id="join-strategy"><option value="nested">Buffered nested loop</option><option value="hash">Hash join</option></select></label><label><input id="join-duplicate" type="checkbox" checked> 오른쪽 dept 10 중복 행 포함</label><label><input id="join-null" type="checkbox" checked> 오른쪽 NULL 키 행 포함</label><label><input id="join-left-null" type="checkbox"> Dana의 NULL dept를 10으로 변경</label></div>
+ <div class="controls"><label>결과 행 수 예상 <input id="join-predict" type="number" min="0" max="20" value="5"></label><button class="btn primary" id="join-check">예측 확인</button></div><output id="join-feedback" aria-live="polite"></output>
+ <div class="qx-panes"><div><b>왼쪽 people</b><div id="join-left-table" class="table-scroll"></div></div><div><b>오른쪽 departments</b><div id="join-right-table" class="table-scroll"></div></div></div>
+ <pre id="join-rule" data-language="sql">-- 연산자 조건 (SQL JOIN 파서 입력이 아님)
+people.dept = departments.dept_key</pre>
+ <div class="stage"><svg id="join-diagram" class="diagram" viewBox="0 0 820 180" role="img" aria-label="오른쪽 버퍼 또는 해시 구성, 왼쪽 후보 조사, 조인 출력 단계"></svg></div><p class="qx-note qx-scroll-hint">도식은 좌우로 스크롤할 수 있습니다. 작은 화면에서는 내부 영역을 옆으로 밀어 전체 연결을 확인하세요.</p>
+ <output id="join-step" class="qx-note" aria-live="polite"></output><div id="join-counters" class="qx-counters"></div>
+ <div class="qx-panes"><div><b>오른쪽 버퍼 / 해시 버킷</b><div id="join-buffer" class="table-scroll"></div></div><div><b>출력 행</b><div id="join-output" class="table-scroll"></div></div></div><div id="join-player"></div>
+ <p class="qx-note">join_checks는 중첩 루프가 검사한 모든 후보 쌍입니다. hash_build는 비NULL 오른쪽 엔트리 수, hash_probe는 비NULL 왼쪽 조회 수이며 해시 내부 키 비교 횟수와 다릅니다. 각 버퍼·정렬·최종 출력의 실습 상한은 10000행입니다. 큰 사용자 입력 API의 애니메이션 기록은 앞 500단계만 보관하고 계산은 상한 안에서 계속합니다.</p>
+</div>
+
+
+<p>두 알고리즘의 출력은 같은 행과 중복 개수를 가져야 합니다. 일반적인 SQL 결과 순서는 ORDER BY가 없으면 보장하지 않습니다. 이 예제는 과정 재현을 위해 입력과 버킷의 삽입 순서를 유지하지만 조인의 의미를 특정 출력 순서로 정의하지 않습니다.</p>
+<p>nested-loop의 오른쪽 버퍼는 NULL 행을 포함해 최대 10000행입니다. Hash는 NULL을 버리고 보관한 오른쪽 엔트리를 최대 10000개로 제한합니다. 최종 결과를 JSON으로 모으는 드라이버도 10000행으로 제한합니다. 조건에 맞는 조합이 그보다 많으면 일부 결과를 성공으로 반환하지 않고 오류로 끝냅니다.</p></section>
+<section id="s6"><h2>6. 구현 가이드</h2><p>표준 라이브러리만 사용하는 Rust 2024 예제입니다. 4장의 저장소와 5장의 파서를 원본 그대로 include하고 좁은 어댑터를 둡니다. 저장 형식은 추가하거나 변경하지 않습니다. 힙·카탈로그·RID·색인 바이트는 2~4장의 형식을 재사용합니다.</p>
+<h3>A. 바인딩된 열과 조건</h3><pre><code data-language="rust">// TODO: 카탈로그의 열 이름 → usize 인덱스
+// TODO: 비교 양쪽의 타입 검사. NULL 리터럴은 비교 타입을 강제하지 않는다.
+// TODO: 조건 평가는 TRUE/FALSE/UNKNOWN으로 구분한다.
+// TODO: 이름·타입 오류는 행을 읽기 전에 반환한다.
+// TODO: INSERT 열 목록을 테이블 순서로 바꾸고 빠진 열은 NULL로 채운다.</code></pre>
+<details class="deep"><summary>힌트 A: 단락 평가와 타입 검사</summary><div><p>행 평가에서 어떤 분기가 필요 없어 보이더라도 바인딩은 모든 열을 확인해야 합니다. <code data-language="sql">WHERE id = 1 OR missing = 3</code>은 missing이 없으면 실행 전에 오류입니다. 빈 테이블과 LIMIT 0에서도 같습니다. NULL과 정수의 비교는 허용하지만 결과는 UNKNOWN입니다.</p></div></details>
+<h3>B. 연산자 합성</h3><pre><code data-language="rust">// 데이터가 올라오는 순서입니다.
+// Scan → [Filter] → [Sort] → [Limit] → Project
+// TODO: Filter는 자식 next()를 반복해 TRUE인 행 하나를 찾는다.
+// TODO: Sort는 첫 next()에서만 자식을 끝까지 읽고 정렬한다.
+// TODO: Limit의 남은 수가 0이면 upstream next()를 호출하지 않는다.
+// TODO: Project는 바인딩한 열 번호로 행을 새로 만든다.</code></pre>
+<details class="deep"><summary>힌트 B: EOF와 LIMIT 0</summary><div><p>Some(row)와 None을 구분하고, EOF 뒤 next를 반복해도 None을 반환하게 하세요. 빈 입력, 모든 행 탈락, LIMIT 0이 같은 경로를 지나지 않을 수 있습니다. 자식이 몇 행을 반환했는지 세는 시험용 연산자로 불필요한 요청을 검사합니다.</p></div></details>
+<h3>C. 두 조인의 공통 계약</h3><pre><code data-language="rust">// TODO: 오른쪽 입력은 처음 요청받을 때 버퍼 또는 해시 테이블로 만든다.
+// TODO: NULL 키는 결과 쌍을 만들지 않는다.
+// TODO: key → Vec&lt;Row&gt;로 중복된 오른쪽 키를 모두 보관한다.
+// TODO: 왼쪽 한 행이 여러 오른쪽 행과 매칭되면 모두 반환한다.
+// TODO: 두 알고리즘의 결과를 중복 개수까지 비교한다.</code></pre>
+<details class="deep"><summary>힌트 C: Hash가 항상 유리한가요?</summary><div><p>이 예제는 메모리 안에 오른쪽 입력을 놓을 수 있다고 가정합니다. 데이터 크기, 편향, 메모리 한계, 적절한 색인이 있으면 다른 선택이 나을 수 있습니다. 후보 수가 적다는 사실만으로 실제 실행 시간이 더 빠르다고 결론 내리지 마세요. 현재는 비용 기반 최적화가 없습니다.</p></div></details>
+<h3>D. 실제 저장소에 SQL 실행하기</h3><pre><code data-language="text">examples/
+  ch02/pages.rs
+  ch03/btree.rs
+  ch04/tables.rs
+  ch05/sql.rs
+  ch06/executor.rs
+  ch06/check.sh</code></pre>
+<pre><code data-language="bash">rustc --edition=2024 examples/ch06/executor.rs -o executor
+# 새 실습 디렉터리를 사용하세요. 표준입력 전체는 SQL 한 문장입니다.
+printf '%s' 'CREATE TABLE people (id INT NOT NULL, name TEXT NOT NULL, age INT, dept INT);' \
+  | ./executor demo-executor
+for sql in \
+  "INSERT INTO people VALUES (1, 'Roy', 35, 10);" \
+  "INSERT INTO people VALUES (2, 'Ana', 20, 20);" \
+  "INSERT INTO people VALUES (3, 'Bo', NULL, 10);" \
+  "INSERT INTO people VALUES (4, 'Dana', 28, NULL);" \
+  "INSERT INTO people VALUES (5, 'Eli', 40, 30);"
+do
+  printf '%s' "$sql" | ./executor demo-executor
+done
+printf '%s' 'SELECT name, age FROM people WHERE age &gt;= 25 OR age IS NULL ORDER BY age DESC LIMIT 3;' \
+  | ./executor demo-executor
+./executor --join-demo nested
+./executor --join-demo hash</code></pre>
+<p>각 실행은 별도 프로세스이므로 다음 SELECT가 기존 카탈로그와 힙을 다시 엽니다. CREATE·INSERT는 저장소 flush가 성공한 후 응답합니다. 이것이 여러 파일의 원자적 트랜잭션이나 크래시 복구를 보장하지는 않습니다. 입력은 5장과 같은 SQL 부분집합 한 문장이며 여러 문장 배치는 거부합니다.</p>
+<p>SELECT와 조인 데모는 columns, typed rows, stats를 JSON으로 출력합니다. 정수의 JSON value는 i64 정밀도를 잃지 않게 문자열입니다. 예를 들어 정수 35는 <code data-language="json">{"type":"int","value":"35"}</code>, NULL은 <code data-language="json">{"type":"null"}</code>입니다. 화면 실험도 같은 결과·통계 계약으로 Rust와 비교합니다.</p>
+<details class="deep"><summary>접힌 참조 구현: executor.rs</summary><div><p><a href="examples/ch06/executor.rs" download>executor.rs 저장</a> · <a href="examples/ch06/check.sh" download>check.sh 저장</a>. 위 폴더 구조대로 이전 장 파일도 유지하세요.</p><pre><code data-language="rust">use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    io::{self, Read},
+    path::Path,
+    rc::Rc,
+};
+const BUFFER_ROWS: usize = 10_000;
+fn bad(message: &amp;str) -&gt; io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Type {
+    Int,
+    Text,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Field {
+    name: String,
+    kind: Type,
+    nullable: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Datum {
+    Int(i64),
+    Text(String),
+    Null,
+}
+type Row = Vec&lt;Datum&gt;;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cmp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+#[derive(Debug, Clone)]
+enum Operand {
+    Column(String),
+    Value(Datum),
+}
+#[derive(Debug, Clone)]
+enum Expr {
+    Compare(Operand, Cmp, Operand),
+    IsNull(Operand, bool),
+    Not(Box&lt;Expr&gt;),
+    And(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Or(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+}
+#[derive(Debug, Clone)]
+struct Order {
+    name: String,
+    descending: bool,
+}
+#[derive(Debug, Clone)]
+enum Stmt {
+    Create {
+        table: String,
+        fields: Vec&lt;Field&gt;,
+    },
+    Insert {
+        table: String,
+        columns: Option&lt;Vec&lt;String&gt;&gt;,
+        values: Row,
+    },
+    Select {
+        table: String,
+        columns: Option&lt;Vec&lt;String&gt;&gt;,
+        filter: Option&lt;Expr&gt;,
+        order: Vec&lt;Order&gt;,
+        limit: Option&lt;u64&gt;,
+    },
+}
+#[allow(dead_code)]
+mod language {
+    include!(&quot;../ch05/sql.rs&quot;);
+    fn value(v: Literal) -&gt; super::Datum {
+        match v {
+            Literal::Int(n) =&gt; super::Datum::Int(n),
+            Literal::Text(s) =&gt; super::Datum::Text(s),
+            Literal::Null =&gt; super::Datum::Null,
+        }
+    }
+    fn operand(o: Operand) -&gt; super::Operand {
+        match o {
+            Operand::Column(n) =&gt; super::Operand::Column(n),
+            Operand::Value(v) =&gt; super::Operand::Value(value(v)),
+        }
+    }
+    fn expr(e: Expr) -&gt; super::Expr {
+        use super::{Cmp as C, Expr as E};
+        match e {
+            Expr::Compare { left, op, right } =&gt; E::Compare(
+                operand(left),
+                match op {
+                    Compare::Eq =&gt; C::Eq,
+                    Compare::Ne =&gt; C::Ne,
+                    Compare::Lt =&gt; C::Lt,
+                    Compare::Le =&gt; C::Le,
+                    Compare::Gt =&gt; C::Gt,
+                    Compare::Ge =&gt; C::Ge,
+                },
+                operand(right),
+            ),
+            Expr::IsNull { value, negated } =&gt; E::IsNull(operand(value), negated),
+            Expr::Not(v) =&gt; E::Not(Box::new(expr(*v))),
+            Expr::And(a, b) =&gt; E::And(Box::new(expr(*a)), Box::new(expr(*b))),
+            Expr::Or(a, b) =&gt; E::Or(Box::new(expr(*a)), Box::new(expr(*b))),
+        }
+    }
+    pub fn ast(sql: &amp;str) -&gt; io::Result&lt;super::Stmt&gt; {
+        let statement =
+            parse(sql).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+        Ok(match statement {
+            Statement::Create { table, columns } =&gt; super::Stmt::Create {
+                table,
+                fields: columns
+                    .into_iter()
+                    .map(|c| super::Field {
+                        name: c.name,
+                        kind: if c.data_type == &quot;int&quot; {
+                            super::Type::Int
+                        } else {
+                            super::Type::Text
+                        },
+                        nullable: c.nullable,
+                    })
+                    .collect(),
+            },
+            Statement::Insert {
+                table,
+                columns,
+                values,
+            } =&gt; super::Stmt::Insert {
+                table,
+                columns,
+                values: values.into_iter().map(value).collect(),
+            },
+            Statement::Select {
+                table,
+                columns,
+                filter,
+                order,
+                limit,
+            } =&gt; super::Stmt::Select {
+                table,
+                columns,
+                filter: filter.map(expr),
+                order: order
+                    .into_iter()
+                    .map(|o| super::Order {
+                        name: o.column,
+                        descending: o.descending,
+                    })
+                    .collect(),
+                limit: limit.map(|n| n as u64),
+            },
+        })
+    }
+    pub fn json_string(s: &amp;str) -&gt; String {
+        quote(s)
+    }
+}
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Stats {
+    scan_rows: u64,
+    filter_checks: u64,
+    sort_rows: u64,
+    output_rows: u64,
+    join_checks: u64,
+    hash_build: u64,
+    hash_probe: u64,
+}
+type Counters = Rc&lt;RefCell&lt;Stats&gt;&gt;;
+fn counters() -&gt; Counters {
+    Rc::new(RefCell::new(Stats::default()))
+}
+trait Op {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt;;
+}
+#[allow(dead_code)]
+mod storage {
+    include!(&quot;../ch04/tables.rs&quot;);
+    pub struct Store(Db);
+    fn field(c: &amp;Column) -&gt; super::Field {
+        super::Field {
+            name: c.name.clone(),
+            kind: match c.kind {
+                Kind::Int =&gt; super::Type::Int,
+                Kind::Text =&gt; super::Type::Text,
+            },
+            nullable: c.nullable,
+        }
+    }
+    fn datum(v: Value) -&gt; super::Datum {
+        match v {
+            Value::Int(n) =&gt; super::Datum::Int(n),
+            Value::Text(s) =&gt; super::Datum::Text(s),
+            Value::Null =&gt; super::Datum::Null,
+        }
+    }
+    pub struct Scan&lt;&#x27;a&gt; {
+        db: &amp;&#x27;a mut Db,
+        table: Table,
+        page: u64,
+        slot: usize,
+        count: usize,
+        entered: HashSet&lt;u64&gt;,
+        finished: bool,
+        stats: super::Counters,
+    }
+    impl Store {
+        pub fn open(dir: &amp;Path, create_db: bool) -&gt; io::Result&lt;Self&gt; {
+            if !create_db {
+                let path = dir.join(&quot;tables.pages&quot;);
+                if !path.is_file() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        &quot;database does not exist&quot;,
+                    ));
+                }
+                if path.metadata()?.len() == 0 {
+                    return Err(bad(&quot;existing catalog file is empty&quot;));
+                }
+            }
+            Ok(Self(Db::open(dir)?))
+        }
+        pub fn fields(&amp;self, name: &amp;str) -&gt; io::Result&lt;Vec&lt;super::Field&gt;&gt; {
+            let i = self.0.table(name)?;
+            Ok(self.0.tables[i].schema.iter().map(field).collect())
+        }
+        pub fn create(&amp;mut self, name: &amp;str, fields: Vec&lt;super::Field&gt;) -&gt; io::Result&lt;()&gt; {
+            self.0.create(
+                name,
+                fields
+                    .into_iter()
+                    .map(|f| Column {
+                        name: f.name,
+                        kind: match f.kind {
+                            super::Type::Int =&gt; Kind::Int,
+                            super::Type::Text =&gt; Kind::Text,
+                        },
+                        nullable: f.nullable,
+                    })
+                    .collect(),
+            )
+        }
+        pub fn insert(&amp;mut self, name: &amp;str, row: super::Row) -&gt; io::Result&lt;(u64, u16)&gt; {
+            self.0.insert(
+                name,
+                row.into_iter()
+                    .map(|v| match v {
+                        super::Datum::Int(n) =&gt; Value::Int(n),
+                        super::Datum::Text(s) =&gt; Value::Text(s),
+                        super::Datum::Null =&gt; Value::Null,
+                    })
+                    .collect(),
+            )
+        }
+        // Constructing a scan does not read a heap page. Each next pulls one row.
+        pub fn scan(&amp;mut self, name: &amp;str, stats: super::Counters) -&gt; io::Result&lt;Scan&lt;&#x27;_&gt;&gt; {
+            let i = self.0.table(name)?;
+            let table = self.0.tables[i].clone();
+            let page = table.first;
+            Ok(Scan {
+                db: &amp;mut self.0,
+                table,
+                page,
+                slot: 1,
+                count: 0,
+                entered: HashSet::new(),
+                finished: false,
+                stats,
+            })
+        }
+        // Narrow adapters used by the Chapter 09 planner. Chapter 06 remains SeqScan.
+        pub fn lookup(&amp;mut self, name: &amp;str, key: i64) -&gt; io::Result&lt;Option&lt;super::Row&gt;&gt; {
+            Ok(self.0.get(name, key)?.map(|row| row.into_iter().map(datum).collect()))
+        }
+        pub fn heap_pages(&amp;self) -&gt; u64 {
+            self.0.heap.len().saturating_sub(1)
+        }
+        pub fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {
+            self.0.flush()
+        }
+        #[cfg(test)]
+        pub fn corrupt_last_heap_header(&amp;mut self, name: &amp;str) -&gt; io::Result&lt;()&gt; {
+            let i = self.0.table(name)?;
+            self.0.heap.replace(self.0.tables[i].last, b&quot;bad&quot;)
+        }
+    }
+    impl super::Op for Scan&lt;&#x27;_&gt; {
+        fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;super::Row&gt;&gt; {
+            if self.finished {
+                return Ok(None);
+            }
+            loop {
+                if self.count == 0 {
+                    if !self.entered.insert(self.page) {
+                        return Err(bad(&quot;cycle in heap chain&quot;));
+                    }
+                    self.count = self.db.heap.count(self.page)?;
+                    if self.count == 0 {
+                        return Err(bad(&quot;heap page has no next slot&quot;));
+                    }
+                }
+                if self.slot &lt; self.count {
+                    let bytes = self.db.heap.read(self.page, self.slot as u16)?;
+                    let row = decode(&amp;self.table.schema, &amp;bytes)?;
+                    self.slot += 1;
+                    self.stats.borrow_mut().scan_rows += 1;
+                    return Ok(Some(row.into_iter().map(datum).collect()));
+                }
+                let next = self.db.heap.next(self.page)?;
+                if next == 0 {
+                    if self.page != self.table.last {
+                        return Err(bad(&quot;bad last heap page&quot;));
+                    }
+                    self.finished = true;
+                    return Ok(None);
+                }
+                self.page = next;
+                self.slot = 1;
+                self.count = 0;
+            }
+        }
+    }
+}
+fn name_index(fields: &amp;[Field], name: &amp;str) -&gt; io::Result&lt;usize&gt; {
+    fields
+        .iter()
+        .position(|f| f.name == name)
+        .ok_or_else(|| bad(&amp;format!(&quot;unknown column: {name}&quot;)))
+}
+fn datum_type(v: &amp;Datum) -&gt; Option&lt;Type&gt; {
+    match v {
+        Datum::Int(_) =&gt; Some(Type::Int),
+        Datum::Text(_) =&gt; Some(Type::Text),
+        Datum::Null =&gt; None,
+    }
+}
+fn validate_row(fields: &amp;[Field], row: &amp;[Datum]) -&gt; io::Result&lt;()&gt; {
+    if fields.len() != row.len() {
+        return Err(bad(&quot;column count mismatch&quot;));
+    }
+    for (f, v) in fields.iter().zip(row) {
+        match datum_type(v) {
+            Some(t) if t != f.kind =&gt; return Err(bad(&quot;incompatible value type&quot;)),
+            None if !f.nullable =&gt; return Err(bad(&quot;NOT NULL constraint&quot;)),
+            _ =&gt; {}
+        }
+    }
+    Ok(())
+}
+fn valid_name(s: &amp;str) -&gt; bool {
+    !s.is_empty()
+        &amp;&amp; s.len() &lt;= 32
+        &amp;&amp; s.as_bytes()[0].is_ascii_alphabetic()
+        &amp;&amp; s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b&#x27;_&#x27;)
+}
+fn validate_create(table: &amp;str, fields: &amp;[Field]) -&gt; io::Result&lt;()&gt; {
+    if !valid_name(table) || fields.is_empty() || fields.len() &gt; 16 {
+        return Err(bad(&quot;invalid table definition&quot;));
+    }
+    if fields[0].kind != Type::Int || fields[0].nullable {
+        return Err(bad(&quot;first column must be INT NOT NULL primary key&quot;));
+    }
+    let mut names = HashSet::new();
+    for f in fields {
+        if !valid_name(&amp;f.name) || !names.insert(&amp;f.name) {
+            return Err(bad(&quot;bad or duplicate column name&quot;));
+        }
+    }
+    Ok(())
+}
+fn bind_insert(fields: &amp;[Field], columns: Option&lt;&amp;[String]&gt;, values: Row) -&gt; io::Result&lt;Row&gt; {
+    if let Some(columns) = columns {
+        if columns.len() != values.len() {
+            return Err(bad(&quot;INSERT column/value count mismatch&quot;));
+        }
+        let mut seen = HashSet::new();
+        let mut row = vec![Datum::Null; fields.len()];
+        for (name, value) in columns.iter().zip(values) {
+            let i = name_index(fields, name)?;
+            if !seen.insert(i) {
+                return Err(bad(&quot;duplicate INSERT column&quot;));
+            }
+            row[i] = value;
+        }
+        validate_row(fields, &amp;row)?;
+        Ok(row)
+    } else {
+        validate_row(fields, &amp;values)?;
+        Ok(values)
+    }
+}
+#[derive(Debug, Clone)]
+enum BoundOperand {
+    Column(usize, Type),
+    Value(Datum),
+}
+impl BoundOperand {
+    fn kind(&amp;self) -&gt; Option&lt;Type&gt; {
+        match self {
+            Self::Column(_, t) =&gt; Some(*t),
+            Self::Value(v) =&gt; datum_type(v),
+        }
+    }
+    fn value&lt;&#x27;a&gt;(&amp;&#x27;a self, row: &amp;&#x27;a [Datum]) -&gt; io::Result&lt;&amp;&#x27;a Datum&gt; {
+        match self {
+            Self::Column(i, _) =&gt; row
+                .get(*i)
+                .ok_or_else(|| bad(&quot;row is missing bound column&quot;)),
+            Self::Value(v) =&gt; Ok(v),
+        }
+    }
+}
+#[derive(Debug, Clone)]
+enum BoundExpr {
+    Compare(BoundOperand, Cmp, BoundOperand),
+    IsNull(BoundOperand, bool),
+    Not(Box&lt;BoundExpr&gt;),
+    And(Box&lt;BoundExpr&gt;, Box&lt;BoundExpr&gt;),
+    Or(Box&lt;BoundExpr&gt;, Box&lt;BoundExpr&gt;),
+}
+fn bind_operand(fields: &amp;[Field], o: Operand) -&gt; io::Result&lt;BoundOperand&gt; {
+    match o {
+        Operand::Column(name) =&gt; {
+            let i = name_index(fields, &amp;name)?;
+            Ok(BoundOperand::Column(i, fields[i].kind))
+        }
+        Operand::Value(v) =&gt; Ok(BoundOperand::Value(v)),
+    }
+}
+fn bind_expr(fields: &amp;[Field], expr: Expr) -&gt; io::Result&lt;BoundExpr&gt; {
+    Ok(match expr {
+        Expr::Compare(a, op, b) =&gt; {
+            let a = bind_operand(fields, a)?;
+            let b = bind_operand(fields, b)?;
+            if a.kind().is_some() &amp;&amp; b.kind().is_some() &amp;&amp; a.kind() != b.kind() {
+                return Err(bad(&quot;incompatible comparison types&quot;));
+            }
+            BoundExpr::Compare(a, op, b)
+        }
+        Expr::IsNull(v, n) =&gt; BoundExpr::IsNull(bind_operand(fields, v)?, n),
+        Expr::Not(v) =&gt; BoundExpr::Not(Box::new(bind_expr(fields, *v)?)),
+        Expr::And(a, b) =&gt; BoundExpr::And(
+            Box::new(bind_expr(fields, *a)?),
+            Box::new(bind_expr(fields, *b)?),
+        ),
+        Expr::Or(a, b) =&gt; BoundExpr::Or(
+            Box::new(bind_expr(fields, *a)?),
+            Box::new(bind_expr(fields, *b)?),
+        ),
+    })
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Truth {
+    True,
+    False,
+    Unknown,
+}
+impl Truth {
+    fn not(self) -&gt; Self {
+        match self {
+            Self::True =&gt; Self::False,
+            Self::False =&gt; Self::True,
+            Self::Unknown =&gt; Self::Unknown,
+        }
+    }
+    fn and(self, b: Self) -&gt; Self {
+        match (self, b) {
+            (Self::False, _) | (_, Self::False) =&gt; Self::False,
+            (Self::True, Self::True) =&gt; Self::True,
+            _ =&gt; Self::Unknown,
+        }
+    }
+    fn or(self, b: Self) -&gt; Self {
+        match (self, b) {
+            (Self::True, _) | (_, Self::True) =&gt; Self::True,
+            (Self::False, Self::False) =&gt; Self::False,
+            _ =&gt; Self::Unknown,
+        }
+    }
+    fn from_bool(b: bool) -&gt; Self {
+        if b { Self::True } else { Self::False }
+    }
+}
+fn compare(a: &amp;Datum, b: &amp;Datum) -&gt; io::Result&lt;Option&lt;Ordering&gt;&gt; {
+    match (a, b) {
+        (Datum::Null, _) | (_, Datum::Null) =&gt; Ok(None),
+        (Datum::Int(a), Datum::Int(b)) =&gt; Ok(Some(a.cmp(b))),
+        (Datum::Text(a), Datum::Text(b)) =&gt; Ok(Some(a.cmp(b))),
+        _ =&gt; Err(bad(&quot;incompatible comparison types&quot;)),
+    }
+}
+impl BoundExpr {
+    fn eval(&amp;self, row: &amp;[Datum]) -&gt; io::Result&lt;Truth&gt; {
+        Ok(match self {
+            Self::Compare(a, op, b) =&gt; match compare(a.value(row)?, b.value(row)?)? {
+                None =&gt; Truth::Unknown,
+                Some(ord) =&gt; Truth::from_bool(match op {
+                    Cmp::Eq =&gt; ord == Ordering::Equal,
+                    Cmp::Ne =&gt; ord != Ordering::Equal,
+                    Cmp::Lt =&gt; ord == Ordering::Less,
+                    Cmp::Le =&gt; ord != Ordering::Greater,
+                    Cmp::Gt =&gt; ord == Ordering::Greater,
+                    Cmp::Ge =&gt; ord != Ordering::Less,
+                }),
+            },
+            Self::IsNull(v, negated) =&gt; {
+                Truth::from_bool(matches!(v.value(row)?, Datum::Null) ^ negated)
+            }
+            Self::Not(v) =&gt; v.eval(row)?.not(),
+            Self::And(a, b) =&gt; a.eval(row)?.and(b.eval(row)?),
+            Self::Or(a, b) =&gt; a.eval(row)?.or(b.eval(row)?),
+        })
+    }
+}
+struct Values {
+    rows: std::vec::IntoIter&lt;Row&gt;,
+}
+impl Values {
+    fn new(rows: Vec&lt;Row&gt;) -&gt; Self {
+        Self {
+            rows: rows.into_iter(),
+        }
+    }
+}
+impl Op for Values {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        Ok(self.rows.next())
+    }
+}
+struct Filter&lt;&#x27;a&gt; {
+    source: Box&lt;dyn Op + &#x27;a&gt;,
+    predicate: BoundExpr,
+    stats: Counters,
+}
+impl Op for Filter&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        while let Some(row) = self.source.next()? {
+            self.stats.borrow_mut().filter_checks += 1;
+            if self.predicate.eval(&amp;row)? == Truth::True {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
+    }
+}
+struct Project&lt;&#x27;a&gt; {
+    source: Box&lt;dyn Op + &#x27;a&gt;,
+    columns: Vec&lt;usize&gt;,
+}
+impl Op for Project&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        self.source
+            .next()?
+            .map(|row| {
+                self.columns
+                    .iter()
+                    .map(|&amp;i| {
+                        row.get(i)
+                            .cloned()
+                            .ok_or_else(|| bad(&quot;row missing projection column&quot;))
+                    })
+                    .collect()
+            })
+            .transpose()
+    }
+}
+struct Limit&lt;&#x27;a&gt; {
+    source: Box&lt;dyn Op + &#x27;a&gt;,
+    remaining: u64,
+}
+impl Op for Limit&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        let row = self.source.next()?;
+        if row.is_some() {
+            self.remaining -= 1;
+        } else {
+            self.remaining = 0;
+        }
+        Ok(row)
+    }
+}
+#[derive(Clone)]
+struct SortKey {
+    index: usize,
+    kind: Type,
+    descending: bool,
+}
+struct Sort&lt;&#x27;a&gt; {
+    source: Box&lt;dyn Op + &#x27;a&gt;,
+    keys: Vec&lt;SortKey&gt;,
+    rows: Option&lt;std::vec::IntoIter&lt;Row&gt;&gt;,
+    stats: Counters,
+}
+fn sort_cmp(a: &amp;Datum, b: &amp;Datum) -&gt; Ordering {
+    match (a, b) {
+        (Datum::Null, Datum::Null) =&gt; Ordering::Equal,
+        (Datum::Null, _) =&gt; Ordering::Greater,
+        (_, Datum::Null) =&gt; Ordering::Less,
+        (Datum::Int(a), Datum::Int(b)) =&gt; a.cmp(b),
+        (Datum::Text(a), Datum::Text(b)) =&gt; a.cmp(b),
+        _ =&gt; unreachable!(&quot;sort rows checked before sorting&quot;),
+    }
+}
+impl Op for Sort&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        if self.rows.is_none() {
+            let mut rows = vec![];
+            while let Some(row) = self.source.next()? {
+                if rows.len() &gt;= BUFFER_ROWS {
+                    return Err(bad(&quot;sort buffer exceeds 10000 rows&quot;));
+                }
+                for key in &amp;self.keys {
+                    let v = row
+                        .get(key.index)
+                        .ok_or_else(|| bad(&quot;row missing sort column&quot;))?;
+                    if datum_type(v).is_some_and(|t| t != key.kind) {
+                        return Err(bad(&quot;bad sort value type&quot;));
+                    }
+                }
+                self.stats.borrow_mut().sort_rows += 1;
+                rows.push(row);
+            }
+            rows.sort_by(|a, b| {
+                for key in &amp;self.keys {
+                    let ord = sort_cmp(&amp;a[key.index], &amp;b[key.index]);
+                    let ord = if key.descending { ord.reverse() } else { ord };
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+                Ordering::Equal
+            });
+            self.rows = Some(rows.into_iter());
+        }
+        Ok(self.rows.as_mut().unwrap().next())
+    }
+}
+struct Plan {
+    columns: Vec&lt;usize&gt;,
+    names: Vec&lt;String&gt;,
+    filter: Option&lt;BoundExpr&gt;,
+    order: Vec&lt;SortKey&gt;,
+    limit: Option&lt;u64&gt;,
+}
+fn bind_select(
+    fields: &amp;[Field],
+    columns: Option&lt;Vec&lt;String&gt;&gt;,
+    filter: Option&lt;Expr&gt;,
+    order: Vec&lt;Order&gt;,
+    limit: Option&lt;u64&gt;,
+) -&gt; io::Result&lt;Plan&gt; {
+    let columns = match columns {
+        Some(cols) =&gt; cols
+            .iter()
+            .map(|n| name_index(fields, n))
+            .collect::&lt;io::Result&lt;Vec&lt;_&gt;&gt;&gt;()?,
+        None =&gt; (0..fields.len()).collect(),
+    };
+    let names = columns.iter().map(|&amp;i| fields[i].name.clone()).collect();
+    let filter = filter.map(|f| bind_expr(fields, f)).transpose()?;
+    let order = order
+        .into_iter()
+        .map(|o| {
+            let index = name_index(fields, &amp;o.name)?;
+            Ok(SortKey {
+                index,
+                kind: fields[index].kind,
+                descending: o.descending,
+            })
+        })
+        .collect::&lt;io::Result&lt;_&gt;&gt;()?;
+    Ok(Plan {
+        columns,
+        names,
+        filter,
+        order,
+        limit,
+    })
+}
+fn pipeline&lt;&#x27;a&gt;(source: Box&lt;dyn Op + &#x27;a&gt;, plan: &amp;Plan, stats: Counters) -&gt; Box&lt;dyn Op + &#x27;a&gt; {
+    let mut source = source;
+    if let Some(predicate) = &amp;plan.filter {
+        source = Box::new(Filter {
+            source,
+            predicate: predicate.clone(),
+            stats: stats.clone(),
+        });
+    }
+    if !plan.order.is_empty() {
+        source = Box::new(Sort {
+            source,
+            keys: plan.order.clone(),
+            rows: None,
+            stats: stats.clone(),
+        });
+    }
+    if let Some(remaining) = plan.limit {
+        source = Box::new(Limit { source, remaining });
+    }
+    Box::new(Project {
+        source,
+        columns: plan.columns.clone(),
+    })
+}
+fn collect(mut op: Box&lt;dyn Op + &#x27;_&gt;, stats: &amp;Counters) -&gt; io::Result&lt;Vec&lt;Row&gt;&gt; {
+    let mut rows = vec![];
+    while let Some(row) = op.next()? {
+        if rows.len() &gt;= BUFFER_ROWS {
+            return Err(bad(&quot;result buffer exceeds 10000 rows&quot;));
+        }
+        stats.borrow_mut().output_rows += 1;
+        rows.push(row);
+    }
+    Ok(rows)
+}
+#[derive(Clone, Copy)]
+struct JoinKeys {
+    left: usize,
+    right: usize,
+    kind: Type,
+}
+fn bind_join(left: &amp;[Field], right: &amp;[Field], li: usize, ri: usize) -&gt; io::Result&lt;JoinKeys&gt; {
+    let a = left
+        .get(li)
+        .ok_or_else(|| bad(&quot;left join column missing&quot;))?;
+    let b = right
+        .get(ri)
+        .ok_or_else(|| bad(&quot;right join column missing&quot;))?;
+    if a.kind != b.kind {
+        return Err(bad(&quot;incompatible join key types&quot;));
+    }
+    Ok(JoinKeys {
+        left: li,
+        right: ri,
+        kind: a.kind,
+    })
+}
+fn key(row: &amp;[Datum], index: usize, kind: Type) -&gt; io::Result&lt;Option&lt;Datum&gt;&gt; {
+    let v = row.get(index).ok_or_else(|| bad(&quot;row missing join key&quot;))?;
+    if datum_type(v).is_some_and(|t| t != kind) {
+        return Err(bad(&quot;bad join key type&quot;));
+    }
+    Ok(if matches!(v, Datum::Null) {
+        None
+    } else {
+        Some(v.clone())
+    })
+}
+struct NestedJoin&lt;&#x27;a&gt; {
+    left: Box&lt;dyn Op + &#x27;a&gt;,
+    right: Box&lt;dyn Op + &#x27;a&gt;,
+    keys: JoinKeys,
+    buffer: Option&lt;Vec&lt;Row&gt;&gt;,
+    current: Option&lt;Row&gt;,
+    position: usize,
+    stats: Counters,
+}
+impl&lt;&#x27;a&gt; NestedJoin&lt;&#x27;a&gt; {
+    fn new(
+        left: Box&lt;dyn Op + &#x27;a&gt;,
+        right: Box&lt;dyn Op + &#x27;a&gt;,
+        keys: JoinKeys,
+        stats: Counters,
+    ) -&gt; Self {
+        Self {
+            left,
+            right,
+            keys,
+            buffer: None,
+            current: None,
+            position: 0,
+            stats,
+        }
+    }
+}
+impl Op for NestedJoin&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        if self.buffer.is_none() {
+            let mut b = vec![];
+            while let Some(row) = self.right.next()? {
+                if b.len() &gt;= BUFFER_ROWS {
+                    return Err(bad(&quot;join right buffer exceeds 10000 rows&quot;));
+                }
+                key(&amp;row, self.keys.right, self.keys.kind)?;
+                b.push(row);
+            }
+            self.buffer = Some(b);
+        }
+        loop {
+            if self.current.is_none() {
+                self.current = self.left.next()?;
+                self.position = 0;
+                if self.current.is_none() {
+                    return Ok(None);
+                }
+            }
+            let left = self.current.as_ref().unwrap();
+            let left_key = key(left, self.keys.left, self.keys.kind)?;
+            let buffer = self.buffer.as_ref().unwrap();
+            while self.position &lt; buffer.len() {
+                let right = &amp;buffer[self.position];
+                self.position += 1;
+                self.stats.borrow_mut().join_checks += 1;
+                if left_key.is_some() &amp;&amp; left_key == key(right, self.keys.right, self.keys.kind)? {
+                    let mut row = left.clone();
+                    row.extend_from_slice(right);
+                    return Ok(Some(row));
+                }
+            }
+            self.current = None;
+        }
+    }
+}
+struct HashJoin&lt;&#x27;a&gt; {
+    left: Box&lt;dyn Op + &#x27;a&gt;,
+    right: Box&lt;dyn Op + &#x27;a&gt;,
+    keys: JoinKeys,
+    table: Option&lt;HashMap&lt;Datum, Vec&lt;Row&gt;&gt;&gt;,
+    current: Option&lt;Row&gt;,
+    match_key: Option&lt;Datum&gt;,
+    position: usize,
+    stats: Counters,
+}
+impl&lt;&#x27;a&gt; HashJoin&lt;&#x27;a&gt; {
+    fn new(
+        left: Box&lt;dyn Op + &#x27;a&gt;,
+        right: Box&lt;dyn Op + &#x27;a&gt;,
+        keys: JoinKeys,
+        stats: Counters,
+    ) -&gt; Self {
+        Self {
+            left,
+            right,
+            keys,
+            table: None,
+            current: None,
+            match_key: None,
+            position: 0,
+            stats,
+        }
+    }
+}
+impl Op for HashJoin&lt;&#x27;_&gt; {
+    fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        if self.table.is_none() {
+            let mut table: HashMap&lt;Datum, Vec&lt;Row&gt;&gt; = HashMap::new();
+            let mut count = 0;
+            while let Some(row) = self.right.next()? {
+                if let Some(k) = key(&amp;row, self.keys.right, self.keys.kind)? {
+                    if count &gt;= BUFFER_ROWS {
+                        return Err(bad(&quot;hash build buffer exceeds 10000 non-NULL rows&quot;));
+                    }
+                    count += 1;
+                    table.entry(k).or_default().push(row);
+                    self.stats.borrow_mut().hash_build += 1;
+                }
+            }
+            self.table = Some(table);
+        }
+        loop {
+            if let Some(k) = &amp;self.match_key {
+                if let Some(matches) = self.table.as_ref().unwrap().get(k) {
+                    if self.position &lt; matches.len() {
+                        let right = &amp;matches[self.position];
+                        self.position += 1;
+                        let mut row = self.current.as_ref().unwrap().clone();
+                        row.extend_from_slice(right);
+                        return Ok(Some(row));
+                    }
+                }
+            }
+            let Some(left) = self.left.next()? else {
+                return Ok(None);
+            };
+            self.position = 0;
+            self.match_key = key(&amp;left, self.keys.left, self.keys.kind)?;
+            if self.match_key.is_some() {
+                self.stats.borrow_mut().hash_probe += 1;
+            }
+            self.current = Some(left);
+        }
+    }
+}
+fn q(s: &amp;str) -&gt; String {
+    language::json_string(s)
+}
+fn datum_json(d: &amp;Datum) -&gt; String {
+    match d {
+        Datum::Int(n) =&gt; format!(&quot;{{\&quot;type\&quot;:\&quot;int\&quot;,\&quot;value\&quot;:{}}}&quot;, q(&amp;n.to_string())),
+        Datum::Text(s) =&gt; format!(&quot;{{\&quot;type\&quot;:\&quot;text\&quot;,\&quot;value\&quot;:{}}}&quot;, q(s)),
+        Datum::Null =&gt; &quot;{\&quot;type\&quot;:\&quot;null\&quot;}&quot;.into(),
+    }
+}
+fn array(items: impl IntoIterator&lt;Item = String&gt;) -&gt; String {
+    format!(&quot;[{}]&quot;, items.into_iter().collect::&lt;Vec&lt;_&gt;&gt;().join(&quot;,&quot;))
+}
+fn output(columns: &amp;[String], rows: &amp;[Row], stats: &amp;Stats) -&gt; String {
+    format!(
+        &quot;{{\&quot;columns\&quot;:{},\&quot;rows\&quot;:{},\&quot;stats\&quot;:{{\&quot;scan_rows\&quot;:{},\&quot;filter_checks\&quot;:{},\&quot;sort_rows\&quot;:{},\&quot;output_rows\&quot;:{},\&quot;join_checks\&quot;:{},\&quot;hash_build\&quot;:{},\&quot;hash_probe\&quot;:{}}}}}&quot;,
+        array(columns.iter().map(|s| q(s))),
+        array(rows.iter().map(|row| array(row.iter().map(datum_json)))),
+        stats.scan_rows,
+        stats.filter_checks,
+        stats.sort_rows,
+        stats.output_rows,
+        stats.join_checks,
+        stats.hash_build,
+        stats.hash_probe
+    )
+}
+fn execute(store: &amp;mut storage::Store, stmt: Stmt) -&gt; io::Result&lt;String&gt; {
+    match stmt {
+        Stmt::Create { table, fields } =&gt; {
+            validate_create(&amp;table, &amp;fields)?;
+            store.create(&amp;table, fields)?;
+            store.flush()?;
+            Ok(format!(&quot;{{\&quot;type\&quot;:\&quot;create\&quot;,\&quot;table\&quot;:{}}}&quot;, q(&amp;table)))
+        }
+        Stmt::Insert {
+            table,
+            columns,
+            values,
+        } =&gt; {
+            let fields = store.fields(&amp;table)?;
+            let row = bind_insert(&amp;fields, columns.as_deref(), values)?;
+            let (page, slot) = store.insert(&amp;table, row)?;
+            store.flush()?;
+            Ok(format!(
+                &quot;{{\&quot;type\&quot;:\&quot;insert\&quot;,\&quot;rid\&quot;:{{\&quot;page\&quot;:{page},\&quot;slot\&quot;:{slot}}}}}&quot;
+            ))
+        }
+        Stmt::Select {
+            table,
+            columns,
+            filter,
+            order,
+            limit,
+        } =&gt; {
+            let fields = store.fields(&amp;table)?;
+            let plan = bind_select(&amp;fields, columns, filter, order, limit)?;
+            let stats = counters();
+            let scan = store.scan(&amp;table, stats.clone())?;
+            let rows = collect(pipeline(Box::new(scan), &amp;plan, stats.clone()), &amp;stats)?;
+            let result = output(&amp;plan.names, &amp;rows, &amp;stats.borrow());
+            Ok(result)
+        }
+    }
+}
+fn demo_data() -&gt; (Vec&lt;Field&gt;, Vec&lt;Row&gt;, Vec&lt;Field&gt;, Vec&lt;Row&gt;) {
+    use Datum::{Int as I, Null as N, Text as T};
+    let f = |name: &amp;str, kind, nullable| Field {
+        name: name.into(),
+        kind,
+        nullable,
+    };
+    (
+        vec![
+            f(&quot;id&quot;, Type::Int, false),
+            f(&quot;name&quot;, Type::Text, false),
+            f(&quot;age&quot;, Type::Int, true),
+            f(&quot;dept&quot;, Type::Int, true),
+        ],
+        vec![
+            vec![I(1), T(&quot;Roy&quot;.into()), I(35), I(10)],
+            vec![I(2), T(&quot;Ana&quot;.into()), I(20), I(20)],
+            vec![I(3), T(&quot;Bo&quot;.into()), N, I(10)],
+            vec![I(4), T(&quot;Dana&quot;.into()), I(28), N],
+            vec![I(5), T(&quot;Eli&quot;.into()), I(40), I(30)],
+        ],
+        vec![
+            f(&quot;dept_key&quot;, Type::Int, true),
+            f(&quot;label&quot;, Type::Text, false),
+        ],
+        vec![
+            vec![I(10), T(&quot;Eng&quot;.into())],
+            vec![I(20), T(&quot;Ops&quot;.into())],
+            vec![I(10), T(&quot;Field&quot;.into())],
+            vec![N, T(&quot;Unknown&quot;.into())],
+            vec![I(40), T(&quot;Legal&quot;.into())],
+        ],
+    )
+}
+fn join_demo(method: &amp;str) -&gt; io::Result&lt;String&gt; {
+    let (left_fields, left, right_fields, right) = demo_data();
+    let keys = bind_join(&amp;left_fields, &amp;right_fields, 3, 0)?;
+    let stats = counters();
+    let left: Box&lt;dyn Op&gt; = Box::new(Values::new(left));
+    let right: Box&lt;dyn Op&gt; = Box::new(Values::new(right));
+    let join: Box&lt;dyn Op&gt; = match method {
+        &quot;nested&quot; =&gt; Box::new(NestedJoin::new(left, right, keys, stats.clone())),
+        &quot;hash&quot; =&gt; Box::new(HashJoin::new(left, right, keys, stats.clone())),
+        _ =&gt; return Err(bad(&quot;join demo expects nested or hash&quot;)),
+    };
+    let rows = collect(join, &amp;stats)?;
+    let columns = left_fields
+        .iter()
+        .chain(&amp;right_fields)
+        .map(|f| f.name.clone())
+        .collect::&lt;Vec&lt;_&gt;&gt;();
+    let result = output(&amp;columns, &amp;rows, &amp;stats.borrow());
+    Ok(result)
+}
+fn run() -&gt; io::Result&lt;String&gt; {
+    let args: Vec&lt;_&gt; = std::env::args().skip(1).collect();
+    if let [flag, method] = args.as_slice() {
+        if flag == &quot;--join-demo&quot; {
+            return join_demo(method);
+        }
+    }
+    let [directory] = args.as_slice() else {
+        return Err(bad(
+            &quot;usage: executor DIRECTORY &lt; one.sql | executor --join-demo nested|hash&quot;,
+        ));
+    };
+    let mut sql = String::new();
+    io::stdin().take(16385).read_to_string(&amp;mut sql)?;
+    let stmt = language::ast(&amp;sql)?;
+    if let Stmt::Create { table, fields } = &amp;stmt {
+        validate_create(table, fields)?;
+    }
+    let create = matches!(stmt, Stmt::Create { .. });
+    let mut store = storage::Store::open(Path::new(directory), create)?;
+    execute(&amp;mut store, stmt)
+}
+fn main() {
+    match run() {
+        Ok(json) =&gt; println!(&quot;{json}&quot;),
+        Err(e) =&gt; {
+            eprintln!(&quot;{e}&quot;);
+            std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Datum::{Int as I, Null as N, Text as T};
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    };
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -&gt; Self {
+            Self(std::env::temp_dir().join(format!(
+                &quot;mydb-ch06-{}-{}&quot;,
+                std::process::id(),
+                SEQ.fetch_add(1, AtomicOrdering::Relaxed)
+            )))
+        }
+        fn store(&amp;self) -&gt; storage::Store {
+            storage::Store::open(&amp;self.0, true).unwrap()
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&amp;mut self) {
+            let _ = std::fs::remove_dir_all(&amp;self.0);
+        }
+    }
+    fn memory(fields: &amp;[Field], rows: Vec&lt;Row&gt;, sql: &amp;str) -&gt; (Vec&lt;Row&gt;, Stats) {
+        let Stmt::Select {
+            columns,
+            filter,
+            order,
+            limit,
+            ..
+        } = language::ast(sql).unwrap()
+        else {
+            panic!()
+        };
+        let plan = bind_select(fields, columns, filter, order, limit).unwrap();
+        let stats = counters();
+        let result = collect(
+            pipeline(Box::new(Values::new(rows)), &amp;plan, stats.clone()),
+            &amp;stats,
+        )
+        .unwrap();
+        let stats = stats.borrow().clone();
+        (result, stats)
+    }
+    fn bound(fields: &amp;[Field], sql: &amp;str) -&gt; io::Result&lt;Plan&gt; {
+        let Stmt::Select {
+            columns,
+            filter,
+            order,
+            limit,
+            ..
+        } = language::ast(sql)?
+        else {
+            panic!()
+        };
+        bind_select(fields, columns, filter, order, limit)
+    }
+    fn field(name: &amp;str, kind: Type, nullable: bool) -&gt; Field {
+        Field {
+            name: name.into(),
+            kind,
+            nullable,
+        }
+    }
+    struct Bomb;
+    impl Op for Bomb {
+        fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+            Err(bad(&quot;upstream was pulled&quot;))
+        }
+    }
+    struct Counting {
+        source: Values,
+        calls: Rc&lt;RefCell&lt;usize&gt;&gt;,
+    }
+    impl Op for Counting {
+        fn next(&amp;mut self) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+            *self.calls.borrow_mut() += 1;
+            self.source.next()
+        }
+    }
+    #[test]
+    fn complete_three_valued_truth_tables() {
+        use Truth::{False as B, True as A, Unknown as U};
+        let cases = [A, B, U];
+        let and = [[A, B, U], [B, B, B], [U, B, U]];
+        let or = [[A, A, A], [A, B, U], [A, U, U]];
+        for (i, &amp;a) in cases.iter().enumerate() {
+            for (j, &amp;b) in cases.iter().enumerate() {
+                assert_eq!(a.and(b), and[i][j]);
+                assert_eq!(a.or(b), or[i][j]);
+            }
+        }
+        assert_eq!(A.not(), B);
+        assert_eq!(B.not(), A);
+        assert_eq!(U.not(), U);
+    }
+    #[test]
+    fn null_comparisons_and_is_null_filter() {
+        let fields = vec![field(&quot;age&quot;, Type::Int, true)];
+        let rows = vec![vec![N], vec![I(0)], vec![I(30)]];
+        assert_eq!(
+            memory(&amp;fields, rows.clone(), &quot;SELECT * FROM t WHERE age = NULL&quot;).0,
+            Vec::&lt;Row&gt;::new()
+        );
+        assert_eq!(
+            memory(&amp;fields, rows.clone(), &quot;SELECT * FROM t WHERE NOT age = 30&quot;).0,
+            vec![vec![I(0)]]
+        );
+        assert_eq!(
+            memory(
+                &amp;fields,
+                rows.clone(),
+                &quot;SELECT * FROM t WHERE age &gt;=25 OR age IS NULL&quot;
+            )
+            .0,
+            vec![vec![N], vec![I(30)]]
+        );
+        assert_eq!(
+            memory(&amp;fields, rows, &quot;SELECT * FROM t WHERE age IS NOT NULL&quot;).0,
+            vec![vec![I(0)], vec![I(30)]]
+        );
+    }
+    #[test]
+    fn binding_errors_happen_before_pull_even_with_limit_zero() {
+        let fields = vec![field(&quot;id&quot;, Type::Int, false)];
+        for sql in [
+            &quot;SELECT missing FROM t LIMIT 0&quot;,
+            &quot;SELECT id FROM t WHERE missing=1 LIMIT 0&quot;,
+            &quot;SELECT id FROM t ORDER BY missing LIMIT 0&quot;,
+            &quot;SELECT id FROM t WHERE id=&#x27;text&#x27; LIMIT 0&quot;,
+            &quot;SELECT id FROM t WHERE 1=0 AND missing=1 LIMIT 0&quot;,
+            &quot;SELECT id FROM t WHERE &#x27;x&#x27;=1 LIMIT 0&quot;,
+        ] {
+            assert!(bound(&amp;fields, sql).is_err(), &quot;accepted {sql}&quot;);
+        }
+    }
+    #[test]
+    fn limit_zero_does_not_pull_sort_or_any_source() {
+        let fields = vec![field(&quot;id&quot;, Type::Int, false)];
+        let plan = bound(&amp;fields, &quot;SELECT id FROM t WHERE id&gt;0 ORDER BY id LIMIT 0&quot;).unwrap();
+        let stats = counters();
+        assert!(
+            collect(pipeline(Box::new(Bomb), &amp;plan, stats.clone()), &amp;stats)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(*stats.borrow(), Stats::default());
+    }
+    #[test]
+    fn unsorted_limit_stops_after_requested_rows() {
+        let fields = vec![field(&quot;id&quot;, Type::Int, false)];
+        let plan = bound(&amp;fields, &quot;SELECT id FROM t LIMIT 2&quot;).unwrap();
+        let stats = counters();
+        let calls = Rc::new(RefCell::new(0));
+        let source = Counting {
+            source: Values::new(vec![vec![I(1)], vec![I(2)], vec![I(3)]]),
+            calls: calls.clone(),
+        };
+        assert_eq!(
+            collect(pipeline(Box::new(source), &amp;plan, stats.clone()), &amp;stats).unwrap(),
+            vec![vec![I(1)], vec![I(2)]]
+        );
+        assert_eq!(*calls.borrow(), 2);
+    }
+    #[test]
+    fn filter_next_pulls_until_one_true_row() {
+        let fields = vec![field(&quot;id&quot;, Type::Int, false)];
+        let plan = bound(&amp;fields, &quot;SELECT id FROM t WHERE id&gt;=3&quot;).unwrap();
+        let stats = counters();
+        let calls = Rc::new(RefCell::new(0));
+        let mut op = pipeline(
+            Box::new(Counting {
+                source: Values::new((1..=4).map(|n| vec![I(n)]).collect()),
+                calls: calls.clone(),
+            }),
+            &amp;plan,
+            stats.clone(),
+        );
+        assert_eq!(op.next().unwrap(), Some(vec![I(3)]));
+        assert_eq!(*calls.borrow(), 3);
+        assert_eq!(stats.borrow().filter_checks, 3);
+    }
+    #[test]
+    fn prototype_query_results_and_operator_stats() {
+        let (fields, rows, _, _) = demo_data();
+        let (result, stats) = memory(
+            &amp;fields,
+            rows,
+            &quot;SELECT name,age FROM people WHERE age&gt;=25 OR age IS NULL ORDER BY age DESC LIMIT 3&quot;,
+        );
+        assert_eq!(
+            result,
+            vec![
+                vec![T(&quot;Bo&quot;.into()), N],
+                vec![T(&quot;Eli&quot;.into()), I(40)],
+                vec![T(&quot;Roy&quot;.into()), I(35)]
+            ]
+        );
+        assert_eq!(
+            stats,
+            Stats {
+                filter_checks: 5,
+                sort_rows: 4,
+                output_rows: 3,
+                ..Stats::default()
+            }
+        );
+    }
+    #[test]
+    fn stable_sort_null_placement_and_hidden_order_column() {
+        let fields = vec![
+            field(&quot;name&quot;, Type::Text, false),
+            field(&quot;age&quot;, Type::Int, true),
+        ];
+        let rows = vec![
+            vec![T(&quot;first&quot;.into()), I(20)],
+            vec![T(&quot;null&quot;.into()), N],
+            vec![T(&quot;second&quot;.into()), I(20)],
+            vec![T(&quot;older&quot;.into()), I(30)],
+        ];
+        assert_eq!(
+            memory(&amp;fields, rows.clone(), &quot;SELECT name FROM t ORDER BY age ASC&quot;).0,
+            vec![
+                vec![T(&quot;first&quot;.into())],
+                vec![T(&quot;second&quot;.into())],
+                vec![T(&quot;older&quot;.into())],
+                vec![T(&quot;null&quot;.into())]
+            ]
+        );
+        assert_eq!(
+            memory(&amp;fields, rows, &quot;SELECT name FROM t ORDER BY age DESC&quot;).0,
+            vec![
+                vec![T(&quot;null&quot;.into())],
+                vec![T(&quot;older&quot;.into())],
+                vec![T(&quot;first&quot;.into())],
+                vec![T(&quot;second&quot;.into())]
+            ]
+        );
+    }
+    #[test]
+    fn multi_key_sort_and_exact_i64_ordering() {
+        let fields = vec![
+            field(&quot;id&quot;, Type::Int, false),
+            field(&quot;grouping&quot;, Type::Int, true),
+        ];
+        let rows = vec![
+            vec![I(i64::MAX), I(1)],
+            vec![I(i64::MIN), I(1)],
+            vec![I(0), N],
+        ];
+        assert_eq!(
+            memory(
+                &amp;fields,
+                rows,
+                &quot;SELECT id FROM t ORDER BY grouping ASC,id DESC&quot;
+            )
+            .0,
+            vec![vec![I(i64::MAX)], vec![I(i64::MIN)], vec![I(0)]]
+        );
+        assert_eq!(
+            compare(&amp;I(i64::MAX), &amp;I(i64::MAX - 1)).unwrap(),
+            Some(Ordering::Greater)
+        );
+    }
+    #[test]
+    fn text_sort_is_binary_not_locale_or_numeric() {
+        let fields = vec![field(&quot;word&quot;, Type::Text, false)];
+        let rows = [&quot;가&quot;, &quot;a&quot;, &quot;Z&quot;, &quot;A&quot;, &quot;10&quot;, &quot;2&quot;]
+            .into_iter()
+            .map(|s| vec![T(s.into())])
+            .collect();
+        assert_eq!(
+            memory(&amp;fields, rows, &quot;SELECT word FROM t ORDER BY word&quot;).0,
+            [&quot;10&quot;, &quot;2&quot;, &quot;A&quot;, &quot;Z&quot;, &quot;a&quot;, &quot;가&quot;]
+                .into_iter()
+                .map(|s| vec![T(s.into())])
+                .collect::&lt;Vec&lt;_&gt;&gt;()
+        );
+    }
+    #[test]
+    fn named_insert_reorders_and_fills_nullable_columns() {
+        let fields = vec![
+            field(&quot;id&quot;, Type::Int, false),
+            field(&quot;name&quot;, Type::Text, true),
+            field(&quot;age&quot;, Type::Int, true),
+        ];
+        assert_eq!(
+            bind_insert(
+                &amp;fields,
+                Some(&amp;[&quot;name&quot;.into(), &quot;id&quot;.into()]),
+                vec![T(&quot;Roy&quot;.into()), I(1)]
+            )
+            .unwrap(),
+            vec![I(1), T(&quot;Roy&quot;.into()), N]
+        );
+        for (names, values) in [
+            (vec![&quot;name&quot;.into()], vec![T(&quot;Roy&quot;.into())]),
+            (vec![&quot;id&quot;.into(), &quot;id&quot;.into()], vec![I(1), I(2)]),
+            (vec![&quot;unknown&quot;.into()], vec![I(1)]),
+            (vec![&quot;id&quot;.into()], vec![T(&quot;1&quot;.into())]),
+        ] {
+            assert!(bind_insert(&amp;fields, Some(&amp;names), values).is_err());
+        }
+    }
+    #[test]
+    fn create_policy_checked_before_store_open() {
+        let temp = Temp::new();
+        std::fs::create_dir_all(&amp;temp.0).unwrap();
+        let empty = temp.0.join(&quot;tables.pages&quot;);
+        std::fs::write(&amp;empty, b&quot;&quot;).unwrap();
+        assert!(storage::Store::open(&amp;temp.0, false).is_err());
+        assert_eq!(std::fs::metadata(&amp;empty).unwrap().len(), 0);
+        for sql in [
+            &quot;CREATE TABLE t(id INT)&quot;,
+            &quot;CREATE TABLE t(id TEXT NOT NULL)&quot;,
+            &quot;CREATE TABLE t(id INT NOT NULL,id TEXT)&quot;,
+        ] {
+            let Stmt::Create { table, fields } = language::ast(sql).unwrap() else {
+                panic!()
+            };
+            assert!(validate_create(&amp;table, &amp;fields).is_err());
+        }
+    }
+    #[test]
+    fn sql_mutations_reopen_and_binding_failures_do_not_insert() {
+        let t = Temp::new();
+        let mut store = t.store();
+        execute(
+            &amp;mut store,
+            language::ast(&quot;CREATE TABLE people(id INT NOT NULL,name TEXT,age INT)&quot;).unwrap(),
+        )
+        .unwrap();
+        execute(
+            &amp;mut store,
+            language::ast(&quot;INSERT INTO people(name,id) VALUES(&#x27;Roy&#x27;,1)&quot;).unwrap(),
+        )
+        .unwrap();
+        for sql in [
+            &quot;INSERT INTO people(id,missing) VALUES(2,&#x27;x&#x27;)&quot;,
+            &quot;INSERT INTO people(id,id) VALUES(2,3)&quot;,
+            &quot;INSERT INTO people(name) VALUES(&#x27;x&#x27;)&quot;,
+            &quot;INSERT INTO people VALUES(2,&#x27;x&#x27;,&#x27;bad&#x27;)&quot;,
+            &quot;INSERT INTO people VALUES(1,&#x27;duplicate&#x27;,NULL)&quot;,
+        ] {
+            assert!(execute(&amp;mut store, language::ast(sql).unwrap()).is_err());
+        }
+        drop(store);
+        let mut store = storage::Store::open(&amp;t.0, false).unwrap();
+        let output = execute(&amp;mut store, language::ast(&quot;SELECT * FROM people&quot;).unwrap()).unwrap();
+        assert!(output.contains(&quot;\&quot;scan_rows\&quot;:1&quot;));
+        assert!(output.contains(&quot;Roy&quot;));
+        assert!(!output.contains(&quot;duplicate&quot;));
+        assert!(
+            execute(
+                &amp;mut store,
+                language::ast(&quot;SELECT * FROM absent LIMIT 0&quot;).unwrap()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn genuine_scan_is_lazy_across_heap_pages() {
+        let t = Temp::new();
+        let mut store = t.store();
+        let fields = vec![
+            field(&quot;id&quot;, Type::Int, false),
+            field(&quot;name&quot;, Type::Text, true),
+        ];
+        store.create(&quot;people&quot;, fields).unwrap();
+        for n in 0..90 {
+            store
+                .insert(&quot;people&quot;, vec![I(n), T(&quot;x&quot;.repeat(200))])
+                .unwrap();
+        }
+        store.corrupt_last_heap_header(&quot;people&quot;).unwrap();
+        let stats = counters();
+        let mut scan = store.scan(&quot;people&quot;, stats.clone()).unwrap();
+        assert_eq!(stats.borrow().scan_rows, 0);
+        assert_eq!(scan.next().unwrap().unwrap()[0], I(0));
+        assert_eq!(stats.borrow().scan_rows, 1);
+        let mut error = false;
+        loop {
+            match scan.next() {
+                Ok(Some(_)) =&gt; {}
+                Ok(None) =&gt; break,
+                Err(_) =&gt; {
+                    error = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            error,
+            &quot;later corruption should be seen only when the scan reaches it&quot;
+        );
+    }
+    #[test]
+    fn stored_pipeline_stats_count_emitted_heap_rows() {
+        let t = Temp::new();
+        let mut store = t.store();
+        execute(
+            &amp;mut store,
+            language::ast(&quot;CREATE TABLE people(id INT NOT NULL,name TEXT,age INT,dept INT)&quot;)
+                .unwrap(),
+        )
+        .unwrap();
+        let (_, rows, _, _) = demo_data();
+        for row in rows {
+            store.insert(&quot;people&quot;, row).unwrap();
+        }
+        store.flush().unwrap();
+        let result=execute(&amp;mut store,language::ast(&quot;SELECT name,age FROM people WHERE age&gt;=25 OR age IS NULL ORDER BY age DESC LIMIT 3&quot;).unwrap()).unwrap();
+        assert!(
+            result
+                .contains(&quot;\&quot;scan_rows\&quot;:5,\&quot;filter_checks\&quot;:5,\&quot;sort_rows\&quot;:4,\&quot;output_rows\&quot;:3&quot;)
+        );
+        let zero = execute(
+            &amp;mut store,
+            language::ast(&quot;SELECT * FROM people ORDER BY age LIMIT 0&quot;).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            zero.contains(&quot;\&quot;scan_rows\&quot;:0,\&quot;filter_checks\&quot;:0,\&quot;sort_rows\&quot;:0,\&quot;output_rows\&quot;:0&quot;)
+        );
+    }
+    fn join_rows(
+        method: &amp;str,
+        left: Vec&lt;Row&gt;,
+        right: Vec&lt;Row&gt;,
+        keys: JoinKeys,
+    ) -&gt; io::Result&lt;(Vec&lt;Row&gt;, Stats)&gt; {
+        let stats = counters();
+        let left = Box::new(Values::new(left));
+        let right = Box::new(Values::new(right));
+        let op: Box&lt;dyn Op&gt; = if method == &quot;nested&quot; {
+            Box::new(NestedJoin::new(left, right, keys, stats.clone()))
+        } else {
+            Box::new(HashJoin::new(left, right, keys, stats.clone()))
+        };
+        let rows = collect(op, &amp;stats)?;
+        let s = stats.borrow().clone();
+        Ok((rows, s))
+    }
+    #[test]
+    fn joins_keep_duplicate_matches_and_have_distinct_work_counters() {
+        let (lf, left, rf, right) = demo_data();
+        let keys = bind_join(&amp;lf, &amp;rf, 3, 0).unwrap();
+        let (nested, ns) = join_rows(&quot;nested&quot;, left.clone(), right.clone(), keys).unwrap();
+        let (hash, hs) = join_rows(&quot;hash&quot;, left, right, keys).unwrap();
+        assert_eq!(nested, hash);
+        assert_eq!(hash.len(), 5);
+        assert_eq!(ns.join_checks, 25);
+        assert_eq!(ns.output_rows, 5);
+        assert_eq!(hs.join_checks, 0);
+        assert_eq!(hs.hash_build, 4);
+        assert_eq!(hs.hash_probe, 4);
+        assert_eq!(hs.scan_rows, 0);
+        assert_eq!(
+            hash.iter()
+                .map(|r| (r[1].clone(), r[5].clone()))
+                .collect::&lt;Vec&lt;_&gt;&gt;(),
+            [
+                (&quot;Roy&quot;, &quot;Eng&quot;),
+                (&quot;Roy&quot;, &quot;Field&quot;),
+                (&quot;Ana&quot;, &quot;Ops&quot;),
+                (&quot;Bo&quot;, &quot;Eng&quot;),
+                (&quot;Bo&quot;, &quot;Field&quot;)
+            ]
+            .into_iter()
+            .map(|(a, b)| (T(a.into()), T(b.into())))
+            .collect::&lt;Vec&lt;_&gt;&gt;()
+        );
+    }
+    #[test]
+    fn joins_empty_inputs_null_keys_and_typed_keys() {
+        let f = vec![field(&quot;keycol&quot;, Type::Int, true)];
+        let keys = bind_join(&amp;f, &amp;f, 0, 0).unwrap();
+        let left = vec![vec![I(1)], vec![I(1)], vec![N]];
+        let right = vec![vec![I(1)], vec![I(1)], vec![N]];
+        for method in [&quot;nested&quot;, &quot;hash&quot;] {
+            assert_eq!(
+                join_rows(method, left.clone(), right.clone(), keys)
+                    .unwrap()
+                    .0
+                    .len(),
+                4
+            );
+            assert!(
+                join_rows(method, vec![], right.clone(), keys)
+                    .unwrap()
+                    .0
+                    .is_empty()
+            );
+            assert!(
+                join_rows(method, left.clone(), vec![], keys)
+                    .unwrap()
+                    .0
+                    .is_empty()
+            );
+        }
+        assert!(bind_join(&amp;f, &amp;[field(&quot;keycol&quot;, Type::Text, true)], 0, 0).is_err());
+        assert!(bind_join(&amp;f, &amp;f, 1, 0).is_err());
+        assert!(join_rows(&quot;hash&quot;, vec![vec![T(&quot;1&quot;.into())]], right, keys).is_err());
+    }
+    #[test]
+    fn text_key_join_retains_all_matches() {
+        let f = vec![field(&quot;word&quot;, Type::Text, true)];
+        let keys = bind_join(&amp;f, &amp;f, 0, 0).unwrap();
+        let left = vec![vec![T(&quot;한글&quot;.into())], vec![N]];
+        let right = vec![
+            vec![T(&quot;한글&quot;.into())],
+            vec![T(&quot;한글&quot;.into())],
+            vec![T(&quot;other&quot;.into())],
+        ];
+        assert_eq!(
+            join_rows(&quot;nested&quot;, left.clone(), right.clone(), keys)
+                .unwrap()
+                .0,
+            join_rows(&quot;hash&quot;, left, right, keys).unwrap().0
+        );
+    }
+    #[test]
+    fn sort_and_join_buffers_have_hard_row_bounds() {
+        let stats = counters();
+        let mut sort = Sort {
+            source: Box::new(Values::new(vec![vec![I(1)]; BUFFER_ROWS + 1])),
+            keys: vec![SortKey {
+                index: 0,
+                kind: Type::Int,
+                descending: false,
+            }],
+            rows: None,
+            stats,
+        };
+        assert!(sort.next().unwrap_err().to_string().contains(&quot;sort buffer&quot;));
+        let keys = JoinKeys {
+            left: 0,
+            right: 0,
+            kind: Type::Int,
+        };
+        assert!(
+            join_rows(&quot;nested&quot;, vec![], vec![vec![N]; BUFFER_ROWS + 1], keys)
+                .unwrap_err()
+                .to_string()
+                .contains(&quot;right buffer&quot;)
+        );
+        assert!(
+            join_rows(&quot;hash&quot;, vec![], vec![vec![I(1)]; BUFFER_ROWS + 1], keys)
+                .unwrap_err()
+                .to_string()
+                .contains(&quot;hash build&quot;)
+        );
+        let (_, stats) = join_rows(
+            &quot;hash&quot;,
+            vec![vec![I(1)]],
+            vec![vec![N]; BUFFER_ROWS + 1],
+            keys,
+        )
+        .unwrap();
+        assert_eq!(stats.hash_build, 0);
+    }
+    #[test]
+    fn collector_bounds_duplicate_join_result_product() {
+        let keys = JoinKeys {
+            left: 0,
+            right: 0,
+            kind: Type::Int,
+        };
+        assert!(
+            join_rows(&quot;hash&quot;, vec![vec![I(1)]; 101], vec![vec![I(1)]; 100], keys)
+                .unwrap_err()
+                .to_string()
+                .contains(&quot;result buffer&quot;)
+        );
+    }
+    #[test]
+    fn zero_limit_also_avoids_join_build() {
+        let stats = counters();
+        let keys = JoinKeys {
+            left: 0,
+            right: 0,
+            kind: Type::Int,
+        };
+        let join = HashJoin::new(Box::new(Bomb), Box::new(Bomb), keys, stats.clone());
+        let limit = Limit {
+            source: Box::new(join),
+            remaining: 0,
+        };
+        assert!(collect(Box::new(limit), &amp;stats).unwrap().is_empty());
+        assert_eq!(*stats.borrow(), Stats::default());
+    }
+    #[test]
+    fn output_preserves_i64_json_strings_and_null_kind() {
+        let text = output(
+            &amp;[&quot;n&quot;.into()],
+            &amp;[vec![I(i64::MAX)], vec![N]],
+            &amp;Stats::default(),
+        );
+        assert!(text.contains(&quot;\&quot;value\&quot;:\&quot;9223372036854775807\&quot;&quot;));
+        assert!(text.contains(&quot;\&quot;type\&quot;:\&quot;null\&quot;&quot;));
+        assert!(join_demo(&quot;invalid&quot;).is_err());
+    }
+}
+</code></pre></div></details></section>
+<section id="s7"><h2>7. 완료 기준과 실습</h2><p><code data-language="bash">bash examples/ch06/check.sh</code>를 실행하세요. 새 연산자 검사 22개와 앞 장 재사용 검사 69개를 합쳐 총 91개를 실행하고, 실제 CLI의 SQL 저장·재시작·NULL·정렬·바인딩 오류·조인 결과를 검증합니다. Rust와 Python 3가 필요합니다. macOS에서 검증했으며 Linux 실행 검증은 별도입니다.</p><pre><code data-language="bash">#!/usr/bin/env bash
+set -eu
+HERE=$(CDPATH= cd -- &quot;$(dirname -- &quot;$0&quot;)&quot; &amp;&amp; pwd)
+D=$(mktemp -d)
+trap &#x27;rm -rf &quot;$D&quot;&#x27; EXIT
+rustc --edition=2024 --test &quot;$HERE/executor.rs&quot; -o &quot;$D/tests&quot;
+&quot;$D/tests&quot; --quiet
+rustc --edition=2024 &quot;$HERE/executor.rs&quot; -o &quot;$D/executor&quot;
+python3 - &quot;$D/executor&quot; &quot;$D&quot; &lt;&lt;&#x27;PY&#x27;
+import hashlib,json,pathlib,subprocess,sys
+binary=pathlib.Path(sys.argv[1]); scratch=pathlib.Path(sys.argv[2]); database=scratch/&#x27;db&#x27;
+def sql(text,ok=True,directory=database):
+    result=subprocess.run([str(binary),str(directory)],input=text,text=True,capture_output=True)
+    if ok:
+        assert result.returncode==0,result.stderr
+        return json.loads(result.stdout)
+    assert result.returncode==2,(text,result.returncode,result.stdout,result.stderr)
+    assert not result.stdout,(&#x27;partial output&#x27;,result.stdout)
+    return result.stderr
+
+def values(result):
+    def value(d):
+        return None if d[&#x27;type&#x27;]==&#x27;null&#x27; else int(d[&#x27;value&#x27;]) if d[&#x27;type&#x27;]==&#x27;int&#x27; else d[&#x27;value&#x27;]
+    return [[value(d) for d in row] for row in result[&#x27;rows&#x27;]]
+
+def snapshot():
+    return {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in database.iterdir() if p.is_file()}
+
+# Neither syntax errors nor invalid CREATE policy create a database directory.
+absent=scratch/&#x27;must-not-exist&#x27;
+sql(&#x27;SELECT * FROM people; DROP TABLE people;&#x27;,False,absent)
+assert not absent.exists()
+sql(&#x27;CREATE TABLE broken(id INT)&#x27;,False,absent)
+assert not absent.exists()
+assert sql(&#x27;CREATE TABLE people(id INT NOT NULL,name TEXT,age INT,dept INT)&#x27;)[&#x27;type&#x27;]==&#x27;create&#x27;
+for statement in [
+    &quot;INSERT INTO people VALUES(1,&#x27;Roy&#x27;,35,10)&quot;,
+    &quot;INSERT INTO people VALUES(2,&#x27;Ana&#x27;,20,20)&quot;,
+    &quot;INSERT INTO people VALUES(3,&#x27;Bo&#x27;,NULL,10)&quot;,
+    &quot;INSERT INTO people VALUES(4,&#x27;Dana&#x27;,28,NULL)&quot;,
+    &quot;INSERT INTO people VALUES(5,&#x27;Eli&#x27;,40,30)&quot;,
+]:
+    assert sql(statement)[&#x27;type&#x27;]==&#x27;insert&#x27;
+# Every sql() call starts a new process, so each query checks persisted reopen behavior.
+result=sql(&#x27;SELECT name,age FROM people WHERE age&gt;=25 OR age IS NULL ORDER BY age DESC LIMIT 3&#x27;)
+assert result[&#x27;columns&#x27;]==[&#x27;name&#x27;,&#x27;age&#x27;]
+assert values(result)==[[&#x27;Bo&#x27;,None],[&#x27;Eli&#x27;,40],[&#x27;Roy&#x27;,35]],result
+assert result[&#x27;stats&#x27;]==dict(scan_rows=5,filter_checks=5,sort_rows=4,output_rows=3,join_checks=0,hash_build=0,hash_probe=0),result
+result=sql(&#x27;SELECT name FROM people ORDER BY age ASC&#x27;)
+assert values(result)==[[&#x27;Ana&#x27;],[&#x27;Dana&#x27;],[&#x27;Roy&#x27;],[&#x27;Eli&#x27;],[&#x27;Bo&#x27;]]
+assert sql(&#x27;SELECT * FROM people ORDER BY age DESC LIMIT 0&#x27;)[&#x27;stats&#x27;]==dict(scan_rows=0,filter_checks=0,sort_rows=0,output_rows=0,join_checks=0,hash_build=0,hash_probe=0)
+result=sql(&#x27;SELECT id FROM people LIMIT 2&#x27;)
+assert values(result)==[[1],[2]] and result[&#x27;stats&#x27;][&#x27;scan_rows&#x27;]==2
+result=sql(&#x27;SELECT id FROM people WHERE age=NULL&#x27;)
+assert result[&#x27;rows&#x27;]==[] and result[&#x27;stats&#x27;][&#x27;filter_checks&#x27;]==5
+sql(&#x27;CREATE TABLE empty(id INT NOT NULL,age INT)&#x27;)
+before=snapshot()
+for statement in [
+    &#x27;SELECT missing FROM empty LIMIT 0&#x27;,
+    &#x27;SELECT id FROM empty WHERE age=\&#x27;wrong type\&#x27; LIMIT 0&#x27;,
+    &#x27;SELECT id FROM empty ORDER BY missing LIMIT 0&#x27;,
+    &#x27;SELECT * FROM absent LIMIT 0&#x27;,
+    &quot;INSERT INTO people(id,missing) VALUES(6,&#x27;x&#x27;)&quot;,
+    &#x27;INSERT INTO people(id,id) VALUES(6,7)&#x27;,
+    &quot;INSERT INTO people(name) VALUES(&#x27;x&#x27;)&quot;,
+    &quot;INSERT INTO people VALUES(6,&#x27;x&#x27;,&#x27;bad&#x27;,NULL)&quot;,
+    &quot;INSERT INTO people VALUES(1,&#x27;duplicate&#x27;,NULL,NULL)&quot;,
+]:
+    sql(statement,False)
+assert snapshot()==before,&#x27;binding/constraint failure modified database files&#x27;
+sql(&quot;INSERT INTO people(name,id) VALUES(&#x27;Fox&#x27;,6)&quot;)
+assert values(sql(&#x27;SELECT name,age,dept FROM people WHERE id=6&#x27;))==[[&#x27;Fox&#x27;,None,None]]
+# Preserve i64 without floating-point JSON conversion and round-trip UTF-8 text.
+sql(&quot;INSERT INTO people VALUES(9223372036854775807,&#x27;한글&#x27;,NULL,NULL)&quot;)
+result=sql(&#x27;SELECT id,name FROM people WHERE id=9223372036854775807&#x27;)
+assert result[&#x27;rows&#x27;][0][0]=={&#x27;type&#x27;:&#x27;int&#x27;,&#x27;value&#x27;:&#x27;9223372036854775807&#x27;}
+assert values(result)==[[9223372036854775807,&#x27;한글&#x27;]]
+join_results={}
+for strategy in [&#x27;nested&#x27;,&#x27;hash&#x27;]:
+    process=subprocess.run([str(binary),&#x27;--join-demo&#x27;,strategy],text=True,capture_output=True)
+    assert process.returncode==0,process.stderr
+    result=json.loads(process.stdout);join_results[strategy]=result
+    assert result[&#x27;columns&#x27;]==[&#x27;id&#x27;,&#x27;name&#x27;,&#x27;age&#x27;,&#x27;dept&#x27;,&#x27;dept_key&#x27;,&#x27;label&#x27;]
+    assert [(row[1],row[5]) for row in values(result)]==[(&#x27;Roy&#x27;,&#x27;Eng&#x27;),(&#x27;Roy&#x27;,&#x27;Field&#x27;),(&#x27;Ana&#x27;,&#x27;Ops&#x27;),(&#x27;Bo&#x27;,&#x27;Eng&#x27;),(&#x27;Bo&#x27;,&#x27;Field&#x27;)]
+    assert result[&#x27;stats&#x27;][&#x27;scan_rows&#x27;]==result[&#x27;stats&#x27;][&#x27;filter_checks&#x27;]==result[&#x27;stats&#x27;][&#x27;sort_rows&#x27;]==0
+    assert result[&#x27;stats&#x27;][&#x27;output_rows&#x27;]==5
+assert join_results[&#x27;nested&#x27;][&#x27;rows&#x27;]==join_results[&#x27;hash&#x27;][&#x27;rows&#x27;]
+assert join_results[&#x27;nested&#x27;][&#x27;stats&#x27;][&#x27;join_checks&#x27;]==25
+assert join_results[&#x27;hash&#x27;][&#x27;stats&#x27;][&#x27;join_checks&#x27;]==0
+assert join_results[&#x27;hash&#x27;][&#x27;stats&#x27;][&#x27;hash_build&#x27;]==join_results[&#x27;hash&#x27;][&#x27;stats&#x27;][&#x27;hash_probe&#x27;]==4
+assert &#x27;expected end&#x27; in sql(&#x27;SELECT * FROM people JOIN depts ON dept=dept_key&#x27;,False)
+print(&#x27;PASS: SQL create/insert/reopen, binding before row access, no writes on rejected statements, pull LIMIT, NULL semantics/order, exact JSON/stats, both join demos&#x27;)
+PY
+</code></pre>
+<ul class="checklist"><li>빈 입력·EOF 반복·모두 탈락·LIMIT 0에서 올바른 결과와 pull 수를 얻습니다.</li><li>없는 열과 타입 불일치를 빈 데이터에서도 실행 전에 거부합니다.</li><li>FALSE AND UNKNOWN, TRUE OR UNKNOWN, NOT UNKNOWN이 맞습니다.</li><li>ASC/DESC의 NULL 위치와 출력에 없는 ORDER BY 열을 처리합니다.</li><li>중복·NULL·빈 입력을 포함한 두 조인 결과가 중복 개수까지 같습니다.</li><li>정상 저장 후 프로세스를 다시 열어 같은 SELECT 결과를 얻습니다.</li></ul>
+<div class="summary"><h3>핵심 요약</h3><ul><li>바인딩은 열의 이름·타입을 확인하고 실행은 바인딩된 열 번호를 사용합니다.</li><li>같은 next 인터페이스라도 Sort는 입력을 모으는 blocking 연산자입니다.</li><li>WHERE는 TRUE만 통과시킵니다. UNKNOWN을 FALSE로 치환하면 안 됩니다.</li><li>Hash join은 키마다 여러 행을 보관하고 NULL 키를 매칭하지 않습니다.</li></ul></div>
+<h2>확인 문제</h2><div class="quiz" data-answer="1"><div class="q">빈 테이블에 SELECT missing FROM people LIMIT 0을 실행하면?</div><button class="opt">행을 안 읽으므로 성공한다</button><button class="opt">missing 열이 없으면 바인딩 오류다</button><button class="opt">NULL 한 행을 반환한다</button><div class="explain">LIMIT와 입력 크기에 상관없이 이름·타입을 먼저 검사합니다.</div></div><div class="quiz" data-answer="0"><div class="q">FALSE AND UNKNOWN의 결과는?</div><button class="opt">FALSE</button><button class="opt">TRUE</button><button class="opt">UNKNOWN</button><div class="explain">하나가 FALSE이면 AND는 FALSE입니다.</div></div><div class="quiz" data-answer="1"><div class="q">Sort의 첫 next에서 일어나는 일은?</div><button class="opt">자식 행 하나만 받고 바로 반환한다</button><button class="opt">필요한 입력을 끝까지 모아 정렬한 뒤 반환한다</button><button class="opt">LIMIT가 있으면 항상 읽기를 생략한다</button><div class="explain">Sort는 첫 결과를 확정하기 전에 입력을 모으는 blocking 연산자입니다.</div></div><div class="quiz" data-answer="2"><div class="q">키 10이 왼쪽에 2행, 오른쪽에 3행이면 inner equijoin 결과는?</div><button class="opt">1행</button><button class="opt">3행</button><button class="opt">6행</button><div class="explain">같은 키의 모든 조합을 보존하므로 2×3입니다.</div></div><div class="quiz" data-answer="0"><div class="q">NULL 키끼리 inner equijoin에서 매칭되나요?</div><button class="opt">아니요. NULL = NULL은 UNKNOWN입니다</button><button class="opt">네. NULL을 정수 0으로 바꿉니다</button><button class="opt">해시 조인에서만 매칭됩니다</button><div class="explain">두 알고리즘 모두 동등 조건이 TRUE인 쌍만 결과에 포함합니다.</div></div>
+<h2>실습 과제</h2><ol><li><b>정렬과 LIMIT를 비교하세요.</b> 기본 SQL의 ORDER BY를 뺀 뒤 LIMIT 2로 바꾸세요. 결과는 Roy·Bo이고 Scan 반환 행 수는 3이어야 합니다. ORDER BY age DESC LIMIT 3을 복원하면 다섯 행을 읽고 Bo·Eli·Roy를 반환해야 합니다.</li><li><b>NULL 비교를 바꾸세요.</b> <code data-language="sql">WHERE age = NULL</code>과 <code data-language="sql">WHERE age IS NULL</code>을 실행하세요. 앞 쿼리는 빈 결과, 뒤 쿼리는 Bo 한 행이어야 합니다. OR·AND로 UNKNOWN과 다른 조건을 합쳐 보세요.</li><li><b>중복 조인 키를 늘리세요.</b> 오른쪽 키 10 행을 하나 더 넣으면 왼쪽 Roy·Bo 각각에 결과가 하나씩 늘어야 합니다. nested와 hash 결과의 중복 개수를 비교하세요. 오른쪽 NULL 키를 늘려도 결과 수는 늘지 않아야 합니다.</li><li><b>외부 정렬의 경계를 설계하세요.</b> 10000행을 넘는 정렬을 먼저 거부하는지 확인하세요. 그다음 run 파일을 나눠 쓰고 병합하는 방식을 설계하세요. 메모리 상한을 지키면서 같은 정렬 결과를 내는 검사가 필요합니다.</li></ol>
+<p class="hint">더 읽기: <a href="https://www.postgresql.org/docs/current/executor.html">PostgreSQL 실행기 설명</a>은 demand-pull과 Sort의 입력 수집을 설명합니다. 이 코스는 단일 스레드의 소형 학습용 구현이며 실제 제품의 모든 연산자나 최적화를 구현하지 않습니다.</p></section>
+<section id="s8"><h2>8. 이 실행기가 못 하는 것</h2><p>SQL로 실제 테이블을 만들고 행을 넣은 뒤 SELECT 결과를 얻을 수 있게 됐습니다. 하지만 쓰기 도중 프로세스가 종료되면 힙·카탈로그·색인이 서로 다른 시점에 남을 수 있습니다. 다음 장에서는 WAL을 먼저 기록하는 순서와 크래시 복구를 다룹니다.</p>
+<p>현재는 단일 테이블 SeqScan 계획이며 WHERE가 기본키 비교여도 자동으로 색인을 선택하지 않습니다. SQL JOIN 문법·외부 정렬·집계·트랜잭션·동시 접근 잠금은 없습니다. Linux의 fsync 계열과 macOS의 F_FULLFSYNC 차이는 2장의 동기화 설명을 참고하세요.</p></section>
+</main><script src="assets/query-executor.js"></script></body></html>
