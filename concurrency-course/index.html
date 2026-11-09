@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="CPU 한 명령에서 C# async/await와 Channel까지. 그림과 직접 조작하는 실험으로 배우는 8주 동시성·비동기 교재.">
+<title>동시성과 비동기, 밑바닥부터 · C# Lab</title>
+<link rel="stylesheet" href="style.css">
+<script defer src="content.js"></script><script defer src="models.js"></script><script defer src="diagrams.js"></script><script defer src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<header class="topbar"><a class="brand" href="../index.html"><span class="brand-mark" aria-hidden="true">⌘</span> COURSE LIBRARY <span class="slash">/</span> <span>C# LAB</span></a><div class="top-actions"><span class="version">8 WEEKS · FROM FIRST PRINCIPLES</span><button id="motion" aria-pressed="false" title="실험 재생 속도 줄이기">동작 줄이기</button><button id="print">인쇄</button></div></header>
+<div class="shell"><aside class="sidebar"><a class="course-name" href="#overview">동시성과 비동기<br><strong>밑바닥부터.</strong></a><p class="sidebar-sub">읽고, 예상하고, 실행하세요.</p><div class="progress-line"><span id="progress-label">학습 진도 0 / 8</span><span id="progress-percent">0%</span></div><div class="progress-track"><i id="progress-fill"></i></div><nav id="nav" aria-label="8주 학습 목차"></nav><a class="side-link" href="examples/README.md">↗ C# 실습 실행 안내</a><button id="reset-progress" class="text-button">이 코스 진도 초기화</button><p class="storage-note" id="storage-note"></p></aside>
+<main id="main"><section id="overview" class="overview"><div class="hero-copy"><div class="eyebrow"><span class="small-dot"></span> INTERACTIVE SYSTEMS LAB / 01</div><h1>동시에 한다는 건,<br><em>어떤 뜻일까?</em></h1><p class="hero-lead">CPU는 한 번에 무엇을 실행할까요?<br>기다리는 동안 스레드는 어디에 있을까요?<br>눈으로 보고, 실행 순서를 바꾸며 이해하세요.</p><div class="hero-actions"><a class="primary button" href="#week-1">첫 번째 실험 시작 <span>↗</span></a><a href="#roadmap" class="button secondary">8주 학습 경로 ↓</a></div><div class="hero-meta"><span><b>08</b> 개념 실험</span><span><b>C#</b> 실습 코드</span><span><b>16</b> 확인 문제</span></div></div><div class="hero-art" id="hero-art"></div></section>
+<section id="roadmap" class="roadmap"><div class="section-label">THE LEARNING PATH</div><h2>명령 하나에서, 작업 처리기까지.</h2><p class="muted">주 4–6시간. 각 장에서 예상 → 실험 → 해석 → C# 구현을 반복합니다.</p><div id="path-grid" class="path-grid"></div><div class="foundation"><strong>먼저 구분할 세 단어</strong><div><b>동시성</b><span>여러 작업의 진행 구간이 겹침</span></div><div><b>병렬성</b><span>같은 순간에 실제로 함께 실행</span></div><div><b>비동기</b><span>완료까지 호출 흐름을 붙잡지 않음</span></div></div><p class="model-note">웹 실험은 실행 순서를 이해하기 위한 결정적 개념 모델입니다. 표시되는 틱은 가상 시간이며 실제 .NET 성능 측정값이 아닙니다.</p></section>
+<article id="lesson" hidden tabindex="-1"></article>
+<footer class="footer"><span>CONCURRENCY / ASYNC · C# LEARNING LAB</span><span>로컬 진도 저장 · 외부 라이브러리 없이 작동</span></footer>
+</main></div>
+<noscript><p class="noscript">이 교재의 조작 실험에는 JavaScript가 필요합니다. <a href="examples/README.md">실습 안내와 C# 원본</a>은 직접 열 수 있습니다.</p></noscript>
+</body></html>
