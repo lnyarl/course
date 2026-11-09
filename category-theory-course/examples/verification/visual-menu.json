@@ -1,0 +1,37 @@
+[
+  {
+    "href": "#part-i",
+    "label": "기초 · 01–10",
+    "hash": "#part-i",
+    "top": 75.640625,
+    "text": "Part I · 기초Chapter 01범주와 합성객체와 사상, 합성 순서, 결합법칙과 항등사상원문 "
+  },
+  {
+    "href": "#part-ii",
+    "label": "구조 · 11–16",
+    "hash": "#part-ii",
+    "top": 75.890625,
+    "text": "Part II · 구조Chapter 11선언적 프로그래밍등식으로 추론하고 함수 합성으로 프로그램을 "
+  },
+  {
+    "href": "#part-iii",
+    "label": "심화 · 17–31",
+    "hash": "#part-iii",
+    "top": 76.140625,
+    "text": "Part III · 심화Chapter 17사상으로 보는 구조가환도, Hom 집합, 자연동형을 다시 "
+  },
+  {
+    "href": "#examples",
+    "label": "C# 예제",
+    "hash": "#examples",
+    "top": 76.421875,
+    "text": "시작하기 전에 · C# 예제"
+  },
+  {
+    "href": "#reference",
+    "label": "기준 교재",
+    "hash": "#reference",
+    "top": 75.890625,
+    "text": "교재와 표기기준 교재는 Bartosz Milewski의 Category Theory for Prog"
+  }
+]

@@ -1,0 +1,31 @@
+.source { font-size:14px; color:var(--muted); }
+.formula { padding:12px 16px; background:var(--accent-soft); border-left:3px solid var(--accent); border-radius:6px; overflow-x:auto; font-family:var(--mono); }
+.c05-static, .c05-live { display:block; min-width:640px; width:100%; font-family:var(--sans); }
+.c05-static text, .c05-live text { fill:var(--text); font-size:15px; }
+.c05-static .box, .c05-live .box { fill:var(--surface-2); stroke:var(--border); }
+.c05-static .node, .c05-live .node { fill:var(--surface); stroke:var(--border); stroke-width:2; }
+.c05-static .arrow, .c05-live .arrow { fill:none; stroke:var(--accent); stroke-width:2; }
+.c05-static .faint, .c05-live .faint { opacity:.35; }
+.c05-live .selected { fill:var(--accent-soft); stroke:var(--accent); stroke-width:3; }
+.c05-live .done { fill:var(--ok-soft); stroke:var(--ok); stroke-width:2; }
+.c05-live .failure { fill:var(--bad-soft); stroke:var(--bad); stroke-width:2; }
+.c05-live .warn { fill:var(--warn-soft); stroke:var(--warn); stroke-width:2; }
+.c05-live .good-arrow { stroke:var(--ok); stroke-width:3; }
+.c05-live .bad-arrow { stroke:var(--bad); stroke-width:3; stroke-dasharray:5 4; }
+.c05-live .small { font-size:12px; }
+.c05-live .muted { fill:var(--muted); }
+.c05-live .travel { stroke-dasharray:9 5; animation:c05-travel .7s linear 1; }
+.c05-live-output { white-space:pre-wrap; overflow-wrap:anywhere; padding:12px; background:var(--surface-2); border-left:3px solid var(--accent); border-radius:6px; margin:12px 0; }
+.c05-player { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:14px 0; }
+.c05-player > span { font-size:14px; color:var(--muted); }
+.controls label { display:flex; flex-direction:column; gap:4px; min-width:0; max-width:100%; font-size:14px; }
+.controls input, .controls select, .c05-product-rows select { min-width:0; max-width:100%; border:1px solid var(--border); border-radius:6px; padding:7px 9px; font:inherit; background:var(--bg); color:var(--text); }
+#sum-widget .controls input { width:90px; }
+.c05-product-rows { display:grid; gap:10px; margin:14px 0; }
+.c05-product-row { padding:12px; background:var(--surface-2); border-radius:9px; border:1px solid var(--border); }
+.c05-product-row .controls { margin-bottom:0; }
+.c05-product-row label { display:flex; flex-direction:column; gap:4px; font-size:14px; min-width:0; max-width:100%; }
+.c05-product-row select { max-width:min(300px,100%); }
+.stage:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@keyframes c05-travel { from { stroke-dashoffset:28; } to { stroke-dashoffset:0; } }
+@media (prefers-reduced-motion:reduce) { .c05-live .travel { animation:none; stroke-dasharray:none; } }

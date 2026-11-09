@@ -1,0 +1,765 @@
+{
+  "date": "2026-11-09",
+  "scope": "31 chapters, 94 widgets",
+  "removed_playback": 22,
+  "retained_playback": 10,
+  "criteria": [
+    "Each control supports comparison, prediction, or checking a concept.",
+    "Playback changes actual elements, connections, intermediate values, branches, or context.",
+    "Independent results use separate branches or comparison signs, not operation arrows."
+  ],
+  "widgets": [
+    {
+      "chapter": "01",
+      "widget": "association",
+      "decision": "improved",
+      "reason": "반복 계산 단계 버튼 3개 제거. 입력과 묶음 선택만으로 결합법칙의 핵심 경계를 비교",
+      "visual": "g∘f 또는 h∘g의 점선 묶음 경계 이동",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "01",
+      "widget": "composer",
+      "decision": "improved",
+      "reason": "실행 순서 비교는 유지하되 한 경로의 중복 숫자 카드를 두 계산 경로로 바꾸고 결과를 단계에 맞춰 공개",
+      "visual": "f 다음 g와 g 다음 f의 중간값을 두 줄로 비교",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "01",
+      "widget": "graph-checker",
+      "decision": "retained",
+      "reason": "관계 체크와 항등·합성 폐포가 그래프 간선에 직접 반영됨",
+      "visual": "객체·항등고리·필요한 합성 간선",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "01",
+      "widget": "type-checker",
+      "decision": "retained",
+      "reason": "합성 가능 여부가 정의역·공역 접점의 일치와 단절로 직접 드러남",
+      "visual": "타입 접점 연결/단절",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "02",
+      "widget": "finite-widget",
+      "decision": "improved",
+      "reason": "직접 함수 결과를 골라 함수 공간을 탐색하는 조작 유지. 변경 시 점선 효과 제거",
+      "visual": "유한 함수의 원소별 대응",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "02",
+      "widget": "memo-widget",
+      "decision": "retained",
+      "reason": "각 호출의 캐시 적중·실제 계산 횟수와 상태 변화를 순차 표시하므로 재생 유지",
+      "visual": "호출별 캐시/출력/계산 횟수",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "02",
+      "widget": "partial-widget",
+      "decision": "improved",
+      "reason": "정의역 축소와 실패 반환의 차이를 보여주는 입력은 유지하고 입력마다 흐르던 점선 효과 제거",
+      "visual": "정의역 원소와 성공·실패 도착점",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "03",
+      "widget": "free-widget",
+      "decision": "retained",
+      "reason": "실제로 경로를 한 변씩 따라가며 현재 객체가 바뀌므로 재생 유지",
+      "visual": "객체 그래프와 선택 경로",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "03",
+      "widget": "monoid-widget",
+      "decision": "improved",
+      "reason": "괄호·항등원 반례를 비교하는 입력은 유지. 일괄 흐름 효과 제거",
+      "visual": "두 결합 트리와 단위 법칙",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "03",
+      "widget": "relation-widget",
+      "decision": "retained",
+      "reason": "준순서/부분순서의 반례를 관계 행렬과 실제 간선으로 확인 가능",
+      "visual": "관계 그래프·행렬",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "04",
+      "widget": "identity-widget",
+      "decision": "improved",
+      "reason": "항등원 후보와 타입 접점 비교 유지. 입력 변경 때 흐름 효과 제거",
+      "visual": "항등 합성의 접점과 값/로그 비교",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "04",
+      "widget": "loglaw-widget",
+      "decision": "improved",
+      "reason": "로그 정책의 결합법칙 반례를 두 트리로 비교. 입력 때 모든 간선에 흐르던 효과 제거",
+      "visual": "로그 결합 트리",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "04",
+      "widget": "writer-widget",
+      "decision": "retained",
+      "reason": "값 전달과 로그 생성·병합의 중간 상태가 실제로 변하므로 재생 유지",
+      "visual": "값 경로·누적 로그·대기 로그",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "05",
+      "widget": "hom-widget",
+      "decision": "improved",
+      "reason": "초기/말단 후보의 존재·유일성 비교 유지. 단순 점선 효과 제거",
+      "visual": "Hom 방향과 각 집합의 함수 수",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "05",
+      "widget": "product-widget",
+      "decision": "improved",
+      "reason": "직접 매개함수를 골라 사영과 유일성을 확인하는 조작 유지. 입력 시 흐름 효과 제거",
+      "visual": "두 사영 경로와 매개함수 후보",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "05",
+      "widget": "sum-widget",
+      "decision": "retained",
+      "reason": "태그에 따른 실제 분기와 실행되지 않는 반대쪽 함수를 보여주므로 재생 유지",
+      "visual": "Left/Right 태그와 선택 분기",
+      "removedPlayback": false
+    },
+    {
+      "chapter": "06",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "기존 재생은 완성된 값 카드의 테두리만 순회했다. 재생을 제거하고 곱의 두 축과 합의 출처 태그를 직접 인코딩했다.",
+      "removedPlayback": true,
+      "visual": "A행×B열 곱 격자 / Left·Right 영역 / Nothing·Just 영역"
+    },
+    {
+      "chapter": "06",
+      "widget": "w2",
+      "decision": "improved",
+      "reason": "문자열 세 상자보다 공통 A가 어느 태그 분기의 좌표로 이동하는지 보여줄 필요가 있었다.",
+      "removedPlayback": false,
+      "visual": "A값·태그를 분리한 분배 분기; 선택하지 않은 분기는 비활성, Unit에서 무의미한 payload 제어 비활성"
+    },
+    {
+      "chapter": "06",
+      "widget": "w3",
+      "decision": "improved",
+      "reason": "네 값 카드는 두 bool의 좌표 구조와 유효 합 상태의 대응을 감췄다.",
+      "removedPlayback": false,
+      "visual": "열림·닫힘 2×2 격자, 두 무효 칸, 실제 선택 좌표에서 Open·Closed로 가는 화살표"
+    },
+    {
+      "chapter": "07",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "모든 값이 먼저 보이고 재생은 사각형 모서리만 강조했다.",
+      "removedPlayback": true,
+      "visual": "Some 내부의 값 변화와 None 보존을 분리한 두 생성자 경로; None에서 값 입력 비활성"
+    },
+    {
+      "chapter": "07",
+      "widget": "w2",
+      "decision": "retained",
+      "reason": "항등·두 번 Map·합성 한 번의 독립 경로와 실제 중간값이 이미 반례를 정확하게 비교한다.",
+      "removedPlayback": false,
+      "visual": "서로 독립된 세 계산 경로, bad Map의 [2,3]·[8]·[6,8] 구별"
+    },
+    {
+      "chapter": "07",
+      "widget": "w3",
+      "decision": "retained",
+      "reason": "환경→Reader 결과→후합성 결과는 각 화살표가 실제 함수 계산이며 입력 변화가 결과를 바꾼다.",
+      "removedPlayback": false,
+      "visual": "환경과 Reader 및 후합성의 값 흐름"
+    },
+    {
+      "chapter": "08",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "기존 순차 상자와 강조 재생은 독립된 두 좌표를 마치 의존적인 단계처럼 보이게 했다.",
+      "removedPlayback": true,
+      "visual": "곱의 두 좌표를 평행하게 대응시키는 Bimap 도식"
+    },
+    {
+      "chapter": "08",
+      "widget": "w2",
+      "decision": "retained",
+      "reason": "반변 타입 방향은 본문의 도식이 설명하고 위젯의 순방향 값 흐름은 전처리·검사를 실제로 계산한다.",
+      "removedPlayback": false,
+      "visual": "문자열→길이→Predicate 결과의 값 대응"
+    },
+    {
+      "chapter": "08",
+      "widget": "w3",
+      "decision": "retained",
+      "reason": "입력 전처리·기존 계산·출력 후처리는 실제 함수 적용이고 모든 제어가 결과에 영향을 준다.",
+      "removedPlayback": false,
+      "visual": "Dimap의 세 실제 계산값"
+    },
+    {
+      "chapter": "09",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "재생은 이미 계산된 상자 강조만 바꿨고 평가에 별도 a가 필요함이 보이지 않았다.",
+      "removedPlayback": true,
+      "visual": "z로 만든 함수값과 별도 a 입력이 Eval에 합류하는 도식"
+    },
+    {
+      "chapter": "09",
+      "widget": "w2",
+      "decision": "improved",
+      "reason": "a↦b를 쓴 카드만으로는 함수의 전체 대응·다대일·빈 집합을 읽기 어려웠다.",
+      "removedPlayback": false,
+      "visual": "A와 B 집합의 원소 및 실제 대응 화살표; 0·1개 함수에서 번호 제어 비활성"
+    },
+    {
+      "chapter": "09",
+      "widget": "w3",
+      "decision": "improved",
+      "reason": "배열 세 상자는 합 입력의 두 출처가 어느 부분 함수에 대응하는지 숨겼다.",
+      "removedPlayback": false,
+      "visual": "a0·a1·c0 행을 두 분기 함수표로 나누는 실제 대응"
+    },
+    {
+      "chapter": "10",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "자연성의 두 경로는 유효하지만 기존 재생은 이미 완성된 사각형 강조만 순회했다.",
+      "removedPlayback": true,
+      "visual": "자연성 사각형과 Head/Max의 두 결과 비교를 유지하고 재생 제거"
+    },
+    {
+      "chapter": "10",
+      "widget": "w2",
+      "decision": "improved",
+      "reason": "정보 손실은 리스트 문자열보다 원소가 어디서 사라지는지 보이는 편이 명확하다.",
+      "removedPlayback": false,
+      "visual": "첫 원소는 유지·꼬리는 삭제로 인코딩하고 Head→Pack의 한 원소 복원을 표시"
+    },
+    {
+      "chapter": "10",
+      "widget": "w3",
+      "decision": "retained",
+      "reason": "Reader Map과 고정 환경 평가의 두 경로가 실제 자연성 식을 계산한다.",
+      "removedPlayback": false,
+      "visual": "Reader의 함수 표현과 평가 결과의 가환 사각형"
+    },
+    {
+      "chapter": "11",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "단계 강조 재생은 중간 리스트와 융합의 차이를 추가로 보여주지 않았다.",
+      "removedPlayback": true,
+      "visual": "원소 토큰으로 중간 리스트가 있는 경로와 없는 경로를 나란히 비교"
+    },
+    {
+      "chapter": "11",
+      "widget": "w2",
+      "decision": "retained",
+      "reason": "통과점과 두 속도가 실제 경로·시간·유한 최적 후보를 바꾸는 기하 시각화다.",
+      "removedPlayback": false,
+      "visual": "두 매질 경계, 선택 경로와 21개 후보 최적 경로"
+    },
+    {
+      "chapter": "11",
+      "widget": "w3",
+      "decision": "improved",
+      "reason": "접두부 상태는 실제로 변하므로 재생을 유지하되 카드보다 시간에 따른 누적 변화가 잘 보이게 했다.",
+      "removedPlayback": false,
+      "visual": "관측 이벤트·기여량 막대·관측한 접두부만의 누적 상태 그래프"
+    },
+    {
+      "chapter": "12",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "완성된 참거짓 표를 순차 강조하는 재생은 등화자의 인수 분해를 설명하지 못했다.",
+      "removedPlayback": true,
+      "visual": "후보 X의 값→등화자 E 부분집합→A 포함 사상; E 밖의 값은 매개 존재 실패로 표시"
+    },
+    {
+      "chapter": "12",
+      "widget": "w2",
+      "decision": "improved",
+      "reason": "일반 카드 배치는 당김의 두 입력 축과 결과 동등 조건을 숨겼다.",
+      "removedPlayback": false,
+      "visual": "A 행·C 열 및 f(a)·g(c)의 키값을 가진 당김 일치 격자"
+    },
+    {
+      "chapter": "12",
+      "widget": "w3",
+      "decision": "improved",
+      "reason": "상자 연결은 원소별 식별과 추이적 동치류를 직접 보여주지 않았다.",
+      "removedPlayback": false,
+      "visual": "서로소 합의 태그 원소, B가 요구하는 식별, 각 원소의 몫 동치류 대응"
+    },
+    {
+      "chapter": "13",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "접두부와 미처리 단어는 실제 상태 변화이므로 재생을 유지하지만 기존 chain은 두 값을 잘못 의존적으로 배치했다.",
+      "removedPlayback": false,
+      "visual": "생성자 위치·처리한 접두부 괄호·실제 누적 단어·남은 생성자"
+    },
+    {
+      "chapter": "13",
+      "widget": "w2",
+      "decision": "retained",
+      "reason": "연결과 FoldMap의 두 경로는 준동형 법칙을 실제 값으로 계산하는 올바른 사각형이다.",
+      "removedPlayback": false,
+      "visual": "h(uv)와 h(u)⋆h(v)의 사각형"
+    },
+    {
+      "chapter": "13",
+      "widget": "w3",
+      "decision": "improved",
+      "reason": "단어를 나열한 문자열보다 서로 다른 원소 시퀀스가 같은 해석으로 모이는 구조가 핵심이다.",
+      "removedPlayback": false,
+      "visual": "두 리스트의 원소 토큰과 같거나 다른 목표 원소로 가는 해석 화살표"
+    },
+    {
+      "chapter": "14",
+      "widget": "w1",
+      "decision": "improved",
+      "reason": "강조만 옮기는 재생 대신 두 Bool 키가 저장 좌표에 어떻게 대응하고 조회되는지 보여야 했다.",
+      "removedPlayback": true,
+      "visual": "false·true 함수표↔First·Second 좌표와 선택 key·저장값의 Index 합류"
+    },
+    {
+      "chapter": "14",
+      "widget": "w2",
+      "decision": "retained",
+      "reason": "Tabulate와 Map의 사각형은 두 방향의 실제 대응값이 같음을 이미 보여준다.",
+      "removedPlayback": false,
+      "visual": "후합성과 Pair.Map의 자연성 사각형"
+    },
+    {
+      "chapter": "14",
+      "widget": "w3",
+      "decision": "retained",
+      "reason": "동일 입력에서 Hom과 F의 개수를 독립 계산 후 비교하도록 이미 고쳐져 실제 데이터 흐름이다.",
+      "removedPlayback": false,
+      "visual": "두 갈래 개수 계산과 비교 입력 합류"
+    },
+    {
+      "chapter": "15",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "이미 계산된 값 네 상자의 강조만 바뀌던 재생을 제거. 원소 슬롯별 q 대응과 독립 id 관찰을 분리.",
+      "removedPlayback": true,
+      "visual": "n·q로 원소별 출력과 복원값을 비교"
+    },
+    {
+      "chapter": "15",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "스칼라 상자를 두 독립 경로의 원소 결과와 중간 α(h) 리스트로 교체.",
+      "removedPlayback": false,
+      "visual": "k 변경으로 합성의 두 경로 비교"
+    },
+    {
+      "chapter": "15",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "실패하는 두 결과 사이 연산 화살표 제거를 유지하고 공통 입력에서 갈라지는 비교를 확대.",
+      "removedPlayback": false,
+      "visual": "출력 보정 +1이 자연성을 깨는 반례 비교"
+    },
+    {
+      "chapter": "16",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "Bool 두 입력 각각의 f와 h 출력표, 별도 id 관찰을 표시. 색 강조 재생 제거.",
+      "removedPlayback": true,
+      "visual": "f·h 변경으로 관찰과 복원을 구분"
+    },
+    {
+      "chapter": "16",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "f,g 두 입력표에 동일 관찰을 적용한 독립 열을 표시.",
+      "removedPlayback": false,
+      "visual": "항등/상수 관찰로 구별 가능성 비교"
+    },
+    {
+      "chapter": "16",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "숫자 네 개 대신 가능한 함수 표를 실제 열거하고 전체 수를 별도 표시.",
+      "removedPlayback": false,
+      "visual": "입력/출력 집합 크기에 따른 독립 선택 수 확인"
+    },
+    {
+      "chapter": "17",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "map f와 map g에서 원소별 선·중간값, 합성 한 번의 독립 결과를 표시. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "g를 바꾸며 중간값과 최종값 비교"
+    },
+    {
+      "chapter": "17",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "원소 슬롯 수를 유지한 두 리스트와 원소별 대응을 표시.",
+      "removedPlayback": false,
+      "visual": "원소 변환과 길이 보존 구분"
+    },
+    {
+      "chapter": "17",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "양방향 함수 수를 별도 glyph 묶음으로 표시해 방향 차이를 비교.",
+      "removedPlayback": false,
+      "visual": "집합 크기에 따른 두 지수 계산 비교"
+    },
+    {
+      "chapter": "18",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "먼저 받은 a·나중 s·남은 인자 함수·적용 결과를 실제 연결. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "연산·a를 바꾸며 부분 적용 의미 비교"
+    },
+    {
+      "chapter": "18",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "Lη의 함수·상태 쌍과 ε 평가 후 복원 쌍을 직접 표시.",
+      "removedPlayback": false,
+      "visual": "같은 s를 공급하는 평가와 원래 쌍 비교"
+    },
+    {
+      "chapter": "18",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "공통 입력에서 두 자연성 경로를 분리한 결과 비교.",
+      "removedPlayback": false,
+      "visual": "q 변경으로 커링과 입출력 변경의 호환 확인"
+    },
+    {
+      "chapter": "19",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "a,b,a 슬롯에서 k의 값으로 대응시키고 목표 연산 결과를 표시. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "덧셈/문자열 연결 목표의 차이 비교"
+    },
+    {
+      "chapter": "19",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "u,v의 중첩 경계와 각각 fold한 값을 시각화.",
+      "removedPlayback": false,
+      "visual": "연결 후 fold와 각 fold 후 연산 비교"
+    },
+    {
+      "chapter": "19",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "단위 보존을 별도 구역에 놓고 합 보존의 두 분기를 비교.",
+      "removedPlayback": false,
+      "visual": "편향 +1의 두 법칙 실패를 각각 확인"
+    },
+    {
+      "chapter": "20",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "짝수 판정 diamond·성공/실패 결과·다음 함수 생략을 표시. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "n·다음 함수로 성공과 실패 전파 비교"
+    },
+    {
+      "chapter": "20",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "공통 Some/None에서 두 괄호 경로와 중간 Option을 비교. None 선택 시 사용되지 않는 값 입력을 비활성화하고 검증도 건너뜁니다.",
+      "removedPlayback": false,
+      "visual": "실패/성공 입력에서 결합법칙 사례 확인"
+    },
+    {
+      "chapter": "20",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "원래 Some과 bind 결과를 독립 분기로 비교.",
+      "removedPlayback": false,
+      "visual": "결과 보정이 pure 항등을 깨는 반례 확인"
+    },
+    {
+      "chapter": "21",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "상태 s₀,s₁,s₂와 반환 번호 a,b를 다른 행으로 표시. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "최신 상태 전달/원래 상태 재사용의 중복번호 비교"
+    },
+    {
+      "chapter": "21",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "값 계산 행과 로그 누적 행을 분리하고 로그 순서를 슬롯으로 표시.",
+      "removedPlayback": false,
+      "visual": "값이 같아도 로그 순서가 달라짐을 비교"
+    },
+    {
+      "chapter": "21",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "하나의 환경에서 두 계산으로 갈라지는 선과 값 전달선을 구분.",
+      "removedPlayback": false,
+      "visual": "환경 공유와 값 흐름을 비교"
+    },
+    {
+      "chapter": "22",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "실제 세 겹 경계·선택한 첫 제거 뒤 경계·마지막 경계 제거를 표시. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "먼저 제거할 층 선택으로 서로 다른 중간 구조 비교"
+    },
+    {
+      "chapter": "22",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "전체 리스트 감싸기/원소별 감싸기를 실제 다른 중첩 경계로 표시.",
+      "removedPlayback": false,
+      "visual": "두 η의 다른 중간 구조와 같은 복원 결과 비교"
+    },
+    {
+      "chapter": "22",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "중첩 경계 유지 map과 경계 제거 뒤 map의 두 경로를 표시.",
+      "removedPlayback": false,
+      "visual": "h 변경과 join 순서의 호환 비교"
+    },
+    {
+      "chapter": "23",
+      "widget": "b1",
+      "decision": "improved",
+      "reason": "초점·이웃·문맥 밖을 격자 위치와 i² 값으로 표시하고 실제 이웃 합을 표시. 재생 제거.",
+      "removedPlayback": true,
+      "visual": "초점·합/평균 선택으로 읽는 문맥과 결과 비교"
+    },
+    {
+      "chapter": "23",
+      "widget": "b2",
+      "decision": "improved",
+      "reason": "원본 Store와 두 법칙 결과를 같은 키 격자·같은 초점으로 비교.",
+      "removedPlayback": false,
+      "visual": "초점·추가 조회 위치를 바꿔 관찰 결과 비교"
+    },
+    {
+      "chapter": "23",
+      "widget": "b3",
+      "decision": "improved",
+      "reason": "실제 슬롯 존재/부재와 첫 값 또는 정의 불가를 표시. 비어 있지 않은 리스트에서는 영향을 주지 않는 실패 정책 선택을 비활성화합니다.",
+      "removedPlayback": false,
+      "visual": "빈 입력과 임의 int 기본값 정책을 구분"
+    },
+    {
+      "chapter": "24",
+      "widget": "hom",
+      "decision": "improved",
+      "reason": "두 경로의 수치 차이를 같은 축과 길이로 비교",
+      "removedPlayback": false,
+      "visual": "n별 두 해석의 막대 길이와 도착점"
+    },
+    {
+      "chapter": "24",
+      "widget": "natfold",
+      "decision": "improved",
+      "reason": "재귀 생성자 사슬을 하위 값으로 실제 축약",
+      "removedPlayback": false,
+      "visual": "Succ/Zero 재귀 트리 → 운반 값"
+    },
+    {
+      "chapter": "24",
+      "widget": "unfold",
+      "decision": "improved",
+      "reason": "상태 수에 따라 생성 간선과 출력 원소 개수가 달라짐",
+      "removedPlayback": false,
+      "visual": "상태 전이 사슬 → 생성 리스트 → 합계"
+    },
+    {
+      "chapter": "25",
+      "widget": "alghom",
+      "decision": "improved",
+      "reason": "공백 및 길이별 보정값 중복이 원소 수와 합계에 반영됨",
+      "removedPlayback": false,
+      "visual": "입력 리스트/Map 리스트/두 평가 결과"
+    },
+    {
+      "chapter": "25",
+      "widget": "lens",
+      "decision": "improved",
+      "reason": "요청 좌표와 실제 도착 좌표의 차이를 직접 표시",
+      "removedPlayback": false,
+      "visual": "이름×점수 격자, 좌표 이동, 세 법칙 상태"
+    },
+    {
+      "chapter": "25",
+      "widget": "monadalg",
+      "decision": "improved",
+      "reason": "경계를 없애는 경로와 내부 값을 줄이는 경로가 실제로 변함",
+      "removedPlayback": false,
+      "visual": "중첩 리스트 경계 → 두 중간 리스트 → 결과"
+    },
+    {
+      "chapter": "26",
+      "widget": "coend",
+      "decision": "improved",
+      "reason": "생성 관계 변경이 식별 대상과 몫의 동치류를 변경",
+      "removedPlayback": false,
+      "visual": "대각 합의 관계 그래프 → 두 동치류"
+    },
+    {
+      "chapter": "26",
+      "widget": "end",
+      "decision": "improved",
+      "reason": "선택한 함수 표가 네 집합 사이의 실제 연결을 변경",
+      "removedPlayback": true,
+      "visual": "Fa/Ga/Fb/Gb 원소 대응과 자연성 두 경로"
+    },
+    {
+      "chapter": "26",
+      "widget": "prof",
+      "decision": "improved",
+      "reason": "가운데 객체별 증거 곱을 실제 격자로 생성",
+      "removedPlayback": false,
+      "visual": "d별 Q×P 원소쌍 격자와 태그 분리"
+    },
+    {
+      "chapter": "27",
+      "widget": "kanposet",
+      "decision": "improved",
+      "reason": "끝점과 후보에 따라 허용 구간과 순서 사상 위치가 변함",
+      "removedPlayback": false,
+      "visual": "0<1<2에서 수치 사슬로 가는 확장 및 허용 구간"
+    },
+    {
+      "chapter": "27",
+      "widget": "lan",
+      "decision": "improved",
+      "reason": "서로소 합의 각 원소에서 선택 결과로 실제 간선 연결",
+      "removedPlayback": false,
+      "visual": "Left/Right 태그 원소와 X로 가는 사상"
+    },
+    {
+      "chapter": "27",
+      "widget": "ran",
+      "decision": "improved",
+      "reason": "집합 크기에 따라 곱 격자가 달라지고 사영값이 교점을 선택",
+      "removedPlayback": true,
+      "visual": "A×B 좌표 격자와 유일 σ의 도착점"
+    },
+    {
+      "chapter": "28",
+      "widget": "boolenrich",
+      "decision": "improved",
+      "reason": "참인 간선만 생성하고 빠진 합성 간선은 반례로 표시",
+      "removedPlayback": false,
+      "visual": "반사 간선, 두 단계 경로와 필수 직접 관계"
+    },
+    {
+      "chapter": "28",
+      "widget": "nonexpand",
+      "decision": "improved",
+      "reason": "배율에 따라 점 위치가 이동·합쳐지고 거리 길이가 변함",
+      "removedPlayback": false,
+      "visual": "원래 수직선과 함수 상의 수직선, 거리 비교"
+    },
+    {
+      "chapter": "28",
+      "widget": "triangle",
+      "decision": "improved",
+      "reason": "단순 강조 재생을 제거하고 경유/직접 비용을 실제 길이로 비교",
+      "removedPlayback": true,
+      "visual": "가중 삼각 경로 및 수치 비례 비용 막대"
+    },
+    {
+      "chapter": "29",
+      "widget": "classifier",
+      "decision": "improved",
+      "reason": "부분집합 선택에 따라 선택 경계와 true/false 연결이 달라짐",
+      "removedPlayback": true,
+      "visual": "X의 부분집합 및 Ω로 가는 원소별 특성 함수"
+    },
+    {
+      "chapter": "29",
+      "widget": "heyting",
+      "decision": "improved",
+      "reason": "사슬의 실제 순서에서 연산 결과와 비최상위 값을 표시",
+      "removedPlayback": false,
+      "visual": "세 개의 Heyting 사슬과 함의·부정·배중률"
+    },
+    {
+      "chapter": "29",
+      "widget": "pullback",
+      "decision": "improved",
+      "reason": "사상 변경에 따라 선택되는 정의역 원소의 배치가 달라짐",
+      "removedPlayback": false,
+      "visual": "Y→X 원소 연결과 S/g⁻¹S의 경계"
+    },
+    {
+      "chapter": "30",
+      "widget": "substitute",
+      "decision": "improved",
+      "reason": "각 변수 위치에 대입 항의 하위 노드가 실제 복제됨",
+      "removedPlayback": false,
+      "visual": "원래 항 트리에서 동시 치환한 가지와 결과 항"
+    },
+    {
+      "chapter": "30",
+      "widget": "theorylaws",
+      "decision": "improved",
+      "reason": "연산 표와 전수 검사 칸이 바뀌며 반례 괄호 트리를 비교",
+      "removedPlayback": false,
+      "visual": "Cayley 표, 27개 입력 검사, 양쪽 연산 트리"
+    },
+    {
+      "chapter": "30",
+      "widget": "word",
+      "decision": "improved",
+      "reason": "변수 트리→문자열 치환→연결 결과로 실제 구조를 축약",
+      "removedPlayback": false,
+      "visual": "모노이드 항 트리의 평가 단계"
+    },
+    {
+      "chapter": "31",
+      "widget": "flatten3",
+      "decision": "improved",
+      "reason": "같은 원소를 감싼 중첩 경계의 제거 위치를 비교",
+      "removedPlayback": false,
+      "visual": "T³ 입력→Tμ/μT 중간 경계→같은 리스트"
+    },
+    {
+      "chapter": "31",
+      "widget": "span",
+      "decision": "improved",
+      "reason": "중간 객체가 일치하는 경우만 경로 및 당김 원소가 생성됨",
+      "removedPlayback": true,
+      "visual": "Ar→Ob←Ar 연결과 합성 가능한 화살표 쌍"
+    },
+    {
+      "chapter": "31",
+      "widget": "spanmonoid",
+      "decision": "improved",
+      "reason": "한 객체의 모든 화살표 합성과 실제 결합 반례를 연결",
+      "removedPlayback": false,
+      "visual": "한 객체 루프, 합성 표, 괄호별 합성 트리"
+    }
+  ]
+}

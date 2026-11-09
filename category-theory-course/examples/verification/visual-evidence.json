@@ -1,0 +1,879 @@
+{
+  "root_semantics": {
+    "chapter01": {
+      "orderCases": 27,
+      "groupCases": 2,
+      "keyboardReset": "PASS"
+    },
+    "exceptions": []
+  },
+  "conditional_controls": {
+    "option": "PASS invalid→None→Some→valid",
+    "list": "PASS empty→nonempty→empty policy",
+    "exceptions": []
+  },
+  "06-14_browser": {
+    "reports": [
+      {
+        "chapter": 6,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "생성 가능한 값 6개\n(a0,b0), (a0,b1), (a0,b2), (a1,b0), (a1,b1), (a1,b2)\n행 A와 열 B의 교차점 하나가 순서쌍 하나입니다.",
+            "분배: (0,Left(0)) → Left((0,0))\n역변환: (0,Left(0))\n공통 A값 0와 B의 값 0를 같은 태그 분기에 함께 넣습니다.",
+            "선택 (false,false)\n불필요한 상태: 둘 다 없거나 둘 다 있음\n네 플래그 조합 중 두 개만 요구에 맞습니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 7,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "선택 경로: Some(2)\n두 번 Map: Some(6) / 합성 Map: Some(6)\nSome은 값을 바꾸고 None은 계속 None입니다.",
+            "Map id = [1,2,3] / 원본 [1,2,3]\n두 번 Map = [4,6,8]\n합성 한 번 Map = [4,6,8]\n항등 true, 합성 true",
+            "r(4)=7\nf(r(4))=14\n환경을 바꾸면 새 함수도 그 환경에 맞춰 계산됩니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 8,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "(2,\"abc\") → (3,3)\n첫 좌표에는 +1, 둘째 좌표에는 Length를 적용합니다. 두 좌표를 섞지 않습니다.",
+            "p(f(s)) = true\nContra(f): Pred<Int> → Pred<String>\n값의 실행 순서와 타입 간 반변 방향을 구분하세요.",
+            "\"abc\" → 3 → 9 → 19\npre:String→Int, core:Int→Int, post:Int→Int"
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 9,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "직접 g(3,4)=11\n커링하면 z=3를 고른 함수 a↦3+2a가 생깁니다.\n그 함수와 a=4를 Eval에 함께 넣으면 11입니다.",
+            "함수 수=2^2=4\na0↦b0, a1↦b0",
+            "2^(2+1)=8=4×2\n전체 [0,0,0] → ([0,0],[0])\n두 분기 표를 합치면 원래 [0,0,0]를 복원합니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true,
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 10,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "Gf∘α = Some(-1)\nα∘Ff = Some(-1)\n이 표본 자연성: true",
+            "[1,2] → [1]\n리스트 왕복 false\nHead는 나머지 원소를 보존하지 않으므로 Pack으로 복원할 수 없습니다.",
+            "Reader(r)=r+3\nMap(×2) 후 평가=14\n평가 후 ×2=14"
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 11,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [
+            "w3-play"
+          ],
+          "outputs": [
+            "단계별 [4,6,8]\n융합 [4,6,8]\n값 동등 true\n위 경로는 중간 리스트를 만들고 아래 경로는 각 원소에 합성 함수를 적용합니다.",
+            "선택시간=3.3541\n21개 후보의 최솟값=2.9382, 통과점번호=17\n연속 최적해의 정확한 증명은 아닙니다.",
+            "각 시점 상태 [2,2,8]\n현재 단계에서 관측한 접두부만 그래프로 그립니다. 미래 이벤트가 추가되어도 이미 계산한 접두부는 바뀌지 않습니다.\n\n단계 1/4: 아직 이벤트를 관측하지 않았습니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 12,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "등화자 E={-1,1}\n후보 h의 값 [-1,1]\n전체 인수 분해 가능=true\n각 후보 값이 E 안에 있으면 m은 그 값을 E의 같은 원소로 보내고, 포함 e가 A로 돌려보냅니다.",
+            "당김 5개: (a0,c0), (a0,c1), (a1,c2), (a2,c0), (a2,c1)\n선택쌍 f(a0)=0, g(c0)=0 → 조건 만족\n녹색 교차점 하나가 당김의 입력 쌍 하나입니다.",
+            "동치류 3개\n{A0,C0} / {A1} / {C1}\nb0: A0~C0\n실선은 몫 사상, 왼쪽 점선은 공통 B가 요구하는 식별입니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 13,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [
+            "w1-play"
+          ],
+          "outputs": [
+            "선택 단어 길이=3\n{a,b}의 길이 ≤ 3 단어 15개\n일부 목록: ε, a, b, aa, ab, ba, bb, aaa, aab, aba, abb, baa, bab, bba, bbb\n진행하면 생성자 하나가 접두부로 옮겨지고 누적 단어가 실제로 바뀝니다.\n\n단계 1/4: 빈 단어에서 시작합니다.",
+            "h(uv)=36\nh(u)⋆h(v)=36\n빈 단어는 1",
+            "[2,3] → 6\n[6] → 6\n단어 다름 / 해석 값 같음\n해석 준동형은 서로 다른 생성자 시퀀스를 같은 원소로 보낼 수 있습니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true
+        ]
+      },
+      {
+        "chapter": 14,
+        "initial": {
+          "widgets": 3,
+          "svg": 5,
+          "players": [],
+          "outputs": [
+            "Tabulate = (3, 7)\nIndex(false) = 3\nfalse는 첫 좌표, true는 둘째 좌표에 정확히 대응합니다.",
+            "Pair.Map = [4,8]\nTabulate(g∘f) = [4,8]\n각 키에서 같은 결과",
+            "|A|^|R|=1, |F(A)|=1\n이 검사에서 개수만 일치합니다. 왕복·자연성은 별도로 필요합니다.\nMaybe·List는 A=Unit에서 어떤 R도 불가능합니다."
+          ],
+          "duplicates": []
+        },
+        "semantic": [
+          true,
+          true
+        ]
+      }
+    ],
+    "clips": [],
+    "errors": []
+  },
+  "06-14_boundaries_playback": {
+    "evidence": [
+      {
+        "chapter": 6,
+        "config": {
+          "a": 4,
+          "b": 4,
+          "op": "product"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 6,
+        "config": {
+          "op": "sum"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 6,
+        "config": {
+          "op": "maybe"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 6,
+        "config": {
+          "branch": "L",
+          "da": 1,
+          "payload": 1
+        },
+        "clips": []
+      },
+      {
+        "chapter": 7,
+        "config": {
+          "x": 20,
+          "some": "some"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 7,
+        "config": {
+          "some": "none"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 8,
+        "config": {
+          "x": -20,
+          "s": "한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글한글",
+          "pred-text": "긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열긴문자열",
+          "dimap-text": "안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕안녕",
+          "offset": 20
+        },
+        "clips": []
+      },
+      {
+        "chapter": 9,
+        "config": {
+          "domain": 3,
+          "codomain": 3,
+          "index": 26,
+          "z": -20,
+          "arg": 20,
+          "split-index": 7
+        },
+        "clips": []
+      },
+      {
+        "chapter": 9,
+        "config": {
+          "domain": 0,
+          "codomain": 0
+        },
+        "clips": []
+      },
+      {
+        "chapter": 10,
+        "config": {
+          "xs": "-20,-19,-18,-17,17,18,19,20",
+          "alpha": "max",
+          "transform": "neg",
+          "round-list": "-20,-19,-18,-17,17,18,19,20"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 11,
+        "config": {
+          "xs": "-20,20,-20,20,-20,20,-20,20",
+          "events": "20,20,20,20,20,20,20,20"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 11,
+        "config": {
+          "events": "-20,-20,-20,-20,-20,-20,-20,-20"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 12,
+        "config": {
+          "k": 9,
+          "cone": "-3,-2,-1,0,1,2,3,3",
+          "fa": "1,1,1",
+          "gc": "1,1,1",
+          "pair": 8,
+          "bsize": 2,
+          "i0": 1,
+          "j0": 1,
+          "i1": 0,
+          "j1": 0
+        },
+        "clips": []
+      },
+      {
+        "chapter": 12,
+        "config": {
+          "k": 2
+        },
+        "clips": []
+      },
+      {
+        "chapter": 13,
+        "config": {
+          "word": "ababab",
+          "xs": "20,20,20,20,20,20,20,20",
+          "ys": "-20,20,-20,20,-20,20,-20,20"
+        },
+        "clips": []
+      },
+      {
+        "chapter": 14,
+        "config": {
+          "first": -20,
+          "second": 20,
+          "key": 1,
+          "pa": -20,
+          "pb": 20,
+          "map": "neg",
+          "functor": "list",
+          "r": 3,
+          "size": 3
+        },
+        "clips": []
+      }
+    ],
+    "playback": [
+      {
+        "chapter": 11,
+        "widget": "w3",
+        "manual": {
+          "changed": true,
+          "text": "관측한 이벤트 접두부와 누적 상태 그래프입력 이벤트와 양수×2 기여량1+2-2대기3대기상태8관측 순서02관측 1/3개 · 현재 상태 2",
+          "reversed": true
+        },
+        "end": true,
+        "input": true,
+        "hidden": true,
+        "pagehide": true
+      },
+      {
+        "chapter": 13,
+        "widget": "w1",
+        "manual": {
+          "changed": true,
+          "text": "유한 단어의 접두부와 남은 생성자 분해원래 단어의 순서 · 위치도 정보입니다.a처리함b남음a남음처리한 접두부누적 단어: [a]남은 생성자: ba · 연결 순서를 바꾸거나 생성자를 지우지 않습니다.",
+          "reversed": true
+        },
+        "end": true,
+        "input": true,
+        "hidden": true,
+        "pagehide": true
+      }
+    ],
+    "errors": []
+  },
+  "15-23_semantics": [
+    {
+      "chapter": 15,
+      "widget": 1,
+      "visualTokens": [
+        "2",
+        "4",
+        "3",
+        "5"
+      ],
+      "modelResult": "encode(q) = [3,5]"
+    },
+    {
+      "chapter": 15,
+      "widget": 2,
+      "visualTokens": [
+        "6",
+        "10",
+        "3",
+        "5"
+      ],
+      "modelResult": "[6,10]"
+    },
+    {
+      "chapter": 15,
+      "widget": 3,
+      "visualTokens": [
+        "5",
+        "6",
+        "두 경로의 결과 ≠"
+      ],
+      "modelResult": "자연성 실패"
+    },
+    {
+      "chapter": 16,
+      "widget": 1,
+      "visualTokens": [
+        "false",
+        "true",
+        "0",
+        "1",
+        "2"
+      ],
+      "modelResult": "Y(f)(h)=[0,2]"
+    },
+    {
+      "chapter": 16,
+      "widget": 2,
+      "visualTokens": [
+        "관찰 결과 같음 · 원래 함수가 같다는 뜻은 아님"
+      ],
+      "modelResult": "현재 관찰에서 같음"
+    },
+    {
+      "chapter": 16,
+      "widget": 3,
+      "visualTokens": [
+        "9",
+        "f8"
+      ],
+      "modelResult": "3^2 = 9"
+    },
+    {
+      "chapter": 17,
+      "widget": 1,
+      "visualTokens": [
+        "2",
+        "3",
+        "4",
+        "9",
+        "16"
+      ],
+      "modelResult": "[9,16]"
+    },
+    {
+      "chapter": 17,
+      "widget": 2,
+      "visualTokens": [
+        "∅",
+        "0"
+      ],
+      "modelResult": "length(map f xs) = 0"
+    },
+    {
+      "chapter": 17,
+      "widget": 3,
+      "visualTokens": [
+        "Hom(A,B): 3^2 = 9",
+        "Hom(B,A): 2^3 = 8"
+      ],
+      "modelResult": "3^2=9; 2^3=8"
+    },
+    {
+      "chapter": 18,
+      "widget": 1,
+      "visualTokens": [
+        "s ↦ 4×s",
+        "12",
+        "s=3 공급"
+      ],
+      "modelResult": "f(4,3) = 12"
+    },
+    {
+      "chapter": 18,
+      "widget": 2,
+      "visualTokens": [
+        "(4,5)",
+        "(t ↦ (4,t), 5)"
+      ],
+      "modelResult": "(4,5)"
+    },
+    {
+      "chapter": 18,
+      "widget": 3,
+      "visualTokens": [
+        "-6",
+        "두 경로의 결과 ="
+      ],
+      "modelResult": "두 자연성 경로 = -6"
+    },
+    {
+      "chapter": 19,
+      "widget": 1,
+      "visualTokens": [
+        "a",
+        "b",
+        "2",
+        "3",
+        "232"
+      ],
+      "modelResult": "k*([a,b,a]) = 232"
+    },
+    {
+      "chapter": 19,
+      "widget": 2,
+      "visualTokens": [
+        "7",
+        "2",
+        "9"
+      ],
+      "modelResult": "fold(u++v)=9"
+    },
+    {
+      "chapter": 19,
+      "widget": 3,
+      "visualTokens": [
+        "1 vs 0",
+        "11",
+        "12",
+        "연산 보존 ≠"
+      ],
+      "modelResult": "h(0)=1"
+    },
+    {
+      "chapter": 20,
+      "widget": 1,
+      "visualTokens": [
+        "아니요",
+        "None",
+        "다음 함수 건너뜀"
+      ],
+      "modelResult": "결과 = None"
+    },
+    {
+      "chapter": 20,
+      "widget": 2,
+      "visualTokens": [
+        "Some(8)",
+        "Some(7)"
+      ],
+      "modelResult": "Some(7) = Some(7)"
+    },
+    {
+      "chapter": 20,
+      "widget": 3,
+      "visualTokens": [
+        "Some(5)",
+        "Some(4)",
+        "두 경로의 결과 ≠"
+      ],
+      "modelResult": "우항등 실패"
+    },
+    {
+      "chapter": 21,
+      "widget": 1,
+      "visualTokens": [
+        "11",
+        "반환 번호 a",
+        "반환 번호 b",
+        "중복 번호: 최신 상태를 버린 경로"
+      ],
+      "modelResult": "값=20, 최종 상태=11"
+    },
+    {
+      "chapter": 21,
+      "widget": 2,
+      "visualTokens": [
+        "5",
+        "10",
+        "double;",
+        "add;"
+      ],
+      "modelResult": "로그=double;add;"
+    },
+    {
+      "chapter": 21,
+      "widget": 3,
+      "visualTokens": [
+        "2",
+        "5",
+        "10",
+        "같은 e"
+      ],
+      "modelResult": "Reader 결과 = (2+3)×2 = 10"
+    },
+    {
+      "chapter": 22,
+      "widget": 1,
+      "visualTokens": [
+        "먼저 안쪽 경계 제거: Mμ_A",
+        "1",
+        "2",
+        "3"
+      ],
+      "modelResult": "[1,2,3]"
+    },
+    {
+      "chapter": 22,
+      "widget": 2,
+      "visualTokens": [
+        "Mη_A: 각 원소를 따로 감쌈",
+        "2",
+        "3"
+      ],
+      "modelResult": "[2,3]"
+    },
+    {
+      "chapter": 22,
+      "widget": 3,
+      "visualTokens": [
+        "1",
+        "2",
+        "3",
+        "11",
+        "12",
+        "13"
+      ],
+      "modelResult": "[11,12,13]"
+    },
+    {
+      "chapter": 23,
+      "widget": 1,
+      "visualTokens": [
+        "현재 초점",
+        "1",
+        "4",
+        "9",
+        "(1 + 4 + 9) / 3",
+        "extend(f)의 현재 값 = 4.667"
+      ],
+      "modelResult": "문맥 결과=4.667"
+    },
+    {
+      "chapter": 23,
+      "widget": 2,
+      "visualTokens": [
+        "키 1",
+        "값 1",
+        "키 2",
+        "값 4",
+        "키 3",
+        "값 9",
+        "현재 초점 2 유지 · 별도 peek(3) = 9로 양 경로 동일"
+      ],
+      "modelResult": "t=3에서 값=9"
+    },
+    {
+      "chapter": 23,
+      "widget": 3,
+      "visualTokens": [
+        "∅",
+        "현재 슬롯 없음",
+        "별도 int 기본값 0"
+      ],
+      "modelResult": "extract: 임의 0"
+    }
+  ],
+  "24-31_semantics": [
+    {
+      "widget": "natfold",
+      "detail": "Succ×3+Zero의 네 노드가 값 3 한 노드로 축약",
+      "result": "PASS"
+    },
+    {
+      "widget": "hom",
+      "detail": "첫 경로 값 2/1의 막대 높이가 32/16으로 다름",
+      "result": "PASS"
+    },
+    {
+      "widget": "unfold",
+      "detail": "상태 4→0 다섯 노드, 생성 4원소+결과리스트4+합계1",
+      "result": "PASS"
+    },
+    {
+      "widget": "monadalg",
+      "detail": "Length 반례는 flatten 길이3/내부길이들의 길이2로 갈라짐",
+      "result": "PASS"
+    },
+    {
+      "widget": "alghom",
+      "detail": "공백 리스트의 h(0)=1과 Map 후 Sum=0을 별도 표시",
+      "result": "PASS"
+    },
+    {
+      "widget": "lens",
+      "detail": "요청점수2(x350)와 잘못 쓴3(x450)가 다른 좌표",
+      "result": "PASS"
+    },
+    {
+      "widget": "end",
+      "detail": "τa(1)=1의 실제 목적지와 자연성 반례 표시",
+      "result": "PASS"
+    },
+    {
+      "widget": "coend",
+      "detail": "항등/뒤집기 양 모드에서 a0,a1,b0,b1의 네 몫 사상 목적 동치류 검사",
+      "result": "PASS"
+    },
+    {
+      "widget": "prof",
+      "detail": "빈 첫 곱과 두번째 2×3 증거쌍 여섯 개",
+      "result": "PASS"
+    },
+    {
+      "widget": "ran",
+      "detail": "3×2 격자의 지정 좌표(2,1) 하나 선택",
+      "result": "PASS"
+    },
+    {
+      "widget": "lan",
+      "detail": "서로 다른 두 Left 원소가 결과0으로 실제 합류",
+      "result": "PASS"
+    },
+    {
+      "widget": "kanposet",
+      "detail": "l>u일 때 허용구간 자체가 없음",
+      "result": "PASS"
+    },
+    {
+      "widget": "triangle",
+      "detail": "삼각부등식 반례 비용 1+1과5를 정확한 길이48+48/240로 표시",
+      "result": "PASS"
+    },
+    {
+      "widget": "boolenrich",
+      "detail": "합성으로 필요한 x→z 부재를 하나의 빠진 간선으로 표시",
+      "result": "PASS"
+    },
+    {
+      "widget": "nonexpand",
+      "detail": "세 원래 점이 상에서는 한 점으로 합쳐짐",
+      "result": "PASS"
+    },
+    {
+      "widget": "classifier",
+      "detail": "S의 두 원소와 true로 가는 두 함수 간선 일치",
+      "result": "PASS"
+    },
+    {
+      "widget": "pullback",
+      "detail": "S={1}의 역상 y0,y2를 정확히 선택",
+      "result": "PASS"
+    },
+    {
+      "widget": "heyting",
+      "detail": "배중률 결과 u를 최상위 아래 실제 사슬 위치에 표시",
+      "result": "PASS"
+    },
+    {
+      "widget": "word",
+      "detail": "xyx 항의 네 노드가 해석 결과 abBab 한 노드로 축약",
+      "result": "PASS"
+    },
+    {
+      "widget": "theorylaws",
+      "detail": "결합법칙 27입력 중 반례18개와 첫 반례001 확인",
+      "result": "PASS"
+    },
+    {
+      "widget": "substitute",
+      "detail": "변수 세 위치에 두 노드씩 복제해 새 항 xyyxxy 여섯 토큰",
+      "result": "PASS"
+    },
+    {
+      "widget": "span",
+      "detail": "네 화살표의 cod/dom 8간선, 당김8쌍 및 두 번째 다리의 올바른 방향",
+      "result": "PASS"
+    },
+    {
+      "widget": "spanmonoid",
+      "detail": "모든 쌍 합성 가능해도 결합법칙 반례는 유지",
+      "result": "PASS"
+    },
+    {
+      "widget": "flatten3",
+      "detail": "입력6/왼중간3/오른중간4/결과1 경계와 각 경로의 동일4원소",
+      "result": "PASS"
+    }
+  ],
+  "24-31_controls": {
+    "checks": [
+      {
+        "chapter": 24,
+        "noAutoplay": "PASS",
+        "keyboardEnterPlayback": "PASS",
+        "realStructureEndAutoStop": "PASS",
+        "manualPause": "PASS",
+        "inputCancelReset": "PASS",
+        "actualVisibilityStop": "PASS",
+        "pagehideHandlerStop": "PASS",
+        "keyboardStageScroll": "PASS"
+      },
+      {
+        "chapter": 25,
+        "noAutoplay": "PASS",
+        "keyboardEnterPlayback": "PASS",
+        "realStructureEndAutoStop": "PASS",
+        "manualPause": "PASS",
+        "inputCancelReset": "PASS",
+        "actualVisibilityStop": "PASS",
+        "pagehideHandlerStop": "PASS",
+        "keyboardStageScroll": "PASS"
+      },
+      {
+        "chapter": 30,
+        "noAutoplay": "PASS",
+        "keyboardEnterPlayback": "PASS",
+        "realStructureEndAutoStop": "PASS",
+        "manualPause": "PASS",
+        "inputCancelReset": "PASS",
+        "actualVisibilityStop": "PASS",
+        "pagehideHandlerStop": "PASS",
+        "keyboardStageScroll": "PASS"
+      }
+    ],
+    "removedPlayers": [
+      26,
+      27,
+      28,
+      29,
+      31
+    ],
+    "errors": []
+  },
+  "independent_review": [
+    {
+      "chapter": 25,
+      "paths": [
+        "M85 129C210 129 220 90 622 90",
+        "M85 129C230 129 240 191 325 191",
+        "M385 191L622 191",
+        "M96 309C210 309 220 270 622 270",
+        "M96 309C230 309 240 371 325 371",
+        "M401 371L622 371",
+        "M140 489C210 489 220 450 622 450",
+        "M140 489C230 489 240 551 325 551",
+        "M450 551L622 551"
+      ],
+      "text": "실험 2 · 대수 준동형 후보같은 입력 리스트에서 두 평가 경로가 갈라집니다.공백 리스트[]h ∘ Sum1Map h[]Sum0≠입력 xs1h ∘ Sum3Map h3Sum3=입력 xs12h ∘ Sum7Map h35Sum8≠h(x)=2x+1. 공백 입력의 두 경로는 h(0)와 0을 비교합니다.",
+      "output": "실패: 공백 리스트에서 h(0)≠0."
+    },
+    {
+      "chapter": 26,
+      "paths": [
+        "M135 110Q330 25 475 125",
+        "M285 110C350 110 400 225 475 225",
+        "M135 200Q330 310 475 225",
+        "M285 200C350 200 400 125 475 125"
+      ],
+      "verdict": "PASS four source elements to correct classes"
+    },
+    {
+      "chapter": 20,
+      "verdict": "PASS inactive value disabled, invalid former value ignored"
+    },
+    {
+      "chapter": 23,
+      "verdict": "PASS policy enabled only at empty input"
+    },
+    {
+      "chapter": 29,
+      "verdict": "PASS exact selected sources to true, empty subset none"
+    },
+    {
+      "chapter": 31,
+      "verdict": "PASS cod(first)=dom(next) yields4/8 pairs"
+    }
+  ]
+}

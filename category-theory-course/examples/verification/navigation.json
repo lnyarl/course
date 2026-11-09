@@ -1,0 +1,200 @@
+[
+  {
+    "chapter": "01",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "02",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "03",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "04",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "05",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "06",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "07",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "08",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "09",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "10",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "11",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "12",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "13",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "14",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "15",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "16",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "17",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "18",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "19",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "20",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "21",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "22",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "23",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "24",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "25",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "26",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "27",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "28",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "29",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "30",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "chapter": "31",
+    "pager": "PASS",
+    "scroll_regions_focusable": true
+  },
+  {
+    "page": "index.html",
+    "widths": {
+      "360": {
+        "width": 360,
+        "scroll": 360
+      },
+      "768": {
+        "width": 768,
+        "scroll": 753
+      },
+      "1200": {
+        "width": 1200,
+        "scroll": 1185
+      }
+    },
+    "info": {
+      "cards": 31,
+      "soon": 0,
+      "progress": "31 / 31"
+    }
+  },
+  {
+    "page": "../index.html",
+    "widths": {
+      "360": {
+        "width": 360,
+        "scroll": 360
+      },
+      "768": {
+        "width": 768,
+        "scroll": 753
+      },
+      "1200": {
+        "width": 1200,
+        "scroll": 1185
+      }
+    },
+    "info": {
+      "chapters": 31,
+      "total": 147
+    }
+  }
+]

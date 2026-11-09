@@ -1,0 +1,4 @@
+(function(){"use strict";
+const configs=[{"title": "Curry와 Uncurry 왕복", "min": -10, "max": 10}, {"title": "첫 삼각 항등식", "min": -10, "max": 10}, {"title": "자연성: 입력·출력 변경", "min": -10, "max": 10}];
+const compute=(i,n,m)=>{if(i===0){const val=m==='sum'?n+3:n*3;return{nodes:['('+n+',3)','s↦'+n+(m==='sum'?'+s':'×s'),String(val),String(val)],result:'f('+n+',3) = '+val+' = Uncurry(Curry(f))('+n+',3)',explain:'임의의 a,s에 대입하면 같으므로 왕복은 입력별 항등입니다.'};}if(i===1){const s=Number(m);return{nodes:['('+n+','+s+')','(t↦('+n+',t),'+s+')','('+n+','+s+')','('+n+','+s+')'],result:'ε_LA(Lη_A(a,s)) = ('+n+','+s+')',explain:'평가 ε가 함수 η(a)에 같은 s를 공급하므로 원래 쌍이 복원됩니다.'};}const q=m==='double'?x=>2*x:x=>-x,v=q(n+1+3);return{nodes:['a='+n,String(v),'p(a)='+(n+1),String(v)],result:'두 자연성 경로 = '+v,explain:'Curry(q∘f∘(p×id)) = (a↦q∘Curry(f)(p(a))). 설정 S의 좌표는 그대로 둡니다.'};};
+BEffects.mount(18,configs,compute);})();

@@ -1,6 +1,6 @@
 # Course Library
 
-운영체제, 네트워크, 런타임, 데이터베이스, 게임 AI를 도식·애니메이션·시뮬레이터로 직접 조작하며 배우는 인터랙티브 학습자료 모음입니다.
+운영체제, 네트워크, 런타임, 데이터베이스, 프로그래밍 이론, 게임 AI를 도식·애니메이션·시뮬레이터로 직접 조작하며 배우는 인터랙티브 학습자료 모음입니다.
 
 **사이트:** https://lnyarl.github.io/course/
 
@@ -13,6 +13,7 @@
 | C# 가비지 컬렉터 해부 | 런타임 | 19개 섹션 (한 페이지) | https://lnyarl.github.io/course/CSharp_GC_%ED%95%99%EC%8A%B5%EC%9E%90%EB%A3%8C.html |
 | 컨테이너 런타임 만들기 (Rust) | 시스템 프로그래밍 | 9장 | https://lnyarl.github.io/course/container-runtime-course/ |
 | 데이터베이스 만들기 (Rust) | 데이터베이스 | 9장 | https://lnyarl.github.io/course/database-course/ |
+| 프로그래머를 위한 범주론 · C# | 프로그래밍 이론 | 31장 | https://lnyarl.github.io/course/category-theory-course/ |
 | 효용 AI 시뮬레이션 코스 | 게임 AI | 12장 | https://lnyarl.github.io/course/utility-ai-course/ |
 
 모든 페이지는 빌드 없는 정적 HTML이라 GitHub Pages(`main` 브랜치, 루트)에서 그대로 열립니다.

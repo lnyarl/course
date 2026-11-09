@@ -1,0 +1,34 @@
+/* 장별 SVG는 공통 테마의 색을 사용하고, 넓은 도식만 내부 스크롤합니다. */
+.advanced-widget .concept-svg{display:block;min-width:740px;width:100%;color:var(--accent)}
+.advanced-widget svg text{fill:var(--text);font:15px var(--sans)}
+.advanced-widget svg .heading{font-size:17px;font-weight:700}
+.advanced-widget svg .small{font-size:14px}.advanced-widget svg .tiny{font-size:12px}.advanced-widget svg .micro{font-size:11px}
+.advanced-widget svg .big{font-size:25px;font-weight:700}.advanced-widget svg .node-label{font-size:14px;font-weight:650}
+.advanced-widget .node,.advanced-widget .token,.advanced-widget .set-boundary,.advanced-widget .boundary,.advanced-widget .logic-gate{fill:var(--surface);stroke:var(--border);stroke-width:1.7}
+.advanced-widget .edge{fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round}
+.advanced-widget .arrow-head{fill:var(--accent)}
+.advanced-widget .muted-edge{stroke:var(--muted);opacity:.65}.advanced-widget .comparison-edge{stroke:var(--violet)}
+.advanced-widget .relation-edge{stroke:var(--violet);stroke-width:3}.advanced-widget .dashed,.advanced-widget .absent-edge{stroke-dasharray:7 6}.advanced-widget .absent-edge{stroke:var(--border)}
+.advanced-widget .result,.advanced-widget .accent,.advanced-widget .selected-node{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2.2}
+.advanced-widget .subset-ring,.advanced-widget .target-ring{fill:none;stroke:var(--ok);stroke-width:3;stroke-dasharray:5 3}
+.advanced-widget .target-ring{stroke:var(--violet)}
+.advanced-widget .ok-node,.advanced-widget .allowed{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2}
+.advanced-widget .bad-node{fill:var(--bad-soft);stroke:var(--bad);stroke-width:2}
+.advanced-widget .ok-edge{stroke:var(--ok);stroke-width:2.5}.advanced-widget .bad-edge{stroke:var(--bad);stroke-width:2.5}
+.advanced-widget .ok-text{fill:var(--ok);font-weight:650}.advanced-widget .bad-text{fill:var(--bad);font-weight:650}.advanced-widget .muted{fill:var(--muted)}
+.advanced-widget .tone0,.advanced-widget .depth0{fill:var(--accent-soft);stroke:var(--accent)}
+.advanced-widget .tone1,.advanced-widget .depth1{fill:var(--teal-soft);stroke:var(--teal)}
+.advanced-widget .depth2{fill:var(--violet-soft);stroke:var(--violet)}
+.advanced-widget .tone0-edge{stroke:var(--accent)}.advanced-widget .tone1-edge{stroke:var(--teal)}
+.advanced-widget .quotient-class{stroke-width:2.5}.advanced-widget .allowed-band{fill:var(--ok-soft);stroke:var(--ok);stroke-dasharray:4 4}
+.advanced-widget .grid-dot{fill:var(--border);stroke:none}.advanced-widget .accent-fill,.advanced-widget .cost-a{fill:var(--accent);stroke:none}
+.advanced-widget .ok-fill,.advanced-widget .cost-good{fill:var(--ok);stroke:none}.advanced-widget .bad-fill,.advanced-widget .cost-bad{fill:var(--bad);stroke:none}
+.advanced-widget .cost-b{fill:var(--teal);stroke:none}.advanced-widget .unit-cell{fill:var(--violet-soft);stroke:var(--violet)}
+.advanced-widget .calc-output{padding:1rem;border-left:4px solid var(--accent);background:var(--surface-2);line-height:1.8;white-space:pre-line;overflow-wrap:anywhere}
+.advanced-widget .controls label{min-width:125px}.advanced-player{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:1rem 0}
+.advanced-player .position{flex-basis:100%;font-size:.9rem}.advanced-widget .stage:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.advanced-static{width:100%;min-width:780px;color:var(--accent)}.advanced-static text{fill:var(--text);font-family:var(--sans)}
+.advanced-static .box{fill:var(--surface);stroke:var(--border);stroke-width:1.5}.advanced-static .arrow{fill:none;stroke:var(--accent);stroke-width:2}
+.advanced-static .map-label{font-size:14px;paint-order:stroke;stroke:var(--bg);stroke-width:5px;stroke-linejoin:round}
+@media(prefers-reduced-motion:reduce){.advanced-widget *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+.advanced-widget .comparison-band{fill:var(--surface-2);stroke:var(--border);stroke-width:1}

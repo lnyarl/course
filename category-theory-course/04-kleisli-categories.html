@@ -1,0 +1,188 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04. 클레이슬리 범주 · 프로그래머를 위한 범주론</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/ch04-visuals.css"><script src="assets/common.js"></script></head>
+<body data-chapter="04"><main>
+<header class="chapter-head"><span class="label">Part I · Chapter 04</span><h1>클레이슬리 범주</h1><p class="lead">값과 함께 로그를 반환하면 함수는 순수하게 만들 수 있습니다. 하지만 다음 함수에 넘길 타입이 맞지 않습니다. 값은 전달하고 로그는 모으는 새로운 합성을 직접 만들며 클레이슬리 범주의 첫 사례를 배웁니다.</p>
+<p class="source">원문 Chapter 4 “Kleisli Categories”, 인쇄 pp. 38–50 · PDF pp. 56–68. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=56">원문 열기</a></p>
+<div class="objectives"><h4>학습 목표</h4><ul><li>콘솔에 로그를 쓰는 동작과 로그를 데이터로 반환하는 함수를 구별합니다.</li><li>Writer를 반환하는 함수 두 개의 값 전달과 로그 병합을 구현합니다.</li><li>새 합성에 맞는 항등사상을 정의하고 결합법칙을 값·로그 각각으로 확인합니다.</li><li>클레이슬리 사상 A → B와 이를 구현하는 함수 A → Writer&lt;B&gt;를 구별합니다.</li><li>실패를 반환하는 Optional 함수의 합성·항등·단락 평가를 구현합니다.</li></ul></div></header>
+<nav class="toc" aria-label="장 목차"><b>목차</b><ol><li><a href="#logging">전역 로그를 반환 데이터로 옮기기</a></li><li><a href="#writer">Writer와 일반 합성의 타입 불일치</a></li><li><a href="#compose">값을 전달하고 로그를 모으는 합성</a></li><li><a href="#laws">결합법칙은 로그의 모노이드 법칙에 기대어 선다</a></li><li><a href="#identity">새 합성에 맞는 항등사상</a></li><li><a href="#program">전체 C# 구현</a></li><li><a href="#kleisli">무엇을 클레이슬리 범주라고 부르는가</a></li><li><a href="#quiz">확인 문제</a></li><li><a href="#practice">직접 구현하는 실습</a></li></ol></nav>
+
+<section id="logging"><h2>1. 전역 로그를 반환 데이터로 옮기기</h2><p>함수가 실행될 때마다 전역 문자열에 메시지를 붙인다고 합시다. 반환값이 늘 같아도 함수 호출을 생략하면 로그가 사라집니다. 2장의 메모이제이션 실험처럼, 반환값만 보면 놓치는 부작용이 있습니다. 공유 로그에 여러 호출이 동시에 접근하면 갱신 순서도 별도의 문제가 됩니다.</p>
+<pre><code>// 설명용 조각: 관찰 가능한 전역 변경을 가진 함수
+static string globalLog = "";
+static bool Negate(bool input)
+{
+    globalLog += "negate&gt;";
+    return !input;
+}</code></pre>
+<p>첫 해결책은 이전 로그를 인수로 받고 다음 로그를 반환하는 것입니다. 그러면 숨은 상태를 드러낼 수 있지만 함수가 전체 로그 이력을 매번 받게 됩니다. 업무 값의 계산과 로그 이력 관리를 함께 떠안는 인터페이스입니다.</p>
+<pre><code>// 설명용 조각: 상태는 드러났지만 전체 이력을 인수로 받는다.
+static (bool Value, string Log) Negate(bool input, string oldLog)
+    =&gt; (!input, oldLog + "negate&gt;");</code></pre>
+<p>원문은 한 단계를 더 나아갑니다. 함수는 이번 실행의 값과 <b>이번 실행에서 생긴 로그 조각</b>만 반환하고, 조각들을 합치는 일은 함수 바깥에서 맡깁니다. 이때 로그는 콘솔이나 파일에 기록된 것이 아니라 평범한 반환 데이터입니다. 나중에 그 데이터를 실제 콘솔에 출력하는 경계에서는 별도로 부작용이 일어납니다.</p>
+<div class="callout tip"><span class="title">Writer는 로그 출력기가 아닙니다</span><code>Writer&lt;bool&gt;(false, "negate&gt;")</code>라는 값을 만드는 것은 <code>Console.WriteLine</code> 호출과 다릅니다. 함수가 생성한 메시지를 데이터로 보존하므로 로그를 버릴지·저장할지·출력할지는 호출자가 정할 수 있습니다.</div>
+</section>
+
+<section id="writer"><h2>2. Writer와 일반 합성의 타입 불일치</h2><p>이 장의 Writer는 값과 문자열 로그의 쌍입니다. C#에서는 불변인 문자열과 <code>readonly record struct</code>로 표현합니다. 제네릭 값 T가 자동으로 깊은 불변이 되는 것은 아니므로 예제에서는 BigInteger, bool, null이 아닌 문자열 같은 값으로 한정합니다.</p><pre><code>// 설명용 선언. 6절의 전체 프로그램에 포함되어 있습니다.
+readonly record struct Writer&lt;T&gt;(T Value, string Log);</code></pre>
+<p>f : A → Writer&lt;B&gt;는 A를 받아 B 값과 로그를 돌려줍니다. g : B → Writer&lt;C&gt;가 있다면 <code>g(f(x))</code>로 직접 연결할 수 없습니다. f가 반환한 것은 B가 아니라 <b>Writer&lt;B&gt;</b>이고 g가 원하는 것은 그 안의 B 값이기 때문입니다.</p>
+<figure><div class="stage" tabindex="0" role="region" aria-label="일반 합성에서 Writer 타입이 맞지 않는 도식, 좌우 스크롤 가능"><svg class="diagram c04-static" viewBox="0 0 760 255" role="img" aria-labelledby="mismatch-title mismatch-desc"><title id="mismatch-title">Writer 반환값과 다음 함수의 인수 사이의 타입 불일치</title><desc id="mismatch-desc">f는 A를 받아 값 B와 로그를 담은 Writer B를 반환한다. g는 Writer B가 아니라 B를 받아야 하므로 직접 합성이 막힌다.</desc><defs><marker id="c04-static-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+<rect class="box" x="20" y="91" width="105" height="58" rx="9"/><text x="72" y="126" text-anchor="middle">A</text><path class="arrow" d="M130 120H222" marker-end="url(#c04-static-arrow)"/><text x="177" y="100" text-anchor="middle">f</text>
+<rect class="box" x="230" y="48" width="198" height="146" rx="12"/><text x="329" y="76" text-anchor="middle">Writer&lt;B&gt;</text><rect class="node" x="247" y="89" width="164" height="39" rx="7"/><text x="329" y="115" text-anchor="middle">Value : B</text><rect class="node" x="247" y="137" width="164" height="39" rx="7"/><text x="329" y="163" text-anchor="middle">Log : string</text>
+<path class="bad-arrow" d="M435 120H497"/><text x="520" y="127" style="fill:var(--bad)">×</text><rect class="box" x="552" y="91" width="82" height="58" rx="9"/><text x="593" y="126" text-anchor="middle">B</text><path class="arrow" d="M639 120H700" marker-end="url(#c04-static-arrow)"/><text x="669" y="100" text-anchor="middle">g</text><text x="380" y="236" text-anchor="middle">Writer&lt;B&gt; ≠ B · Value를 꺼내고 Log를 따로 보존해야 합니다.</text></svg></div><figcaption>g에 Value만 넘긴 뒤 첫 로그를 잊으면 계산값은 맞아도 추적 정보가 사라집니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure>
+<p>우선 손으로 연결해 봅시다. f를 실행하고, f의 Value를 g에 넣고, 마지막 Value와 두 로그를 묶습니다. 로그는 <b>먼저 실행한 함수의 조각 다음 나중에 실행한 함수의 조각</b> 순서로 이어 붙입니다.</p><pre><code>// 설명용 조각: 반복되는 값 전달과 로그 조립
+var first = f(input);
+var second = g(first.Value);
+var result = new Writer&lt;C&gt;(
+    second.Value, first.Log + second.Log);</code></pre><p>이 코드를 매 연결 지점에서 반복하면 값을 잘못 꺼내거나 로그 한쪽을 빠뜨리기 쉽습니다. 반복을 없애려면 이번에는 업무 함수를 추상화하는 것이 아니라 <b>함수를 합성하는 방법</b>을 추상화해야 합니다.</p>
+</section>
+
+<section id="compose"><h2>3. 값을 전달하고 로그를 모으는 합성</h2><p>새 합성은 함수 f와 g를 받아 A → Writer&lt;C&gt; 함수를 만듭니다. 1장의 API 순서를 유지해 <code>Compose(g, f)</code>라고 부르며, 실행 순서는 f 다음 g입니다. 일반 함수 합성과 구별할 때는 수식에 작은 K를 붙여 <code>g ∘<sub>K</sub> f</code>라고 적겠습니다.</p>
+<div class="formula">f(x) = (y, s_f), g(y) = (z, s_g)일 때<br>(g ∘<sub>K</sub> f)(x) = (z, s_f + s_g)<br>f : A → Writer&lt;B&gt;, g : B → Writer&lt;C&gt;</div>
+<p>값 경로는 f의 출력 B를 g에 전달합니다. 로그 경로는 f가 만든 s_f와 g가 만든 s_g를 모읍니다. 같은 반환 쌍 안에 들어 있지만 두 경로의 책임이 다릅니다. f와 g는 서로의 로그를 읽지 않고 자신의 로그 조각만 만듭니다.</p>
+<div class="widget" id="writer-widget"><div class="w-title">실험 1 · 값과 로그를 두 경로로 따라가기</div><p class="w-desc">f(x)=x+1, g(x)=2x, h(x)=x²입니다. 입력과 각 로그 조각을 바꾸고 재생하세요. 함수 실행·값 전달·로그 병합을 나누어 표시합니다. 이는 순수한 함수 합성의 설명용 단계를 나눈 것이며 실제 C# 명령의 시간 측정은 아닙니다.</p><div class="controls"><label for="writer-x">입력 x<input id="writer-x" type="range" min="-3" max="5" step="1" value="2"></label><label for="writer-log-f">f의 로그<input id="writer-log-f" value="f&gt;" maxlength="8"></label><label for="writer-log-g">g의 로그<input id="writer-log-g" value="g&gt;" maxlength="8"></label><label for="writer-log-h">h의 로그<input id="writer-log-h" value="h&gt;" maxlength="8"></label></div><div class="c04-player"><button class="btn" type="button" id="writer-reset">처음</button><button class="btn" type="button" id="writer-prev">이전 단계</button><button class="btn primary" type="button" id="writer-play" aria-pressed="false">▶ 재생</button><button class="btn" type="button" id="writer-next">다음 단계</button><span id="writer-position"></span></div><figure><div class="stage" tabindex="0" role="region" aria-label="Writer 합성에서 값 전달과 로그 병합의 단계별 도식, 좌우 스크롤 가능" id="writer-diagram"></div><figcaption>위쪽에서는 값을 넘기고 아래쪽에서는 로그 조각을 보존·병합합니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure><div class="c04-live-output" id="writer-output" aria-live="polite"></div></div>
+<p>원문 Haskell의 물고기 연산자 <code>f &gt;=&gt; g</code>는 같은 연결을 실행 순서로 적습니다. 여기의 C# API와 대응하면 <code>Compose(g, f)</code>입니다. Haskell 문법을 몰라도 “첫 값을 꺼내 다음 함수에 넣고 로그를 합친다”는 알고리즘으로 이해할 수 있습니다.</p>
+<div class="callout"><span class="title">3장의 문자열 사상 합성과 순서가 다른가요?</span>3장에서는 문자열 원소 자체를 한 객체의 사상으로 두고 <code>g ∘ f := g ⋆ f</code>로 정의했습니다. 여기서는 f와 g가 값을 계산하는 함수이며 로그는 그 함수의 <em>반환 데이터</em>입니다. 새 합성의 정의가 먼저 만든 로그 s_f 뒤에 s_g를 붙이도록 정합니다. 서로 다른 범주 구성의 정의를 기호만 보고 같은 것으로 바꾸면 안 됩니다.</div>
+</section>
+
+<section id="laws"><h2>4. 결합법칙은 로그의 모노이드 법칙에 기대어 선다</h2><p>세 함수를 연결하면 어느 쪽으로 묶든 값은 h(g(f(x).Value).Value).Value로 흐릅니다. 로그는 한쪽에서 (s_f+s_g)+s_h, 다른 쪽에서 s_f+(s_g+s_h)가 됩니다. 따라서 값의 함수 합성이 결합적이고 문자열 연결도 결합적이므로 새 합성 역시 결합적입니다.</p>
+<div class="formula">h ∘<sub>K</sub> (g ∘<sub>K</sub> f) = (h ∘<sub>K</sub> g) ∘<sub>K</sub> f<br>값: 두 쪽 모두 f → g → h<br>로그: (s_f ⋆ s_g) ⋆ s_h = s_f ⋆ (s_g ⋆ s_h)</div>
+<p>문자열 대신 어떤 모노이드 M의 원소를 로그로 써도 같은 구성이 가능합니다. 로그를 합칠 때 그 모노이드의 연산 ⋆를 사용하고 항등 로그는 항등원 e로 정합니다. 즉 Writer가 필요로 하는 최소 조건은 문자열 자체가 아니라 <b>로그 집합의 모노이드 구조</b>입니다.</p>
+<div class="widget" id="loglaw-widget"><div class="w-title">실험 2 · 로그 병합 정책을 바꾸면 어떤 법칙이 깨질까</div><p class="w-desc">세 로그 조각을 직접 편집합니다. 값 계산 f→g→h는 유지하고 로그 결합만 바꿉니다. 역순 연결도 결합적이며, 로그 의미가 달라진다는 점을 구별하세요.</p><div class="controls"><label for="law-policy">로그 결합 ⋆<select id="law-policy"><option value="concat">앞 + 뒤 (정상 순서)</option><option value="reverse">뒤 + 앞 (역순, 결합적)</option><option value="overwrite">뒤 로그만 남김 (항등법칙 반례)</option><option value="parentheses">(앞|뒤) (결합법칙 반례)</option></select></label><label for="law-f">s_f<input id="law-f" value="A" maxlength="8"></label><label for="law-g">s_g<input id="law-g" value="B" maxlength="8"></label><label for="law-h">s_h<input id="law-h" value="C" maxlength="8"></label></div><figure><div class="stage" tabindex="0" role="region" aria-label="로그 결합법칙의 두 괄호 구조와 결과 도식, 좌우 스크롤 가능" id="law-diagram"></div><figcaption>같은 순서의 조각을 다른 괄호로 묶습니다. 색 외에도 결과 문자열과 법칙 이름을 함께 표시합니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure><div class="c04-live-output" id="law-output" aria-live="polite"></div></div>
+<p>역순 연산 a ⋆ b=b+a는 빈 문자열을 항등원으로 가지며 여전히 모노이드입니다. 따라서 그 로그 연산으로도 Writer 범주를 만들 수 있습니다. 다만 실행 순서대로 기록하겠다는 의도와 달라집니다. 반대로 뒤 로그만 남기는 연산은 결합적이지만 빈 문자열이 <em>양쪽</em> 항등원이 되지 못합니다. 괄호를 추가하는 연산은 결합법칙 자체가 깨집니다.</p><p>표본에서 두 결과가 같은 것과 일반 법칙이 성립하는 것은 구별해야 합니다. 위젯은 반례를 살펴보는 도구이며, 결합법칙의 일반 근거는 해당 로그 연산의 정의입니다. 반환 로그를 실제 전역 변수에 쓰는 부작용으로 바꾸면 이 순수한 쌍 모델의 등호를 그대로 적용할 수 없습니다.</p>
+</section>
+
+<section id="identity"><h2>5. 새 합성에 맞는 항등사상</h2><p>일반 항등함수 x ↦ x는 A → A입니다. 하지만 지금 필요한 사상은 구현상 A → Writer&lt;A&gt;여야 합니다. 값은 그대로 두고 로그는 새 정보를 더하지 않는 항등원으로 반환해야 합니다.</p><div class="formula">id<sup>K</sup>_A(x) = (x, "")<br>f ∘<sub>K</sub> id<sup>K</sup>_A = f = id<sup>K</sup>_B ∘<sub>K</sub> f</div>
+<p>항등사상이 “id 실행”이라는 로그를 새로 만들면 값이 같아도 원래의 Writer 결과와는 다릅니다. 앞쪽에 붙이면 id 로그가 먼저, 뒤쪽에 붙이면 id 로그가 나중에 붙습니다. 이 장의 함수 동등성은 반환 쌍의 값과 로그가 모두 같은지를 비교합니다.</p>
+<div class="widget" id="identity-widget"><div class="w-title">실험 3 · 타입 연결과 항등사상 후보 검사</div><p class="w-desc">두 업무 함수를 고른 뒤 합성 가능한지 확인합니다. 항등사상 후보가 값을 바꾸거나 로그를 남기면 f의 앞·뒤에 붙인 결과가 어떻게 달라지는지도 비교하세요.</p><div class="controls"><label for="identity-f">먼저 f<select id="identity-f"><option value="length">Length : String → Writer&lt;Int&gt;</option><option value="add">AddOne : Int → Writer&lt;Int&gt;</option><option value="even">IsEven : Int → Writer&lt;Bool&gt;</option><option value="not">Not : Bool → Writer&lt;Bool&gt;</option></select></label><label for="identity-g">나중에 g<select id="identity-g"><option value="even">IsEven : Int → Writer&lt;Bool&gt;</option><option value="length">Length : String → Writer&lt;Int&gt;</option><option value="add">AddOne : Int → Writer&lt;Int&gt;</option><option value="not">Not : Bool → Writer&lt;Bool&gt;</option></select></label><label for="identity-input">입력값<input id="identity-input" value="code" maxlength="40"></label><label for="identity-value">후보의 값<select id="identity-value"><option value="keep">입력값 유지</option><option value="replace">기본값으로 교체 (String="", Int=0, Bool=false)</option></select></label><label for="identity-log">후보의 로그<input id="identity-log" value="" maxlength="8"></label></div><figure><div class="stage" tabindex="0" role="region" aria-label="Writer 함수의 타입 연결과 항등법칙 비교 도식, 좌우 스크롤 가능" id="identity-diagram"></div><figcaption>타입이 맞는 것과 올바른 항등사상인 것은 별개의 조건입니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure><div class="c04-live-output" id="identity-output" aria-live="polite"></div></div>
+<div class="callout warn"><span class="title">특정 입력에서 우연히 같아질 수 있습니다</span>입력 기본값을 반환하는 잘못된 항등사상도 입력이 이미 기본값이면 표본을 통과할 수 있습니다. 모든 입력에서 값을 그대로 보존하고 항등 로그를 반환한다는 정의가 일반적인 항등법칙을 보장합니다.</div>
+</section>
+
+<section id="program"><h2>6. 전체 C# 구현</h2><p>C# 12 / .NET 8 BCL만 사용하는 전체 Program.cs입니다. 계산 함수는 콘솔을 쓰지 않고 Writer 값을 반환합니다. Main이 마지막 결과를 출력하는 부분에서만 실제 콘솔 부작용이 발생합니다. 기본값 <code>default(Writer&lt;T&gt;)</code>의 Log는 null일 수 있으므로 예제에서는 생성자로 null이 아닌 로그를 제공한 Writer만 사용합니다.</p><pre data-csharp="true"><code>using System;
+using System.Numerics;
+
+readonly record struct Writer&lt;T&gt;(T Value, string Log);
+
+internal static class Program
+{
+    static Writer&lt;T&gt; Identity&lt;T&gt;(T value) =&gt; new(value, &quot;&quot;);
+
+    // g 다음 f가 아니라 f 다음 g이다: Compose(g, f).
+    static Func&lt;A, Writer&lt;C&gt;&gt; Compose&lt;A, B, C&gt;(
+        Func&lt;B, Writer&lt;C&gt;&gt; g, Func&lt;A, Writer&lt;B&gt;&gt; f)
+        =&gt; input =&gt;
+        {
+            var first = f(input);
+            var second = g(first.Value);
+            return new Writer&lt;C&gt;(second.Value, first.Log + second.Log);
+        };
+
+    static void Main()
+    {
+        Func&lt;BigInteger, Writer&lt;BigInteger&gt;&gt; f = x =&gt; new(x + 1, &quot;f&gt;&quot;);
+        Func&lt;BigInteger, Writer&lt;BigInteger&gt;&gt; g = x =&gt; new(x * 2, &quot;g&gt;&quot;);
+        Func&lt;BigInteger, Writer&lt;BigInteger&gt;&gt; h = x =&gt; new(x * x, &quot;h&gt;&quot;);
+        var composed = Compose(h, Compose(g, f))(2);
+        var first = f(2);
+        var second = g(first.Value);
+        var third = h(second.Value);
+        var manual = new Writer&lt;BigInteger&gt;(
+            third.Value, first.Log + second.Log + third.Log);
+        Console.WriteLine($&quot;value = {composed.Value}&quot;);
+        Console.WriteLine($&quot;log = {composed.Log}&quot;);
+        Console.WriteLine($&quot;manual equals composed = {manual == composed}&quot;);
+
+        var otherGrouping = Compose(Compose(h, g), f)(2);
+        Console.WriteLine($&quot;associativity value = {composed.Value == otherGrouping.Value}&quot;);
+        Console.WriteLine($&quot;associativity log = {composed.Log == otherGrouping.Log}&quot;);
+        Func&lt;BigInteger, Writer&lt;BigInteger&gt;&gt; id = Identity&lt;BigInteger&gt;;
+        Console.WriteLine($&quot;identity before = {Compose(f, id)(2) == f(2)}&quot;);
+        Console.WriteLine($&quot;identity after = {Compose(id, f)(2) == f(2)}&quot;);
+
+        Func&lt;int, Writer&lt;bool&gt;&gt; isEven = n =&gt; new(n % 2 == 0, &quot;isEven&gt;&quot;);
+        Func&lt;bool, Writer&lt;bool&gt;&gt; negate = b =&gt; new(!b, &quot;negate&gt;&quot;);
+        var isOdd = Compose&lt;int, bool, bool&gt;(negate, isEven)(3);
+        Console.WriteLine($&quot;isOdd(3) = {isOdd.Value}&quot;);
+        Console.WriteLine($&quot;isOdd log = {isOdd.Log}&quot;);
+    }
+}</code></pre><p><code>examples/Ch04</code>에서 <code>dotnet run</code>으로 실행합니다. 기대 출력:</p><pre><code>value = 36
+log = f&gt;g&gt;h&gt;
+manual equals composed = True
+associativity value = True
+associativity log = True
+identity before = True
+identity after = True
+isOdd(3) = True
+isOdd log = isEven&gt;negate&gt;</code></pre><p>BigInteger는 이 예제의 덧셈·곱셈에서 고정 폭 오버플로를 피하기 위한 선택입니다. 메모리 한계와 실행 비용을 제거하지는 않습니다. record의 <code>==</code>는 여기의 BigInteger·bool·string 필드를 적절히 값 비교하지만 임의의 T가 언제나 원하는 의미로 비교된다는 보장은 아닙니다. 이 프로그램은 샘플 결과를 검사하며 일반 법칙은 앞의 식 전개로 설명합니다.</p>
+</section>
+
+<section id="kleisli"><h2>7. 무엇을 클레이슬리 범주라고 부르는가</h2><p>이 장에서 만든 Writer 범주는 클레이슬리 범주의 한 사례입니다. <b>객체는 여전히 A, B 같은 타입</b>입니다. 이 새 범주의 사상 A → B를 원래 함수의 언어로 구현하면 A → Writer&lt;B&gt;가 됩니다. 도착 객체를 매번 Writer&lt;B&gt;라고 바꾸었다고 읽으면 사상의 합성 조건을 헷갈리게 됩니다.</p>
+<figure><div class="stage" tabindex="0" role="region" aria-label="클레이슬리 범주의 객체와 기반 함수 표현 비교 도식, 좌우 스크롤 가능"><svg class="diagram c04-static" viewBox="0 0 760 265" role="img" aria-labelledby="layers-title layers-desc"><title id="layers-title">같은 사상을 보는 두 층위</title><desc id="layers-desc">클레이슬리 범주에서는 A에서 B 그리고 B에서 C로 사상이 연결된다. 구현 층위에서는 A에서 Writer B로 가는 함수와 B에서 Writer C로 가는 함수의 값·로그를 합성한다.</desc><defs><marker id="c04-layers-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+<text x="28" y="26">클레이슬리 범주</text><rect class="box" x="35" y="48" width="100" height="47" rx="8"/><rect class="box" x="330" y="48" width="100" height="47" rx="8"/><rect class="box" x="625" y="48" width="100" height="47" rx="8"/><text x="85" y="78" text-anchor="middle">A</text><text x="380" y="78" text-anchor="middle">B</text><text x="675" y="78" text-anchor="middle">C</text><path class="arrow" d="M140 72H324" marker-end="url(#c04-layers-arrow)"/><path class="arrow" d="M435 72H619" marker-end="url(#c04-layers-arrow)"/><text x="232" y="57" text-anchor="middle">f</text><text x="527" y="57" text-anchor="middle">g</text>
+<text x="28" y="143">기반 함수로 구현</text><rect class="box" x="35" y="163" width="305" height="52" rx="8"/><rect class="box" x="420" y="163" width="305" height="52" rx="8"/><text x="187" y="195" text-anchor="middle">f : A → Writer&lt;B&gt;</text><text x="572" y="195" text-anchor="middle">g : B → Writer&lt;C&gt;</text><text x="380" y="249" text-anchor="middle">Value를 전달하고 Log를 합치는 규칙으로 연결</text></svg></div><figcaption>위층의 B는 객체이고 아래층의 Writer&lt;B&gt;는 사상을 표현하는 기반 함수의 반환 타입입니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure>
+<p>아무 반환 타입에 장식을 붙였다고 자동으로 클레이슬리 범주가 생기는 것은 아닙니다. 해당 장식에 맞는 합성과 항등사상이 존재하고 법칙을 만족해야 합니다. 일반 이론에서는 이를 모나드 구조로 설명합니다. 원문도 이 장에서는 Writer라는 구체적인 사례를 먼저 다루고 모나드의 정의는 뒤로 미룹니다. 지금은 “객체뿐 아니라 사상의 표현과 합성 규칙도 바꿀 수 있다”는 점을 이해하면 됩니다.</p><p>원문 마지막 도전 문제는 로그 대신 실패 가능성을 반환 타입으로 표현합니다. Optional&lt;B&gt;를 돌려주는 함수에서 f가 실패하면 g를 호출하지 않고 실패를 이어 보내는 합성과, 모든 값을 성공으로 감싸는 항등사상을 직접 만들게 됩니다. 다음 실습 B에서 구현합니다.</p>
+</section>
+
+<section id="quiz"><h2>8. 확인 문제</h2>
+<div class="quiz" data-answer="1"><div class="q">f : A → Writer&lt;B&gt;, g : B → Writer&lt;C&gt;를 일반 합성 g(f(x))로 연결할 수 없는 이유는?</div><button class="opt">로그가 항상 비어 있기 때문이다.</button><button class="opt">g는 B를 받는데 f(x)는 Writer&lt;B&gt;이기 때문이다.</button><button class="opt">C#에는 고차 함수가 없기 때문이다.</button><div class="explain">f(x).Value를 g에 전달하고 f와 g의 로그를 따로 모아야 합니다. 이 반복을 새 합성으로 추상화합니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">Writer 합성에서 올바른 항등사상은?</div><button class="opt">x를 그대로 반환하는 A → A만 있으면 충분하다.</button><button class="opt">x를 유지하고 "id&gt;" 로그를 반환한다.</button><button class="opt">x를 유지하고 빈 로그를 반환하는 A → Writer&lt;A&gt;이다.</button><div class="explain">값과 로그가 모두 원래 결과를 보존해야 합니다. 새로운 로그를 남기면 항등사상이 아닙니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">로그 연산 a ⋆ b = b + a를 사용하면?</div><button class="opt">여전히 결합적이며 빈 로그가 항등원이다. 로그 순서의 의미는 달라진다.</button><button class="opt">반드시 결합법칙이 깨진다.</button><button class="opt">모든 로그가 사라진다.</button><div class="explain">역순 연결은 반대 모노이드의 연산입니다. 범주 법칙의 성립과 원하는 로그 순서라는 요구를 구분해야 합니다.</div></div>
+<div class="quiz" data-answer="1"><div class="q">Writer 클레이슬리 범주에서 사상 A → B의 객체와 구현은?</div><button class="opt">도착 객체가 반드시 Writer&lt;B&gt;이며 구현은 A → B이다.</button><button class="opt">객체는 A와 B이고, 그 사상은 기반 함수 A → Writer&lt;B&gt;로 표현한다.</button><button class="opt">Writer의 로그 문자열 하나하나가 별개의 객체다.</button><div class="explain">클레이슬리 범주에서의 화살표와 기반 함수의 시그니처는 서로 다른 층위입니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">값과 로그를 반환하는 순수 함수를 메모이제이션하면?</div><button class="opt">이전 로그는 언제나 콘솔에 자동으로 다시 출력된다.</button><button class="opt">캐시가 적중하면 반환 로그는 반드시 빈 문자열이 된다.</button><button class="opt">캐시한 값·로그 쌍을 다시 받을 수 있다. 실제 출력 여부는 별도 코드가 결정한다.</button><div class="explain">Writer의 로그는 데이터입니다. 콘솔 출력과 다릅니다. 같은 반환 쌍을 재사용하는 것과 외부 기록 동작을 다시 하는 것은 별개의 문제입니다.</div></div>
+</section>
+
+<section id="practice"><h2>9. 직접 구현하는 실습</h2>
+<article class="exercise"><h3>실습 A · 누락된 로그를 잡는 회귀 검사</h3><p>6절의 합성 함수를 고쳐서 두 번째 로그만 남기도록 만들면 어떤 결과가 달라지는지 예측하세요. 정상 합성과 누락 합성을 f→g→h에 각각 적용하고, 값을 비교하는 검사와 로그를 비교하는 검사를 따로 작성하세요.</p><p><b>기대 결과:</b> 둘 다 값은 36입니다. 정상 로그는 <code>f&gt;g&gt;h&gt;</code>, 누락 로그는 <code>h&gt;</code>입니다. 값 동등성은 true지만 로그 동등성은 false입니다. 뒤 로그만 남기는 연산은 결합적일 수 있어도 항등법칙이 실패한다는 점도 설명하세요.</p><details class="deep"><summary>힌트</summary><div><p>마지막 반환에서 <code>first.Log + second.Log</code> 대신 <code>second.Log</code>를 사용합니다. 원래 Compose를 덮어쓰지 말고 별도 함수 이름을 사용하세요.</p></div></details><details class="deep"><summary>해답 · Program 클래스에 추가할 메서드와 Main 조각</summary><div><pre><code>static Func&lt;A, Writer&lt;C&gt;&gt; DropFirstLog&lt;A, B, C&gt;(
+    Func&lt;B, Writer&lt;C&gt;&gt; g, Func&lt;A, Writer&lt;B&gt;&gt; f)
+    =&gt; x =&gt;
+    {
+        var first = f(x);
+        var second = g(first.Value);
+        return new Writer&lt;C&gt;(second.Value, second.Log);
+    };
+
+// Main의 f,g,h 정의 뒤에서 실행
+var good = Compose(h, Compose(g, f))(2);
+var bad = DropFirstLog(h, DropFirstLog(g, f))(2);
+Console.WriteLine($"same value = {good.Value == bad.Value}"); // True
+Console.WriteLine($"same log = {good.Log == bad.Log}");       // False
+Console.WriteLine($"bad log = {bad.Log}");                  // h&gt;</code></pre><p>항등사상을 뒤에 붙이면 마지막의 빈 로그만 남아서 f의 로그가 사라집니다. 따라서 범주를 얻으려면 결합법칙만 확인해서는 안 됩니다.</p></div></details></article>
+<article class="exercise"><h3>실습 B · Optional 역수 → 제곱근 연결하기</h3><p>원문 4.4의 도전 문제입니다. 성공 여부와 값을 담은 Optional&lt;T&gt;를 만들고, 실패하면 다음 함수를 호출하지 않는 합성과 모든 값을 성공으로 감싸는 항등사상을 정의하세요. 역수 다음 제곱근으로 √(1/x)를 계산합니다.</p><p><b>기대 결과:</b> x=4는 성공 0.5, x=0과 x=−4는 실패입니다. NaN·Infinity도 실패로 처리하세요. 여기의 성공 값은 유한 double 근삿값입니다. 0이 아닌 아주 작은 값의 역수가 무한대로 넘치는 경우도 실패로 정합니다. 이 구현을 모든 실수의 정확한 유리수·제곱근 연산이라고 부르면 안 됩니다.</p><details class="deep"><summary>힌트</summary><div><p>Optional이 실패 상태면 Value를 읽거나 다음 함수를 호출하지 않습니다. 항등사상은 입력을 성공으로 감쌉니다. 실패는 None으로 전달하며 실제 부작용이나 비종료를 자동으로 고치는 것은 아닙니다.</p></div></details><details class="deep"><summary>해답 · 선언·메서드·Main 조각</summary><div><pre><code>// Program 클래스 바깥에 추가
+readonly record struct Optional&lt;T&gt;(bool HasValue, T Value);
+
+// Program 클래스 안에 추가
+static Optional&lt;T&gt; Some&lt;T&gt;(T value) =&gt; new(true, value);
+static Optional&lt;T&gt; None&lt;T&gt;() =&gt; default;
+static Func&lt;A, Optional&lt;C&gt;&gt; ComposeOptional&lt;A, B, C&gt;(
+    Func&lt;B, Optional&lt;C&gt;&gt; g, Func&lt;A, Optional&lt;B&gt;&gt; f)
+    =&gt; x =&gt;
+    {
+        var first = f(x);
+        return first.HasValue ? g(first.Value) : None&lt;C&gt;();
+    };
+static Optional&lt;double&gt; SafeReciprocal(double x)
+{
+    if (!double.IsFinite(x) || x == 0) return None&lt;double&gt;();
+    double result = 1.0 / x;
+    return double.IsFinite(result) ? Some(result) : None&lt;double&gt;();
+}
+static Optional&lt;double&gt; SafeRoot(double x)
+    =&gt; double.IsFinite(x) &amp;&amp; x &gt;= 0
+        ? Some(Math.Sqrt(x)) : None&lt;double&gt;();
+
+// Main에 추가
+Func&lt;double, Optional&lt;double&gt;&gt; identity = Some&lt;double&gt;;
+var rootReciprocal = ComposeOptional&lt;double, double, double&gt;(
+    SafeRoot, SafeReciprocal);
+foreach (double x in new[] { 4.0, 0.0, -4.0, double.NaN,
+    double.PositiveInfinity, double.Epsilon })
+{
+    var result = rootReciprocal(x);
+    Console.WriteLine(result.HasValue ? $"Some({result.Value})" : "None");
+}
+// Some(0.5), None, None, None, None, None (각 줄)
+// identity는 임의의 double을 감쌀 수 있다.
+// SafeRoot·SafeReciprocal의 입력 검증과 항등사상 정의는 별개다.</code></pre><p>Optional의 실패 상태에서는 Value가 default(T)여도 의미상 읽지 않습니다. 모든 기본값이 실패라는 뜻도 아닙니다. 예를 들어 Some(0.0)은 정상적인 성공입니다. 이 작은 표현의 유효한 생성 규칙과 HasValue 검사를 지켜야 합니다.</p></div></details></article>
+</section>
+<div class="summary"><h3>핵심 요약</h3><ul><li>Writer&lt;A&gt;는 값 A와 이번 호출의 로그를 함께 반환합니다. 실제 로그 출력은 별도 부작용입니다.</li><li>합성은 첫 Value를 다음 함수에 넘기고 첫 Log 뒤에 다음 Log를 붙입니다.</li><li>합성의 결합법칙은 값의 함수 합성과 로그 모노이드의 결합법칙에 기대어 성립합니다.</li><li>항등사상은 값을 유지하고 항등 로그를 반환합니다.</li><li>클레이슬리 사상 A → B는 기반 함수 A → Writer&lt;B&gt;로 구현됩니다.</li><li>모든 장식 타입이 자동으로 범주를 만드는 것은 아닙니다. 합성·항등·법칙이 필요합니다.</li><li>Optional에서는 실패 시 다음 함수를 호출하지 않는 합성과 성공으로 감싸는 항등사상을 만들 수 있습니다.</li></ul><p>다음 원문 5장은 타입의 내부 구현 대신 화살표의 관계로 곱·쌍대곱을 정의합니다.</p></div>
+<p class="source">Bartosz Milewski, <i>Category Theory for Programmers</i>, Chapter 4. Igal Tabachnik 편집, version 98b71ac, 2023-01-30. 한국어 해설·C# 예제·도식·실습·위젯을 새로 구성했습니다. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=56">원문 PDF pp. 56–68</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</p>
+</main><script src="assets/ch04-visuals.js"></script></body></html>

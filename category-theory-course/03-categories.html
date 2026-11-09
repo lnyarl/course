@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03. 크고 작은 범주 · 프로그래머를 위한 범주론</title>
+<link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/ch03-visuals.css"><script src="assets/common.js"></script>
+</head><body data-chapter="03"><main>
+<header class="chapter-head"><span class="label">Part I · Chapter 03</span><h1>크고 작은 범주</h1>
+<p class="lead">타입과 함수만이 범주의 재료는 아닙니다. 그래프의 경로, “이하” 관계, 문자열 연결을 서로 다른 범주로 만들며 객체와 사상을 무엇으로 정하는지 연습합니다.</p>
+<p class="source">원문 Chapter 3 “Categories Great and Small”, 인쇄 pp. 27–37 · PDF pp. 45–55. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=45">원문 열기</a></p>
+<div class="objectives"><h4>학습 목표</h4><ul><li>빈 범주와 이산 범주에서 객체·사상·항등사상을 셉니다.</li><li>자유 범주의 사상을 경로로 표현하고, 같은 끝점의 서로 다른 경로를 보존합니다.</li><li>준순서(preorder)·부분순서(poset)·선형순서(total order)를 구분합니다.</li><li>모노이드를 집합의 연산과 한 객체 범주라는 두 관점으로 설명합니다.</li></ul></div></header>
+<nav class="toc" aria-label="장 목차"><b>목차</b><ol><li><a href="#empty">객체가 없거나 항등사상만 있다면</a></li><li><a href="#free">그래프의 모든 경로: 자유 범주</a></li><li><a href="#order">관계로 만드는 얇은 범주</a></li><li><a href="#monoid">모노이드: 연산과 항등원</a></li><li><a href="#one-object">모노이드: 객체 하나와 많은 사상</a></li><li><a href="#program">C#으로 구성과 판정 구현하기</a></li><li><a href="#quiz">확인 문제</a></li><li><a href="#practice">직접 구현하는 실습</a></li></ol></nav>
+
+<section id="empty"><h2>1. 객체가 없거나 항등사상만 있다면</h2>
+<p>범주에는 객체와 사상이 필요하다고 배웠습니다. 그렇다면 객체가 하나도 없으면 어떨까요? <b>빈 범주(empty category)</b>는 객체도 사상도 0개입니다. “각 객체에 항등사상이 있다”는 조건은 반례가 되는 객체가 없으므로 성립합니다. 합성할 사상도 없어서 합성법칙을 어기는 경우가 없습니다.</p>
+<p>2장에서 본 빈 <em>타입</em>과는 다른 층위입니다. 빈 타입을 하나의 객체로 둔 범주라면 객체는 이미 하나 있습니다. 그 객체에는 적어도 항등사상이 있어야 하므로 빈 범주가 아닙니다. “객체 안에 값이 없다”와 “범주 안에 객체가 없다”를 구분해야 합니다.</p>
+<p>객체 A, B, C는 있지만 각각의 항등사상만 두는 구성도 가능합니다. 이를 <b>이산 범주(discrete category)</b>라고 합니다. 서로 다른 객체 사이의 사상이 없으므로 그 객체들을 연결할 수 없습니다. 이산 범주의 객체가 n개라면 사상도 n개이며, n=0이면 빈 범주가 됩니다.</p>
+<figure><div class="stage" tabindex="0" role="region" aria-label="빈 범주와 이산 범주 비교 도식, 좌우 스크롤 가능"><svg class="diagram c03-static" viewBox="0 0 760 230" role="img" aria-labelledby="empty-title empty-desc"><title id="empty-title">빈 범주와 객체 세 개인 이산 범주</title><desc id="empty-desc">빈 범주의 상자는 비어 있다. 이산 범주에는 A B C 객체가 있고 각 객체에 항등 고리 하나만 있다.</desc><defs><marker id="discrete-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+<rect class="box" x="20" y="44" width="220" height="148" rx="12"/><text x="130" y="27" text-anchor="middle">빈 범주</text><text x="130" y="120" text-anchor="middle">객체 0 · 사상 0</text>
+<rect class="box" x="270" y="44" width="470" height="148" rx="12"/><text x="505" y="27" text-anchor="middle">세 객체의 이산 범주</text>
+<circle class="node" cx="350" cy="140" r="25"/><circle class="node" cx="505" cy="140" r="25"/><circle class="node" cx="660" cy="140" r="25"/><text x="350" y="146" text-anchor="middle">A</text><text x="505" y="146" text-anchor="middle">B</text><text x="660" y="146" text-anchor="middle">C</text>
+<path class="arrow" d="M331 122C289 55 411 55 369 119" marker-end="url(#discrete-arrow)"/><path class="arrow" d="M486 122C444 55 566 55 524 119" marker-end="url(#discrete-arrow)"/><path class="arrow" d="M641 122C599 55 721 55 679 119" marker-end="url(#discrete-arrow)"/>
+<text x="350" y="70" text-anchor="middle">id_A</text><text x="505" y="70" text-anchor="middle">id_B</text><text x="660" y="70" text-anchor="middle">id_C</text><text x="505" y="218" text-anchor="middle">객체 3 · 사상 3</text></svg></div><figcaption>이산 범주에서는 서로 다른 객체로 가는 화살표가 없습니다. 작은 화면에서는 도식을 좌우로 스크롤하세요.</figcaption></figure>
+</section>
+
+<section id="free"><h2>2. 그래프의 모든 경로: 자유 범주</h2>
+<p>이제 A → B 화살표 a와 B → C 화살표 b가 있는 그래프를 생각합니다. 범주를 만들려면 합성 b ∘ a가 필요합니다. 그래프의 변을 출발 재료로 삼고 <b>유한한 경로 하나하나를 사상으로 정하면</b> 이 문제를 해결할 수 있습니다. 객체는 그래프의 노드이고, 합성은 경로를 이어 붙이는 것이며, 각 노드의 길이 0 경로가 항등사상입니다.</p>
+<div class="formula">a : A → B, b : B → C<br>b ∘ a = 경로 [a, b] : A → C<br>id_A = A에서 시작해 아무 변도 지나지 않는 길이 0 경로</div>
+<p>이렇게 만든 범주를 주어진 그래프가 생성하는 <b>자유 범주(free category)</b>라고 합니다. “자유”는 필요한 법칙 외에 경로들을 추가로 같다고 만들지 않는다는 뜻입니다. A → C 직접 변 c가 이미 있어도 [c]와 [a,b]는 <b>서로 다른 사상</b>입니다. 시작과 끝이 같다는 이유로 둘을 합치면 자유 범주가 아니라 다른 구조를 만들게 됩니다.</p>
+<p>경로 연결은 순서대로 변을 나열하는 연산입니다. 세 경로를 어떻게 묶어 연결해도 전체 변의 시퀀스는 같습니다. 빈 경로를 앞이나 뒤에 연결해도 변의 시퀀스는 바뀌지 않습니다. 따라서 결합법칙과 항등법칙이 성립합니다. C#에서 경로를 List로 표현할 때도 빈 경로의 출발 노드는 저장해야 합니다. id_A와 id_B는 변 목록이 둘 다 비어 있지만 다른 사상입니다.</p>
+<div class="widget" id="free-widget"><div class="w-title">실험 1 · 경로를 보존하며 범주 만들기</div><p class="w-desc">변을 켜거나 끄고, 표시할 최대 길이를 정하세요. c와 a·b는 끝점이 같아도 다른 경로입니다. 재생기는 선택한 경로를 한 변씩 따라갑니다.</p>
+<div class="controls c03-edges"><label><input type="checkbox" id="edge-a" checked> a : A → B</label><label><input type="checkbox" id="edge-b" checked> b : B → C</label><label><input type="checkbox" id="edge-c" checked> c : A → C</label><label><input type="checkbox" id="edge-l"> l : B → B</label></div>
+<div class="controls"><label for="path-bound">표시할 최대 길이<input id="path-bound" type="range" min="0" max="4" value="2" step="1"></label><label for="path-choice">따라갈 경로<select id="path-choice"></select></label></div>
+<div class="c03-player"><button class="btn" type="button" id="path-reset">처음</button><button class="btn" type="button" id="path-prev">이전 변</button><button class="btn primary" type="button" id="path-play" aria-pressed="false">▶ 재생</button><button class="btn" type="button" id="path-next">다음 변</button><span id="path-position"></span></div>
+<figure><div class="stage" tabindex="0" role="region" aria-label="선택한 자유 범주 경로의 단계별 도식, 좌우 스크롤 가능" id="path-diagram"></div><figcaption>이 도식의 변은 생성 그래프입니다. 합성 경로는 아래 경로 칸에서 별개의 사상으로 확인합니다. 넓은 도식은 좌우로 스크롤하세요.</figcaption></figure><div class="c03-live-output" id="path-output" aria-live="polite"></div><div class="c03-path-list" id="path-list"></div>
+</div>
+<div class="callout warn"><span class="title">최대 길이는 표시 한도입니다</span>위젯과 C# 예제는 길이 한도 안의 경로만 열거합니다. 전체 자유 범주에서 더 긴 경로를 금지한 것이 아닙니다. B의 고리 l을 켜면 id_B, l, ll, lll, …이 모두 다른 사상이므로 사상이 무한히 많습니다. 길이를 4에서 잘라 놓은 목록은 일반적으로 합성에 닫혀 있지 않아 그 자체를 완전한 범주라고 부르면 안 됩니다.</div>
+</section>
+
+<section id="order"><h2>3. 관계로 만드는 얇은 범주</h2>
+<p>이번에는 경로를 기억하지 않고 “A ≤ B가 성립하는가”만 기억해 봅시다. 객체를 관계의 원소로 두고 A ≤ B일 때만 A → B 사상 하나를 둡니다. <b>반사성</b> A ≤ A는 항등사상을 제공하고, <b>추이성</b> A ≤ B, B ≤ C ⇒ A ≤ C는 합성 결과의 존재를 보장합니다. 같은 출발·도착 사이의 사상이 최대 하나이므로 합성의 결합법칙과 항등법칙도 자동으로 정해집니다.</p>
+<p>반사성과 추이성을 만족하는 관계가 <b>준순서(preorder)</b>입니다. 이 용어는 비교 가능성을 모두 요구하는 선형순서(total order)와 다릅니다. 준순서의 범주에서는 Hom(A,B)가 빈 집합이거나 한 원소 집합입니다. <b>얇은 범주(thin category)</b>라는 이름은 이 “객체 쌍마다 사상이 최대 하나”라는 성질을 가리킵니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>관계</th><th>요구 조건</th><th>범주에서 읽기</th></tr></thead><tbody><tr><td>준순서 preorder</td><td>반사성 + 추이성</td><td>얇은 범주. 다른 객체끼리 양방향 사상이 있어도 된다.</td></tr><tr><td>부분순서 poset</td><td>위 조건 + 반대칭성</td><td>A ≤ B와 B ≤ A이면 A = B. 다른 객체의 양방향 연결은 없다.</td></tr><tr><td>선형순서 total order</td><td>부분순서 + 모든 쌍 비교 가능</td><td>A ≤ B 또는 B ≤ A가 모든 쌍에서 성립한다.</td></tr></tbody></table></div>
+<p>부분순서에서는 모든 원소 쌍이 비교 가능할 필요가 없습니다. 예를 들어 집합 포함 관계에서 {1}과 {2}는 어느 쪽도 다른 쪽의 부분집합이 아닙니다. 작업의 선행 의존성도 부분순서로 볼 수 있습니다. 선형순서는 이런 비교 불가능한 쌍이 없는 더 강한 조건입니다.</p>
+<div class="widget" id="relation-widget"><div class="w-title">실험 2 · 준순서와 부분순서의 차이 찾기</div><p class="w-desc">행이 출발, 열이 도착입니다. 체크 하나가 해당 Hom 집합에 사상이 하나 있음을 뜻합니다. 서로 다른 경로를 따로 저장하는 실험 1과 구별하세요.</p>
+<div class="controls"><label for="relation-preset">예제<select id="relation-preset"><option value="chain">A ≤ B ≤ C</option><option value="fork">A ≤ B, A ≤ C (B·C 비교 불가)</option><option value="cycle">A ⇄ B, C는 별개</option><option value="missing">A → B → C (법칙 미완성)</option><option value="discrete">항등사상만</option></select></label></div>
+<div class="tbl-wrap"><table class="c03-relation"><thead><tr><th>출발 ↓ / 도착 →</th><th>A</th><th>B</th><th>C</th></tr></thead><tbody><tr><th scope="row">A</th><td><input type="checkbox" data-row="0" data-col="0" aria-label="A에서 A로 사상"></td><td><input type="checkbox" data-row="0" data-col="1" aria-label="A에서 B로 사상"></td><td><input type="checkbox" data-row="0" data-col="2" aria-label="A에서 C로 사상"></td></tr><tr><th scope="row">B</th><td><input type="checkbox" data-row="1" data-col="0" aria-label="B에서 A로 사상"></td><td><input type="checkbox" data-row="1" data-col="1" aria-label="B에서 B로 사상"></td><td><input type="checkbox" data-row="1" data-col="2" aria-label="B에서 C로 사상"></td></tr><tr><th scope="row">C</th><td><input type="checkbox" data-row="2" data-col="0" aria-label="C에서 A로 사상"></td><td><input type="checkbox" data-row="2" data-col="1" aria-label="C에서 B로 사상"></td><td><input type="checkbox" data-row="2" data-col="2" aria-label="C에서 C로 사상"></td></tr></tbody></table></div>
+<div class="controls"><button class="btn" type="button" id="relation-identities">항등사상 추가</button><button class="btn primary" type="button" id="relation-closure">반사·추이 폐포 계산</button><label for="hom-from">Hom 출발<select id="hom-from"><option>A</option><option>B</option><option>C</option></select></label><label for="hom-to">Hom 도착<select id="hom-to"><option>A</option><option selected>B</option><option>C</option></select></label></div>
+<figure><div class="stage" tabindex="0" role="region" aria-label="관계에서 유도한 얇은 범주 도식, 좌우 스크롤 가능" id="relation-diagram"></div><figcaption>체크한 관계를 모두 표시합니다. 양방향 사상은 서로 다른 경로로 그립니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure><div class="c03-live-output" id="relation-output" aria-live="polite"></div>
+</div>
+<p>A와 B가 서로 다른 객체인데 A → B와 B → A가 모두 있어도 준순서가 될 수 있습니다. 이때 얇은 범주에서는 두 합성이 각각의 항등사상이므로 A와 B는 동형입니다. 동형이라고 같은 객체로 합쳐야 하는 것은 아닙니다. 부분순서 조건은 이러한 서로 다른 객체의 양방향 관계를 배제합니다.</p>
+<div class="callout"><span class="title">경로 열거와 폐포의 차이</span>실험 1에서 A → C의 사상 [c]와 [a,b]는 둘입니다. 이 관계 모델에서는 A에서 C로 도달 가능한지 하나만 남겨 사상을 하나로 봅니다. 반사·추이 폐포는 빠진 관계를 채우지만 어떤 경로로 도달했는지는 보존하지 않습니다. 따라서 자유 범주를 계산하는 연산과 같지 않습니다.</div>
+</section>
+
+<section id="monoid"><h2>4. 모노이드: 연산과 항등원</h2>
+<p><b>모노이드(monoid)</b>는 집합 M, 닫힌 이항 연산 ⋆ : M × M → M, 항등원 e ∈ M으로 이루어집니다. 어떤 두 원소를 연산해도 다시 M의 원소여야 하며, 다음 법칙을 만족해야 합니다.</p>
+<div class="formula">모든 a,b,c ∈ M에서 (a ⋆ b) ⋆ c = a ⋆ (b ⋆ c)<br>모든 a ∈ M에서 e ⋆ a = a = a ⋆ e</div>
+<p>수학적 자연수와 덧셈은 항등원 0을 가진 모노이드입니다. 문자열 연결은 항등원 빈 문자열을 가진 모노이드입니다. bool의 AND는 true가 항등원이고 OR는 false가 항등원입니다. 같은 집합에도 연산을 달리 고르면 서로 다른 모노이드가 생깁니다.</p>
+<p>교환법칙 a ⋆ b = b ⋆ a는 요구하지 않습니다. 문자열에서 “ab”와 “ba”는 다르지만, (“a”+“b”)+“c”와 “a”+(“b”+“c”)는 같은 “abc”입니다. 뺄셈은 일반적으로 결합적이지 않습니다. 후보 항등원 0도 오른쪽에서는 a−0=a지만 왼쪽에서는 0−a=a가 아니므로 양쪽 항등원이 아닙니다.</p>
+<div class="widget" id="monoid-widget"><div class="w-title">실험 3 · 법칙을 계산하고 한 객체 범주로 읽기</div><p class="w-desc">연산·원소·항등원 후보를 바꾸세요. 도식은 객체 ⋆ 하나인 범주 후보이며 a,b,c는 고리 사상 후보입니다. 법칙을 만족할 때만 실제 범주가 됩니다. 양쪽 괄호의 계산 결과와 항등법칙을 비교합니다.</p>
+<div class="controls"><label for="monoid-mode">연산<select id="monoid-mode"><option value="concat">문자열 연결</option><option value="add">정수 덧셈</option><option value="subtract">정수 뺄셈 (반례)</option><option value="mod3">3으로 나눈 나머지의 덧셈</option><option value="and">Bool AND</option></select></label><label for="monoid-a">a<input id="monoid-a" value="a" maxlength="8"></label><label for="monoid-b">b<input id="monoid-b" value="b" maxlength="8"></label><label for="monoid-c">c<input id="monoid-c" value="c" maxlength="8"></label><label for="monoid-unit">항등원 후보 e<input id="monoid-unit" value="" maxlength="8"></label></div>
+<figure><div class="stage" tabindex="0" role="region" aria-label="모노이드 법칙과 한 객체 범주 실시간 도식, 좌우 스크롤 가능" id="monoid-diagram"></div><figcaption>항등원 후보가 틀리면 결합법칙이 맞더라도 모노이드 법칙을 모두 확인한 것이 아닙니다. 작은 화면에서는 좌우로 스크롤하세요.</figcaption></figure><div class="c03-live-output" id="monoid-output" aria-live="polite"></div>
+</div>
+<p>위젯에서 몇 개의 값을 확인하는 것은 법칙의 일반 증명이 아닙니다. 반례 하나는 법칙을 부정할 수 있지만, 표본에서 같다고 모든 원소에 대해 같다는 결론을 내릴 수는 없습니다. 문자열 연결의 결합법칙은 양쪽이 동일한 문자 시퀀스를 만든다는 사실로, 덧셈은 수학적 덧셈의 결합법칙으로 설명합니다. Bool AND처럼 집합이 유한하고 작은 경우에는 모든 조합을 빠짐없이 검사할 수 있습니다.</p>
+<p>C#의 인터페이스나 연산자 시그니처는 연산과 항등원을 제공하도록 요구할 수 있지만 법칙을 자동으로 증명하지는 않습니다. 고정 폭 정수나 부동소수점의 연산을 수학적 정수 덧셈과 그대로 동일시해서도 안 됩니다. 위젯의 정수 값은 검증된 작은 범위에서 계산하며, C# 프로그램은 큰 정수 예시에 BigInteger를 사용합니다.</p>
+</section>
+
+<section id="one-object"><h2>5. 모노이드: 객체 하나와 많은 사상</h2>
+<p>모노이드의 원소를 각각 사상으로 바꾸고, 모든 사상의 출발과 도착을 같은 객체 ⋆로 정해 봅시다. 그러면 <b>객체는 하나</b>이고 사상은 M의 원소만큼 있습니다. 합성을 모노이드 연산으로 정의하고 항등사상을 e로 두면 모노이드 법칙이 그대로 범주 법칙이 됩니다.</p>
+<div class="formula">객체: ⋆ 하나<br>Hom(⋆,⋆) = M<br>사상 f,g의 합성 규약: g ∘ f := g ⋆ f<br>id_⋆ = e</div>
+<p>순서가 혼동되기 쉬우므로 이 장은 위 규약으로 고정합니다. 문자열 사상 s를 함수 P_s(x) = s + x, 즉 앞에 붙이는 함수로 나타내면 P_g(P_f(x)) = g + f + x입니다. 따라서 P_g ∘ P_f = P_(g+f)입니다. f=“foo”, g=“bar”라면 f 다음 g의 결과 접두사는 “barfoo”입니다.</p>
+<figure><div class="stage" tabindex="0" role="region" aria-label="문자열 원소를 한 객체 범주의 사상으로 바꾸는 도식, 좌우 스크롤 가능"><svg class="diagram c03-static" viewBox="0 0 760 270" role="img" aria-labelledby="monoid-title monoid-desc"><title id="monoid-title">집합의 문자열 원소와 한 객체 범주의 고리 사상</title><desc id="monoid-desc">집합 안의 빈문자열 foo bar barfoo가 범주에서는 객체 하나의 사상이 된다. bar 사상과 foo 사상의 합성은 barfoo 사상이다.</desc><defs><marker id="mono-static-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+<rect class="box" x="20" y="45" width="270" height="185" rx="12"/><text x="155" y="27" text-anchor="middle">집합 M의 일부 원소</text><text x="155" y="90" text-anchor="middle">ε = ""</text><text x="155" y="130" text-anchor="middle">"foo" · "bar"</text><text x="155" y="170" text-anchor="middle">"barfoo" · …</text><text x="155" y="210" text-anchor="middle">연산은 문자열 연결</text>
+<path class="arrow" d="M306 140H385" marker-end="url(#mono-static-arrow)"/>
+<circle class="node" cx="558" cy="151" r="34"/><text x="558" y="158" text-anchor="middle">⋆</text>
+<path class="arrow" d="M532 127C410 12 692 12 584 123" marker-end="url(#mono-static-arrow)"/><text x="560" y="35" text-anchor="middle">f = "foo"</text>
+<path class="arrow" d="M590 145C749 70 749 235 590 169" marker-end="url(#mono-static-arrow)"/><text x="690" y="155" text-anchor="middle">g = "bar"</text>
+<path class="arrow" d="M527 168C387 225 397 76 526 140" marker-end="url(#mono-static-arrow)"/><text x="445" y="170" text-anchor="middle">id = ε</text>
+<text x="555" y="250" text-anchor="middle">g ∘ f = "barfoo" : ⋆ → ⋆</text></svg></div><figcaption>“foo”와 “bar”는 객체가 아니라 사상입니다. 객체 ⋆ 하나와 여러 고리를 구분하세요.</figcaption></figure>
+<p>뒤에 붙이는 함수 R_s(x)=x+s를 고르면 R_g ∘ R_f=R_(f+g)가 되어 대응 순서가 뒤집힙니다. 원문이 왼쪽 붙이기와 오른쪽 붙이기의 합성표를 거울상이라고 하는 이유입니다. 어느 구현을 선택하든 연산과 합성의 순서 규약을 함께 적어야 합니다.</p>
+<p>반대로 한 객체 범주에서 그 객체의 자기 사상들을 모으면 모노이드가 됩니다. 그 집합이 Hom(⋆,⋆)이며 합성은 항상 가능하고 항등사상이 항등원입니다. 일반 범주에서는 사상 전체가 하나의 집합이 아닐 수도 있습니다. 각 객체 쌍 사이의 Hom이 집합인 범주를 <b>국소적으로 작은 범주(locally small category)</b>라고 합니다. 여기의 유한 그래프 경로·관계·문자열 예제는 이 조건 안에서 다룹니다.</p>
+</section>
+
+<section id="program"><h2>6. C#으로 구성과 판정 구현하기</h2>
+<p>아래는 C# 12 / .NET 8 BCL만 사용하는 전체 Program.cs입니다. 경로마다 출발·도착·변 시퀀스를 저장하고 같은 끝점의 다른 경로를 합치지 않습니다. 예제의 변 이름은 한 글자이므로 문자열 시퀀스로 저장합니다. 임의의 다중 문자 이름이라면 구분자나 변 배열을 사용해야 합니다.</p>
+<pre data-csharp="true"><code>using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+
+internal static class Program
+{
+    readonly record struct Edge(string Name, int From, int To);
+    readonly record struct Path(int From, int To, string Word, int Length);
+
+    // 표시·검사용 유한 열거. 전체 자유 범주를 유한하다고 가정하지 않는다.
+    static List&lt;Path&gt; PathsUpTo(int objects, Edge[] edges, int bound)
+    {
+        var frontier = Enumerable.Range(0, objects)
+            .Select(i =&gt; new Path(i, i, &quot;&quot;, 0)).ToList();
+        var all = new List&lt;Path&gt;(frontier);
+        for (int length = 0; length &lt; bound; length++)
+        {
+            var next = new List&lt;Path&gt;();
+            foreach (var path in frontier)
+            foreach (var edge in edges)
+                if (path.To == edge.From)
+                    next.Add(new Path(path.From, edge.To,
+                        path.Word + edge.Name, path.Length + 1));
+            all.AddRange(next);
+            frontier = next;
+        }
+        return all;
+    }
+
+    static bool Preorder(bool[,] relation)
+    {
+        int n = relation.GetLength(0);
+        for (int a = 0; a &lt; n; a++)
+        {
+            if (!relation[a, a]) return false;
+            for (int b = 0; b &lt; n; b++)
+            for (int c = 0; c &lt; n; c++)
+                if (relation[a, b] &amp;&amp; relation[b, c] &amp;&amp; !relation[a, c])
+                    return false;
+        }
+        return true;
+    }
+
+    static bool Poset(bool[,] relation)
+    {
+        if (!Preorder(relation)) return false;
+        int n = relation.GetLength(0);
+        for (int a = 0; a &lt; n; a++)
+        for (int b = a + 1; b &lt; n; b++)
+            if (relation[a, b] &amp;&amp; relation[b, a]) return false;
+        return true;
+    }
+
+    static void Main()
+    {
+        Edge[] triangle = [new(&quot;a&quot;, 0, 1), new(&quot;b&quot;, 1, 2), new(&quot;c&quot;, 0, 2)];
+        var paths = PathsUpTo(3, triangle, 2);
+        Console.WriteLine($&quot;triangle paths &lt;= 2 = {paths.Count}&quot;);
+        Console.WriteLine($&quot;A -&gt; C = {string.Join(&quot;,&quot;, paths
+            .Where(p =&gt; p.From == 0 &amp;&amp; p.To == 2).Select(p =&gt; p.Word))}&quot;);
+        var loop = PathsUpTo(1, [new Edge(&quot;l&quot;, 0, 0)], 3);
+        Console.WriteLine($&quot;loop paths &lt;= 3 = {string.Join(&quot;,&quot;, loop
+            .Select(p =&gt; p.Length == 0 ? &quot;id_A&quot; : p.Word))}&quot;);
+        Console.WriteLine($&quot;empty category paths = {PathsUpTo(0, [], 3).Count}&quot;);
+
+        bool[,] cycle = { { true, true }, { true, true } };
+        bool[,] chain = { { true, true }, { false, true } };
+        Console.WriteLine($&quot;cycle preorder = {Preorder(cycle)}&quot;);
+        Console.WriteLine($&quot;cycle poset = {Poset(cycle)}&quot;);
+        Console.WriteLine($&quot;chain poset = {Poset(chain)}&quot;);
+
+        string a = &quot;a&quot;, b = &quot;b&quot;, c = &quot;c&quot;, unit = &quot;&quot;;
+        Console.WriteLine($&quot;concat associativity = {((a + b) + c == a + (b + c))}&quot;);
+        Console.WriteLine($&quot;concat identity = {(unit + a == a &amp;&amp; a + unit == a)}&quot;);
+        BigInteger large = BigInteger.Pow(2, 100);
+        Console.WriteLine($&quot;addition sample = {((large + 7) + 9 == large + (7 + 9))}&quot;);
+
+        Func&lt;string, string&gt; f = x =&gt; &quot;foo&quot; + x;
+        Func&lt;string, string&gt; g = x =&gt; &quot;bar&quot; + x;
+        Console.WriteLine($&quot;g after f (prepend) = {g(f(&quot;x&quot;))}&quot;);
+        Console.WriteLine($&quot;g * f = {&quot;bar&quot; + &quot;foo&quot;}&quot;);
+    }
+}</code></pre>
+<p><code>examples/Ch03</code>에서 <code>dotnet run</code>으로 실행합니다. 기대 출력:</p><pre><code>triangle paths &lt;= 2 = 7
+A -&gt; C = c,ab
+loop paths &lt;= 3 = id_A,l,ll,lll
+empty category paths = 0
+cycle preorder = True
+cycle poset = False
+chain poset = True
+concat associativity = True
+concat identity = True
+addition sample = True
+g after f (prepend) = barfoox
+g * f = barfoo</code></pre>
+<p>관계 판정 함수는 정사각형 행렬을 입력으로 받는다는 계약입니다. 경로 열거 함수는 유효한 객체 번호를 가진 변과 작은 음이 아닌 한도를 사용합니다. 이는 교재의 유한 열거 도구이며 그래프가 만드는 무한 범주 전체를 메모리에 구축하는 API가 아닙니다. <code>addition sample = True</code> 역시 선택한 큰 수의 계산 결과이지 일반적인 법칙의 증명이라고 출력하지 않습니다.</p>
+</section>
+
+<section id="quiz"><h2>7. 확인 문제</h2>
+<div class="quiz" data-answer="1"><div class="q">객체가 0개인 빈 범주의 항등사상 수는?</div><button class="opt">1개. 빈 타입의 항등함수가 필요하다.</button><button class="opt">0개. 항등사상이 필요한 객체 자체가 없다.</button><button class="opt">3개. 모든 범주는 최소 객체 세 개가 필요하다.</button><div class="explain">빈 타입을 하나의 객체로 둔 범주와 빈 범주는 다릅니다. 빈 범주에는 객체도 사상도 없습니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">A → C 직접 변 c와 A → B → C 경로 [a,b]는 자유 범주에서?</div><button class="opt">끝점이 같으므로 반드시 같은 사상이다.</button><button class="opt">직접 변만 사상이고 경로는 사상이 아니다.</button><button class="opt">추가 등식을 요구하지 않았으므로 서로 다른 사상이다.</button><div class="explain">자유 범주는 경로를 보존합니다. 도달 가능 여부 하나로 합치는 것은 얇은 관계 범주를 만드는 다른 구성입니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">반사적·추이적인 관계에서 서로 다른 A와 B가 A ≤ B, B ≤ A를 만족한다. 맞는 설명은?</div><button class="opt">준순서일 수 있지만 부분순서는 아니다.</button><button class="opt">준순서도 될 수 없다.</button><button class="opt">모든 쌍이 비교 가능하므로 항상 선형순서다.</button><div class="explain">부분순서에는 반대칭성이 추가로 필요합니다. 다른 객체 사이의 양방향 관계는 준순서에서 허용됩니다.</div></div>
+<div class="quiz" data-answer="1"><div class="q">문자열 모노이드에 대응하는 한 객체 범주에서 “foo”는?</div><button class="opt">다른 모든 문자열과 별개의 객체</button><button class="opt">유일한 객체 ⋆에서 ⋆로 가는 사상 하나</button><button class="opt">항등사상과 반드시 같은 사상</button><div class="explain">원소는 사상에 대응합니다. 객체는 하나이며, 항등사상은 빈 문자열입니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">모노이드가 반드시 만족해야 하는 법칙의 조합은?</div><button class="opt">결합법칙과 교환법칙만</button><button class="opt">모든 원소의 역원 존재</button><button class="opt">닫힌 연산, 결합법칙, 양쪽 항등원</button><div class="explain">문자열 연결처럼 비가환인 모노이드가 있습니다. 역원도 일반 모노이드에는 요구하지 않습니다.</div></div>
+</section>
+
+<section id="practice"><h2>8. 직접 구현하는 실습</h2>
+<article class="exercise"><h3>실습 A · 한 노드·한 고리의 경로를 세기</h3><p>전체 프로그램의 <code>PathsUpTo</code>로 객체 1개, 변 l : A → A 하나인 그래프를 길이 0·1·2·3·4 한도에서 각각 열거하세요. 각 목록에 길이 0 경로를 포함하고, 결과를 노드 쌍으로 중복 제거하지 마세요.</p><p><b>기대 결과:</b> 경로 개수는 <code>1,2,3,4,5</code>. 길이 4 목록은 <code>id_A,l,ll,lll,llll</code>입니다. 전체 자유 범주의 사상이 무한하다는 이유도 적으세요.</p>
+<details class="deep"><summary>힌트</summary><div><p>길이가 k인 경로가 l을 k번 지난 시퀀스 하나입니다. 길이 한도를 올릴 때마다 이전에 없던 사상 하나가 생깁니다.</p></div></details><details class="deep"><summary>해답 · Main에 추가할 조각</summary><div><pre><code>Edge[] oneLoop = [new("l", 0, 0)];
+for (int bound = 0; bound &lt;= 4; bound++)
+    Console.WriteLine(PathsUpTo(1, oneLoop, bound).Count);
+// 1, 2, 3, 4, 5가 한 줄씩 출력된다.</code></pre><p>임의의 자연수 k에 대해 길이 k의 경로가 있고 서로 길이가 다르면 다른 사상입니다. 따라서 표시 한도를 늘리는 유한 실험과 별개로 전체 경로 집합은 무한합니다.</p></div></details></article>
+<article class="exercise"><h3>실습 B · Bool AND와 3을 법으로 하는 덧셈</h3><p>Bool AND의 항등원 true와 결합법칙을 모든 입력에서 검사하세요. 이어 {0,1,2}에서 연산 a ⋆ b = (a+b) mod 3, 항등원 0을 검사하세요. 각 집합의 원소를 객체로 세지 말고, 대응하는 한 객체 범주에서 사상을 세세요.</p><p><b>기대 결과:</b> AND에서 항등법칙 4회·결합법칙 8회, mod 3에서 항등법칙 6회·결합법칙 27회가 모두 통과합니다. 두 범주의 객체 수는 각각 1개, 사상 수는 각각 2개와 3개입니다.</p><details class="deep"><summary>힌트</summary><div><p>항등법칙은 원소마다 왼쪽·오른쪽을 별도로 셉니다. 결합법칙은 가능한 삼중쌍을 모두 검사합니다. finite 집합이라서 이번에는 전수 검사입니다.</p></div></details><details class="deep"><summary>해답 · Main에 추가할 조각</summary><div><pre><code>bool[] booleans = [false, true];
+int boolUnits = 0, boolAssociations = 0;
+foreach (bool x in booleans)
+{
+    if ((true &amp;&amp; x) != x || (x &amp;&amp; true) != x)
+        throw new Exception("AND identity");
+    boolUnits += 2;
+}
+foreach (bool x in booleans)
+foreach (bool y in booleans)
+foreach (bool z in booleans)
+{
+    if (((x &amp;&amp; y) &amp;&amp; z) != (x &amp;&amp; (y &amp;&amp; z)))
+        throw new Exception("AND associativity");
+    boolAssociations++;
+}
+static int Add3(int x, int y) =&gt; (x + y) % 3;
+int modUnits = 0, modAssociations = 0;
+for (int x = 0; x &lt; 3; x++)
+{
+    if (Add3(0, x) != x || Add3(x, 0) != x)
+        throw new Exception("mod identity");
+    modUnits += 2;
+    for (int y = 0; y &lt; 3; y++)
+    for (int z = 0; z &lt; 3; z++)
+    {
+        if (Add3(Add3(x, y), z) != Add3(x, Add3(y, z)))
+            throw new Exception("mod associativity");
+        modAssociations++;
+    }
+}
+Console.WriteLine($"AND: {boolUnits}, {boolAssociations}");
+Console.WriteLine($"mod3: {modUnits}, {modAssociations}");</code></pre><p>원소는 사상에 대응하고, 사상의 합성표는 선택한 이항 연산의 표와 같습니다. 예를 들어 mod 3에서 2 ∘ 2에 대응하는 사상은 1입니다.</p></div></details></article>
+</section>
+<div class="summary"><h3>핵심 요약</h3><ul><li>빈 범주는 객체·사상이 모두 0개이고, n개 객체의 이산 범주에는 항등사상 n개만 있습니다.</li><li>자유 범주의 사상은 유한 경로입니다. 같은 끝점이라도 경로가 다르면 다른 사상입니다.</li><li>고리가 있으면 경로가 무한해질 수 있습니다. 유한 표시 한도는 전체 범주가 아닙니다.</li><li>준순서는 얇은 범주가 됩니다. 부분순서는 반대칭성을, 선형순서는 모든 쌍의 비교 가능성을 더 요구합니다.</li><li>모노이드는 닫힌 결합 연산과 양쪽 항등원을 갖습니다. 교환법칙이나 역원은 필요하지 않습니다.</li><li>모노이드의 원소는 한 객체 범주의 사상에 대응하며 객체 자체가 아닙니다.</li></ul><p>다음 원문 4장은 로그를 반환값에 덧붙이는 함수들을 연결합니다. 이 장의 문자열 모노이드가 로그를 합치는 규칙으로 다시 쓰입니다.</p></div>
+<p class="source">Bartosz Milewski, <i>Category Theory for Programmers</i>, Chapter 3. Igal Tabachnik 편집, version 98b71ac, 2023-01-30. 한국어 해설·C# 예제·도식·위젯·실습을 새로 구성했습니다. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=45">PDF pp. 45–55</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</p>
+</main><script src="assets/ch03-visuals.js"></script></body></html>

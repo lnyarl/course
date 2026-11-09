@@ -1,0 +1,366 @@
+[
+  {
+    "chapter": "06",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "bool roundtrip = True\npair roundtrip = True"
+  },
+  {
+    "chapter": "06",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "all = 4, valid = 2"
+  },
+  {
+    "chapter": "07",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "identity = False"
+  },
+  {
+    "chapter": "07",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "2,3;4"
+  },
+  {
+    "chapter": "08",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "same = True"
+  },
+  {
+    "chapter": "08",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "#9"
+  },
+  {
+    "chapter": "09",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "False,False\nTrue,False\nFalse,True\nTrue,True"
+  },
+  {
+    "chapter": "09",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "function = True\npair = True"
+  },
+  {
+    "chapter": "10",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "natural = True"
+  },
+  {
+    "chapter": "10",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "option = True\nlist = False"
+  },
+  {
+    "chapter": "11",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "f1,f2,g2,g3\nf1,g2,f2,g3\nvalues = True"
+  },
+  {
+    "chapter": "11",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "prefix = 2,2\ncausal sample = True"
+  },
+  {
+    "chapter": "12",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "good cone = True\nbad cone = False"
+  },
+  {
+    "chapter": "12",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "classes = 2\nidentified = True"
+  },
+  {
+    "chapter": "13",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "length hom = True\nempty = 0"
+  },
+  {
+    "chapter": "13",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "multiplication = True\nunit = False"
+  },
+  {
+    "chapter": "14",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "Hom counts = 1,1,1,1\nMaybe(Unit) = 2"
+  },
+  {
+    "chapter": "14",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "values = 4,9,4\ncomputations = 2"
+  },
+  {
+    "chapter": "15",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "9,15\nTrue"
+  },
+  {
+    "chapter": "15",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "tick,tick,tick\n3"
+  },
+  {
+    "chapter": "16",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "False,False\nFalse,True\nTrue,False\nTrue,True"
+  },
+  {
+    "chapter": "16",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "6\n6"
+  },
+  {
+    "chapter": "17",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "8\n7"
+  },
+  {
+    "chapter": "17",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "True\nTrue"
+  },
+  {
+    "chapter": "18",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "4=4\n0=0\n9=9"
+  },
+  {
+    "chapter": "18",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "4,6\nTrue"
+  },
+  {
+    "chapter": "19",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "ABBA\n0"
+  },
+  {
+    "chapter": "19",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "True\n3"
+  },
+  {
+    "chapter": "20",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "1,-1,2,-2\nTrue"
+  },
+  {
+    "chapter": "20",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "7:True\nNone:True\nNone:True"
+  },
+  {
+    "chapter": "21",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "old=5, state=9"
+  },
+  {
+    "chapter": "21",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "a;b;c;\na;b;c;\nFalse"
+  },
+  {
+    "chapter": "22",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "6,7,8\nTrue"
+  },
+  {
+    "chapter": "22",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "16,9"
+  },
+  {
+    "chapter": "23",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "3,7\n7"
+  },
+  {
+    "chapter": "23",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "4,4\n25,25"
+  },
+  {
+    "chapter": "24",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "hom samples = True"
+  },
+  {
+    "chapter": "24",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "4,3,2,1\nsum = 10"
+  },
+  {
+    "chapter": "25",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "flat = 6\nnested = 6"
+  },
+  {
+    "chapter": "25",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "get-put = True\nput-get = True\nput-put = True"
+  },
+  {
+    "chapter": "26",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "end size = 6"
+  },
+  {
+    "chapter": "26",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "coend classes = 2"
+  },
+  {
+    "chapter": "27",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "factorization = True"
+  },
+  {
+    "chapter": "27",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "2,3\nfactors = True"
+  },
+  {
+    "chapter": "28",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "relations = 6"
+  },
+  {
+    "chapter": "28",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "Lawvere metric = True\nsymmetric = False"
+  },
+  {
+    "chapter": "29",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "characteristic tables = 8"
+  },
+  {
+    "chapter": "29",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "0: 2\n1: 1\n2: 2"
+  },
+  {
+    "chapter": "30",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "BAAA\ncomposition = True"
+  },
+  {
+    "chapter": "30",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "counterexample = 0,0,1"
+  },
+  {
+    "chapter": "31",
+    "exercise": 1,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "composable = 4, rejected = 5"
+  },
+  {
+    "chapter": "31",
+    "exercise": 2,
+    "compiled_source_matches_html": true,
+    "validation": "PASS",
+    "stdout": "1,2,3,4\nassociative = True"
+  }
+]

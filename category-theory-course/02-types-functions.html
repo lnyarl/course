@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02. 타입과 함수 · 프로그래머를 위한 범주론</title>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/ch02-visuals.css">
+<script src="assets/common.js"></script>
+<style>
+.chapter-diagram { min-width: 620px; }
+.controls label { display:flex; flex-direction:column; gap:4px; min-width:0; font-size:14px; }
+.controls input, .controls select { min-width:0; max-width:100%; padding:7px 9px; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; }
+.widget .log { white-space:pre-wrap; overflow-wrap:anywhere; }
+.formula { overflow-x:auto; padding:12px 16px; background:var(--accent-soft); border-left:3px solid var(--accent); border-radius:6px; font-family:var(--mono); }
+.source { font-size:14px; color:var(--muted); }
+.diagram .edge { fill:none; stroke:var(--accent); stroke-width:2; }
+.diagram .bad-edge { fill:none; stroke:var(--bad); stroke-width:2; stroke-dasharray:5 4; }
+.diagram text { font-size:15px; }
+.diagram .small { font-size:12px; }
+</style>
+</head>
+<body data-chapter="02">
+<main>
+<header class="chapter-head">
+<span class="label">Part I · Chapter 02</span>
+<h1>타입과 함수</h1>
+<p class="lead">타입을 값의 집합으로 보면 함수의 입력과 출력이 선명해집니다. 이 모델로 함수의 개수를 세고, 메모이제이션이 의미를 보존하는 조건과 C#의 실제 동작이 모델을 벗어나는 지점을 확인합니다.</p>
+<p class="source">원문 대응: Chapter 2, “Types and Functions”, 인쇄 pp. 11–26 · PDF pp. 29–44. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=29">원문 열기</a></p>
+<div class="objectives"><h4>학습 목표</h4><ul>
+<li>타입 검사가 보장하는 연결 조건과 보장하지 않는 업무 규칙을 구분합니다.</li>
+<li>순수성·전함수·부분함수를 각각 설명하고 null과 ⊥를 구별합니다.</li>
+<li>빈 타입·Unit·Bool 사이의 함수 개수를 셉니다.</li>
+<li>순수 함수의 메모이제이션과 숨은 상태·부작용을 가진 함수의 반례를 비교합니다.</li>
+</ul></div>
+</header>
+<nav class="toc" aria-label="장 목차"><b>목차</b><ol>
+<li><a href="#types">타입은 연결 조건이다</a></li>
+<li><a href="#sets">타입을 값의 집합으로 보기</a></li>
+<li><a href="#totality">전함수·부분함수와 ⊥</a></li>
+<li><a href="#semantics">코드의 동작과 수학적 의미</a></li>
+<li><a href="#purity">순수성과 메모이제이션</a></li>
+<li><a href="#small-types">빈 타입·Unit·Bool</a></li>
+<li><a href="#program">전체 C# 프로그램</a></li>
+<li><a href="#quiz">확인 문제</a></li>
+<li><a href="#practice">실습 과제</a></li>
+</ol></nav>
+
+<section id="types"><h2>1. 타입은 연결 조건이다</h2>
+<p>1장에서 <code>string → int</code>와 <code>int → bool</code>을 합성했습니다. 가운데의 <code>int</code>는 앞 단계가 만든 값을 뒷 단계가 읽을 수 있다는 약속입니다. 타입 검사는 이 약속의 일부를 기계적으로 확인합니다. 함수가 많아질수록 어떤 단계가 무엇을 내보내는지 주석에만 의존하지 않는 것이 유리합니다.</p>
+<pre><code>// 설명용 조각. 7절에 별도 전체 실행 프로그램이 있습니다.
+Func&lt;string, int&gt; length = text =&gt; text.Length;
+Func&lt;int, bool&gt; isEven = n =&gt; n % 2 == 0;
+Func&lt;string, bool&gt; valid = text =&gt; isEven(length(text));
+// length(isEven(4))는 bool을 string 인수로 쓸 수 없어 컴파일되지 않는다.</code></pre>
+<p>정적 타입 언어인 C#은 선언된 타입 사이의 많은 불일치를 실행 전에 찾아냅니다. <code>var</code>는 정적 타입의 <b>추론</b>이며 동적 타입으로 바꾸는 표기가 아닙니다. <code>dynamic</code>은 일부 바인딩 검사를 실행 시점으로 미룹니다. 동적 타입 언어에도 값의 타입과 실행 시점의 검사는 있으므로 “타입이 없다”와 같은 뜻은 아닙니다.</p>
+<p>하지만 <code>int → int</code>라는 타입은 함수가 세금을 올바르게 계산하는지, 금액이 음수가 아닌지 알려 주지 않습니다. 원문의 요점도 타입 검사가 테스트를 모두 대체한다는 주장이 아닙니다. 타입은 가능한 프로그램을 제한하고 연결을 확인하는 도구이며, 알고리즘의 정답·종료·성능·업무 정책에는 별도의 근거가 필요합니다.</p>
+<div class="callout tip"><span class="title">설계에 적용하기</span>원 단위 금액과 섭씨 온도를 둘 다 int로 받으면 잘못 연결해도 타입이 맞습니다. 의미가 다른 값을 작은 전용 타입으로 나누면 컴파일러가 더 많은 실수를 잡을 수 있습니다. 단, 전용 타입의 생성자가 값의 범위까지 검사하는지는 별도 설계입니다.</div>
+</section>
+
+<section id="sets"><h2>2. 타입을 값의 집합으로 보기</h2>
+<p>첫 번째 모델로 타입 A를 가능한 값들의 집합으로 생각합니다. <code>bool</code>은 {false, true}이고, 단순한 삼색 신호등 모델은 {Red, Yellow, Green}입니다. 수학의 함수 <code>f : A → B</code>는 A의 <b>각 원소마다 정확히 하나의 B 원소</b>를 지정합니다. 서로 다른 입력이 같은 결과로 가도 괜찮지만, 입력 하나에 결과가 없거나 두 개가 있으면 이 정의의 함수가 아닙니다.</p>
+<div class="formula">f : A → B<br>모든 a ∈ A에 대해 결과 f(a) ∈ B가 정확히 하나 존재</div>
+<p>여기서 “B의 모든 값을 만들어야 한다”는 조건은 없습니다. 항상 false를 반환하는 Bool → Bool도 함수입니다. B는 공역이고, 실제로 나온 결과인 치역은 {false}입니다. 객체가 집합이고 사상이 이러한 함수인 범주를 <b>Set</b>이라고 부릅니다.</p>
+<figure><div class="stage" tabindex="0" role="region" aria-label="좌우로 스크롤할 수 있는 도식"><svg class="diagram chapter-diagram" viewBox="0 0 760 260" role="img" aria-labelledby="set-title set-desc">
+<title id="set-title">전함수의 값 대응과 결과가 없는 입력</title><desc id="set-desc">왼쪽 함수는 세 입력 각각을 하나의 Bool 값으로 보낸다. 오른쪽 부분함수에서는 입력 0의 결과가 없다.</desc>
+<defs><marker id="set-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+<text x="183" y="24" text-anchor="middle">전함수: 모든 입력에 결과</text><text x="568" y="24" text-anchor="middle">부분함수: 빠진 입력이 있음</text>
+<rect class="box" x="25" y="45" width="105" height="174" rx="16"/><rect class="box" x="248" y="45" width="105" height="174" rx="16"/>
+<text x="78" y="82" text-anchor="middle">−1</text><text x="78" y="135" text-anchor="middle">0</text><text x="78" y="188" text-anchor="middle">1</text>
+<text x="300" y="95" text-anchor="middle">false</text><text x="300" y="173" text-anchor="middle">true</text>
+<path class="edge" d="M104 78L263 90" marker-end="url(#set-arrow)"/><path class="edge" d="M104 131L263 166" marker-end="url(#set-arrow)"/><path class="edge" d="M104 184L263 97" marker-end="url(#set-arrow)"/>
+<text class="small muted" x="188" y="246" text-anchor="middle">IsZero : {−1, 0, 1} → Bool</text>
+<rect class="box" x="407" y="45" width="105" height="174" rx="16"/><rect class="box" x="629" y="45" width="105" height="174" rx="16"/>
+<text x="460" y="82" text-anchor="middle">−1</text><text x="460" y="135" text-anchor="middle">0</text><text x="460" y="188" text-anchor="middle">1</text>
+<text x="682" y="82" text-anchor="middle">−1</text><text x="682" y="188" text-anchor="middle">1</text>
+<path class="edge" d="M486 78H650" marker-end="url(#set-arrow)"/><path class="edge" d="M486 184H650" marker-end="url(#set-arrow)"/>
+<path class="bad-edge" d="M486 131H576"/><text x="586" y="138" style="fill:var(--bad)">?</text>
+<text class="small muted" x="570" y="246" text-anchor="middle">Reciprocal : {−1, 0, 1} ⇀ ℚ</text>
+</svg></div><figcaption>서로 다른 입력이 같은 결과로 가는 것은 허용합니다. 정의역 안의 입력에 결과가 없으면 전함수가 아닙니다. 작은 화면에서는 도식을 좌우로 스크롤할 수 있습니다.</figcaption></figure>
+<p>C# 타입과 수학의 집합을 그대로 동일시할 수는 없습니다. <code>int</code>는 고정 폭 정수이고 수학적 정수 ℤ와 다릅니다. <code>string</code>은 UTF-16 코드 단위의 유한 시퀀스이며, C#의 <code>char</code> 하나가 항상 완전한 유니코드 문자 하나를 뜻하지 않습니다. 참조형에서는 null을 포함할지 정해야 합니다. 이 장에서는 별도로 밝히지 않은 문자열 정의역에서 null을 제외합니다.</p>
+</section>
+
+<section id="totality"><h2>3. 전함수·부분함수와 ⊥</h2>
+<p><b>전함수(total function)</b>는 정한 정의역의 모든 입력에 정상적인 결과를 냅니다. <b>부분함수(partial function)</b>는 어떤 입력에서는 결과가 정의되지 않습니다. 예를 들어 유리수에서 1/x를 계산하면서 정의역에 0을 포함하면 그 입력에 결과가 없습니다. 정의역을 “0이 아닌 유리수”로 제한하면 전함수로 볼 수 있습니다.</p>
+<p>코드에서는 예외를 던지거나 계산이 끝나지 않는 경우도 있습니다. 원문은 비종료 등을 나타내는 의미론적 표기 <b>⊥(bottom)</b>를 소개합니다. 이는 C#에서 변수에 넣는 특별한 상수 이름이 아닙니다. <code>null</code>도 ⊥와 같지 않습니다. null은 참조형·nullable 값형에서 표현 가능한 실제 값이고, 계산은 null을 정상적으로 반환하고 끝날 수 있습니다.</p>
+<div class="formula">부분적인 f : A ⇀ B를 다루는 두 접근<br>① 정의역을 안전한 입력 집합 A′로 줄여 f : A′ → B<br>② 결과에 실패를 표현하여 safeF : A → Success(B) + Failure</div>
+<p>두 번째 방법은 함수가 아예 끝나지 않는 문제를 마술처럼 해결하는 것이 아닙니다. 예상 가능한 실패를 반환 데이터로 만들었을 때 그 범위에서 정상적인 결과 대응을 설명할 수 있다는 뜻입니다. 성공 값 0과 “실패했다”를 같은 숫자로 표현하면 둘을 구분할 수 없으므로 태그가 필요합니다. 합 타입의 정확한 구조는 5·6장에서 다룹니다.</p>
+<div class="widget" id="partial-widget"><div class="w-title">실험 1 · 정의역과 반환 타입을 바꾸기</div>
+<p class="w-desc">정의역은 {−3, −2, −1, 0, 1, 2, 3}입니다. 결과의 1/3 같은 표기는 부동소수점 근삿값이 아닌 정확한 유리수 표현입니다.</p>
+<div class="controls"><label for="partial-mode">모델<select id="partial-mode"><option value="raw">전체 입력, 결과는 유리수</option><option value="restrict">0을 정의역에서 제외</option><option value="result">전체 입력, 성공 또는 실패 반환</option></select></label><label for="partial-x">살펴볼 입력<input id="partial-x" type="range" min="-3" max="3" step="1" value="0"></label></div>
+<figure class="ct02-visual"><div class="stage" tabindex="0" role="region" aria-label="입력에 따라 바뀌는 역수 대응도, 좌우 스크롤 가능" id="partial-live-diagram"></div><figcaption id="partial-live-caption"></figcaption></figure>
+<pre class="log" id="partial-output" aria-live="polite"></pre></div>
+<div class="callout warn"><span class="title">C#의 나눗셈 표현은 수학적 유리수와 다릅니다</span>정수 나눗셈은 몫을 계산하고, decimal 나눗셈은 유한 정밀도의 결과를 내며 0으로 나누면 예외가 납니다. double 연산은 Infinity나 NaN을 만들 수 있습니다. 이 위젯은 C# 나눗셈 연산자가 아니라 유리수 함수의 모형입니다.</div>
+<p><code>string</code>과 <code>string?</code>의 표기는 nullable 분석에 정보를 줍니다. nullable 참조형 경고는 런타임에 null을 없애는 장벽이나 종료 증명이 아닙니다. C# 전체를 순수 전함수의 Set 모델이라고 선언하면 이런 차이를 모두 놓치게 됩니다.</p>
+</section>
+
+<section id="semantics"><h2>4. 코드의 동작과 수학적 의미</h2>
+<p>원문은 프로그램을 이해하는 두 관점을 구분합니다. <b>조작적 의미론(operational semantics)</b>은 상태와 실행 규칙을 따라 프로그램이 어떻게 움직이는지 설명합니다. <b>표시적 의미론(denotational semantics)</b>은 코드에 수학적 의미를 대응시켜 무엇을 계산하는지 설명합니다.</p>
+<p>0 이상의 정수 n에 대한 팩토리얼을 생각해 봅시다. 반복문으로 곱해도 되고 재귀로 계산해도 됩니다. 표시적 관점에서는 둘 다 <code>n! = ∏(k=1..n) k</code>라는 같은 함수를 구현한다고 볼 수 있습니다. 빈 곱은 1이므로 0! = 1입니다. 조작적 관점에서는 루프 변수, 호출 스택, 중간 값이 서로 다르게 움직입니다.</p>
+<pre><code>// 설명용 조각: 입력 n은 0 이상이라는 계약을 둔다.
+static BigInteger Factorial(int n)
+{
+    BigInteger result = 1;
+    for (int k = 1; k &lt; n; k++) result *= k + 1;
+    return result;
+}</code></pre>
+<p>같은 수학적 함수를 구현한다는 말은 실행 시간·할당량·스택 사용량까지 같다는 뜻이 아닙니다. 수학적 모델은 어떤 성질을 논의할지 선택하게 해 줍니다. 입력과 반환값의 관계를 논의할 때는 큰 도움이 되지만, 메모리 부족이나 실행 비용을 설명하려면 그 현상을 포함하는 모델이 더 필요합니다.</p>
+<p>이후 등장하는 법칙들도 이런 구분 위에 서 있습니다. “함수가 같다”는 말의 관찰 범위를 반환값으로 정했는지, 로그·예외·상태 변화까지 포함했는지 먼저 밝혀야 리팩터링이 안전한지 판단할 수 있습니다.</p>
+</section>
+
+<section id="purity"><h2>5. 순수성과 메모이제이션</h2>
+<p><b>순수 함수(pure function)</b>는 같은 명시적 입력에 같은 결과를 내고, 관찰 가능한 부작용이 없습니다. 숨은 카운터를 읽고 바꾸거나 현재 시각·외부 입력에 의존하면 입력만으로 결과를 설명할 수 없습니다. 항상 true를 돌려주더라도 매 호출마다 로그를 쓰는 함수는 부작용이 있습니다.</p>
+<p><b>메모이제이션(memoization)</b>은 인수에 대한 결과를 저장했다가 같은 인수의 요청에 재사용하는 방법입니다. 순수한 제곱 함수라면 같은 입력의 계산을 생략해도 반환값의 의미가 유지됩니다. 하지만 누적 카운터 함수의 “같은 인수”는 같은 실제 상태를 뜻하지 않습니다. 로그 함수에서는 반환값이 같아도 로그가 생략되어 관찰되는 행동이 달라집니다.</p>
+<figure><div class="stage" tabindex="0" role="region" aria-label="좌우로 스크롤할 수 있는 도식"><svg class="diagram chapter-diagram" viewBox="0 0 760 265" role="img" aria-labelledby="state-title state-desc">
+<title id="state-title">순수 함수의 캐시와 숨은 상태를 가진 함수의 차이</title><desc id="state-desc">위에서는 입력 x만으로 x의 제곱 결과가 정해진다. 아래에서는 입력 x와 상태 S를 모두 보아야 누적 결과와 다음 상태가 정해진다.</desc>
+<defs><marker id="state-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+<rect class="box" x="20" y="35" width="140" height="52" rx="8"/><text x="90" y="67" text-anchor="middle">입력 x = 2</text>
+<rect class="box" x="280" y="35" width="190" height="52" rx="8"/><text x="375" y="67" text-anchor="middle">Square(x)</text>
+<rect class="box" x="600" y="35" width="140" height="52" rx="8"/><text x="670" y="67" text-anchor="middle">결과 4</text>
+<path class="edge" d="M160 61H276" marker-end="url(#state-arrow)"/><path class="edge" d="M470 61H596" marker-end="url(#state-arrow)"/>
+<text class="small muted" x="375" y="115" text-anchor="middle">캐시 키 x가 반환값을 결정하기에 충분</text>
+<rect class="box" x="20" y="158" width="160" height="52" rx="8"/><text x="100" y="190" text-anchor="middle">(x = 2, S = 4)</text>
+<rect class="box" x="280" y="158" width="190" height="52" rx="8"/><text x="375" y="190" text-anchor="middle">Step(x, S)</text>
+<rect class="box" x="565" y="158" width="175" height="52" rx="8"/><text x="652" y="190" text-anchor="middle">(결과 6, S′ = 6)</text>
+<path class="edge" d="M180 184H276" marker-end="url(#state-arrow)"/><path class="edge" d="M470 184H561" marker-end="url(#state-arrow)"/>
+<text class="small muted" x="375" y="245" text-anchor="middle">x만 키로 쓰면 S가 다른 호출을 잘못 재사용할 수 있음</text>
+</svg></div><figcaption>상태를 명시적으로 받으면 상태 전이를 함수로 설명할 수 있습니다. 실제 상태 갱신까지 보존하려면 반환된 다음 상태를 처리해야 합니다. 작은 화면에서는 도식을 좌우로 스크롤할 수 있습니다.</figcaption></figure>
+<div class="widget" id="memo-widget"><div class="w-title">실험 2 · 캐시가 보존하는 것과 바꾸는 것</div>
+<p class="w-desc">두 실행은 각각 캐시가 비어 있고 상태가 0인 상태에서 시작합니다. 매번 직접 계산한 경우와 입력값만 키로 캐시한 경우를 비교합니다. 계산 횟수는 실험용 관찰값이며 업무 함수의 결과와 구분합니다.</p>
+<div class="controls"><label for="memo-mode">함수<select id="memo-mode"><option value="square">순수한 Square(n) = n²</option><option value="counter">숨은 상태 S += n, 결과 S</option><option value="logging">로그를 쓰고 true 반환</option></select></label><label for="memo-input">입력 순서 (쉼표로 구분)<input id="memo-input" value="2,2,3" maxlength="100"></label><button class="btn primary" type="button" id="memo-run">새 초기 상태에서 비교</button></div>
+<p class="ct02-caption">아래 재생기는 요청 하나씩 처리합니다. 직접 호출과 캐시 호출에서 함수 본문·상태·로그가 어떻게 달라지는지 경로와 캐시 칸으로 확인하세요. 자동 재생은 버튼을 눌러야 시작합니다.</p>
+<div class="ct02-player controls"><button class="btn" type="button" id="memo-reset">처음부터</button><button class="btn" type="button" id="memo-prev">이전 요청</button><button class="btn primary" type="button" id="memo-play" aria-pressed="false">▶ 재생</button><button class="btn" type="button" id="memo-next">다음 요청</button><label for="memo-speed">요청 간격<select id="memo-speed"><option value="700">0.7초</option><option value="1400" selected>1.4초</option><option value="2400">2.4초</option></select></label><span class="position" id="memo-position"></span></div>
+<figure class="ct02-visual"><div class="stage" tabindex="0" role="region" aria-label="직접 호출과 캐시 호출의 단계별 실행도, 좌우 스크롤 가능" id="memo-live-diagram"></div><figcaption>같은 입력 요청도 캐시 적중 여부에 따라 실행 경로가 달라집니다. 작은 화면에서는 도식을 좌우로 스크롤할 수 있습니다.</figcaption></figure>
+<div class="ct02-step-output" id="memo-step-output" aria-live="polite"></div>
+<details><summary>전체 입력을 처리한 결과 보기</summary>
+<pre class="log" id="memo-output" aria-live="polite"></pre></details></div>
+<p>입력이 [2, 2, 3]이면 순수한 제곱은 두 실행 모두 [4, 4, 9]입니다. 카운터는 직접 실행에서 [2, 4, 7], 메모이제이션에서 [2, 2, 5]가 됩니다. 캐시된 두 번째 2가 상태 갱신을 건너뛰기 때문입니다. 로그 함수에서는 반환값 세 개가 모두 true라도 실제 로그 수가 3개에서 2개로 바뀝니다.</p>
+<p>순수성과 전함수성은 다른 조건입니다. 부작용 없이 0에서 정의되지 않는 역수 함수는 순수하지만 부분적일 수 있습니다. 반대로 모든 작은 입력에서 끝나고 로그를 쓰는 함수는 전함수처럼 반환값을 내더라도 순수하지 않습니다.</p>
+<div class="callout"><span class="title">난수에 시드를 주면 언제 함수로 볼 수 있을까</span>고정한 알고리즘으로 시드에서 새 생성기를 만들고 첫 결과만 반환한다면 그 고정된 알고리즘 안에서는 결과가 시드로 결정됩니다. 공유 생성기를 계속 호출하면 생성기 내부 상태도 입력의 일부입니다. 특정 시드가 영원히 같은 .NET 버전 간 난수열을 보장한다고 확대해석하지 마세요.</div>
+<p>캐시는 키의 동등성·메모리 증가·스레드 안전성·예외 처리 정책도 갖습니다. 가변 객체를 키나 결과로 쓰면 비교와 공유 상태 문제가 생길 수 있습니다. 이 장의 C# 구현은 단일 스레드에서 불변인 BigInteger 키·결과를 사용하는 작은 예제이고, 성공적으로 반환된 결과만 저장합니다. 순수한 값의 의미가 보존되어도 캐시는 실행 비용과 메모리 사용을 바꿉니다.</p>
+</section>
+
+<section id="small-types"><h2>6. 빈 타입·Unit·Bool</h2>
+<p>값이 없는 집합을 타입처럼 생각한 것이 <b>빈 타입(Empty, 원문 Haskell의 Void)</b>입니다. 이 모델의 값을 인수로 요구하는 함수는 실제로 호출할 수 없습니다. 인수를 줄 방법이 없기 때문입니다. 반대로 <b>Unit</b>은 값이 하나인 타입입니다. Unit → A 함수는 A의 값 하나를 고르는 것이고, A → Unit 함수는 모든 입력을 유일한 Unit 값으로 보냅니다.</p>
+<p>C#의 <code>void</code>는 <code>Func&lt;void, int&gt;</code>처럼 제네릭 타입 인수로 쓸 수 있는 일급 Unit 타입이 아닙니다. <code>Func&lt;int&gt;</code>의 인수 없는 호출을 수학적으로 Unit → Int에 대응시켜 생각할 수는 있지만, C# 시그니처가 같다는 뜻은 아닙니다. 아래와 같이 필드 없는 <code>readonly record struct Unit</code>을 정의하면 값 동등성 관점에서 하나의 값을 가진 명시적인 모델을 만들 수 있습니다.</p>
+<pre><code>// 설명용 조각
+readonly record struct Unit;
+// new Unit()과 default(Unit)은 값으로 같다.
+// Unit은 C# void를 별칭으로 바꾼 것이 아니다.</code></pre>
+<p>C#의 “멤버가 없는 enum”은 빈 타입이 아닙니다. 기본값이나 캐스팅으로 값이 생깁니다. 생성자를 숨긴 클래스도 null·리플렉션 등 실제 언어의 경계를 검토해야 하므로 수학적 빈 타입이라고 단정하지 않습니다. 이 장의 Empty는 C#에서 완전히 구현했다고 주장하지 않는 수학적 모델입니다.</p>
+<div class="formula">|A| = a, |B| = b인 유한 집합에서<br>|함수 A → B의 집합| = bᵃ</div>
+<p>A의 각 원소마다 B에서 결과 하나를 독립적으로 고릅니다. 입력이 a개이므로 선택지는 b를 a번 곱한 수입니다. Bool → Bool은 2² = 4개입니다. 항상 false, 항상 true, 항등, 부정이 전부입니다. 함수가 종료하지 않는 경우나 부작용까지 세는 것이 아니라, 가능한 값 대응표를 셉니다.</p>
+<div class="tbl-wrap"><table><thead><tr><th>정의역 → 공역</th><th>개수</th><th>이유</th></tr></thead><tbody>
+<tr><td>Empty → B</td><td>1</td><td>지정해야 할 입력이 없다. 빈 대응표가 유일하다.</td></tr>
+<tr><td>비어 있지 않은 A → Empty</td><td>0</td><td>적어도 하나의 입력에 줄 결과를 고를 수 없다.</td></tr>
+<tr><td>Empty → Empty</td><td>1</td><td>빈 대응표 하나. 이 함수 개수 문맥에서 0⁰ = 1.</td></tr>
+<tr><td>A → Unit</td><td>1</td><td>모든 입력이 같은 Unit 값으로 간다. A가 비어 있어도 1개.</td></tr>
+<tr><td>Unit → B</td><td>|B|</td><td>유일한 입력의 결과를 B에서 하나 고른다.</td></tr>
+</tbody></table></div>
+<p>Empty → Empty 함수가 하나 있다는 말과 그 함수를 실제 인수로 호출할 수 있다는 말은 다릅니다. 함수의 존재는 대응 규칙의 존재이며, 입력값의 존재를 요구하지 않습니다. 이 구별은 뒤에서 초기 객체와 말단 객체를 정의할 때 다시 나타납니다.</p>
+<div class="widget" id="finite-widget"><div class="w-title">실험 3 · 가능한 모든 함수 세기</div>
+<p class="w-desc">A = {a₀, …}, B = {b₀, …}인 유한 모델입니다. 0~4개의 값으로 크기를 정하고 함수 번호를 골라 대응표를 살펴보세요. 함수 번호는 0부터 시작합니다.</p>
+<div class="controls"><label for="finite-a">정의역 원소 수 a<select id="finite-a"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label><label for="finite-b">공역 원소 수 b<select id="finite-b"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label><label for="finite-index">살펴볼 함수 번호<input id="finite-index" type="number" min="0" max="3" value="0" step="1"></label></div>
+<div class="ct02-player"><button class="btn" type="button" id="finite-prev-map">이전 함수</button><button class="btn" type="button" id="finite-next-map">다음 함수</button></div>
+<figure class="ct02-visual"><div class="stage" tabindex="0" role="region" aria-label="유한 함수의 실시간 대응도, 좌우 스크롤 가능" id="finite-live-diagram"></div><figcaption id="finite-live-caption"></figcaption></figure>
+<p class="ct02-caption">각 입력의 결과를 직접 바꿔도 됩니다. 화살표가 가리키는 값과 함수 번호가 함께 바뀝니다. 작은 화면에서는 도식을 좌우로 스크롤할 수 있습니다.</p><div class="ct02-picks" id="finite-picks"></div>
+<pre class="log" id="finite-output" aria-live="polite"></pre></div>
+</section>
+
+<section id="program"><h2>7. 전체 C# 프로그램</h2>
+<p>다음은 C# 12 / .NET 8 BCL만 사용하는 전체 Program.cs입니다. 함수 개수는 BigInteger로 계산하고, 메모이제이션의 입력과 결과도 불변인 BigInteger를 사용합니다. 숨은 카운터 예제는 의도적으로 부작용을 넣은 반례입니다.</p>
+<pre data-csharp="true"><code>using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+
+readonly record struct Unit;
+
+internal static class Program
+{
+    // 단일 스레드, 기본 키 동등성, 정상 반환 결과만 캐시한다.
+    static Func&lt;A, B&gt; Memoize&lt;A, B&gt;(Func&lt;A, B&gt; function)
+        where A : notnull
+    {
+        var cache = new Dictionary&lt;A, B&gt;();
+        return input =&gt;
+        {
+            if (cache.TryGetValue(input, out var result)) return result;
+            result = function(input);
+            cache.Add(input, result);
+            return result;
+        };
+    }
+
+    static void Main()
+    {
+        Func&lt;Unit, int&gt; choose = _ =&gt; 44;
+        Func&lt;int, Unit&gt; discard = _ =&gt; new Unit();
+        Console.WriteLine($&quot;unit equal = {discard(7) == discard(99)}&quot;);
+        Console.WriteLine($&quot;unit chooses = {choose(new Unit())}&quot;);
+
+        Console.WriteLine($&quot;Bool -&gt; Bool = {BigInteger.Pow(2, 2)}&quot;);
+        Console.WriteLine($&quot;Empty -&gt; Bool = {BigInteger.Pow(2, 0)}&quot;);
+        Console.WriteLine($&quot;Bool -&gt; Empty = {BigInteger.Pow(0, 2)}&quot;);
+        Console.WriteLine($&quot;Empty -&gt; Empty = {BigInteger.Pow(0, 0)}&quot;);
+
+        BigInteger[] inputs = [2, 2, 3];
+        Func&lt;BigInteger, BigInteger&gt; square = n =&gt; n * n;
+        var memoSquare = Memoize(square);
+        Console.WriteLine($&quot;square direct = {string.Join(&quot;,&quot;, inputs.Select(square))}&quot;);
+        Console.WriteLine($&quot;square memo = {string.Join(&quot;,&quot;, inputs.Select(memoSquare))}&quot;);
+
+        // 서로 독립적인 초기 상태로 비교한다.
+        BigInteger directState = 0, memoState = 0;
+        Func&lt;BigInteger, BigInteger&gt; counter = n =&gt; directState += n;
+        var memoCounter = Memoize&lt;BigInteger, BigInteger&gt;(n =&gt; memoState += n);
+        Console.WriteLine($&quot;counter direct = {string.Join(&quot;,&quot;, inputs.Select(counter))}&quot;);
+        Console.WriteLine($&quot;counter memo = {string.Join(&quot;,&quot;, inputs.Select(memoCounter))}&quot;);
+    }
+}</code></pre>
+<p><code>examples/Ch02</code>에서 <code>dotnet run</code>으로 실행합니다. 예상 출력:</p>
+<pre><code>unit equal = True
+unit chooses = 44
+Bool -&gt; Bool = 4
+Empty -&gt; Bool = 1
+Bool -&gt; Empty = 0
+Empty -&gt; Empty = 1
+square direct = 4,4,9
+square memo = 4,4,9
+counter direct = 2,4,7
+counter memo = 2,2,5</code></pre>
+<p><code>Memoize</code>는 Dictionary를 내부에 가지므로 구현에는 변경 가능한 캐시 상태가 있습니다. 그렇더라도 순수한 원래 함수와 비교하는 관찰을 “입력별 정상 반환값”으로 제한하면 그 값의 의미를 보존할 수 있습니다. 따라서 “내부에 대입문이 있다”와 “호출자가 관찰하는 부작용이 있다”를 같은 조건으로 취급하지 않습니다. 할당·속도·메모리 사용까지 관찰하면 두 구현은 당연히 다릅니다.</p>
+</section>
+
+<section id="quiz"><h2>8. 확인 문제</h2>
+<div class="quiz" data-answer="1"><div class="q">C# 함수가 int → int로 컴파일되었다. 확실하게 보장되는 것은?</div><button class="opt">금액 계산의 업무 규칙이 모두 맞다.</button><button class="opt">선언된 타입의 규칙을 통과했다. 정답·종료·순수성까지 증명한 것은 아니다.</button><button class="opt">모든 입력에서 예외 없이 종료한다.</button><div class="explain">타입 검사는 연결의 일부를 확인합니다. 같은 int 타입 안에서도 잘못된 계산을 작성할 수 있습니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">이 장의 순수 전함수 모델에서 Empty → Empty 함수는 몇 개인가?</div><button class="opt">1개, 빈 대응표</button><button class="opt">0개, 결과를 고를 수 없어서</button><button class="opt">무한 개, 입력이 없어서</button><div class="explain">정의역에 입력이 하나도 없으므로 결과를 지정할 의무도 없습니다. 빈 대응표가 유일합니다. 비어 있지 않은 정의역에서 Empty로 가는 전함수는 없습니다.</div></div>
+<div class="quiz" data-answer="2"><div class="q">입력값만 키로 메모이제이션했을 때 결과값은 같아도 동작이 달라질 수 있는 함수는?</div><button class="opt">부작용 없는 BigInteger 제곱 함수</button><button class="opt">항상 44를 돌려주는 순수한 Unit → Int 함수</button><button class="opt">로그를 쓰고 항상 true를 반환하는 함수</button><div class="explain">캐시가 원래 호출을 건너뛰면 로그도 생략됩니다. 반환값의 같음만으로 부작용까지 같다고 할 수 없습니다.</div></div>
+<div class="quiz" data-answer="1"><div class="q">C# null과 의미론의 ⊥에 관한 설명으로 맞는 것은?</div><button class="opt">두 표기는 언제나 같은 런타임 값이다.</button><button class="opt">null은 표현 가능한 값이고, ⊥는 여기서 비종료 등 정상 결과가 없는 계산을 나타내는 모델의 표기다.</button><button class="opt">string 타입에는 런타임에 null을 절대 넣을 수 없다.</button><div class="explain">nullable 분석은 유용하지만 null이나 비종료를 동일한 현상으로 바꾸지 않습니다. 순수 전함수 모델의 정의역과 정상 결과를 먼저 정해야 합니다.</div></div>
+<div class="quiz" data-answer="0"><div class="q">Bool → Unit과 Unit → Bool의 전함수 개수는 각각?</div><button class="opt">1개, 2개</button><button class="opt">2개, 1개</button><button class="opt">0개, 4개</button><div class="explain">1² = 1, 2¹ = 2입니다. Unit으로 가는 함수는 입력을 버리고 유일한 값을 반환합니다. Unit에서 나가는 함수는 결과값 하나를 고릅니다.</div></div>
+</section>
+
+<section id="practice"><h2>9. 실습 과제</h2>
+<article class="exercise"><h3>실습 A · 메모이제이션에서 “한 번”의 뜻 확인하기</h3>
+<p>7절의 프로그램에 계산 횟수를 세는 진단용 래퍼를 추가하세요. 제곱 함수의 입력 순서를 [2, 2, 3, 2]로 바꾸고 직접 호출 횟수와 캐시가 원래 함수를 호출한 횟수를 비교하세요. 반환값 시퀀스도 비교하세요.</p>
+<p><b>기대 결과:</b> 두 시퀀스는 모두 <code>4,4,9,4</code>, 직접 호출은 4회, 메모이제이션 내부 계산은 2회입니다. 카운터 래퍼 자체는 순수 함수가 아니라 실험용 계측임을 밝히세요.</p>
+<details class="deep"><summary>힌트</summary><div><p>메모이제이션 함수 바깥에서 세면 캐시 적중 요청까지 셉니다. 원래 함수가 실행되는 위치에 카운터를 두세요. 비교하는 두 실행의 카운터를 따로 만듭니다.</p></div></details>
+<details class="deep"><summary>해답 · Main에 추가할 코드 조각</summary><div><pre><code>int directCalls = 0, memoCalls = 0;
+BigInteger[] sequence = [2, 2, 3, 2];
+Func&lt;BigInteger, BigInteger&gt; direct = n =&gt;
+{
+    directCalls++; // 진단용 계측
+    return n * n;
+};
+var cached = Memoize&lt;BigInteger, BigInteger&gt;(n =&gt;
+{
+    memoCalls++; // 캐시 미스에서만 실행된다.
+    return n * n;
+});
+Console.WriteLine(string.Join(",", sequence.Select(direct)));
+Console.WriteLine(string.Join(",", sequence.Select(cached)));
+Console.WriteLine($"direct = {directCalls}, memo = {memoCalls}");</code></pre><p>계측 결과의 차이는 캐시가 실제로 재사용했음을 보여 줍니다. 두 결과 시퀀스가 같다는 일반적인 이유는 제곱의 결과가 인수로 결정되기 때문이며, 이 네 번의 실행만으로 모든 함수에 같은 결론을 내리지는 않습니다.</p></div></details>
+</article>
+<article class="exercise"><h3>실습 B · 작은 타입 사이의 함수 목록 그리기</h3>
+<p>E = Empty, U = Unit, B = Bool 세 객체를 그립니다. 각 순서쌍 사이의 순수 전함수 개수를 3×3 표로 작성하세요. B → B 네 함수는 <code>(f(false), f(true))</code> 쌍으로 모두 나열하세요. C#에서 E를 가짜 빈 enum으로 구현할 필요는 없습니다.</p>
+<p><b>기대 결과:</b> 출발을 행, 도착을 열로 놓으면 행 E는 <code>1,1,1</code>, 행 U는 <code>0,1,2</code>, 행 B는 <code>0,1,4</code>입니다. E에서 나가는 함수와 E의 값을 혼동하지 마세요.</p>
+<details class="deep"><summary>힌트</summary><div><p>각 칸에 bᵃ를 적용합니다. 인수가 없는 빈 대응표는 하나이고, 인수가 있는데 결과 후보가 없으면 0개입니다.</p></div></details>
+<details class="deep"><summary>해답</summary><div><div class="tbl-wrap"><table><thead><tr><th>출발 ↓ / 도착 →</th><th>E (0)</th><th>U (1)</th><th>B (2)</th></tr></thead><tbody><tr><th>E (0)</th><td>1</td><td>1</td><td>1</td></tr><tr><th>U (1)</th><td>0</td><td>1</td><td>2</td></tr><tr><th>B (2)</th><td>0</td><td>1</td><td>4</td></tr></tbody></table></div><p>B → B의 대응표는 (false, false), (false, true), (true, false), (true, true)입니다. 각각 상수 false, 항등, 부정, 상수 true입니다. 이 모델에는 비종료·예외·외부 상태를 가진 동작을 포함하지 않습니다.</p></div></details>
+</article>
+</section>
+
+<div class="summary"><h3>핵심 요약</h3><ul>
+<li>타입은 함수 연결 조건을 기계적으로 확인하지만 업무 정답과 종료까지 보장하지 않습니다.</li>
+<li>Set 모델의 함수는 정의역의 각 값에 공역의 값 하나를 대응시킵니다.</li>
+<li>순수성은 입력과 관찰 가능한 부작용의 문제이며, 전함수성은 모든 입력에서 정상 결과가 있는지의 문제입니다.</li>
+<li>메모이제이션은 순수한 반환값의 의미를 보존할 수 있지만, 숨은 상태·로그·실행 비용을 따로 보아야 합니다.</li>
+<li>Empty는 값이 없고 Unit은 값이 하나입니다. C# void는 일급 Unit 타입이 아닙니다.</li>
+<li>유한한 A → B 함수의 개수는 |B|의 |A|승입니다. 빈 정의역의 빈 대응표도 하나의 함수입니다.</li>
+</ul><p>다음 원문 3장은 타입과 함수 이외에 그래프·순서·모노이드로 범주를 만드는 사례를 살펴봅니다.</p></div>
+<p class="source">Bartosz Milewski, <i>Category Theory for Programmers</i>, Chapter 2. PDF 편집 Igal Tabachnik, version 98b71ac, 2023-01-30. 원문의 구성을 따라 한국어 해설·C# 예제·도식·실습을 새로 작성했습니다. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=29">원문 PDF pp. 29–44</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</p>
+</main>
+<script>
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  function reciprocal(n) {
+    if (n === 0) return null;
+    if (n === 1 || n === -1) return String(n);
+    return n < 0 ? `−1/${-n}` : `1/${n}`;
+  }
+  function renderPartial() {
+    const mode = $("partial-mode").value;
+    const x = Number($("partial-x").value);
+    const domain = [-3, -2, -1, 0, 1, 2, 3].filter(n => mode !== "restrict" || n !== 0);
+    const rows = domain.map(n => {
+      const value = reciprocal(n);
+      return `${n} ↦ ${value === null ? (mode === "result" ? "Failure(Zero)" : "정의되지 않음") : (mode === "result" ? `Success(${value})` : value)}`;
+    });
+    const selected = !domain.includes(x) ? "이 입력은 제한한 정의역 밖입니다. 함수에 넘기지 않습니다." : rows[domain.indexOf(x)];
+    $("partial-output").textContent = `정의역 = {${domain.join(", ")}}\n${rows.join("\n")}\n\n선택 x = ${x}: ${selected}\n${mode === "raw" ? "0에서 정상 유리수 결과가 없어 이 정의역에서는 부분함수입니다." : "이 유한 모델에서는 모든 정의역 입력에 반환값이 있습니다."}`;
+  }
+  ["partial-mode", "partial-x"].forEach(id => $(id).addEventListener("input", renderPartial));
+  renderPartial();
+
+  function parseSequence(raw) {
+    const parts = raw.split(",");
+    if (parts.length < 1 || parts.length > 8) return null;
+    if (parts.some(part => !/^-?\d+$/.test(part.trim()))) return null;
+    const numbers = parts.map(part => Number(part.trim()));
+    return numbers.every(n => Number.isInteger(n) && n >= -20 && n <= 20) ? numbers : null;
+  }
+  function simulateMemo(mode, inputs, memoized) {
+    let state = 0, computations = 0;
+    const cache = new Map(), logs = [], results = [], hits = [];
+    for (const n of inputs) {
+      if (memoized && cache.has(n)) { results.push(cache.get(n)); hits.push("hit"); continue; }
+      computations++; hits.push(memoized ? "miss" : "직접");
+      let value;
+      if (mode === "counter") { state += n; value = state; }
+      else if (mode === "logging") { logs.push(`log(${n})`); value = true; }
+      else value = n * n;
+      if (memoized) cache.set(n, value);
+      results.push(value);
+    }
+    return { results, computations, state, logs, hits };
+  }
+  function renderMemo() {
+    const inputs = parseSequence($("memo-input").value);
+    if (!inputs) { $("memo-output").textContent = "입력 오류: −20~20의 정수 1~8개를 쉼표로 구분하세요. 빈 항목·소수·문자는 허용하지 않습니다."; return; }
+    const mode = $("memo-mode").value;
+    const direct = simulateMemo(mode, inputs, false), cached = simulateMemo(mode, inputs, true);
+    const valueSame = JSON.stringify(direct.results) === JSON.stringify(cached.results);
+    const logsSame = JSON.stringify(direct.logs) === JSON.stringify(cached.logs);
+    const format = (name, run) => `${name}: 결과 [${run.results.join(", ")}]\n원래 함수 계산 ${run.computations}회 / 내부 상태 ${run.state}\n로그 [${run.logs.join(", ")}]\n요청별 처리: ${run.hits.join(" → ")}`;
+    $("memo-output").textContent = `입력 [${inputs.join(", ")}]\n\n${format("직접 호출", direct)}\n\n${format("메모이제이션", cached)}\n\n반환값 시퀀스 ${valueSame ? "같음" : "다름"} / 로그 시퀀스 ${logsSame ? "같음" : "다름"}\n${mode === "square" ? "순수한 제곱에서는 같은 입력의 반환값을 재사용할 수 있습니다." : "이번 표본이 같더라도 이 함수가 순수하다는 뜻은 아닙니다. 중복 입력으로 상태·로그가 생략되는지 확인하세요."}`;
+  }
+  $("memo-run").addEventListener("click", renderMemo);
+  ["memo-mode", "memo-input"].forEach(id => $(id).addEventListener("input", renderMemo));
+  renderMemo();
+
+  function functionCount(a, b) { return BigInt(b) ** BigInt(a); }
+  function renderFinite(resetIndex) {
+    const a = Number($("finite-a").value), b = Number($("finite-b").value);
+    const count = functionCount(a, b), max = count > 0n ? count - 1n : 0n;
+    const indexInput = $("finite-index");
+    indexInput.max = String(max);
+    indexInput.disabled = count === 0n;
+    if (resetIndex) indexInput.value = "0";
+    const header = `|A| = ${a}, |B| = ${b}\n함수 개수 = ${b}^${a} = ${count}`;
+    if (count === 0n) { $("finite-output").textContent = `${header}\n정의역에 입력이 있지만 공역에는 줄 결과가 없습니다. 전함수는 없습니다.`; return; }
+    const raw = indexInput.value.trim();
+    if (!/^\d+$/.test(raw) || BigInt(raw) > max) { $("finite-output").textContent = `${header}\n함수 번호는 0~${max}의 정수로 입력하세요.`; return; }
+    let code = BigInt(raw);
+    const mappings = [];
+    for (let input = 0; input < a; input++) {
+      const output = code % BigInt(b); code /= BigInt(b);
+      mappings.push(`a${input} ↦ b${output}`);
+    }
+    $("finite-output").textContent = `${header}\n함수 #${raw}\n${a === 0 ? "입력이 없으므로 대응표도 비어 있습니다. 이 빈 대응표가 유일한 함수입니다." : mappings.join("\n")}\n${a === 0 && b === 0 ? "이 함수 개수 문맥에서 0^0 = 1입니다." : a === 2 && b === 2 ? "b0=false, b1=true로 읽으면 Bool → Bool의 네 대응표를 살펴볼 수 있습니다." : "각 입력의 출력 하나씩을 독립적으로 고릅니다."}`;
+  }
+  ["finite-a", "finite-b"].forEach(id => $(id).addEventListener("input", () => renderFinite(true)));
+  $("finite-index").addEventListener("input", () => renderFinite(false));
+  renderFinite(true);
+})();
+</script>
+<script src="assets/ch02-visuals.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+(function(){"use strict";
+const configs=[{"title": "생성자 해석과 fold", "min": 0, "max": 9}, {"title": "준동형의 연결 보존", "min": 0, "max": 9}, {"title": "임의 함수와 준동형의 차이", "min": -5, "max": 5}];
+const compute=(i,n,m)=>{if(i===0){const values=[n,3,n],result=m==='sum'?String(2*n+3):values.join('');return{nodes:['a↦'+n+', b↦3','[a,b,a]','['+values+']',result],result:'k*([a,b,a]) = '+result,explain:m==='sum'?'목표 항등은 0, 연산은 +입니다.':'목표 항등은 빈 문자열, 연산은 순서대로 연결입니다.'};}if(i===1){const b=Number(m),u=n+b,v=n;return{nodes:['[a,b,a]',String(2*n+b),u+','+v,String(u+v)],result:'fold(u++v)='+(2*n+b)+' = fold(u)+fold(v)',explain:'리스트 분해와 목표 모노이드의 결합법칙으로 일반화합니다.'};}const extra=m==='bad'?1:0,h=x=>n*x+extra,a=h(5),b=h(2)+h(3);return{nodes:[String(h(0)),String(a),String(b),extra?'실패':'성립'],result:'h(0)='+h(0)+'; h(2+3)='+a+'; h(2)+h(3)='+b,explain:extra?'편향 +1은 항등 보존과 합성 보존을 모두 깨뜨립니다.':'h(x+y)=cx+cy이며 h(0)=0이므로 모든 정수에서 준동형입니다.'};};
+BEffects.mount(19,configs,compute);})();

@@ -1,0 +1,10 @@
+using System;
+using System.Linq;
+int[] x = [0, 1, 2];
+bool Chi(int n) => n >= 1;
+Console.WriteLine($"subset = {string.Join(",", x.Where(Chi))}");
+int[] g = [0, 1, 1];
+Console.WriteLine($"pullback indices = {string.Join(",", Enumerable.Range(0, 3).Where(y => Chi(g[y])))}");
+static int Implies(int p, int q) => p <= q ? 2 : q;
+int u = 1, neg = Implies(u, 0);
+Console.WriteLine($"u OR not u = {Math.Max(u, neg)} (top=2)");

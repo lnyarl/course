@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프로그래머를 위한 범주론 · C#</title><meta name="description" content="Bartosz Milewski의 Category Theory for Programmers를 C# 예제와 한국어 실습으로 배우는 코스. 원문 31장 전체를 C# 예제와 인터랙티브 실습으로 배웁니다.">
+<link rel="stylesheet" href="assets/style.css"><script src="assets/common.js"></script>
+<style>
+.hero {padding: 24px 0 12px;} .eyebrow {font: 700 12px var(--mono);letter-spacing:.08em;color:var(--accent);}
+.hero h1 {font-size:clamp(34px,6vw,52px);max-width:760px;line-height:1.2;}
+.hero .subtitle {display:block;color:var(--muted);font-size:.65em;margin-top:12px;font-weight:500;}
+.meta {display:flex;flex-wrap:wrap;gap:8px;margin:24px 0;} .meta span {border:1px solid var(--border);border-radius:30px;padding:3px 12px;font-size:13px;background:var(--surface);}
+.start-link {display:inline-block;background:var(--accent);color:var(--surface);border-radius:8px;padding:10px 18px;text-decoration:none;font-weight:700;}
+.hero-links {display:flex;flex-wrap:wrap;align-items:center;gap:18px;margin:24px 0;}
+.progress-wrap {display:flex;align-items:center;flex-wrap:wrap;gap:10px;color:var(--muted);font-size:14px;}
+.progress-track {height:6px;flex:1;min-width:100px;background:var(--surface-2);border-radius:9px;overflow:hidden;}.progress-fill {height:100%;background:var(--ok);width:0;}
+.course-menu{display:flex;flex-wrap:wrap;gap:8px 18px;padding:16px 0;border-bottom:1px solid var(--border);margin:20px 0}.course-menu a{font-size:14px}.part,#examples,#reference{scroll-margin-top:76px}
+.card small {color:var(--muted);font-size:12px;display:block;margin-top:10px;}.part {margin-top:38px;} .part h2 {margin-top:0;}
+.route {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:24px 0;}.route div {border-top:3px solid var(--accent);background:var(--surface);padding:16px;border-radius:0 0 8px 8px;}.route b {display:block;}.route small {color:var(--muted);}
+@media(max-width:600px){.route{grid-template-columns:1fr;}.route div{padding:12px;}.card-grid{grid-template-columns:minmax(0,1fr);}}
+</style></head><body><main>
+<header class="hero"><div class="eyebrow">CATEGORY THEORY FOR PROGRAMMERS · C#</div><h1>프로그래머를 위한 범주론<span class="subtitle">함수 합성에서 시작해 구조를 읽는 법까지</span></h1>
+<p class="lead">같은 역할을 하는 코드가 왜 서로 다른 형태로 반복될까요? 함수의 합성 규칙, 타입의 구조, 구조를 보존하는 변환을 차례로 배웁니다. Bartosz Milewski의 책을 따라가면서 C# 코드와 직접 조작하는 실습으로 각 개념을 확인합니다.</p>
+<div class="meta"><span>원문 3부 · 31장</span><span>C# 12 · .NET 8</span><span>한국어 해설</span><span>오프라인 학습</span></div>
+<div class="hero-links"><a class="start-link" href="01-category-composition.html">1장 · 범주와 합성 시작하기 →</a><a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf">기준 교재 PDF ↗</a></div>
+<div class="progress-wrap"><span>방문한 장</span><div class="progress-track"><div class="progress-fill" id="pbar"></div></div><span id="ptext">0 / 31</span><button class="btn" id="reset" type="button">방문 기록 초기화</button></div>
+</header>
+<div class="callout tip"><span class="title">원문 31장 전체를 학습할 수 있습니다</span>기초부터 심화까지 원문의 순서를 유지했습니다. 각 장은 한국어 설명, C# 예제와 구조를 보여주는 도식을 제공합니다. 입력을 바꿔 법칙과 반례를 비교하고, 순서가 중요한 계산은 단계별로 살펴봅니다. 방문 기록은 이 브라우저에 저장되며 이해도나 실습 통과를 의미하지 않습니다.</div>
+<nav class="course-menu" aria-label="학습 메뉴"><a href="#part-i">기초 · 01–10</a><a href="#part-ii">구조 · 11–16</a><a href="#part-iii">심화 · 17–31</a><a href="#examples">C# 예제</a><a href="#reference">기준 교재</a></nav>
+<section><h2>이 코스의 학습 흐름</h2><div class="route"><div><small>PART I · 01–10</small><b>합성에서 자연변환까지</b>타입과 함수로 범주의 기본 언어를 익힙니다.</div><div><small>PART II · 11–16</small><b>보편 성질과 요네다</b>구조를 정의하고 관찰하는 방법을 연결합니다.</div><div><small>PART III · 17–31</small><b>수반·효과·일반화</b>모나드와 고급 개념을 앞선 정의 위에 쌓습니다.</div></div>
+<p>각 장은 문제 상황 → 개념과 법칙 → C# 예제 → 도식과 조작 실습 → 확인 문제 순서로 진행합니다. 결과를 먼저 예측한 뒤 위젯을 조작하고, 실습 과제는 접힌 해답을 열기 전에 직접 구현하세요.</p>
+<h3 id="examples">시작하기 전에 · C# 예제</h3><p>C#의 제네릭, 람다, <code>Func&lt;A, B&gt;</code>를 읽을 수 있으면 시작할 수 있습니다. Haskell이나 범주론 선행 지식은 요구하지 않습니다. 수식은 의미와 타입을 함께 설명합니다.</p>
+<p>예제는 C# 12와 .NET 8의 기본 라이브러리만 사용합니다. 웹 실습은 브라우저에서 실행되며 C#을 브라우저에서 컴파일하지는 않습니다. 같은 합성 규칙을 JavaScript로 구현한 모형입니다. 각 장의 전체 실행 프로그램은 <a href="examples/README.md">C# 예제 안내</a>에서 내려받아 별도로 실행하세요.</p>
+<div class="callout warn"><span class="title">모델의 범위를 구분합니다</span>타입을 집합, 함수를 순수 전함수로 보는 모델에서 시작합니다. 예외, 비종료, 공유 상태, I/O를 포함하는 모든 C# 프로그램이 이 모델에 들어가지는 않습니다. 위젯의 유한 표본 검사는 수학적 증명을 대신하지 않습니다.</div>
+</section>
+<section class="part" id="part-i"><h2>Part I · 기초</h2><div class="card-grid"><a class="card" data-id="01" href="01-category-composition.html"><div class="num">Chapter 01</div><div class="t">범주와 합성</div><div class="d">객체와 사상, 합성 순서, 결합법칙과 항등사상</div><small>원문 p. 2부터</small></a>
+<a class="card" data-id="02" href="02-types-functions.html"><div class="num">Chapter 02</div><div class="t">타입과 함수</div><div class="d">타입을 집합으로 보는 모델과 순수 함수의 조건</div><small>원문 p. 11부터</small></a>
+<a class="card" data-id="03" href="03-categories.html"><div class="num">Chapter 03</div><div class="t">크고 작은 범주</div><div class="d">자유 범주, 순서 관계, 하나의 객체로 보는 모노이드</div><small>원문 p. 27부터</small></a>
+<a class="card" data-id="04" href="04-kleisli-categories.html"><div class="num">Chapter 04</div><div class="t">클레이슬리 범주</div><div class="d">Writer 예제로 살펴보는 효과가 있는 함수의 합성</div><small>원문 p. 38부터</small></a>
+<a class="card" data-id="05" href="05-products-coproducts.html"><div class="num">Chapter 05</div><div class="t">곱과 쌍대곱</div><div class="d">보편 성질, 동형, 초기 객체와 끝 객체</div><small>원문 p. 51부터</small></a>
+<a class="card" data-id="06" href="06-algebraic-data-types.html"><div class="num">Chapter 06</div><div class="t">대수적 자료형</div><div class="d">곱 타입과 합 타입을 C# 레코드로 표현하기</div><small>원문 p. 72부터</small></a>
+<a class="card" data-id="07" href="07-functors.html"><div class="num">Chapter 07</div><div class="t">함자</div><div class="d">객체와 사상을 옮기면서 합성과 항등을 보존하기</div><small>원문 p. 89부터</small></a>
+<a class="card" data-id="08" href="08-functoriality.html"><div class="num">Chapter 08</div><div class="t">함자성</div><div class="d">이변함자, 공변과 반변, Hom 함자</div><small>원문 p. 113부터</small></a>
+<a class="card" data-id="09" href="09-function-types.html"><div class="num">Chapter 09</div><div class="t">함수 타입</div><div class="d">커링, 지수 객체, 카르테시안 닫힌 범주</div><small>원문 p. 134부터</small></a>
+<a class="card" data-id="10" href="10-natural-transformations.html"><div class="num">Chapter 10</div><div class="t">자연변환</div><div class="d">함자 사이의 변환과 자연성 사각형</div><small>원문 p. 154부터</small></a></div></section>
+<section class="part" id="part-ii"><h2>Part II · 구조</h2><div class="card-grid"><a class="card" data-id="11" href="11-declarative-programming.html"><div class="num">Chapter 11</div><div class="t">선언적 프로그래밍</div><div class="d">등식으로 추론하고 함수 합성으로 프로그램을 구성하기</div><small>원문 p. 180부터</small></a>
+<a class="card" data-id="12" href="12-limits-colimits.html"><div class="num">Chapter 12</div><div class="t">극한과 쌍대극한</div><div class="d">원뿔, 곱, 당김과 보편 성질의 일반화</div><small>원문 p. 188부터</small></a>
+<a class="card" data-id="13" href="13-free-monoids.html"><div class="num">Chapter 13</div><div class="t">자유 모노이드</div><div class="d">리스트, 접기, 생성자와 보편적 확장</div><small>원문 p. 211부터</small></a>
+<a class="card" data-id="14" href="14-representable-functors.html"><div class="num">Chapter 14</div><div class="t">표현 가능한 함자</div><div class="d">함자를 Hom으로 표현하고 인덱스와 연결하기</div><small>원문 p. 220부터</small></a>
+<a class="card" data-id="15" href="15-yoneda-lemma.html"><div class="num">Chapter 15</div><div class="t">요네다 보조정리</div><div class="d">자연변환과 원소의 대응, 다형성의 역할</div><small>원문 p. 231부터</small></a>
+<a class="card" data-id="16" href="16-yoneda-embedding.html"><div class="num">Chapter 16</div><div class="t">요네다 매장</div><div class="d">사상으로 객체를 관찰하고 원래 구조를 복원하기</div><small>원문 p. 243부터</small></a></div></section>
+<section class="part" id="part-iii"><h2>Part III · 심화</h2><div class="card-grid"><a class="card" data-id="17" href="17-morphisms.html"><div class="num">Chapter 17</div><div class="t">사상으로 보는 구조</div><div class="d">가환도, Hom 집합, 자연동형을 다시 연결하기</div><small>원문 p. 254부터</small></a>
+<a class="card" data-id="18" href="18-adjunctions.html"><div class="num">Chapter 18</div><div class="t">수반</div><div class="d">Hom 집합의 자연동형과 단위·쌍대단위</div><small>원문 p. 262부터</small></a>
+<a class="card" data-id="19" href="19-free-forgetful-adjunctions.html"><div class="num">Chapter 19</div><div class="t">자유·망각 수반</div><div class="d">구조를 만들거나 잊는 함자 사이의 대응</div><small>원문 p. 281부터</small></a>
+<a class="card" data-id="20" href="20-monads.html"><div class="num">Chapter 20</div><div class="t">프로그래머의 모나드 정의</div><div class="d">클레이슬리 합성과 bind, 모나드 법칙</div><small>원문 p. 289부터</small></a>
+<a class="card" data-id="21" href="21-monads-effects.html"><div class="num">Chapter 21</div><div class="t">모나드와 효과</div><div class="d">Reader, Writer, State와 효과의 명시적 표현</div><small>원문 p. 301부터</small></a>
+<a class="card" data-id="22" href="22-monads-categorically.html"><div class="num">Chapter 22</div><div class="t">범주론으로 정의하는 모나드</div><div class="d">자기함자 범주에서의 모노이드와 수반</div><small>원문 p. 318부터</small></a>
+<a class="card" data-id="23" href="23-comonads.html"><div class="num">Chapter 23</div><div class="t">코모나드</div><div class="d">문맥에서 꺼내기와 확장, 모나드의 쌍대</div><small>원문 p. 337부터</small></a>
+<a class="card" data-id="24" href="24-f-algebras.html"><div class="num">Chapter 24</div><div class="t">F-대수</div><div class="d">재귀 자료형과 카타모피즘으로 보는 접기</div><small>원문 p. 352부터</small></a>
+<a class="card" data-id="25" href="25-algebras-for-monads.html"><div class="num">Chapter 25</div><div class="t">모나드의 대수</div><div class="d">T-대수, 코대수와 렌즈</div><small>원문 p. 371부터</small></a>
+<a class="card" data-id="26" href="26-ends-coends.html"><div class="num">Chapter 26</div><div class="t">엔드와 코엔드</div><div class="d">쐐기, 자연성, 프로함자 합성</div><small>원문 p. 384부터</small></a>
+<a class="card" data-id="27" href="27-kan-extensions.html"><div class="num">Chapter 27</div><div class="t">칸 확장</div><div class="d">함자의 확장과 보편 성질</div><small>원문 p. 401부터</small></a>
+<a class="card" data-id="28" href="28-enriched-categories.html"><div class="num">Chapter 28</div><div class="t">풍성한 범주</div><div class="d">Hom 집합을 넘어 순서와 거리로 일반화하기</div><small>원문 p. 420부터</small></a>
+<a class="card" data-id="29" href="29-topoi.html"><div class="num">Chapter 29</div><div class="t">토포스</div><div class="d">부분객체 분류자와 범주 안의 논리</div><small>원문 p. 434부터</small></a>
+<a class="card" data-id="30" href="30-lawvere-theories.html"><div class="num">Chapter 30</div><div class="t">로비어 이론</div><div class="d">유한 곱과 연산으로 대수 이론을 표현하기</div><small>원문 p. 443부터</small></a>
+<a class="card" data-id="31" href="31-monads-monoids-categories.html"><div class="num">Chapter 31</div><div class="t">모나드·모노이드·범주</div><div class="d">쌍범주에서 세 구조의 관계 정리하기</div><small>원문 p. 462부터</small></a></div></section>
+<section id="reference"><h2>교재와 표기</h2><p>기준 교재는 Bartosz Milewski의 <i>Category Theory for Programmers</i>, Igal Tabachnik 편집, 2023-01-30판(version 98b71ac)입니다. 원문 장 번호를 유지하고, 각 장에 인쇄 페이지와 PDF 페이지를 구분해 연결합니다.</p><p>이 코스는 원문을 바탕으로 C# 예제와 한국어 설명을 새로 구성한 학습 자료입니다. Haskell의 타입클래스나 고차 타입을 C#이 그대로 지원한다고 가정하지 않습니다. 필요한 경우 언어의 표현 한계와 수학적 정의를 따로 설명합니다.</p></section>
+</main><script>
+(() => {
+ const ready=MM.CHAPTERS.filter(c=>c.ready), visited=MM.visited();
+ const count=ready.filter(c=>visited.has(c.id)).length;
+ document.getElementById('pbar').style.width=(count/ready.length*100)+'%';
+ document.getElementById('ptext').textContent=`${count} / ${ready.length}`;
+ document.querySelectorAll('.card[data-id]').forEach(c=>{if(visited.has(c.dataset.id))c.classList.add('visited');});
+ document.getElementById('reset').onclick=()=>{MM.resetVisited();location.reload();};
+})();
+</script></body></html>

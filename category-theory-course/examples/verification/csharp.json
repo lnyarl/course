@@ -1,0 +1,281 @@
+[
+  {
+    "chapter": "01",
+    "widgets": 4,
+    "static_svg": 2,
+    "quizzes": 5,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "evenLength(code) = True\nleft(2) = 36\nright(2) = 36\nassociative on samples = True\nidentity before = True\nidentity after = True\nnot twice = True"
+  },
+  {
+    "chapter": "02",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 5,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "unit equal = True\nunit chooses = 44\nBool -> Bool = 4\nEmpty -> Bool = 1\nBool -> Empty = 0\nEmpty -> Empty = 1\nsquare direct = 4,4,9\nsquare memo = 4,4,9\ncounter direct = 2,4,7\ncounter memo = 2,2,5"
+  },
+  {
+    "chapter": "03",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 5,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "triangle paths <= 2 = 7\nA -> C = c,ab\nloop paths <= 3 = id_A,l,ll,lll\nempty category paths = 0\ncycle preorder = True\ncycle poset = False\nchain poset = True\nconcat associativity = True\nconcat identity = True\naddition sample = True\ng after f (prepend) = barfoox\ng * f = barfoo"
+  },
+  {
+    "chapter": "04",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 5,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "value = 36\nlog = f>g>h>\nmanual equals composed = True\nassociativity value = True\nassociativity log = True\nidentity before = True\nidentity after = True\nisOdd(3) = True\nisOdd log = isEven>negate>"
+  },
+  {
+    "chapter": "05",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 5,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "product(3) = (4,False)\nprojection A = 4\nprojection B = False\nswap twice = True\nleft(0) = L:0\nright(0) = R:0\nunit equal = True"
+  },
+  {
+    "chapter": "06",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "states = 6\nroundtrip = True"
+  },
+  {
+    "chapter": "07",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "option composition = True\nnone stays None = True\nlist = 2,4,6\nreader(4) = 14"
+  },
+  {
+    "chapter": "08",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "bimap = (3,3)\npredicate(abcd) = True\ndimap(abcd) = v=8"
+  },
+  {
+    "chapter": "09",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "curried(3)(4) = 11\nsample roundtrip = True\nBool -> Bool = 4"
+  },
+  {
+    "chapter": "10",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "head natural = True\nempty natural = True\nmax natural = False\noption roundtrip = True"
+  },
+  {
+    "chapter": "11",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "query = 8\nloop = 8\nprefix states = 2,2,8"
+  },
+  {
+    "chapter": "12",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "equalizer = -1,1\npullback = 0:0,0:1,1:2,2:0,2:1\ncone compatible = True"
+  },
+  {
+    "chapter": "13",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "product(aba) = 12\nsum(aba) = 7\nempty product = 1\nhomomorphism = True"
+  },
+  {
+    "chapter": "14",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "pair = (3,7)\nindex/tabulate = True\ntabulate/index = True\nnatural = True"
+  },
+  {
+    "chapter": "15",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "3,5\n2,4\n2,4"
+  },
+  {
+    "chapter": "16",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "v10,v11\n0,1"
+  },
+  {
+    "chapter": "17",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "6,8\nTrue\nTrue\nHom(2,3)=9, Hom(3,2)=8"
+  },
+  {
+    "chapter": "18",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "7\n7\n4,3"
+  },
+  {
+    "chapter": "19",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "7\nTrue\n0\nTrue"
+  },
+  {
+    "chapter": "20",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "Some(2)\nNone\nSome(8)"
+  },
+  {
+    "chapter": "21",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "reader=10\nwriter=10:add;double;\nstate=21,12"
+  },
+  {
+    "chapter": "22",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "1,2,3\nTrue\nTrue\nTrue"
+  },
+  {
+    "chapter": "23",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "extract=4\nlocalSum=14\nfocus=2,2\npeek3=9,9"
+  },
+  {
+    "chapter": "24",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "value = 3\nstars = ***"
+  },
+  {
+    "chapter": "25",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "flatten then sum = 6\nsum then sum = 6\nunit(7) = 7\nlength unit(7) = 1"
+  },
+  {
+    "chapter": "26",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "natural families = 4"
+  },
+  {
+    "chapter": "27",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "exact extensions = 4\nLan(1) = 1\nRan(1) = 4\nRan projections = 1,2"
+  },
+  {
+    "chapter": "28",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "triangles = True\nscale 2 nonexpanding = False"
+  },
+  {
+    "chapter": "29",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "subset = 1,2\npullback indices = 1,2\nu OR not u = 1 (top=2)"
+  },
+  {
+    "chapter": "30",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "xyx = ABA\nempty = []\nsubstitution = xyyxxy\nassociative = True"
+  },
+  {
+    "chapter": "31",
+    "widgets": 3,
+    "static_svg": 2,
+    "quizzes": 4,
+    "structure": "PASS",
+    "csharp": "PASS",
+    "stdout": "pullback pairs = 4\nidA after idA = idA\nf after idA = f\nidB after f = f\nidB after idB = idB"
+  }
+]

@@ -1,0 +1,4 @@
+.visual-lab{margin:18px 0;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)}
+.visual-lab h3{margin:0 0 10px;font-size:16px}.visual-lab p{font-size:14px;color:var(--muted)}
+.visual-stage{overflow-x:auto}.visual-stage svg{display:block;width:100%;min-width:620px;height:auto}.visual-stage text{fill:var(--text);font-family:var(--sans);font-size:15px}.visual-stage .node{fill:var(--surface);stroke:var(--accent);stroke-width:2}.visual-stage .edge{fill:none;stroke:var(--accent);stroke-width:2}.visual-stage .missing{stroke:var(--bad);stroke-dasharray:6 5}.visual-stage .hot{fill:var(--accent-soft);stroke:var(--accent);stroke-width:3}
+.visual-stage .done{fill:var(--ok-soft);stroke:var(--ok);stroke-width:2}.visual-stage .group-boundary{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2;stroke-dasharray:6 4}.visual-stage .small{font-size:13px}

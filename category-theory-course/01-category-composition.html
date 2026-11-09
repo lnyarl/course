@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01. 범주와 합성 · 프로그래머를 위한 카테고리 이론</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/common.js"></script>
+<style>
+  .formula { padding: 12px 16px; background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 6px; overflow-x: auto; font-family: var(--mono); }
+  .source { font-size: 14px; color: var(--muted); }
+  .controls label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; min-width: 0; }
+  .controls input, .controls select { max-width: 100%; min-width: 0; padding: 7px 9px; font: inherit; border-radius: 6px; border: 1px solid var(--border); color: var(--text); background: var(--bg); }
+  .controls input[type="range"] { width: 180px; padding: 0; }
+  .widget .log { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 5em; }
+  .law-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 12px; }
+  .law-grid > div { padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .law-grid h3 { margin-top: 0; }
+  .relation { width: auto; margin: 12px 0; }
+  .relation td { text-align: center; min-width: 58px; }
+  .relation input { width: 20px; height: 20px; accent-color: var(--accent); }
+  .exercise { margin: 20px 0; }
+  .exercise h3 { margin-top: 16px; }
+  .source a, h1, h2, p, li { overflow-wrap: break-word; }
+  .diagram { width: 100%; min-width: 600px; }
+  .diagram-stage { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 0; }
+  .diagram text { font-size: 15px; }
+  .diagram .small { font-size: 12px; }
+  .diagram .edge { stroke: var(--accent); stroke-width: 2; fill: none; }
+</style>
+<link rel="stylesheet" href="assets/ch01-visuals.css">
+</head>
+<body data-chapter="01">
+<main>
+  <header class="chapter-head">
+    <span class="label">Part I · Chapter 01</span>
+    <h1>범주와 합성</h1>
+    <p class="lead">함수 두 개를 이어 붙이는 데서 시작합니다. 무엇을 연결할 수 있는지, 묶는 방법을 바꿔도 왜 결과가 같은지, 아무 일도 하지 않는 함수가 왜 필요한지 C#으로 확인합니다.</p>
+    <p class="source">원문 대응: <i>Category Theory for Programmers</i>, Chapter 1, “Category: The Essence of Composition”, 인쇄 pp. 2–10 · PDF pp. 20–28. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=20">원문 열기</a></p>
+    <div class="objectives"><h4>이번 장을 마치면</h4><ul>
+      <li><code>f : A → B</code>에서 타입과 함수를 각각 객체·사상으로 구분합니다.</li>
+      <li><code>g ∘ f</code>를 C#의 <code>x =&gt; g(f(x))</code>로 옮깁니다.</li>
+      <li>결합법칙과 교환법칙을 구분하고, 타입에 맞는 항등함수를 고릅니다.</li>
+      <li>함수의 결과 비교와 델리게이트의 동일성 비교를 구분합니다.</li>
+      <li>유향 그래프에 화살표만 있다고 범주가 되는 것은 아님을 설명합니다.</li>
+    </ul></div>
+  </header>
+
+  <nav class="toc" aria-label="장 목차"><b>목차</b><ol>
+    <li><a href="#motivation">작은 함수에서 큰 동작으로</a></li>
+    <li><a href="#arrows">객체·사상·합성의 방향</a></li>
+    <li><a href="#associativity">결합법칙: 순서를 유지하며 묶기</a></li>
+    <li><a href="#identity">항등함수와 타입의 경계</a></li>
+    <li><a href="#csharp">C#으로 구현하고 결과 비교하기</a></li>
+    <li><a href="#category">그래프는 언제 범주가 되는가</a></li>
+    <li><a href="#quiz">확인 문제</a></li>
+    <li><a href="#exercises">직접 구현하는 실습</a></li>
+  </ol></nav>
+
+  <section id="motivation">
+    <h2>1. 작은 함수에서 큰 동작으로</h2>
+    <p>문자열의 길이가 짝수인지 알려 주는 기능을 생각해 봅시다. 한 함수에서 문자열을 읽고 길이를 계산하고 짝수를 판정해도 됩니다. 하지만 길이를 구하는 일과 짝수를 판정하는 일은 각각 따로 이해할 수 있습니다. 이미 두 함수가 있다면 새로 필요한 일은 <b>앞 함수의 반환값을 뒷 함수의 인수로 전달하는 것</b>입니다.</p>
+    <pre><code>// 설명용 조각. 전체 실행 프로그램은 5절에 있습니다.
+Func&lt;string, int&gt; length = text =&gt; text.Length;
+Func&lt;int, bool&gt; isEven = n =&gt; n % 2 == 0;
+Func&lt;string, bool&gt; evenLength = text =&gt; isEven(length(text));
+
+Console.WriteLine(evenLength("code")); // True</code></pre>
+    <p><code>evenLength</code>를 호출하는 쪽은 두 함수의 구현을 몰라도 됩니다. <code>string</code>을 받아 <code>bool</code>을 돌려준다는 약속으로 사용할 수 있습니다. 원문의 출발점도 이 합성입니다. 큰 기능을 나누는 이유는 나중에 조각을 연결해 원하는 동작을 다시 만들 수 있기 때문입니다.</p>
+    <div class="callout tip"><span class="title">이번 장에서 말하는 객체</span>범주론의 객체(object)는 여기서는 <code>string</code>, <code>int</code>, <code>bool</code> 같은 <b>타입</b>으로 읽습니다. <code>new Customer()</code>로 만든 개별 인스턴스를 뜻하지 않습니다. 이것은 범주의 한 가지 모델이며, 모든 범주의 객체가 타입인 것은 아닙니다.</div>
+    <p>먼저 익숙한 함수로 법칙을 익힌 뒤, 6절에서 함수가 아닌 화살표로도 범주를 만들 수 있는지 살펴봅니다. 낯선 용어를 외우기보다 각 화살표의 출발점과 도착점을 적는 습관부터 들이세요.</p>
+  </section>
+
+  <section id="arrows">
+    <h2>2. 객체·사상·합성의 방향</h2>
+    <p><b>사상(morphism)</b>은 출발 객체와 도착 객체가 정해진 화살표입니다. <code>f : A → B</code>라고 쓰면 <code>A</code>가 정의역(domain), <code>B</code>가 공역(codomain)입니다. 이 장의 함수 모델에서는 <code>A</code>의 값을 받아 <code>B</code>의 값을 만드는 함수로 읽습니다. 공역은 실제로 나온 결과들의 집합인 치역과 다릅니다.</p>
+    <div class="formula">f : A → B, g : B → C<br>g ∘ f : A → C<br>(g ∘ f)(x) = g(f(x))</div>
+    <p><code>g ∘ f</code>는 <b>f를 먼저, g를 나중에</b> 실행합니다. 기호를 오른쪽에서 왼쪽으로 읽는 이유는 <code>g(f(x))</code>의 괄호 안부터 계산하기 때문입니다. 화살표를 따라갈 때는 A → B → C입니다. 두 표기는 같은 과정을 다른 방향으로 적습니다.</p>
+    <figure>
+      <div class="stage diagram-stage" tabindex="0" role="region" aria-label="좌우로 스크롤할 수 있는 도식">
+      <svg class="diagram" viewBox="0 0 760 250" role="img" aria-labelledby="composition-title composition-desc">
+        <title id="composition-title">타입이 맞는 두 함수의 합성</title>
+        <desc id="composition-desc">string에서 Length로 int를 얻고 isEven으로 bool을 얻는다. 합성 함수는 string에서 bool로 직접 가는 화살표다.</desc>
+        <defs><marker id="c-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+        <rect class="box" x="24" y="105" width="150" height="56" rx="10"/><text x="99" y="138" text-anchor="middle">A = string</text>
+        <rect class="box" x="306" y="105" width="150" height="56" rx="10"/><text x="381" y="138" text-anchor="middle">B = int</text>
+        <rect class="box" x="586" y="105" width="150" height="56" rx="10"/><text x="661" y="138" text-anchor="middle">C = bool</text>
+        <path class="edge" d="M174 133H302" marker-end="url(#c-arrow)"/><text x="238" y="111" text-anchor="middle">f = length</text>
+        <path class="edge" d="M456 133H582" marker-end="url(#c-arrow)"/><text x="520" y="111" text-anchor="middle">g = isEven</text>
+        <path class="edge" d="M99 105C170 8 590 8 661 101" marker-end="url(#c-arrow)"/><text x="380" y="35" text-anchor="middle">g ∘ f = evenLength</text>
+        <text class="small muted" x="99" y="194" text-anchor="middle">"code"</text><text class="small muted" x="381" y="194" text-anchor="middle">4</text><text class="small muted" x="661" y="194" text-anchor="middle">True</text>
+        <text class="small muted" x="380" y="230" text-anchor="middle">노드는 타입입니다. 아래 줄은 한 입력에서 나온 값입니다.</text>
+      </svg>
+      </div>
+      <figcaption>합성에 필요한 부분만 표시했습니다. 완전한 범주에는 항등사상도 있습니다. 작은 화면에서는 그림을 좌우로 스크롤하세요.</figcaption>
+    </figure>
+    <p>위 그림의 노드는 값이 아니라 타입입니다. 아래 줄의 <code>"code"</code>, <code>4</code>, <code>True</code>는 그 타입을 따라 이동하는 한 입력의 예입니다. 그림에는 합성에 필요한 화살표만 그렸으며, 완전한 범주에 필요한 항등사상 등은 생략했습니다.</p>
+    <p>합성하려면 접점이 맞아야 합니다. <code>isEven(length(text))</code>는 가능하지만 <code>length(isEven(n))</code>은 <code>bool</code>을 <code>string</code>으로 받으려 하므로 이 두 화살표로는 만들 수 없습니다. 이론의 객체는 정확하게 일치한다고 가정합니다. C#이 제공하는 상속·분산·암시적 변환까지 포함하려면 변환을 어떤 화살표로 모델링할지 추가로 정해야 합니다.</p>
+
+    <div class="widget" id="composer">
+      <div class="w-title">실험 1 · 합성 계산기</div>
+      <p class="w-desc">같은 정수 타입 안의 함수들을 고르세요. 먼저 예상한 뒤 g ∘ f와 f ∘ g를 비교합니다. 위젯은 표시된 작은 정수 범위에서 계산합니다.</p>
+      <div class="controls">
+        <label for="compose-x">입력 x <input id="compose-x" type="range" min="-10" max="10" step="1" value="2"></label>
+        <label for="compose-f">먼저 f <select id="compose-f"><option value="add">x + 3</option><option value="double">2x</option><option value="square">x²</option></select></label>
+        <label for="compose-g">나중에 g <select id="compose-g"><option value="double">2x</option><option value="add">x + 3</option><option value="square">x²</option></select></label>
+      </div>
+      <pre class="log" id="compose-output" aria-live="polite"></pre>
+    </div>
+    <div class="callout"><span class="title">기호와 API의 인수 순서는 별개의 선택입니다</span>아래에서 구현할 <code>Compose(g, f)</code>는 수학 표기 <code>g ∘ f</code>에 맞춥니다. 반대로 <code>Then(f, g)</code>처럼 실행 순서를 먼저 적는 API도 만들 수 있습니다. 이름과 인수 순서를 정한 뒤 일관되게 사용해야 합니다.</div>
+  </section>
+
+  <section id="associativity">
+    <h2>3. 결합법칙: 순서를 유지하며 묶기</h2>
+    <p>이제 함수가 세 개 있다고 합시다. <code>f : A → B</code>, <code>g : B → C</code>, <code>h : C → D</code>입니다. 먼저 f와 g를 하나의 함수로 만들고 h를 붙여도 되고, g와 h를 먼저 묶은 뒤 f를 붙여도 됩니다. 두 방법은 같은 입력에 같은 결과를 줘야 합니다.</p>
+    <div class="formula">h ∘ (g ∘ f) = (h ∘ g) ∘ f<br>두 쪽 모두 x ↦ h(g(f(x)))</div>
+    <p>이것이 <b>결합법칙(associativity)</b>입니다. 함수 호출을 생략한 약속이 아니라, 합성한 함수를 어떤 단위로 묶어 재사용해도 전체 의미가 유지된다는 법칙입니다. 예를 들어 “정규화 → 길이 계산”을 먼저 추출하든 “길이 계산 → 짝수 판정”을 먼저 추출하든 함수의 연결 순서가 같으면 결과도 같습니다.</p>
+    <div class="law-grid"><div><h3>결합법칙</h3><p><code>h ∘ (g ∘ f)</code>와 <code>(h ∘ g) ∘ f</code>의 비교입니다. <b>f → g → h 순서는 그대로</b>이고 괄호만 옮깁니다.</p></div><div><h3>교환법칙</h3><p><code>g ∘ f</code>와 <code>f ∘ g</code>의 비교입니다. <b>실행 순서를 바꿉니다.</b> 범주의 합성에는 요구하지 않으며 역순이 타입상 불가능할 수도 있습니다.</p></div></div>
+    <p>실험 1의 기본 함수 f(x) = x + 3, g(x) = 2x에 x = 2를 넣으면 g(f(2)) = 10, f(g(2)) = 7입니다. 결합법칙은 이 차이를 없애 주지 않습니다. “순서를 자유롭게 바꿔도 된다”로 기억하면 잘못된 리팩터링을 하게 됩니다.</p>
+    <div class="widget" id="association">
+      <div class="w-title">실험 2 · 함수의 묶음과 호출 순서 구분하기</div>
+      <p class="w-desc">f(x) = x + 1, g(x) = 2x, h(x) = x²입니다. 묶음을 바꾸면 점선 경계가 옮겨 갑니다. f → g → h의 호출 순서와 각 중간값은 그대로인지 확인하세요.</p>
+      <div class="controls">
+        <label for="assoc-x">입력 x <input id="assoc-x" type="range" min="-4" max="4" step="1" value="2"></label>
+        <label for="assoc-group">함수를 만드는 묶음 <select id="assoc-group"><option value="fg">h ∘ (g ∘ f)</option><option value="gh">(h ∘ g) ∘ f</option></select></label>
+      </div>
+      <pre class="log" id="assoc-output" aria-live="polite"></pre>
+    </div>
+    <details class="deep"><summary>왜 같은가: 입력 하나를 따라가며 증명하기</summary><div>
+      <p>합성의 정의를 적용하면 <code>[h ∘ (g ∘ f)](x) = h((g ∘ f)(x)) = h(g(f(x)))</code>입니다. 다른 쪽은 <code>[(h ∘ g) ∘ f](x) = (h ∘ g)(f(x)) = h(g(f(x)))</code>입니다. 정의역 A의 <b>모든</b> x에서 같으므로 두 함수는 외연적으로 같습니다.</p>
+      <p>위젯은 이 식을 특정 수에 적용해 보여 줍니다. 몇 개의 입력을 실행한 결과가 이 일반적인 증명을 대신하지는 않습니다.</p>
+    </div></details>
+  </section>
+
+  <section id="identity">
+    <h2>4. 항등함수와 타입의 경계</h2>
+    <p>각 객체 A에는 그 객체에서 출발해 같은 객체로 돌아오는 <b>항등사상(identity morphism)</b> <code>id_A : A → A</code>가 있습니다. 함수 모델에서는 입력을 그대로 돌려주는 <code>x =&gt; x</code>입니다. 아무 함수나 자기 자신으로 가기만 하면 항등사상인 것은 아닙니다. 예를 들어 정수에 1을 더하는 함수도 정수에서 정수로 가지만 다른 함수와 합성할 때 결과를 바꿉니다.</p>
+    <div class="formula">f : A → B일 때<br>f ∘ id_A = f<br>id_B ∘ f = f</div>
+    <p><code>id_A</code>는 f <b>앞</b>에서 A를 보존하고, <code>id_B</code>는 f <b>뒤</b>에서 B를 보존합니다. length가 string → int라면 앞에는 문자열 항등함수, 뒤에는 정수 항등함수를 붙여야 합니다. 동작이 비슷하다는 이유로 타입을 바꿔 붙일 수는 없습니다.</p>
+    <figure>
+      <div class="stage diagram-stage" tabindex="0" role="region" aria-label="좌우로 스크롤할 수 있는 도식">
+      <svg class="diagram" viewBox="0 0 760 235" role="img" aria-labelledby="identity-title identity-desc">
+        <title id="identity-title">함수 양 끝의 서로 다른 타입에 맞는 항등사상</title>
+        <desc id="identity-desc">왼쪽 string 객체에는 id string의 고리, 오른쪽 int 객체에는 id int의 고리가 있다. length 앞과 뒤에 각 항등사상을 붙여도 같은 string에서 int 함수다.</desc>
+        <defs><marker id="i-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker></defs>
+        <rect class="box" x="90" y="100" width="180" height="60" rx="12"/><text x="180" y="136" text-anchor="middle">A = string</text>
+        <rect class="box" x="490" y="100" width="180" height="60" rx="12"/><text x="580" y="136" text-anchor="middle">B = int</text>
+        <path class="edge" d="M270 130H486" marker-end="url(#i-arrow)"/><text x="380" y="113" text-anchor="middle">f = length</text>
+        <path class="edge" d="M120 100C20 10 340 10 240 96" marker-end="url(#i-arrow)"/><text x="180" y="30" text-anchor="middle">id_A : string → string</text>
+        <path class="edge" d="M520 100C420 10 740 10 640 96" marker-end="url(#i-arrow)"/><text x="580" y="30" text-anchor="middle">id_B : int → int</text>
+        <text class="small muted" x="180" y="193" text-anchor="middle">"code" ↦ "code"</text><text class="small muted" x="580" y="193" text-anchor="middle">4 ↦ 4</text>
+        <text x="380" y="226" text-anchor="middle">id_B ∘ f = f = f ∘ id_A</text>
+      </svg>
+      </div>
+      <figcaption>항등사상은 객체마다 필요합니다. C#의 제네릭 함수 하나로 그 함수족을 표현할 수 있습니다. 작은 화면에서는 그림을 좌우로 스크롤하세요.</figcaption>
+    </figure>
+    <p>항등함수는 비어 있는 처리 단계를 표현하는 데 쓸 수 있습니다. 선택적 정규화 기능이 꺼졌다면 <code>normalize = Identity&lt;string&gt;</code>을 선택합니다. 호출하는 쪽은 분기 없이 같은 합성 구조를 유지할 수 있습니다. 0이 덧셈의 빈 시작값인 것처럼 항등함수는 합성의 빈 시작값입니다.</p>
+    <div class="widget" id="type-checker">
+      <div class="w-title">실험 3 · 타입을 확인하고 항등함수 붙이기</div>
+      <p class="w-desc">위젯은 표시된 타입이 정확히 일치할 때만 합성합니다. 문자열 입력은 그대로 사용하고, Int는 −1000~1000의 정수, Bool은 true 또는 false를 입력합니다. 이는 C# 컴파일러 전체를 흉내 내는 도구가 아닙니다.</p>
+      <div class="controls">
+        <label for="type-f">먼저 f <select id="type-f"><option value="length">Length : String → Int</option><option value="append">AppendBang : String → String</option><option value="even">IsEven : Int → Bool</option><option value="idString">id_String : String → String</option><option value="idInt">id_Int : Int → Int</option><option value="idBool">id_Bool : Bool → Bool</option></select></label>
+        <label for="type-g">나중에 g <select id="type-g"><option value="even">IsEven : Int → Bool</option><option value="length">Length : String → Int</option><option value="append">AppendBang : String → String</option><option value="idString">id_String : String → String</option><option value="idInt">id_Int : Int → Int</option><option value="idBool">id_Bool : Bool → Bool</option></select></label>
+        <label for="type-input">입력값 <input id="type-input" type="text" value="code" maxlength="80"></label>
+      </div>
+      <pre class="log" id="type-output" aria-live="polite"></pre>
+    </div>
+    <div class="callout warn"><span class="title">항등함수는 복사 함수가 아닙니다</span>C#에서 참조형 값을 그대로 돌려주면 같은 참조가 돌아옵니다. 깊은 복사나 불변성 보장을 새로 만들지 않습니다. 항등함수를 통과한 뒤 원본 객체를 수정하면 그 참조를 공유하는 코드에도 영향이 있습니다.</div>
+  </section>
+
+  <section id="csharp">
+    <h2>5. C#으로 구현하고 결과 비교하기</h2>
+    <p>C#의 <code>Func&lt;A, B&gt;</code>는 A를 받아 B를 반환하는 델리게이트 타입입니다. 합성은 두 함수를 받아 새 함수를 만드는 고차 함수입니다. 아래의 제네릭 인수 A, B, C는 각각 출발·중간·도착 타입이며, 중간 타입 B가 양쪽에서 공유되어 접점을 맞춥니다.</p>
+    <p>다음은 <b>C# 12 / .NET 8, 외부 패키지 없는 전체 Program.cs</b>입니다. 정수 연산은 <code>BigInteger</code>로 표현해 예제의 덧셈·곱셈에서 고정 폭 정수 오버플로를 피합니다. 실제 실행의 메모리 한계까지 수학적 정수로 없애는 것은 아닙니다.</p>
+    <pre data-csharp="true"><code>using System;
+using System.Linq;
+using System.Numerics;
+
+internal static class Program
+{
+    static T Identity&lt;T&gt;(T value) =&gt; value;
+
+    // Compose(g, f)는 f를 먼저 실행하고 g를 실행한다.
+    static Func&lt;A, C&gt; Compose&lt;A, B, C&gt;(
+        Func&lt;B, C&gt; g, Func&lt;A, B&gt; f)
+        =&gt; x =&gt; g(f(x));
+
+    static bool SameOn&lt;A, B&gt;(
+        Func&lt;A, B&gt; left, Func&lt;A, B&gt; right, A[] samples)
+        =&gt; samples.All(x =&gt;
+            System.Collections.Generic.EqualityComparer&lt;B&gt;
+                .Default.Equals(left(x), right(x)));
+
+    static void Main()
+    {
+        Func&lt;string, int&gt; length = text =&gt; text.Length;
+        Func&lt;int, bool&gt; isEven = n =&gt; n % 2 == 0;
+        var evenLength = Compose&lt;string, int, bool&gt;(isEven, length);
+        Console.WriteLine($"evenLength(code) = {evenLength("code")}");
+
+        Func&lt;BigInteger, BigInteger&gt; f = x =&gt; x + 1;
+        Func&lt;BigInteger, BigInteger&gt; g = x =&gt; x * 2;
+        Func&lt;BigInteger, BigInteger&gt; h = x =&gt; x * x;
+        var left = Compose(h, Compose(g, f));
+        var right = Compose(Compose(h, g), f);
+        BigInteger[] samples = [-2, -1, 0, 1, 2];
+        Console.WriteLine($"left(2) = {left(2)}");
+        Console.WriteLine($"right(2) = {right(2)}");
+        Console.WriteLine($"associative on samples = {SameOn(left, right, samples)}");
+
+        Func&lt;string, string&gt; idString = Identity&lt;string&gt;;
+        Func&lt;int, int&gt; idInt = Identity&lt;int&gt;;
+        string[] words = ["", "a", "code"];
+        var before = Compose&lt;string, string, int&gt;(length, idString);
+        var after = Compose&lt;string, int, int&gt;(idInt, length);
+        Console.WriteLine($"identity before = {SameOn(before, length, words)}");
+        Console.WriteLine($"identity after = {SameOn(after, length, words)}");
+
+        Func&lt;bool, bool&gt; not = value =&gt; !value;
+        Func&lt;bool, bool&gt; idBool = Identity&lt;bool&gt;;
+        var twice = Compose&lt;bool, bool, bool&gt;(not, not);
+        Console.WriteLine($"not twice = {SameOn(twice, idBool, [false, true])}");
+    }
+}</code></pre>
+    <p>코스의 <code>examples/Ch01/Program.cs</code>에서 같은 프로그램을 확인할 수 있습니다. 해당 폴더에서 <code>dotnet run</code>으로 실행합니다. 출력은 다음과 같습니다.</p>
+    <pre><code>evenLength(code) = True
+left(2) = 36
+right(2) = 36
+associative on samples = True
+identity before = True
+identity after = True
+not twice = True</code></pre>
+    <h3>같다는 것은 어떤 뜻인가</h3>
+    <p>위 법칙의 등호는 <b>외연적 동등성(extensional equality)</b>입니다. 정의역의 모든 입력에 대해 결과가 같다는 뜻입니다. C# 델리게이트의 <code>==</code>는 메서드와 대상 객체로 이루어진 호출 목록을 비교합니다. 모든 인수를 넣어 함수를 비교하는 연산이 아닙니다. 따라서 <code>Compose(id, f) == f</code>를 검사하는 코드는 항등법칙을 올바르게 검사하지 못합니다.</p>
+    <p><code>SameOn</code>은 주어진 입력들의 반환값을 비교할 뿐입니다. 일반적인 문자열·정수 함수에서 샘플 5개가 같다고 모든 입력에서 같다고 결론 내릴 수는 없습니다. 반면 순수 전함수 bool → bool의 정의역은 <code>false</code>, <code>true</code>뿐이므로 두 값을 빠짐없이 확인하면 그 모델에서는 전수 검사입니다. 결과 타입 B의 비교 방법도 중요합니다. 위 프로그램의 int, bool, BigInteger는 값 비교가 적합하지만, 임의의 참조형까지 원하는 의미로 비교해 주는 보편적인 함수는 아닙니다.</p>
+    <div class="callout warn"><span class="title">모든 C# 함수가 이 모델에 들어가지는 않습니다</span>이 장에서는 명시한 정의역의 모든 입력에서 끝나고 결과를 내는 <b>순수 전함수</b>를 사용합니다. <code>length</code>의 정의역은 null을 제외한 문자열입니다. <code>Func&lt;string, int&gt;</code>만으로 null 불가·종료·순수성을 컴파일러가 증명하지는 않습니다. 예외, 무한 반복, 시간 읽기, 외부 상태 변경은 추가 모델링이 필요합니다. 리소스 고갈과 실행 비용도 여기서 비교하는 값의 의미에는 포함하지 않습니다.</div>
+    <p>부작용이 있다고 함수 합성의 괄호를 바꾸는 것만으로 반드시 호출 순서가 바뀌는 것은 아닙니다. 이 장에서 순수성을 요구하는 이유는 “함수는 입력과 출력으로 설명된다”는 모델과 등호를 명확히 쓰기 위해서입니다. 부작용을 다루는 구조는 원문 4장과 뒤의 모나드 장에서 이어집니다.</p>
+  </section>
+
+  <section id="category">
+    <h2>6. 그래프는 언제 범주가 되는가</h2>
+    <p>지금까지 배운 내용을 함수 예제에서 떼어 내면 범주의 정의가 됩니다. 범주에는 객체와 사상이 있고, 각 사상의 출발·도착 객체가 정해집니다. 도착과 출발이 맞는 두 사상에는 합성이 정의되며, 각 객체에는 항등사상이 있습니다. 합성은 결합법칙과 양쪽 항등법칙을 만족해야 합니다.</p>
+    <p>따라서 A → B, B → C를 그렸다는 사실만으로 범주가 되지는 않습니다. 합성 A → C가 필요하고, A·B·C 각각의 항등사상도 필요합니다. 한 쌍의 객체 사이에 여러 화살표가 있다면 어느 것이 어떤 합성의 결과인지도 정해야 합니다. 필요한 화살표가 있다는 사실만으로 결합법칙이 자동으로 정해지지는 않습니다.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>구조</th><th>있는 것</th><th>추가로 확인할 것</th></tr></thead><tbody>
+      <tr><td>유향 그래프</td><td>노드와 화살표</td><td>합성과 항등사상을 갖추었는지 보장하지 않음</td></tr>
+      <tr><td>범주</td><td>객체, 사상, 합성, 항등사상</td><td>합성의 결합법칙과 양쪽 항등법칙</td></tr>
+      <tr><td>자유 범주의 구성 예고</td><td>그래프의 노드는 객체, 유한 경로는 사상</td><td>합성은 경로 연결, 항등은 길이 0 경로. 3장에서 자세히 다룸</td></tr>
+    </tbody></table></div>
+    <p>웹 페이지를 객체, 직접 걸린 하이퍼링크를 사상이라고 해도 바로 범주는 아닙니다. A에서 B로 링크가 있고 B에서 C로 링크가 있다고 A에서 C로 직접 가는 링크가 반드시 있지는 않기 때문입니다. 대신 “유한한 링크 경로”를 사상으로 삼으면 경로를 이어 붙이는 합성을 생각할 수 있습니다. 무엇을 사상으로 정하느냐가 결론을 바꿉니다.</p>
+    <div class="widget" id="graph-checker">
+      <div class="w-title">실험 4 · 제한된 관계 모델에서 범주 조건 확인하기</div>
+      <p class="w-desc">A, B, C 사이에 화살표가 최대 하나인 경우만 다룹니다. 행은 출발, 열은 도착입니다. 이 모델은 반사성과 추이성을 만족하면 얇은 범주가 됩니다. 일반적인 다중 화살표 범주 검사기는 아닙니다.</p>
+      <div class="tbl-wrap"><table class="relation"><thead><tr><th scope="col">출발 ↓ / 도착 →</th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th></tr></thead><tbody>
+        <tr><th scope="row">A</th><td><input type="checkbox" data-from="0" data-to="0" aria-label="A에서 A로 화살표"></td><td><input type="checkbox" data-from="0" data-to="1" aria-label="A에서 B로 화살표" checked></td><td><input type="checkbox" data-from="0" data-to="2" aria-label="A에서 C로 화살표"></td></tr>
+        <tr><th scope="row">B</th><td><input type="checkbox" data-from="1" data-to="0" aria-label="B에서 A로 화살표"></td><td><input type="checkbox" data-from="1" data-to="1" aria-label="B에서 B로 화살표"></td><td><input type="checkbox" data-from="1" data-to="2" aria-label="B에서 C로 화살표" checked></td></tr>
+        <tr><th scope="row">C</th><td><input type="checkbox" data-from="2" data-to="0" aria-label="C에서 A로 화살표"></td><td><input type="checkbox" data-from="2" data-to="1" aria-label="C에서 B로 화살표"></td><td><input type="checkbox" data-from="2" data-to="2" aria-label="C에서 C로 화살표"></td></tr>
+      </tbody></table></div>
+      <div class="controls"><button class="btn" type="button" id="graph-identities">항등사상 추가</button><button class="btn primary" type="button" id="graph-close">항등·추이 폐포 계산</button><button class="btn" type="button" id="graph-reset">A → B → C로 초기화</button></div>
+      <pre class="log" id="graph-output" aria-live="polite"></pre>
+    </div>
+    <details class="deep"><summary>이 제한된 모델에서는 왜 법칙이 자동으로 성립할까</summary><div>
+      <p>각 객체 쌍의 사상이 최대 하나라면, A → B와 B → C가 있을 때 A → C의 유일한 사상을 합성 결과로 정할 수 있습니다. 존재는 추이성으로 보장합니다. 세 화살표를 어떻게 묶어도 같은 시작과 끝을 가지며, 그 사이의 사상은 최대 하나이므로 결합법칙이 성립합니다. 자기 자신으로 가는 사상을 반사성으로 마련하면 같은 유일성 때문에 항등법칙도 성립합니다.</p>
+      <p>그래프의 서로 다른 경로들을 별개 사상으로 보존하는 자유 범주와는 다릅니다. 이 위젯의 “폐포”는 도달 가능 여부만 남기므로 여러 경로를 하나의 관계로 합칩니다.</p>
+    </div></details>
+  </section>
+
+  <section id="quiz">
+    <h2>7. 확인 문제</h2>
+    <div class="quiz" data-answer="1"><div class="q">f : A → B, g : B → C일 때 g ∘ f의 뜻은?</div><button class="opt">g를 먼저 실행한 뒤 f를 실행한다.</button><button class="opt">f를 먼저 실행한 뒤 g를 실행하며 A → C가 된다.</button><button class="opt">f와 g의 실행 순서를 마음대로 바꿀 수 있다.</button><div class="explain">(g ∘ f)(x) = g(f(x))입니다. 중간 타입 B가 접점이 됩니다.</div></div>
+    <div class="quiz" data-answer="2"><div class="q">결합법칙이 허용하는 변경은?</div><button class="opt">h(g(f(x)))를 f(g(h(x)))로 바꾸기</button><button class="opt">타입이 다른 함수들을 임의로 연결하기</button><button class="opt">실행 순서는 유지하면서 h ∘ (g ∘ f)를 (h ∘ g) ∘ f로 묶기</button><div class="explain">결합법칙은 괄호의 위치에 관한 법칙입니다. 교환법칙을 요구하지 않습니다.</div></div>
+    <div class="quiz" data-answer="0"><div class="q">length : String → Int에 맞는 항등법칙은?</div><button class="opt">length ∘ id_String = id_Int ∘ length = length</button><button class="opt">length ∘ id_Int = id_String ∘ length = length</button><button class="opt">id_String과 id_Int는 언제나 서로 바꿔 쓸 수 있다.</button><div class="explain">입력 쪽에는 String → String, 출력 쪽에는 Int → Int가 필요합니다.</div></div>
+    <div class="quiz" data-answer="1"><div class="q">정수 함수 두 개가 샘플 5개에서 같은 값을 반환했다. 확실히 말할 수 있는 것은?</div><button class="opt">두 함수가 모든 정수에서 같다는 증명이 끝났다.</button><button class="opt">그 샘플에서 반환값이 같았다. 일반적인 함수 동등성 증명은 아니다.</button><button class="opt">C# 델리게이트의 ==도 반드시 true가 된다.</button><div class="explain">외연적 동등성은 전체 정의역에 대한 주장입니다. 델리게이트의 호출 목록 비교와도 다릅니다.</div></div>
+    <div class="quiz" data-answer="2"><div class="q">A → B, B → C라는 직접 링크만 있는 그래프가 바로 범주가 아닌 이유는?</div><button class="opt">범주에는 반드시 숫자 타입이 있어야 해서</button><button class="opt">범주에는 서로 다른 객체 사이의 화살표가 없어야 해서</button><button class="opt">필요한 합성·항등사상과 그 법칙이 아직 갖추어지지 않아서</button><div class="explain">A → C 합성과 각 객체의 항등사상이 필요합니다. 일반적인 경우에는 합성 연산과 법칙까지 정해야 합니다.</div></div>
+  </section>
+
+  <section id="exercises">
+    <h2>8. 직접 구현하는 실습</h2>
+    <article class="exercise"><h3>실습 A · 합성 순서를 드러내는 API 만들기</h3>
+      <p>5절의 <code>Compose</code>를 참고해 <code>Then&lt;A,B,C&gt;(Func&lt;A,B&gt; f, Func&lt;B,C&gt; g)</code>를 구현하세요. 입력 순서는 실행 순서입니다. <code>f(x) = x + 3</code>, <code>g(x) = 2x</code>를 <code>BigInteger</code>로 정의하고 <code>Then(f,g)(2)</code>와 <code>Then(g,f)(2)</code>를 출력하세요.</p>
+      <p><b>기대 결과:</b> 첫째 줄 <code>10</code>, 둘째 줄 <code>7</code>. 두 출력이 다르면서도 <code>Then(Then(f,g),h)</code>와 <code>Then(f,Then(g,h))</code>는 같은 호출 순서가 되는 이유를 설명하세요.</p>
+      <details class="deep"><summary>힌트</summary><div><p>반환할 함수는 x 하나를 받습니다. f의 반환값을 g에 넣으세요. 함수 자체를 만들 때 f나 g를 미리 호출할 필요는 없습니다.</p></div></details>
+      <details class="deep"><summary>해답 · Program 클래스에 추가할 조각</summary><div><pre><code>static Func&lt;A, C&gt; Then&lt;A, B, C&gt;(
+    Func&lt;A, B&gt; f, Func&lt;B, C&gt; g)
+    =&gt; x =&gt; g(f(x));
+
+// Main 안에서 실행
+Func&lt;BigInteger, BigInteger&gt; add3 = x =&gt; x + 3;
+Func&lt;BigInteger, BigInteger&gt; doubleIt = x =&gt; x * 2;
+Console.WriteLine(Then(add3, doubleIt)(2)); // 10
+Console.WriteLine(Then(doubleIt, add3)(2)); // 7</code></pre><p>f·g·h를 세 번 실행하는 순서는 양쪽 모두 f → g → h입니다. 두 함수를 먼저 묶어 만든다는 것과 입력값을 먼저 계산한다는 것은 구분해야 합니다.</p></div></details>
+    </article>
+    <article class="exercise"><h3>실습 B · Bool → Bool 함수를 전수 검사하기</h3>
+      <p>순수 전함수 Bool → Bool은 네 가지입니다. 항상 false, 항상 true, 입력 그대로, 부정입니다. 각 함수에 대해 앞·뒤에 항등함수를 붙인 결과가 원래 함수와 같은지 <code>false</code>와 <code>true</code> 모두에서 확인하세요. 네 함수에서 세 함수를 고르는 모든 경우에 결합법칙도 검사하세요.</p>
+      <p><b>기대 결과:</b> 항등법칙 검사 <code>16</code>개, 결합법칙 검사 <code>128</code>개가 모두 통과합니다. 16은 함수 4개 × 입력 2개 × 항등함수 위치 2곳, 128은 함수 선택 4³가지 × 입력 2개입니다.</p>
+      <details class="deep"><summary>힌트</summary><div><p>함수는 배열에 담고 입력은 <code>new[] { false, true }</code>로 순회하세요. 결합법칙에서는 g와 f를 바꾸지 말고 Compose의 중첩만 바꾸세요. 기존 Main의 끝에 아래 조각을 넣을 수 있습니다.</p></div></details>
+      <details class="deep"><summary>해답 · Main에 추가할 조각</summary><div><pre><code>Func&lt;bool, bool&gt;[] functions =
+[
+    _ =&gt; false, _ =&gt; true, Identity&lt;bool&gt;, x =&gt; !x
+];
+Func&lt;bool, bool&gt; identity = Identity&lt;bool&gt;;
+int identityChecks = 0, associationChecks = 0;
+foreach (var fn in functions)
+foreach (var value in new[] { false, true })
+{
+    if (Compose&lt;bool, bool, bool&gt;(fn, identity)(value) != fn(value))
+        throw new Exception("identity before");
+    if (Compose&lt;bool, bool, bool&gt;(identity, fn)(value) != fn(value))
+        throw new Exception("identity after");
+    identityChecks += 2;
+}
+foreach (var first in functions)
+foreach (var second in functions)
+foreach (var third in functions)
+foreach (var value in new[] { false, true })
+{
+    var lhs = Compose(third, Compose(second, first));
+    var rhs = Compose(Compose(third, second), first);
+    if (lhs(value) != rhs(value)) throw new Exception("associativity");
+    associationChecks++;
+}
+Console.WriteLine($"identity checks = {identityChecks}"); // 16
+Console.WriteLine($"associativity checks = {associationChecks}"); // 128</code></pre><p>이 경우는 Bool → Bool의 가능한 모든 순수 전함수와 입력을 열거했으므로 이 유한 모델에 대한 전수 검사입니다. 모든 C# 타입에 대한 결합법칙의 증명은 3절의 식 전개가 담당합니다.</p></div></details>
+    </article>
+  </section>
+
+  <div class="summary"><h3>핵심 요약</h3><ul>
+    <li>타입을 객체, 순수 전함수를 사상으로 읽으면 함수 연결을 범주의 합성으로 설명할 수 있습니다.</li>
+    <li><code>g ∘ f</code>는 f 다음 g입니다. 중간 타입이 맞아야 합니다.</li>
+    <li>결합법칙은 묶는 위치를 바꾸며, 실행 순서를 바꾸지 않습니다.</li>
+    <li>객체 A마다 <code>id_A</code>가 있고, <code>f : A → B</code>에는 <code>f ∘ id_A = id_B ∘ f = f</code>가 성립합니다.</li>
+    <li>법칙의 등호는 모든 입력에서의 결과 동등성입니다. C# 델리게이트의 <code>==</code>와 구별합니다.</li>
+    <li>그래프를 범주로 보려면 사상·합성·항등사상을 정하고 법칙을 확인해야 합니다.</li>
+  </ul><p>다음 원문 2장은 “타입을 값들의 집합처럼 본다”는 모델이 무엇을 설명하고 어디서 주의가 필요한지 다룹니다.</p></div>
+  <p class="source">기반 자료: Bartosz Milewski, <i>Category Theory for Programmers</i>, Chapter 1. PDF 편집 Igal Tabachnik, version 98b71ac, 2023-01-30. 원문의 개념 전개를 따라 한국어 해설·C# 예제·도식·실습을 새로 구성했습니다. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=20">원문 PDF pp. 20–28</a> · 원문 및 본 해설의 라이선스: <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</p>
+</main>
+<script>
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const compose = (g, f) => x => g(f(x));
+  const identity = x => x;
+  const show = value => typeof value === "string" ? JSON.stringify(value) : String(value);
+  const af = x => x + 1, ag = x => x * 2, ah = x => x * x;
+  function renderAssociation() {
+    const x = Number($("assoc-x").value), fg = $("assoc-group").value === "fg";
+    const left = compose(ah, compose(ag, af))(x), right = compose(compose(ah, ag), af)(x);
+    $("assoc-output").textContent = `구성: ${fg ? "k = g ∘ f를 만든 뒤 h ∘ k" : "k = h ∘ g를 만든 뒤 k ∘ f"}\n전체 비교: h ∘ (g ∘ f) = ${left}, (h ∘ g) ∘ f = ${right}\n묶음은 바뀌어도 호출 순서 f → g → h는 같습니다.`;
+  }
+  ["assoc-x", "assoc-group"].forEach(id => $(id).addEventListener("input", renderAssociation));
+  renderAssociation();
+
+  const typedFunctions = {
+    length: { name: "Length", from: "String", to: "Int", run: x => x.length },
+    append: { name: "AppendBang", from: "String", to: "String", run: x => x + "!" },
+    even: { name: "IsEven", from: "Int", to: "Bool", run: x => x % 2 === 0 },
+    idString: { name: "id_String", from: "String", to: "String", run: identity },
+    idInt: { name: "id_Int", from: "Int", to: "Int", run: identity },
+    idBool: { name: "id_Bool", from: "Bool", to: "Bool", run: identity }
+  };
+  function parseTyped(type, raw) {
+    if (type === "String") return { ok: true, value: raw };
+    if (type === "Int") {
+      const text = raw.trim(), n = Number(text);
+      return /^-?\d+$/.test(text) && Number.isInteger(n) && Math.abs(n) <= 1000
+        ? { ok: true, value: n } : { ok: false, error: "Int 입력에는 −1000~1000의 정수를 입력하세요." };
+    }
+    if (/^(true|false)$/i.test(raw.trim())) return { ok: true, value: raw.trim().toLowerCase() === "true" };
+    return { ok: false, error: "Bool 입력에는 true 또는 false를 입력하세요." };
+  }
+  function renderTypes() {
+    const f = typedFunctions[$("type-f").value], g = typedFunctions[$("type-g").value];
+    const header = `${f.name} : ${f.from} → ${f.to}\n${g.name} : ${g.from} → ${g.to}`;
+    if (f.to !== g.from) {
+      $("type-output").textContent = `${header}\n\n합성 불가: ${f.to} ≠ ${g.from}\n이 두 화살표를 그대로 연결할 수 없습니다.`;
+      return;
+    }
+    const parsed = parseTyped(f.from, $("type-input").value);
+    if (!parsed.ok) { $("type-output").textContent = `${header}\n\n타입 연결은 가능. ${parsed.error}`; return; }
+    const x = parsed.value, middle = f.run(x), result = compose(g.run, f.run)(x);
+    const before = compose(f.run, identity)(x), after = compose(identity, f.run)(x);
+    $("type-output").textContent = `${header}\n\n합성 가능: ${f.from} → ${g.to}\n${show(x)} → ${show(middle)} → ${show(result)}\n\nf에 항등함수 붙이기:\nf(id_${f.from}(x)) = ${show(before)}\nid_${f.to}(f(x)) = ${show(after)}\nf(x) = ${show(middle)}\n이 입력에서 세 결과가 같습니다.`;
+  }
+  ["type-f", "type-g", "type-input"].forEach(id => $(id).addEventListener("input", renderTypes));
+  renderTypes();
+
+  const relationInputs = [...$("graph-checker").querySelectorAll("input[type=checkbox]")];
+  const readRelation = () => {
+    const relation = Array.from({ length: 3 }, () => [false, false, false]);
+    relationInputs.forEach(input => { relation[Number(input.dataset.from)][Number(input.dataset.to)] = input.checked; });
+    return relation;
+  };
+  function relationFailures(relation) {
+    const identities = [], composites = [];
+    for (let a = 0; a < 3; a++) {
+      if (!relation[a][a]) identities.push(a);
+      for (let b = 0; b < 3; b++) for (let c = 0; c < 3; c++) {
+        if (relation[a][b] && relation[b][c] && !relation[a][c]) composites.push([a, b, c]);
+      }
+    }
+    return { identities, composites };
+  }
+  function reflexiveTransitiveClosure(relation) {
+    const result = relation.map(row => [...row]);
+    for (let a = 0; a < 3; a++) result[a][a] = true;
+    for (let k = 0; k < 3; k++) for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) {
+      result[a][b] = result[a][b] || (result[a][k] && result[k][b]);
+    }
+    return result;
+  }
+  function writeRelation(relation) {
+    relationInputs.forEach(input => { input.checked = relation[Number(input.dataset.from)][Number(input.dataset.to)]; });
+  }
+  function renderRelation() {
+    const relation = readRelation(), { identities, composites } = relationFailures(relation);
+    const names = ["A", "B", "C"], missingPairs = [...new Set(composites.map(([a, , c]) => `${names[a]} → ${names[c]}`))];
+    const count = relation.flat().filter(Boolean).length;
+    $("graph-output").textContent = `화살표 ${count}개\n부족한 항등사상: ${identities.length ? identities.map(a => `id_${names[a]}`).join(", ") : "없음"}\n부족한 합성 결과: ${missingPairs.length ? missingPairs.join(", ") : "없음"}\n${identities.length || composites.length ? "현재 관계는 범주 조건을 만족하지 않습니다." : "이 최대 한 화살표 모델에서는 범주 조건을 만족합니다."}\n${composites.length ? `예: ${names[composites[0][0]]} → ${names[composites[0][1]]} → ${names[composites[0][2]]}의 합성이 없습니다.` : "같은 출발·도착의 사상이 유일하므로, 존재하는 합성의 결합법칙은 자동으로 성립합니다."}`;
+  }
+  relationInputs.forEach(input => input.addEventListener("change", renderRelation));
+  $("graph-identities").addEventListener("click", () => {
+    const relation = readRelation(); for (let a = 0; a < 3; a++) relation[a][a] = true;
+    writeRelation(relation); renderRelation();
+  });
+  $("graph-close").addEventListener("click", () => { writeRelation(reflexiveTransitiveClosure(readRelation())); renderRelation(); });
+  $("graph-reset").addEventListener("click", () => { writeRelation([[false, true, false], [false, false, true], [false, false, false]]); renderRelation(); });
+  renderRelation();
+})();
+</script>
+<script src="assets/ch01-visuals.js"></script>
+</body>
+</html>

@@ -1,0 +1,994 @@
+[
+  {
+    "chapter": "01",
+    "title": "01. 범주와 합성 · 프로그래머를 위한 카테고리 이론",
+    "widgets": 4,
+    "diagrams": 4,
+    "quizzes": 5,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 5,
+    "controlChecks": {
+      "changed": 8,
+      "clicked": 7
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "02",
+    "title": "02. 타입과 함수 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 5,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 5,
+    "controlChecks": {
+      "changed": 8,
+      "clicked": 4
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "03",
+    "title": "03. 크고 작은 범주 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 5,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 5,
+    "controlChecks": {
+      "changed": 14,
+      "clicked": 4
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "04",
+    "title": "04. 클레이슬리 범주 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 5,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 5,
+    "controlChecks": {
+      "changed": 13,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "05",
+    "title": "05. 곱과 쌍대곱 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 5,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 5,
+    "controlChecks": {
+      "changed": 16,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "06",
+    "title": "06. 대수적 자료형 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 8,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "07",
+    "title": "07. 함자 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 5,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "08",
+    "title": "08. 함자성 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "09",
+    "title": "09. 함수 타입 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "10",
+    "title": "10. 자연변환 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "11",
+    "title": "11. 선언적 프로그래밍 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 4
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "12",
+    "title": "12. 극한과 쌍대극한 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 10,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "13",
+    "title": "13. 자유 모노이드 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 8,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "14",
+    "title": "14. 표현 가능한 함자 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 9,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "15",
+    "title": "15. 요네다 보조정리 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "16",
+    "title": "16. 요네다 매장 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "17",
+    "title": "17. 사상으로 보는 구조 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "18",
+    "title": "18. 수반 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "19",
+    "title": "19. 자유·망각 수반 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "20",
+    "title": "20. 프로그래머의 모나드 정의 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "21",
+    "title": "21. 모나드와 효과 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "22",
+    "title": "22. 범주론으로 정의하는 모나드 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "23",
+    "title": "23. 코모나드 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 6,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "24",
+    "title": "24. F-대수 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 5,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "25",
+    "title": "25. 모나드의 대수 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 7,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "26",
+    "title": "26. 엔드와 코엔드 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 7,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "27",
+    "title": "27. 칸 확장 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 10,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "28",
+    "title": "28. 풍성한 범주 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 7,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "29",
+    "title": "29. 토포스 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 5,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "30",
+    "title": "30. 로비어 이론 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 7,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  },
+  {
+    "chapter": "31",
+    "title": "31. 모나드·모노이드·범주 · 프로그래머를 위한 범주론",
+    "widgets": 3,
+    "diagrams": 5,
+    "quizzes": 4,
+    "exercises": 2,
+    "emptyWidgets": 0,
+    "svgTextOverflow": [],
+    "svgRectOverflow": [],
+    "widths": {
+      "360": {
+        "document": 360,
+        "viewport": 360
+      },
+      "768": {
+        "document": 753,
+        "viewport": 768
+      },
+      "1200": {
+        "document": 1185,
+        "viewport": 1200
+      }
+    },
+    "quizChecks": 4,
+    "controlChecks": {
+      "changed": 3,
+      "clicked": 2
+    },
+    "playerCheck": "PASS play/pause",
+    "exceptions": []
+  }
+]

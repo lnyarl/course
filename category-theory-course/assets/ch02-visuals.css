@@ -1,0 +1,27 @@
+/* Chapter 02: input-driven diagrams. Motion begins only after user interaction. */
+.ct02-visual { margin: 18px 0; }
+.ct02-visual .stage { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ct02-live { display: block; width: 100%; min-width: 620px; font-family: var(--sans); }
+.ct02-live text { fill: var(--text); font-size: 15px; }
+.ct02-live .small { font-size: 12px; }
+.ct02-live .muted { fill: var(--muted); }
+.ct02-live .set { fill: var(--surface-2); stroke: var(--border); }
+.ct02-live .node { fill: var(--surface); stroke: var(--border); stroke-width: 1.5; }
+.ct02-live .selected { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+.ct02-live .hit { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 2; }
+.ct02-live .miss { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 2; }
+.ct02-live .failure { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 2; }
+.ct02-live .excluded { opacity: .45; }
+.ct02-live .edge { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.ct02-live .edge.is-active { stroke: var(--accent); stroke-width: 3.5; }
+.ct02-live .edge.is-hit { stroke: var(--ok); stroke-width: 3.5; }
+.ct02-live .edge.is-miss { stroke: var(--warn); stroke-width: 3.5; }
+.ct02-live .edge.is-failure { stroke: var(--bad); stroke-width: 2; stroke-dasharray: 6 4; }
+.ct02-live .travel { stroke-dasharray: 9 5; animation: ct02-travel .7s linear 1; }
+.ct02-picks { display: flex; gap: 7px; flex-wrap: wrap; margin: 12px 0; }
+.ct02-player { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+.ct02-player .position { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+.ct02-caption { color: var(--muted); font-size: 14px; margin: 8px 0; }
+.ct02-step-output { padding: 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@keyframes ct02-travel { from { stroke-dashoffset: 28; } to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .ct02-live .travel { animation: none; stroke-dasharray: none; } }
