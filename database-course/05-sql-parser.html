@@ -1043,4 +1043,5 @@ PY
 <h2>실습 과제</h2><ol><li><b>문자열과 위치를 검사하세요.</b> <code data-language="sql">INSERT INTO t VALUES ('O''Reilly 한글');</code>을 토큰화하세요. Text는 하나여야 하며 값의 따옴표는 하나입니다. start/end로 자른 원문에는 바깥 따옴표와 두 번 쓴 작은따옴표가 남아 있어야 합니다.</li><li><b>AST 모양을 비교하세요.</b> <code>A OR B AND C</code>에 해당하는 비교식을 만들고 괄호를 바꿔 파싱하세요. 기본 루트는 OR, <code>(A OR B) AND C</code>의 루트는 AND여야 합니다. NOT과 IS NOT NULL도 별도 노드인지 확인하세요.</li><li><b>의미 분석의 계약을 적으세요.</b> <code data-language="sql">SELECT unknown FROM absent</code>와 열 수가 다른 INSERT를 파싱하세요. AST는 생성됩니다. 4장의 카탈로그를 조회한다면 어떤 검사와 열 번호 변환이 필요한지 설계하세요. 파서에 파일 접근을 섞지 마세요.</li></ol>
 <p class="hint">더 읽기: <a href="https://www.postgresql.org/docs/current/sql-syntax-lexical.html">PostgreSQL 어휘 구조</a>는 키워드·식별자·작은따옴표 문자열을 설명합니다. 본 예제의 허용 문법은 훨씬 작으며 PostgreSQL 전체 SQL을 구현하지 않습니다.</p>
 <section id="s8"><h2>8. 이 구조가 못 하는 것</h2><p>이제 SELECT 문장을 AST로 만들지만 실제 행을 읽고 WHERE로 걸러 내거나 열을 뽑지 못합니다. ORDER BY도 트리에 기록할 뿐 정렬하지 않습니다. 다음 장에서는 카탈로그로 이름과 타입을 확인하고 실행 연산자를 연결해 SQL의 결과 행을 만듭니다.</p></section>
-</main><script src="assets/sql-parser.js"></script></body></html>
+</main><script src="assets/sql-parser.js"></script><script defer src="../shared/course-comments.js"></script>
+</body></html>

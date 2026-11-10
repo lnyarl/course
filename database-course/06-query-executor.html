@@ -1884,4 +1884,5 @@ PY
 <p class="hint">더 읽기: <a href="https://www.postgresql.org/docs/current/executor.html">PostgreSQL 실행기 설명</a>은 demand-pull과 Sort의 입력 수집을 설명합니다. 이 코스는 단일 스레드의 소형 학습용 구현이며 실제 제품의 모든 연산자나 최적화를 구현하지 않습니다.</p></section>
 <section id="s8"><h2>8. 이 실행기가 못 하는 것</h2><p>SQL로 실제 테이블을 만들고 행을 넣은 뒤 SELECT 결과를 얻을 수 있게 됐습니다. 하지만 쓰기 도중 프로세스가 종료되면 힙·카탈로그·색인이 서로 다른 시점에 남을 수 있습니다. 다음 장에서는 WAL을 먼저 기록하는 순서와 크래시 복구를 다룹니다.</p>
 <p>현재는 단일 테이블 SeqScan 계획이며 WHERE가 기본키 비교여도 자동으로 색인을 선택하지 않습니다. SQL JOIN 문법·외부 정렬·집계·트랜잭션·동시 접근 잠금은 없습니다. Linux의 fsync 계열과 macOS의 F_FULLFSYNC 차이는 2장의 동기화 설명을 참고하세요.</p></section>
-</main><script src="assets/query-executor.js"></script></body></html>
+</main><script src="assets/query-executor.js"></script><script defer src="../shared/course-comments.js"></script>
+</body></html>

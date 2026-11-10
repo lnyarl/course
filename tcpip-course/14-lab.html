@@ -515,5 +515,6 @@ ff ff 50 32 00 00 02 04 05 b4 01 03 03 07 01 01
   CL.forEach((c,i)=>{ const li=el('li'); const id='ck'+i; li.innerHTML=`<input type="checkbox" id="${id}"><span>${i+1}. ${c[0]}</span><a class="btn sm" href="${c[1]}">복습 →</a>`; const cb=$('input',li); cb.checked=!!saved[i]; li.classList.toggle('done',cb.checked); cb.onchange=()=>{ saved[i]=cb.checked; store.set('tcpip-checklist',saved); li.classList.toggle('done',cb.checked); }; cl.appendChild(li); });
 })();
 </script>
+<script defer src="../shared/course-comments.js"></script>
 </body>
 </html>

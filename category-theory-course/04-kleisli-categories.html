@@ -185,4 +185,5 @@ foreach (double x in new[] { 4.0, 0.0, -4.0, double.NaN,
 </section>
 <div class="summary"><h3>핵심 요약</h3><ul><li>Writer&lt;A&gt;는 값 A와 이번 호출의 로그를 함께 반환합니다. 실제 로그 출력은 별도 부작용입니다.</li><li>합성은 첫 Value를 다음 함수에 넘기고 첫 Log 뒤에 다음 Log를 붙입니다.</li><li>합성의 결합법칙은 값의 함수 합성과 로그 모노이드의 결합법칙에 기대어 성립합니다.</li><li>항등사상은 값을 유지하고 항등 로그를 반환합니다.</li><li>클레이슬리 사상 A → B는 기반 함수 A → Writer&lt;B&gt;로 구현됩니다.</li><li>모든 장식 타입이 자동으로 범주를 만드는 것은 아닙니다. 합성·항등·법칙이 필요합니다.</li><li>Optional에서는 실패 시 다음 함수를 호출하지 않는 합성과 성공으로 감싸는 항등사상을 만들 수 있습니다.</li></ul><p>다음 원문 5장은 타입의 내부 구현 대신 화살표의 관계로 곱·쌍대곱을 정의합니다.</p></div>
 <p class="source">Bartosz Milewski, <i>Category Theory for Programmers</i>, Chapter 4. Igal Tabachnik 편집, version 98b71ac, 2023-01-30. 한국어 해설·C# 예제·도식·실습·위젯을 새로 구성했습니다. <a href="https://ai.dmi.unibas.ch/research/reading_group/milewski-2023-01-30.pdf#page=56">원문 PDF pp. 56–68</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</p>
-</main><script src="assets/ch04-visuals.js"></script></body></html>
+</main><script src="assets/ch04-visuals.js"></script><script defer src="../shared/course-comments.js"></script>
+</body></html>

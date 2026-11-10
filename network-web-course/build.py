@@ -53,7 +53,7 @@ def sidebar(current):
 
 
 def wrap(title,body,current=''):
-    return f'<!doctype html>\n<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="DNS, HTTP, TLS, 프록시와 장애 분석을 도식과 실험으로 배우는 한국어 네트워크 교재"><title>{E(title)} · {TITLE}</title><link rel="stylesheet" href="assets/course.css"></head><body data-chapter="{current}"><a class="skip" href="#main">본문으로 이동</a><div class="shell">{sidebar(current)}<main id="main" class="content">{body}</main></div><script src="assets/course.js"></script></body></html>\n'
+    return f'<!doctype html>\n<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="DNS, HTTP, TLS, 프록시와 장애 분석을 도식과 실험으로 배우는 한국어 네트워크 교재"><title>{E(title)} · {TITLE}</title><link rel="stylesheet" href="assets/course.css"></head><body data-chapter="{current}"><a class="skip" href="#main">본문으로 이동</a><div class="shell">{sidebar(current)}<main id="main" class="content">{body}</main></div><script src="assets/course.js"></script><script defer src="../shared/course-comments.js"></script></body></html>\n'
 
 for i,c in enumerate(chapters):
     fig=make_figure(c)
