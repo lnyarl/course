@@ -1,4 +1,4 @@
-/* ===== TCP/IP 전문가 과정 · 공통 스크립트 ===== */
+/* ===== TCP/IP · 공통 스크립트 ===== */
 (function () {
   'use strict';
 
@@ -64,7 +64,7 @@
     const sb = $('#sidebar'); if (!sb) return;
     const cur = document.body.dataset.chapter;
     sb.classList.add('sidebar');
-    let html = `<div class="brand"><div class="logo">IP</div><a href="index.html">TCP/IP 전문가 과정</a></div>`;
+    let html = `<div class="brand"><div class="logo">IP</div><a href="index.html">TCP/IP</a></div>`;
     for (const p of COURSE) {
       html += `<div class="part">${p.part}</div>`;
       for (const c of p.chapters) {

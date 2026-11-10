@@ -192,3 +192,81 @@ main :is(.grid-2,.grid-3)>*{min-width:0}
 @media(min-width:901px){
  :root[data-course=aspnet-core]:not([data-course=library]) body>main{margin-left:264px;width:calc(100% - 264px)}
 }
+:root[data-course=concurrency] #course-chrome .top-actions{margin-left:auto;display:flex;gap:8px}
+:root[data-course=concurrency] #course-chrome .version{display:none}
+:root[data-course=concurrency] #course-chrome .top-actions button{font-size:12px;padding:6px 10px}
+@media(max-width:600px){:root[data-course=concurrency] #course-chrome .design-course-link{display:none}}
+:root[data-course=concurrency] #course-chrome #print{display:block}
+/* One chapter menu contract, shared by every course's existing navigation. */
+:root[data-course] .design-course-menu{
+ width:264px;max-width:none;padding:24px 16px;background:#fafafa;border:0;border-right:1px solid #dfe2e7;
+ color:#475467;font:400 13px/1.55 var(--sans);text-align:left;box-shadow:none;
+}
+:root[data-course] .design-course-menu-title{
+ display:block;padding:0 12px 20px;margin:0 0 20px;border-bottom:1px solid #dfe2e7;
+ color:#101828;font:700 16px/1.5 var(--sans);text-decoration:none;letter-spacing:-.02em;
+}
+:root[data-course] .design-course-menu :is(.design-course-title,.course-name,.brand,.home,.sidebar-sub,.brand-mark,.logo){display:none}
+:root[data-course] .design-course-menu nav{display:grid;gap:4px;margin:0;padding:0;overflow:visible}
+:root[data-course] .design-course-menu :is(ol,ul){list-style:none;padding:0;margin:0;display:block}
+:root[data-course] .design-course-menu .design-course-menu-item{
+ display:flex;align-items:baseline;gap:10px;min-height:40px;width:100%;max-width:none;padding:10px 12px;margin:0;
+ border:0;border-left:2px solid transparent;border-radius:5px;background:transparent;box-shadow:none;
+ color:#475467;text-decoration:none;text-align:left;font:400 13px/1.55 var(--sans);letter-spacing:0;transform:none;
+}
+:root[data-course] .design-course-menu .design-course-menu-item:hover{background:#ededee;color:#101828}
+:root[data-course] .design-course-menu .design-course-menu-item:is(.active,.cur,.current,[aria-current=page],[aria-current=true]){
+ background:#ededee;color:#175cd3;border-left-color:#175cd3;font-weight:650;
+}
+:root[data-course] .design-course-menu .design-course-menu-item :is(.num,.n,.no),
+:root[data-course] .design-course-menu .design-course-menu-item>span:first-child:not(:last-child){
+ flex:0 0 22px;width:22px;min-width:22px;color:#667085;font:400 11px/1.8 var(--mono);
+}
+:root[data-course] .design-course-menu .design-course-menu-group{
+ display:block;margin:24px 12px 8px;padding:0;color:#667085;font:600 11px/1.5 var(--sans);letter-spacing:.04em;
+}
+:root[data-course] .design-course-menu :is(input[type=search],input[type=text]){
+ width:100%;height:38px;padding:8px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#20242c;font:12px var(--sans);
+}
+:root[data-course] .design-course-menu :is(progress,.progress-track,.progress-mini .bar){accent-color:#175cd3}
+:root[data-course] .design-course-menu :is(.sidebar-tools,.side-tools,.side-actions,.tools){font-size:12px;position:static}
+:root[data-course] :is(.menu-btn,.nav-toggle,body>#menu),:root[data-course] .design-course-menu #menu{display:none!important}
+@media(min-width:901px){
+ :root[data-course] .design-course-menu{position:sticky;left:0;top:64px;align-self:start;height:calc(100vh - 64px);max-height:calc(100vh - 64px);overflow-y:auto;transform:none}
+ :root[data-layout=classic] .design-course-menu,:root[data-course=linux-kernel] .design-course-menu{position:fixed}
+ :root[data-course=windows-kernel] .design-course-menu{top:120px;height:calc(100vh - 120px);max-height:calc(100vh - 120px)}
+ :root[data-course] #course-chrome .design-menu{display:none}
+}
+@media(max-width:900px){
+ :root[data-course] .design-course-menu{
+ display:none;position:fixed;left:0;top:60px;bottom:0;z-index:99;width:min(320px,90vw);
+ height:calc(100vh - 60px);max-height:calc(100vh - 60px);overflow-y:auto;transform:none;box-shadow:8px 0 24px #10182816;
+ }
+ :root[data-course] .design-course-menu.design-course-menu-open{display:block}
+ :root[data-course] .design-course-menu :is(#contents,#chapters,#nav,#chapter-list){display:block}
+ :root[data-course] :is(.shell,.layout),:root[data-course=gc] body>.wrap{display:block;padding:0;gap:0}
+ :root[data-course]:not([data-course=library]) main{width:100%;max-width:100%;margin:0;padding:28px 20px 64px}
+ :root[data-course=gc] body{padding-inline:0}
+ :root[data-course] #course-chrome .design-menu{display:block;margin-left:auto;flex-shrink:0;padding:6px 10px;border:1px solid #d0d5dd;background:#fff;color:#20242c;font:12px/1.5 var(--sans)}
+ :root[data-course] #course-chrome .design-course-link{display:none}
+ :root[data-course=concurrency] #course-chrome{gap:8px}
+ :root[data-course=concurrency] #course-chrome .top-actions{gap:4px}
+ :root[data-course=concurrency] #course-chrome .top-actions button{font-size:11px;padding:6px}
+ :root[data-course=concurrency] #course-chrome .design-menu{margin-left:0}
+}
+@media print{:root[data-course] .design-course-menu{display:none!important}}
+:root[data-course] .design-course-menu .side-head>strong,:root[data-course] .design-course-menu .side-head>.eyebrow{display:none}
+:root[data-course] .design-course-menu :is(.side-link,.side-note,.sidebar small,.progress-label,.progress-line,.side-actions,.sidebar-tools){font-size:12px;color:#667085}
+:root[data-course] .design-course-menu .side-link{color:#475467}
+:root[data-course=tcpip] .toc{padding:24px 16px;border-left:1px solid #dfe2e7;background:#fafafa;color:#475467;font:13px/1.55 var(--sans)}
+:root[data-course=tcpip] .toc .toc-title{margin:0 0 16px;color:#667085;font:600 11px/1.5 var(--sans);letter-spacing:.04em}
+:root[data-course=tcpip] .toc a{padding:10px 12px;margin:4px 0;border-left:2px solid transparent;border-radius:5px;color:#475467;font:13px/1.55 var(--sans);text-decoration:none}
+:root[data-course=tcpip] .toc a.h3{padding-left:24px;font-size:12px}
+:root[data-course=tcpip] .toc a:hover{background:#ededee;color:#101828}
+:root[data-course=tcpip] .toc a.active{background:#ededee;color:#175cd3;border-left-color:#175cd3;font-weight:650}
+:root[data-course=tcpip] .design-course-menu .bar>i{background:#175cd3}
+:root[data-course=windows-kernel] #course-chrome .prog{display:flex;align-items:center;gap:8px;margin-left:auto;color:#667085;font:12px/1.5 var(--sans)}
+:root[data-course=windows-kernel] #course-chrome .prog .bar{width:80px;height:4px;background:#e9eaec;border-radius:2px;overflow:hidden}
+:root[data-course=windows-kernel] #course-chrome .prog .bar i{display:block;height:100%;background:#175cd3}
+@media(min-width:901px){:root[data-course=windows-kernel] .design-course-menu{top:64px;height:calc(100vh - 64px);max-height:calc(100vh - 64px)}}
+@media(max-width:900px){:root[data-course=windows-kernel] #course-chrome .design-menu{margin-left:0}}

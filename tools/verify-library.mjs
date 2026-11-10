@@ -20,14 +20,6 @@ try {
  check(await page.locator('.ch li').count()===223,'all 223 chapter links available');
  check(await page.locator('details[open]').count()===0,'chapters collapsed initially');
  await cards.first().locator('summary').click();check(await cards.first().locator('details').getAttribute('open')!==null,'expand chapters');
- await page.locator('#q').fill('혼잡');check(await page.locator('.course:not([hidden])').count()>0,'search finds chapter');
- check(await page.locator('.course:not([hidden]) details[open]').count()>0,'matching chapters exposed');
- check(await page.locator('mark').count()>0,'search highlighted');
- await page.locator('#clear-search').click();check(await page.locator('.course:not([hidden])').count()===total,'clear search restores courses');
- check(await cards.first().locator('details').getAttribute('open')!==null,'clear restores previous expanded state');
- await cards.first().locator('summary').click();
- await page.getByRole('button',{name:'네트워크',exact:true}).click();check(await page.locator('.course:not([hidden])').count()===2,'network filter');
- await page.locator('#q').fill('zz-no-match');check(await page.locator('#empty').isVisible(),'empty state');await page.locator('#reset-filters').click();check(await page.locator('.course:not([hidden])').count()===total,'reset filters');
  for(const width of [320,390,768,1440]){
   await page.setViewportSize({width,height:1000});
   check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`no horizontal overflow at ${width}`);

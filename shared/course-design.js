@@ -11,6 +11,7 @@
   const path = decodeURIComponent(location.pathname);
   const course = path.match(/([^/]+)-course(?:\/|$)/)?.[1] || (path.includes('CSharp_GC_') ? 'gc' : 'library');
   root.dataset.course = course;
+  const courseTitles = {"aspnet-core": "ASP.NET Core 구조와 동작", "network-web": "웹 네트워크", "concurrency": "C# 동시성과 비동기", "os-memory": "운영체제 메모리 관리", "windows-kernel": "Windows 커널", "linux-kernel": "리눅스 커널", "tcpip": "TCP/IP", "nodejs-advanced": "Node.js", "gc": "C# 가비지 컬렉션", "container-runtime": "Rust 컨테이너 런타임 구현", "distributed-queue": "C# 메시지 큐 구현", "database": "Rust 데이터베이스 구현", "category-theory": "C# 범주론", "utility-ai": "효용 기반 AI"};
   const light = () => { if (root.dataset.theme !== 'light') root.dataset.theme = 'light'; };
   light();
   new MutationObserver(light).observe(root, {attributes: true, attributeFilter: ['data-theme']});
@@ -45,6 +46,12 @@
       bar.append(back);
       document.body.prepend(bar);
     }
+    if (course === 'concurrency' || course === 'windows-kernel') {
+      const legacy=document.querySelector('body > .topbar');
+      const actions=legacy?.querySelector(course === 'concurrency' ? '.top-actions' : '.prog');
+      if(actions)bar.append(actions);
+      legacy?.remove();
+    }
     if (classic && window.MM?.CHAPTERS) {
       const sidebar = document.createElement('aside');
       sidebar.className = 'design-sidebar'; sidebar.id = 'design-contents';
@@ -66,6 +73,36 @@
       menu.onclick = () => { const open = sidebar.classList.toggle('is-open'); menu.setAttribute('aria-expanded',String(open)); };
       bar.append(menu);
       sidebar.addEventListener('keydown', event => {if(event.key === 'Escape'){sidebar.classList.remove('is-open');menu.setAttribute('aria-expanded','false');menu.focus();}});
+    }
+    const sidebar=document.querySelector('.design-sidebar, .shell > .sidebar, .layout > .sidebar, .layout > #sidebar, .layout > aside, body > .sidebar, .wrap > nav.toc');
+    if(sidebar && course!=='library') {
+      sidebar.classList.add('design-course-menu');sidebar.id ||= 'design-course-menu';
+      const title=document.createElement('a');title.className='design-course-menu-title';
+      const oldTitle=sidebar.querySelector('.design-course-title,.course-name,.brand,.home');
+      const titleCopy=oldTitle?.cloneNode(true);
+      titleCopy?.querySelectorAll('br').forEach(br=>br.replaceWith(' '));
+      titleCopy?.querySelectorAll('.logo,.brand-mark').forEach(mark=>mark.remove());
+      title.textContent=courseTitles[course]||(titleCopy?.textContent||document.title).replace(/\s+/g,' ').trim();
+      title.href=course==='gc'?'#toc':'index.html';sidebar.prepend(title);
+      function decorateMenu(){
+        if(!sidebar.contains(title)) {
+          const brand=sidebar.querySelector('.brand');
+          if(brand){const copy=brand.cloneNode(true);copy.querySelectorAll('.logo,.brand-mark').forEach(mark=>mark.remove());title.textContent=courseTitles[course]||copy.textContent.replace(/\s+/g,' ').trim();}
+          sidebar.prepend(title);
+        }
+
+        for(const link of sidebar.querySelectorAll('nav a,ol a,a.nav-item,a.ch'))link.classList.add('design-course-menu-item');
+        for(const label of sidebar.querySelectorAll('.part,.group-title,.nav-group-title,.lbl'))label.classList.add('design-course-menu-group');
+      }
+      decorateMenu();
+      new MutationObserver(decorateMenu).observe(sidebar,{childList:true,subtree:true});
+      let toggle=bar.querySelector('.design-menu');
+      if(!toggle){toggle=document.createElement('button');toggle.type='button';toggle.className='design-menu';toggle.textContent='목차';bar.append(toggle);}
+      toggle.setAttribute('aria-controls',sidebar.id);toggle.setAttribute('aria-expanded','false');
+      const close=()=>{sidebar.classList.remove('design-course-menu-open');toggle.setAttribute('aria-expanded','false');};
+      toggle.onclick=()=>{const open=sidebar.classList.toggle('design-course-menu-open');toggle.setAttribute('aria-expanded',String(open));};
+      sidebar.addEventListener('click',event=>{if(event.target.closest('a')&&innerWidth<=900)close();});
+      document.addEventListener('keydown',event=>{if(event.key==='Escape'&&sidebar.classList.contains('design-course-menu-open')){close();toggle.focus();}});
     }
     clean(document.body);
     new MutationObserver(records => {
