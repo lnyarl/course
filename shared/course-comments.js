@@ -1,10 +1,19 @@
-/* Shared, local-only annotations. No course DOM is wrapped or rewritten. */
+/* Standalone local annotations. Configuration: shared/README.md. No dependencies. */
 (() => {
   'use strict';
+  const script = document.currentScript;
+  const options = {...script.dataset};
+  const base = new URL('../', script.src);
+  function mount() {
   if (document.getElementById('course-comments')) return;
-  const base = new URL('../', document.currentScript.src);
-  const page = decodeURI(location.pathname).replace(/index\.html$/, '').replace(/\/$/, '');
-  const namespace = 'course-comments:v1:' + decodeURI(base.pathname) + ':';
+  const content = document.querySelector(options.root || 'body');
+  if (!content) { console.error('Local comments: data-root did not match an element.'); return; }
+  const page = options.pageId || decodeURI(location.pathname).replace(/index\.html$/, '').replace(/\/$/, '');
+  // Keep the original keys when configuration is omitted: existing notes stay readable.
+  const namespace = options.namespace
+    ? 'local-comments:v1:' + encodeURIComponent(options.namespace) + ':'
+    : 'course-comments:v1:' + decodeURI(base.pathname) + ':';
+  const reserveSpace = options.layout !== 'overlay';
   const host = document.createElement('div');
   host.id = 'course-comments';
   document.body.append(host);
@@ -23,14 +32,15 @@
   </style>
   <button id="toggle" aria-expanded="false" aria-controls="panel">코멘트 <span id="count">0</span></button>
   <button id="add" hidden>＋ 코멘트</button>
-  <aside id="panel" aria-label="학습 코멘트" hidden>
+  <aside id="panel" aria-label="문서 코멘트" hidden>
     <header><h2>내 코멘트 <span id="total"></span></h2><button id="close" aria-label="코멘트 닫기">✕</button></header>
-    <p class="hint">본문을 드래그해 선택한 뒤 ‘＋ 코멘트’를 누르세요. 키보드로 선택한 뒤에도 추가할 수 있습니다.</p>
+    <p class="hint">본문을 드래그하거나 세 번 클릭해 선택한 뒤 ‘＋ 코멘트’를 누르세요. 키보드로 선택한 뒤에도 추가할 수 있습니다.</p>
     <form id="editor" hidden><blockquote id="quote"></blockquote><label for="note">코멘트</label><textarea id="note" maxlength="10000" placeholder="궁금한 점이나 생각을 남기세요." required></textarea><div class="actions"><button class="primary" type="submit">저장</button><button type="button" id="cancel">취소</button></div></form>
     <p id="status" role="status" aria-live="polite"></p><div id="list"></div>
     <footer><button id="export">모든 코멘트 내보내기 (JSON)</button><p class="hint">이 브라우저에만 저장됩니다. 브라우저 데이터 삭제 시 사라지므로 파일로 보관하세요.</p></footer>
   </aside>`;
   const $ = id => ui.getElementById(id);
+  if (options.title) ui.querySelector('h2').firstChild.textContent = options.title + ' ';
   const style = document.createElement('style');
   style.textContent = '::highlight(course-notes){background:#ffe29b;color:inherit} @media(min-width:1100px){html.course-notes-open{padding-right:340px!important;box-sizing:border-box}}';
   document.head.append(style);
@@ -49,7 +59,7 @@
   }
   function textIndex() {
     const nodes = []; let text = '';
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {acceptNode(node) {
+    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {acceptNode(node) {
       return node.parentElement.closest('script,style,noscript,textarea,input,select,button,svg,canvas,[contenteditable],#course-comments,[hidden]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
     }});
     while (walker.nextNode()) { const node = walker.currentNode; nodes.push({node,start:text.length}); text += node.textContent; }
@@ -75,7 +85,7 @@
     const index = textIndex();
     CSS.highlights.set('course-notes',new Highlight(...records.map(r => resolve(r,index)).filter(Boolean)));
   }
-  function open() { $('panel').hidden = false; $('toggle').hidden = true; $('toggle').setAttribute('aria-expanded','true');document.documentElement.classList.add('course-notes-open'); }
+  function open() { $('panel').hidden = false; $('toggle').hidden = true; $('toggle').setAttribute('aria-expanded','true');if(reserveSpace) document.documentElement.classList.add('course-notes-open'); }
   function cancel() { pending = null;editing = null;$('editor').hidden = true;$('note').value = ''; }
   function close() { if (!$('editor').hidden && $('note').value.trim() && !confirm('저장하지 않은 코멘트를 닫을까요?')) return;cancel();$('panel').hidden = true;$('toggle').hidden = false;$('toggle').setAttribute('aria-expanded','false');document.documentElement.classList.remove('course-notes-open');$('toggle').focus(); }
   function button(label,fn) { const el = document.createElement('button');el.type='button';el.textContent=label;el.addEventListener('click',fn);return el; }
@@ -106,9 +116,14 @@
     const selected = getSelection();
     if (!selected || selected.isCollapsed || !selected.rangeCount) { $('add').hidden=true;return; }
     const range = selected.getRangeAt(0);const index=textIndex();
-    const first=index.nodes.find(n=>n.node===range.startContainer);const last=index.nodes.find(n=>n.node===range.endContainer);
-    if (!first || !last) { $('add').hidden=true;return; }
-    const start=first.start+range.startOffset,end=last.start+range.endOffset,quote=index.text.slice(start,end);
+    // Selection boundaries can be elements (triple click / selectNodeContents),
+    // whose offsets count child nodes, not characters. Clip to indexed text first.
+    const parts=index.nodes.filter(({node})=>node.length && range.intersectsNode(node)).map(({node,start})=>({
+      start:start+(node===range.startContainer ? range.startOffset : 0),
+      end:start+(node===range.endContainer ? range.endOffset : node.length)
+    })).filter(part=>part.end>part.start);
+    if (!parts.length) { $('add').hidden=true;return; }
+    const start=parts[0].start,end=parts[parts.length-1].end,quote=index.text.slice(start,end);
     if (!quote.trim()) { $('add').hidden=true;return; }
     const anchor={start,before:index.text.slice(Math.max(0,start-32),start),after:index.text.slice(end,end+32)};
     $('add')._selection={quote,anchor,hash:location.hash};
@@ -129,6 +144,9 @@
   ui.addEventListener('keydown',event=>{if(event.key==='Escape')close();if((event.ctrlKey||event.metaKey)&&event.key==='Enter'&&!$('editor').hidden){event.preventDefault();$('editor').requestSubmit();}});
   window.addEventListener('storage',event=>{if(!event.key||event.key.startsWith(namespace))render();});
   window.addEventListener('beforeunload',event=>{if(!$('editor').hidden && $('note').value.trim()){event.preventDefault();event.returnValue='';}});
-  new MutationObserver(()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(highlight,250);}).observe(document.body,{childList:true,subtree:true});
+  new MutationObserver(()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(highlight,250);}).observe(content,{childList:true,subtree:true});
   render();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount, {once:true});
+  else mount();
 })();

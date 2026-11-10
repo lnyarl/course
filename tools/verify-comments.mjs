@@ -17,6 +17,12 @@ async function selectText(selector='h1') {await page.locator(selector).first().e
 const widget=page.locator('#course-comments');
 try {
  await page.goto(base+'/network-web-course/02-dns.html');
+ await page.locator('main p').first().click({clickCount:3});
+ await widget.locator('#add').waitFor({state:'visible',timeout:2000});check(true,'triple click offers comment');
+ await widget.locator('#add').click();check((await widget.locator('#quote').textContent()).trim().length>0,'triple click quote');await widget.locator('#cancel').click();await widget.locator('#close').click();
+ await page.locator('h1').evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);});
+ await widget.locator('#add').waitFor({state:'visible',timeout:2000});check(true,'element boundary selection offers comment');
+ await widget.locator('#add').click();check((await widget.locator('#quote').textContent())===(await page.locator('h1').textContent()),'element selection preserves quote');await widget.locator('#cancel').click();await widget.locator('#close').click();
  const heading=await page.locator('h1').boundingBox();await page.mouse.move(heading.x+3,heading.y+heading.height/2);await page.mouse.down();await page.mouse.move(heading.x+130,heading.y+heading.height/2,{steps:12});await page.mouse.up();await widget.locator('#add').waitFor({state:'visible'});check(true,'mouse drag offers comment');
  await selectText();await widget.locator('#note').fill('DNS 질문 <script>alert(1)</script>');await widget.getByRole('button',{name:'저장',exact:true}).click();check(await widget.locator('article').count()===1,'created');
  await page.reload();await widget.locator('#toggle').click();check((await widget.locator('.body').textContent()).includes('<script>'),'persisted safe text');check(await page.evaluate(()=>CSS.highlights.get('course-notes').size)===1,'highlight restored');
@@ -29,5 +35,20 @@ try {
  await page.goto(base+'/concurrency-course/#week-1');await page.locator('#lesson h2').first().waitFor();await selectText('#lesson h2');await widget.locator('#note').fill('동적 강의 메모');await widget.getByRole('button',{name:'저장',exact:true}).click();await page.reload();await widget.locator('#toggle').click();check(await widget.locator('article').count()===1,'dynamic course persistence');await page.waitForFunction(()=>CSS.highlights.get('course-notes')?.size===1);check(true,'dynamic highlight restored');
  await page.setViewportSize({width:390,height:844});check(await widget.locator('#panel').evaluate(el=>el.getBoundingClientRect().right<=innerWidth),'mobile panel fits');await page.screenshot({path:'/tmp/course-comments-mobile.png'});
  await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'/tmp/course-comments-desktop.png'});
+ check(await page.evaluate(()=>Object.keys(localStorage).some(key=>key.startsWith('course-comments:v1:/:' + ''))),'legacy storage namespace retained');
+ await page.goto(base+'/shared/examples/standalone.html');await widget.locator('#toggle').waitFor();
+ check(await widget.locator('#count').textContent()==='0','new namespace isolated from course notes');
+ await page.locator('nav').evaluate(el=>{const r=document.createRange();r.selectNodeContents(el);getSelection().removeAllRanges();getSelection().addRange(r);document.dispatchEvent(new Event('selectionchange'));});
+ check(await widget.locator('#add').isHidden(),'outside root cannot create comment');
+ await page.locator('main p').first().evaluate(el=>{const r=document.createRange();r.selectNodeContents(el);getSelection().removeAllRanges();getSelection().addRange(r);});
+ await widget.locator('#add').click();check(await widget.locator('#quote').textContent()===await page.locator('main p').first().textContent(),'nested element selection preserves full quote');
+ check((await widget.locator('h2').textContent()).startsWith('문서 메모'),'custom panel title');
+ check(!await page.evaluate(()=>document.documentElement.classList.contains('course-notes-open')),'overlay leaves page layout unchanged');
+ await widget.locator('#note').fill('독립 문서 메모');await widget.getByRole('button',{name:'저장',exact:true}).click();await page.reload();await widget.locator('#toggle').click();
+ check(await widget.locator('.body').textContent()==='독립 문서 메모','standalone persistence');
+ const standaloneDownload=page.waitForEvent('download');await widget.locator('#export').click();const file=await standaloneDownload;const standalone=JSON.parse(await readFile(await file.path(),'utf8'));
+ check(standalone.comments.length===1 && standalone.comments[0].page==='example-document','export respects namespace and custom page ID');
+ await page.addScriptTag({url:base+'/shared/course-comments.js'});check(await widget.count()===1,'duplicate script does not duplicate widget');
+ await page.goto(base+'/concurrency-course/#week-1');await widget.locator('#toggle').click();check(await widget.locator('.body').textContent()==='동적 강의 메모','course notes remain unchanged');
  console.log(`${checks} checks passed; screenshots /tmp/course-comments-{desktop,mobile}.png`);
 } finally {await browser.close();server.close();}
