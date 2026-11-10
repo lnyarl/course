@@ -1,0 +1,20 @@
+{
+  "chapters": 28,
+  "checks": 898,
+  "scenarios": 56,
+  "svgChecks": 556,
+  "browserErrors": [],
+  "preview": false,
+  "screenshots": [
+    "atlas-06-desktop.png",
+    "atlas-06-figure.png",
+    "atlas-13-desktop.png",
+    "atlas-13-figure.png",
+    "atlas-14-desktop.png",
+    "atlas-14-figure.png",
+    "atlas-17-desktop.png",
+    "atlas-17-figure.png",
+    "atlas-20-desktop.png",
+    "atlas-20-figure.png"
+  ]
+}

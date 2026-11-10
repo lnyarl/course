@@ -1,0 +1,12 @@
+{
+  "chapters": 28,
+  "checks": 1206,
+  "browserErrors": 0,
+  "preview": false,
+  "screenshots": [
+    "index-desktop.png",
+    "experiment-desktop.png",
+    "malloc-desktop.png",
+    "chapter-mobile.png"
+  ]
+}

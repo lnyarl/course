@@ -127,8 +127,46 @@
 <li><a href="windows-kernel-course/17-expert-roadmap.html"><span class="no">17</span><span class="t">전문가 로드맵과 실습 랩</span></a></li>
   </ol></details>
 </article>
-<article data-category="네트워크" class="course" style="--c:var(--c3)" data-title="TCP/IP 전문가 과정">
+<article data-category="시스템" class="course" style="--c:var(--c1)" data-title="Linux Kernel Deep Dive 리눅스 커널 malloc EEVDF cgroups io_uring eBPF">
   <header><span class="book-number" aria-hidden="true">06 /</span>
+    <div class="meta"><span class="tag">운영체제 · Linux 6.18 LTS</span><span class="count">28장 · malloc 실험실</span></div>
+    <h2><a href="linux-kernel-course/">리눅스 커널</a></h2>
+    <p>실행·동시성·메모리·I/O·격리·추적까지. 실행 흐름 애니메이션과 28개 조작 실험, malloc 청크 실험실로 커널을 이해합니다.</p>
+  </header>
+  <details class="chapters"><summary>챕터 살펴보기 <span class="expand-icon" aria-hidden="true">＋</span></summary><ol class="ch">
+<li><a href="linux-kernel-course/01-kernel-map.html"><span class="no">01</span><span class="t">커널은 무엇을 책임지는가</span></a></li>
+<li><a href="linux-kernel-course/02-system-calls.html"><span class="no">02</span><span class="t">CPU와 커널의 경계</span></a></li>
+<li><a href="linux-kernel-course/03-boot-process.html"><span class="no">03</span><span class="t">부팅부터 첫 프로세스까지</span></a></li>
+<li><a href="linux-kernel-course/04-observe-source.html"><span class="no">04</span><span class="t">커널을 관찰하고 소스 읽기</span></a></li>
+<li><a href="linux-kernel-course/05-tasks-threads.html"><span class="no">05</span><span class="t">프로세스와 스레드의 실체</span></a></li>
+<li><a href="linux-kernel-course/06-fork-exec-exit.html"><span class="no">06</span><span class="t">생성·실행·종료</span></a></li>
+<li><a href="linux-kernel-course/07-scheduler.html"><span class="no">07</span><span class="t">스케줄러와 CPU 시간</span></a></li>
+<li><a href="linux-kernel-course/08-sleep-wakeup.html"><span class="no">08</span><span class="t">잠들기와 깨어나기</span></a></li>
+<li><a href="linux-kernel-course/09-interrupts.html"><span class="no">09</span><span class="t">하드웨어가 커널을 호출하는 법</span></a></li>
+<li><a href="linux-kernel-course/10-deferred-work.html"><span class="no">10</span><span class="t">일을 나중에 처리하는 법</span></a></li>
+<li><a href="linux-kernel-course/11-locking.html"><span class="no">11</span><span class="t">락과 경쟁 상태</span></a></li>
+<li><a href="linux-kernel-course/12-multicore-rcu.html"><span class="no">12</span><span class="t">멀티코어와 메모리 순서</span></a></li>
+<li><a href="linux-kernel-course/13-address-space.html"><span class="no">13</span><span class="t">프로세스 주소 공간과 malloc</span></a></li>
+<li><a href="linux-kernel-course/14-kernel-allocators.html"><span class="no">14</span><span class="t">커널의 메모리 할당</span></a></li>
+<li><a href="linux-kernel-course/15-page-cache.html"><span class="no">15</span><span class="t">파일과 메모리가 만나는 곳</span></a></li>
+<li><a href="linux-kernel-course/16-memory-pressure.html"><span class="no">16</span><span class="t">메모리 부족과 회수</span></a></li>
+<li><a href="linux-kernel-course/17-vfs.html"><span class="no">17</span><span class="t">파일 디스크립터와 VFS</span></a></li>
+<li><a href="linux-kernel-course/18-durability.html"><span class="no">18</span><span class="t">파일 시스템과 저장의 보장</span></a></li>
+<li><a href="linux-kernel-course/19-block-io.html"><span class="no">19</span><span class="t">블록 I/O와 장치</span></a></li>
+<li><a href="linux-kernel-course/20-network-path.html"><span class="no">20</span><span class="t">커널 네트워크 경로</span></a></li>
+<li><a href="linux-kernel-course/21-async-io.html"><span class="no">21</span><span class="t">epoll과 io_uring</span></a></li>
+<li><a href="linux-kernel-course/22-security.html"><span class="no">22</span><span class="t">권한 검사는 어디에서 일어나는가</span></a></li>
+<li><a href="linux-kernel-course/23-isolation.html"><span class="no">23</span><span class="t">컨테이너와 가상 머신</span></a></li>
+<li><a href="linux-kernel-course/24-modules.html"><span class="no">24</span><span class="t">커널 빌드와 드라이버 입문</span></a></li>
+<li><a href="linux-kernel-course/25-tracing.html"><span class="no">25</span><span class="t">실행 중인 커널 추적</span></a></li>
+<li><a href="linux-kernel-course/26-performance.html"><span class="no">26</span><span class="t">성능 병목을 증거로 좁히기</span></a></li>
+<li><a href="linux-kernel-course/27-crash-analysis.html"><span class="no">27</span><span class="t">커널 오류와 크래시 분석</span></a></li>
+<li><a href="linux-kernel-course/28-capstone.html"><span class="no">28</span><span class="t">종합 실습: 느린 서버 해부</span></a></li>
+  </ol></details>
+</article>
+
+<article data-category="네트워크" class="course" style="--c:var(--c3)" data-title="TCP/IP 전문가 과정">
+  <header><span class="book-number" aria-hidden="true">07 /</span>
     <div class="meta"><span class="tag">네트워크</span><span class="count">14장</span></div>
     <h2><a href="tcpip-course/">TCP/IP</a></h2>
     <p>링크 계층부터 IP, TCP 신뢰성과 혼잡 제어, IPv6, 라우팅, 보안, 성능 분석까지 패킷의 여정을 따라갑니다.</p>
@@ -151,7 +189,7 @@
   </ol></details>
 </article>
 <article data-category="런타임" class="course" style="--c:var(--c4)" data-title="Node.js 전문가 코스">
-  <header><span class="book-number" aria-hidden="true">07 /</span>
+  <header><span class="book-number" aria-hidden="true">08 /</span>
     <div class="meta"><span class="tag">런타임</span><span class="count">20장</span></div>
     <h2><a href="nodejs-advanced-course/">Node.js</a></h2>
     <p>V8과 libuv의 내부, 성능 진단, 프로덕션 운영과 확장 아키텍처까지.</p>
@@ -180,7 +218,7 @@
   </ol></details>
 </article>
 <article data-category="런타임" class="course" style="--c:var(--c6)" data-title="C# 가비지 컬렉터 해부">
-  <header><span class="book-number" aria-hidden="true">08 /</span>
+  <header><span class="book-number" aria-hidden="true">09 /</span>
     <div class="meta"><span class="tag">런타임</span><span class="count">19개 섹션</span></div>
     <h2><a href="CSharp_GC_학습자료.html">C# 가비지 컬렉션</a></h2>
     <p>CLR GC가 언제, 무엇을, 어떻게 치우는지 조작하며 익히고 컨테이너 설정·진단·Unity GC까지 이어서 다룹니다. 한 페이지 구성.</p>
@@ -208,7 +246,7 @@
   </ol></details>
 </article>
 <article data-category="시스템" class="course" style="--c:var(--c6)" data-title="컨테이너 런타임 만들기">
-  <header><span class="book-number" aria-hidden="true">09 /</span>
+  <header><span class="book-number" aria-hidden="true">10 /</span>
     <div class="meta"><span class="tag">시스템 프로그래밍</span><span class="count">9장</span></div>
     <h2><a href="container-runtime-course/">Rust 컨테이너 런타임 구현</a></h2>
     <p>fork 한 번에서 출발해 네임스페이스, cgroup, 네트워크, seccomp, OCI 이미지까지 Rust로 직접 구현합니다.</p>
@@ -226,7 +264,7 @@
   </ol></details>
 </article>
 <article data-category="백엔드·데이터" class="course" style="--c:var(--c3)" data-title="C# 메시지 큐 분산 시스템 MiniQueue">
-  <header><span class="book-number" aria-hidden="true">10 /</span><div class="meta"><span class="tag">분산 시스템 · C#</span><span class="count">10장</span></div>
+  <header><span class="book-number" aria-hidden="true">11 /</span><div class="meta"><span class="tag">분산 시스템 · C#</span><span class="count">10장</span></div>
   <h2><a href="distributed-queue-course/">C# 메시지 큐 구현</a></h2>
   <p>MiniQueue 하나를 만들며 TCP 프레임, WAL, ACK, 멱등성, 재시도, 역압력, 파티션과 복제를 장애 실험으로 배웁니다.</p></header>
   <details class="chapters"><summary>챕터 살펴보기 <span class="expand-icon" aria-hidden="true">＋</span></summary><ol class="ch">
@@ -243,7 +281,7 @@
   </ol></details>
 </article>
 <article data-category="백엔드·데이터" class="course" style="--c:var(--c3)" data-title="데이터베이스 만들기">
-  <header><span class="book-number" aria-hidden="true">11 /</span>
+  <header><span class="book-number" aria-hidden="true">12 /</span>
     <div class="meta"><span class="tag">데이터베이스</span><span class="count">9장</span></div>
     <h2><a href="database-course/">Rust 데이터베이스 구현</a></h2>
     <p>파일 끝에 덧붙이는 키-값 저장소에서 출발해 페이지, B+트리, SQL, WAL, 트랜잭션, psql 서버까지 Rust로 직접 구현합니다.</p>
@@ -261,7 +299,7 @@
   </ol></details>
 </article>
 <article data-category="이론·AI" class="course" style="--c:var(--c4)" data-title="프로그래머를 위한 범주론 C# 카테고리 이론 Category Theory">
-  <header><span class="book-number" aria-hidden="true">12 /</span><div class="meta"><span class="tag">프로그래밍 이론</span><span class="count">31장</span></div>
+  <header><span class="book-number" aria-hidden="true">13 /</span><div class="meta"><span class="tag">프로그래밍 이론</span><span class="count">31장</span></div>
   <h2><a href="category-theory-course/">C# 범주론</a></h2>
   <p>Bartosz Milewski의 원문 31장을 따라 함수 합성부터 요네다, 수반, 모나드와 심화 이론까지 C# 예제·구조도·조작 실습으로 배웁니다.</p></header>
   <details class="chapters"><summary>챕터 살펴보기 <span class="expand-icon" aria-hidden="true">＋</span></summary><ol class="ch">
@@ -299,7 +337,7 @@
   </ol></details>
 </article>
 <article data-category="이론·AI" class="course" style="--c:var(--c5)" data-title="효용 AI 시뮬레이션 코스">
-  <header><span class="book-number" aria-hidden="true">13 /</span>
+  <header><span class="book-number" aria-hidden="true">14 /</span>
     <div class="meta"><span class="tag">게임 AI</span><span class="count">12장</span></div>
     <h2><a href="utility-ai-course/">효용 기반 AI</a></h2>
     <p>반응 커브, 점수 결합, 행동 선택, 욕구와 스마트 오브젝트를 거쳐 마을 시뮬레이션 엔진을 완성합니다.</p>

@@ -16,8 +16,8 @@ const check=(value,label)=>{assert.ok(value,label);checks++;};
 try {
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.goto(base+'/');
- const cards=page.locator('.course');const total=await cards.count();check(total===13,'all 13 courses retained');
- check(await page.locator('.ch li').count()===195,'all 195 chapter links retained');
+ const cards=page.locator('.course');const total=await cards.count();check(total===14,'all 14 courses available');
+ check(await page.locator('.ch li').count()===223,'all 223 chapter links available');
  check(await page.locator('details[open]').count()===0,'chapters collapsed initially');
  await cards.first().locator('summary').click();check(await cards.first().locator('details').getAttribute('open')!==null,'expand chapters');
  await page.locator('#q').fill('혼잡');check(await page.locator('.course:not([hidden])').count()>0,'search finds chapter');
