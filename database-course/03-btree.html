@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html data-theme="light" lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>B+트리</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/ch03-04-visuals.css"><script src="assets/common.js"></script>
 <style>
 .controls input{width:100px}.route-children{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0}.route-child{border:2px solid var(--border);border-radius:6px;padding:10px;text-align:center;background:var(--surface-2);font-family:var(--mono);font-size:13px}.route-child.selected{border-color:var(--accent);color:var(--accent)}
@@ -8,7 +8,9 @@
 @media(max-width:480px){.route-children{grid-template-columns:1fr}}
 </style><link rel="stylesheet" href="assets/syntax.css">
 <script src="assets/syntax.js"></script>
-</head><body data-chapter="03"><main>
+
+<link rel="stylesheet" href="../shared/course-design.css">
+<script src="../shared/course-design.js"></script></head><body data-chapter="03"><main>
 <header class="chapter-head"><span class="label">저장 엔진 · Chapter 03</span><h1>B+트리</h1>
 <p class="lead">페이지마다 키의 범위를 맡깁니다. 키 하나를 찾을 때는 루트에서 리프로 내려가고, 범위를 읽을 때는 리프의 옆 페이지로 이동합니다. 키가 늘어나면 페이지를 나눠 균형을 유지합니다.</p>
 <div class="objectives"><h4>학습 목표</h4><ul><li>구분 키와 같을 때 어느 자식으로 내려가는지 결정합니다.</li><li>리프 분할의 복사와 내부 노드 분할의 이동을 구분합니다.</li><li>분할을 부모로 전파하고 새 루트의 페이지 번호를 저장합니다.</li><li>리프 연결로 범위를 조회하고 flush 후 다시 열어 결과를 확인합니다.</li></ul></div></header>

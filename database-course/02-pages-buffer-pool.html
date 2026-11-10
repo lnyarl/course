@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html data-theme="light" lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>페이지와 버퍼 풀</title><link rel="stylesheet" href="assets/style.css"><script src="assets/common.js"></script>
 <style>
 .page-strip{display:flex;height:48px;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin:12px 0}.page-strip span{min-width:2px;transition:flex-grow .2s}.page-head{background:var(--violet)}.page-slots{background:var(--accent)}.page-free{background:var(--surface-2)}.page-data{background:var(--ok)}
@@ -8,7 +8,9 @@
 </style><link rel="stylesheet" href="assets/ch01-02-visuals.css">
 <link rel="stylesheet" href="assets/syntax.css">
 <script src="assets/syntax.js"></script>
-</head><body data-chapter="02"><main>
+
+<link rel="stylesheet" href="../shared/course-design.css">
+<script src="../shared/course-design.js"></script></head><body data-chapter="02"><main>
 <header class="chapter-head"><span class="label">저장 엔진 · Chapter 02</span><h1>페이지와 버퍼 풀</h1>
 <p class="lead">파일을 4KB씩 나누고, 필요한 조각만 메모리에 올립니다. 레코드를 넣을 자리와 메모리에서 내보낼 페이지를 직접 결정하는 저장 엔진을 만듭니다.</p>
 <div class="objectives"><h4>학습 목표</h4><ul><li>페이지 번호를 파일 오프셋으로 바꾸고 정확히 4096바이트를 읽고 씁니다.</li><li>슬롯 디렉터리로 가변 길이 레코드의 위치를 찾습니다.</li><li>pin count와 dirty flag를 구분하고 CLOCK으로 교체 대상을 고릅니다.</li><li>재시작 후 데이터가 남는지 검사하고, 크래시 복구와의 차이를 설명합니다.</li></ul></div></header>

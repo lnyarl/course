@@ -19,15 +19,14 @@
   document.body.append(host);
   const ui = host.attachShadow({mode: 'open'});
   ui.innerHTML = `<style>
-    :host{all:initial;font:14px/1.6 system-ui,sans-serif;color:#243343;position:relative;z-index:2147483000}
+    :host{all:initial;color-scheme:light;font:14px/1.6 system-ui,sans-serif;color:#20242c;position:relative;z-index:2147483000}
     *{box-sizing:border-box} [hidden]{display:none!important}
-    button,textarea{font:inherit}button{cursor:pointer;border:1px solid #ccd5de;border-radius:8px;background:#fff;color:#243343;padding:7px 11px}button:hover{background:#edf3f8}button:focus-visible,textarea:focus-visible{outline:3px solid #5087dc;outline-offset:2px}
+    button,textarea{font:inherit}button{cursor:pointer;border:1px solid #d4d7dd;border-radius:8px;background:#fff;color:#20242c;padding:7px 11px}button:hover{background:#f2f3f5}button:focus-visible,textarea:focus-visible{outline:3px solid #175cd3;outline-offset:2px}
     #toggle{position:fixed;right:20px;bottom:20px;box-shadow:0 3px 18px #0002;font-weight:650}
-    #add{position:fixed;background:#235fba;color:white;border:0;box-shadow:0 3px 16px #0003}
-    aside{position:fixed;right:0;top:0;width:340px;height:100dvh;background:#f7f9fc;border-left:1px solid #d6dee7;box-shadow:-4px 0 22px #0001;display:flex;flex-direction:column;padding:20px;gap:14px}
-    header{display:flex;align-items:center;justify-content:space-between}h2{font-size:18px;margin:0}p{margin:0}.hint{font-size:12px;color:#5b6c7c}#list{overflow:auto;flex:1;min-height:0}article{background:white;border:1px solid #d6dee7;border-radius:12px;padding:14px;margin-bottom:12px;overflow-wrap:anywhere}blockquote{margin:0 0 10px;padding-left:10px;border-left:3px solid #d6aa38;color:#526170;font-size:12px;max-height:110px;overflow:auto;white-space:pre-wrap}.body{white-space:pre-wrap;margin:10px 0}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{font-size:12px}time{font-size:11px;color:#657486}textarea{display:block;resize:vertical;width:100%;min-height:110px;max-height:30vh;border:1px solid #adbccc;border-radius:8px;padding:10px;background:white;color:#243343;margin:8px 0}#editor{overflow:auto;max-height:65vh;flex-shrink:0}#quote{max-height:90px}#status{font-size:12px;color:#235fba}#export{font-size:12px}.primary{background:#235fba;color:white}footer{display:grid;gap:8px}.missing{color:#986113;font-size:12px}
+    #add{position:fixed;background:#175cd3;color:white;border:0;box-shadow:0 3px 16px #0003}
+    aside{position:fixed;right:0;top:0;width:340px;height:100dvh;background:#fff;border-left:1px solid #d4d7dd;box-shadow:-4px 0 22px #0001;display:flex;flex-direction:column;padding:20px;gap:14px}
+    header{display:flex;align-items:center;justify-content:space-between}h2{font-size:18px;margin:0}p{margin:0}.hint{font-size:12px;color:#606773}#list{overflow:auto;flex:1;min-height:0}article{background:white;border:1px solid #d4d7dd;border-radius:12px;padding:14px;margin-bottom:12px;overflow-wrap:anywhere}blockquote{margin:0 0 10px;padding-left:10px;border-left:3px solid #175cd3;color:#606773;font-size:12px;max-height:110px;overflow:auto;white-space:pre-wrap}.body{white-space:pre-wrap;margin:10px 0}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{font-size:12px}time{font-size:11px;color:#606773}textarea{display:block;resize:vertical;width:100%;min-height:110px;max-height:30vh;border:1px solid #b6bcc6;border-radius:8px;padding:10px;background:white;color:#20242c;margin:8px 0}#editor{overflow:auto;max-height:65vh;flex-shrink:0}#quote{max-height:90px}#status{font-size:12px;color:#175cd3}#export{font-size:12px}.primary{background:#175cd3;color:white}footer{display:grid;gap:8px}.missing{color:#8a3b12;font-size:12px}
     @media(max-width:700px){aside{width:min(340px,100vw)}#toggle{right:12px;bottom:12px}}
-    @media(prefers-color-scheme:dark){aside{background:#17212c;border-color:#374859}:host{color:#e0e8f2}article,button,textarea{background:#202e3d;color:#e0e8f2;border-color:#42556a}button:hover{background:#31465b}.hint,blockquote,time{color:#b2c2d3}#status{color:#9ac1ff}}
     @media print{:host{display:none}}
   </style>
   <button id="toggle" aria-expanded="false" aria-controls="panel">코멘트 <span id="count">0</span></button>
@@ -42,7 +41,7 @@
   const $ = id => ui.getElementById(id);
   if (options.title) ui.querySelector('h2').firstChild.textContent = options.title + ' ';
   const style = document.createElement('style');
-  style.textContent = '::highlight(course-notes){background:#ffe29b;color:inherit} @media(min-width:1100px){html.course-notes-open{padding-right:340px!important;box-sizing:border-box}}';
+  style.textContent = '::highlight(course-notes){background:#175cd3;color:#fff} @media(min-width:1100px){html.course-notes-open{padding-right:340px!important;box-sizing:border-box}}';
   document.head.append(style);
   let pending = null, editing = null, records = [], refreshTimer;
   const status = text => { $('status').textContent = text; };

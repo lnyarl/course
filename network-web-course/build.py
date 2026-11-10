@@ -30,7 +30,7 @@ def sidebar(current):
 
 
 def wrap(title,body,current=''):
-    return f'<!doctype html>\n<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="DNS, HTTP, TLS, 프록시와 장애 분석을 도식과 실험으로 배우는 한국어 네트워크 교재"><title>{E(title)} · {TITLE}</title><link rel="stylesheet" href="assets/course.css"></head><body data-chapter="{current}"><a class="skip" href="#main">본문으로 이동</a><div class="shell">{sidebar(current)}<main id="main" class="content">{body}</main></div><script src="assets/teaching-ui.js"></script><script src="assets/course.js"></script><script defer src="../shared/course-comments.js"></script></body></html>\n'
+    return f'<!doctype html>\n<html lang="ko" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="DNS, HTTP, TLS, 프록시와 장애 분석을 도식과 실험으로 배우는 한국어 네트워크 교재"><title>{E(title)} · {TITLE}</title><link rel="stylesheet" href="assets/course.css"><link rel="stylesheet" href="../shared/course-design.css"><script src="../shared/course-design.js"></script></head><body data-chapter="{current}"><a class="skip" href="#main">본문으로 이동</a><div class="shell">{sidebar(current)}<main id="main" class="content">{body}</main></div><script src="assets/teaching-ui.js"></script><script src="assets/course.js"></script><script defer src="../shared/course-comments.js"></script></body></html>\n'
 
 VISUAL_AFTER={'01':2,'02':3,'03':2,'04':1,'05':3,'06':5,'07':2,'08':5,'09':2,'10':2,'11':2,'12':2}
 EXPERIMENT_AFTER={'01':6,'02':4,'03':2,'04':4,'05':4,'06':6,'07':4,'08':5,'09':3,'10':5,'11':4,'12':7}

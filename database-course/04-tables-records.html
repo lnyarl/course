@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html data-theme="light" lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>테이블과 레코드</title><link rel="stylesheet" href="assets/style.css"><link rel="stylesheet" href="assets/ch03-04-visuals.css"><script src="assets/common.js"></script>
 <style>
 .controls input[type="text"]{width:140px}.controls input[type="checkbox"]{accent-color:var(--accent)}.controls label{max-width:100%}.byte-map{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin:14px 0}.byte-map span{padding:8px;border:1px solid var(--border);border-radius:5px;font-size:12px;text-align:center;background:var(--surface-2)}.byte-map .null-map{border-color:var(--accent);color:var(--accent)}
@@ -8,7 +8,9 @@
 @media(max-width:480px){.byte-map{grid-template-columns:repeat(2,minmax(0,1fr))}#heap-pages{grid-template-columns:1fr}.controls label{flex-wrap:wrap}}
 </style><link rel="stylesheet" href="assets/syntax.css">
 <script src="assets/syntax.js"></script>
-</head><body data-chapter="04"><main>
+
+<link rel="stylesheet" href="../shared/course-design.css">
+<script src="../shared/course-design.js"></script></head><body data-chapter="04"><main>
 <header class="chapter-head"><span class="label adv">관계형 계층 · Chapter 04</span><h1>테이블과 레코드</h1><p class="lead">정수 키·값 저장소에 열의 이름과 타입을 붙입니다. 문자열과 NULL을 바이트로 저장하고, B+트리의 RID를 따라 실제 행을 읽는 테이블 계층을 만듭니다.</p>
 <div class="objectives"><h4>학습 목표</h4><ul><li>스키마로 행의 타입과 NOT NULL을 검사합니다.</li><li>NULL 비트맵과 문자열의 오프셋·바이트 길이를 인코딩합니다.</li><li>힙 페이지에 여러 행을 넣고 RID로 다시 읽습니다.</li><li>카탈로그·힙·기본키 색인을 저장하고 재시작 후 조회합니다.</li></ul></div></header>
 <nav class="toc"><b>목차</b><ol><li><a href="#s1">행의 바이트를 해석할 스키마</a></li><li><a href="#s2">NULL과 빈 값은 다른 바이트다</a></li><li><a href="#s3">문자열 길이는 UTF-8 바이트로 센다</a></li><li><a href="#s4">힙 페이지와 RID</a></li><li><a href="#s5">B+트리는 기본키에서 RID를 찾는다</a></li><li><a href="#s6">재시작 후에도 스키마를 찾는 카탈로그</a></li><li><a href="#s7">구현 가이드</a></li><li><a href="#s8">이 저장 구조가 못 하는 것</a></li></ol></nav>

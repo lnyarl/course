@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390" role="img" aria-labelledby="t d">
 <title id="t">웹 요청을 만드는 서로 다른 연결과 신뢰 경계</title><desc id="d">브라우저가 DNS로 주소를 찾고 TLS 연결을 프록시에 만든다. 프록시는 별도 연결로 앱 서버에 요청한다. DNS는 웹 본문 경로에 없다.</desc>
-<rect width="1080" height="390" rx="16" fill="#122b31"/>
-<g font-family="sans-serif" fill="#e3eeea"><text x="35" y="40" font-size="15" fill="#8ee0bf">ONE REQUEST · MANY BOUNDARIES</text>
-<g stroke="#618787" stroke-width="2" fill="none"><path d="M180 218H425M605 218H795"/><path d="M130 170V100H310" stroke-dasharray="7 6"/></g>
-<g fill="#1d4247" stroke="#6c9b94"><rect x="40" y="170" width="180" height="115" rx="10"/><rect x="425" y="170" width="180" height="115" rx="10"/><rect x="795" y="170" width="240" height="115" rx="10"/><rect x="310" y="63" width="210" height="70" rx="10"/></g>
+<rect width="1080" height="390" rx="16" fill="#f4f4f5"/>
+<g font-family="sans-serif" fill="#20242c"><text x="35" y="40" font-size="15" fill="#175cd3">ONE REQUEST · MANY BOUNDARIES</text>
+<g stroke="#667085" stroke-width="2" fill="none"><path d="M180 218H425M605 218H795"/><path d="M130 170V100H310" stroke-dasharray="7 6"/></g>
+<g fill="#ffffff" stroke="#98a2b3"><rect x="40" y="170" width="180" height="115" rx="10"/><rect x="425" y="170" width="180" height="115" rx="10"/><rect x="795" y="170" width="240" height="115" rx="10"/><rect x="310" y="63" width="210" height="70" rx="10"/></g>
 <g text-anchor="middle" font-size="19"><text x="130" y="215">Browser</text><text x="515" y="215">CDN / Proxy</text><text x="915" y="215">Application</text><text x="415" y="92">DNS resolver</text></g>
-<g text-anchor="middle" font-size="14" fill="#b6ceca"><text x="130" y="245">origin · cookies · CORS</text><text x="515" y="245">cache · TLS termination</text><text x="915" y="245">routing · API · upstream</text><text x="415" y="116">name → address</text></g>
-<g font-size="14" fill="#8ee0bf"><text x="230" y="205">TLS connection A</text><text x="622" y="205">connection B</text><text x="235" y="245">encrypted HTTP</text><text x="622" y="245">HTTP or HTTPS</text></g>
-<path d="M425 300v28H220" stroke="#8ee0bf" fill="none"/><circle cx="425" cy="300" r="4" fill="#8ee0bf"/>
+<g text-anchor="middle" font-size="14" fill="#475467"><text x="130" y="245">origin · cookies · CORS</text><text x="515" y="245">cache · TLS termination</text><text x="915" y="245">routing · API · upstream</text><text x="415" y="116">name → address</text></g>
+<g font-size="14" fill="#175cd3"><text x="230" y="205">TLS connection A</text><text x="622" y="205">connection B</text><text x="235" y="245">encrypted HTTP</text><text x="622" y="245">HTTP or HTTPS</text></g>
+<path d="M425 300v28H220" stroke="#175cd3" fill="none"/><circle cx="425" cy="300" r="4" fill="#175cd3"/>
 <text x="38" y="352" font-size="15">DNS result ≠ certificate identity ≠ HTTP Host ≠ browser origin</text>
-<text x="38" y="376" font-size="12" fill="#b6ceca">Conceptual illustration. A reverse proxy creates a new upstream connection; encryption must be configured for each hop.</text></g></svg>
+<text x="38" y="376" font-size="12" fill="#475467">Conceptual illustration. A reverse proxy creates a new upstream connection; encryption must be configured for each hop.</text></g></svg>

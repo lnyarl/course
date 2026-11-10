@@ -38,3 +38,17 @@ localStorage에 코멘트별로 저장하며, 같은 origin·namespace의 탭에
 ```sh
 node tools/verify-comments.mjs /path/to/playwright/index.mjs /path/to/chromium
 ```
+
+## 공통 코스 디자인
+
+`course-design.css`와 `course-design.js`는 코스 목록, C# GC 단일 교재와 모든 코스 HTML에서 공유합니다. 흰색·중립 회색·파란색을 기준으로 밝은 테마를 고정하며, 각 코스의 학습 기능은 기존 스크립트가 담당합니다. 공통 CSS는 코스별 스타일 뒤에, 공통 JS는 head 마지막에 연결합니다.
+
+새 페이지를 추가하거나 HTML을 생성한 뒤 다음 명령으로 연결합니다. 여러 번 실행해도 중복 태그가 생기지 않습니다. 네트워크·Linux 코스 생성기는 공통 디자인 태그를 직접 포함합니다.
+
+```sh
+python3 tools/connect-design.py
+```
+
+## 공통 코드 하이라이팅
+
+`course-design.js`가 `course-syntax.js`와 `course-syntax.css`를 로컬에서 불러옵니다. `pre` 코드 블록을 자동으로 색칠하고 동적으로 교체되는 코드에도 적용합니다. 언어를 확정하려면 `<code class="language-csharp">` 또는 `data-language="sql"`을 지정하세요. C#, JavaScript/TypeScript, Rust, C/C++, Java, Python, SQL, Bash, JSON 등을 지원합니다. 실행 결과는 `data-language="console"`, 일반 텍스트는 `data-language="text"`로 명시할 수 있습니다. 원문을 텍스트 노드로 유지하며 코드를 실행하지 않습니다.
