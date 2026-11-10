@@ -27,28 +27,100 @@
 <p>같은 시작 스냅샷에서 ‘근무자가 둘이니 나 하나는 빠져도 된다’고 두 세션이 판단한다고 가정합시다. 각자 다른 행을 비근무로 바꿔 둘 다 커밋하면 최소 한 명 근무라는 제약이 깨집니다. 행 단위 write-write 충돌만 확인하는 snapshot isolation은 이런 write skew를 허용할 수 있습니다.</p>
 <div class="widget tx-widget" id="isolation-lab"><div class="w-title">직렬 실행·행 snapshot·global OCC 비교</div><div class="w-desc">초기에는 A와 B 모두 근무합니다. 최소 1명은 남아야 합니다. 어떤 조건이 두 번째 변경을 막는지 비교하세요.</div><p class="tx-model">근무 행의 boolean UPDATE는 개념 실험입니다. 현재 SQL 파서는 UPDATE를 지원하지 않습니다. global OCC 모드는 실제 구현의 ‘어떤 DB 쓰기도 revision 충돌’ 규칙을 보여 줍니다.</p><div class="controls"><label>비교 방식 <select id="isolation-mode"><option value="occ">실제 예제 규칙: global revision OCC</option><option value="si">개념: 행 단위 snapshot, 겹친 쓰기만 검사</option><option value="serial">개념: A 종료 뒤 B가 읽는 직렬 실행</option></select></label><label>마지막 근무자 수 <select id="isolation-prediction"><option value="1">1명</option><option value="0">0명</option></select></label><button id="isolation-check" class="btn">예측 확인</button></div><output id="isolation-feedback" class="tx-output" aria-live="polite"></output><div class="stage" id="isolation-diagram"></div><p class="tx-note">도식은 내부에서 좌우로 스크롤할 수 있습니다.</p><output id="isolation-status" class="tx-output" aria-live="polite"></output><div id="isolation-player"></div></div>
 <p>이 예제의 global 검증에서는 A가 커밋한 뒤 B의 dirty COMMIT이 거부되므로 위 두 변경이 함께 성공하지 않습니다. 그 대신 서로 관련 없는 테이블·행의 쓰기도 충돌합니다. 충돌 범위를 줄이려면 읽기·쓰기 집합, 행 버전과 인덱스 조건 범위를 실제로 추적하는 추가 설계가 필요합니다.</p></section>
-<section id="s6"><h2>6. 구현 가이드</h2><h3>A. 활성 ID와 실패 상태 관리</h3><p>7장의 공개 API를 포함하고 작은 관리자만 추가합니다. 같은 manager를 두 세션이 번갈아 호출하면 동시 수명의 효과를 재현할 수 있습니다.</p><pre><code data-language="rust">struct Active {
-    snapshot: wal::Snapshot,
-    failed: bool,
-}
-pub struct Transactions {
-    database: wal::Database,
-    active: HashMap&lt;u64, Active&gt;,
-    next_id: u64,
-}
-// TODO: BEGIN에서 private snapshot을 만들고 새 ID로 저장한다.
-// TODO: 최대 32개를 넘기기 전에 거부한다.
-// TODO: SQL 오류나 외부 mark_failed 뒤에는 query/commit을 막는다.</code></pre><details class="deep"><summary>힌트 A: E 상태를 먼저 검사하세요</summary><div><p>SQL을 다시 파싱하기 전에 실패 상태인지 확인합니다. rollback은 실패 상태에서도 Snapshot을 Drop할 수 있어야 합니다. 알 수 없는 ID는 오류이고, 성공한 ID를 다시 commit할 수 없습니다.</p></div></details>
-<h3>B. 커밋 결과와 수명 정리</h3><pre><code data-language="rust">// TODO: database.commit(&amp;mut active.snapshot)를 호출한다.
-// TODO: 성공하면 HashMap에서 제거해 작업공간을 정리한다.
-// TODO: 충돌이면 failed=true로 남겨 ROLLBACK만 허용한다.
-// TODO: autocommit은 query와 commit 어느 오류에서도 ID를 정리한다.
-// TODO: poisoned DB는 회복 전 더 사용하지 않는다.</code></pre><details class="deep"><summary>힌트 B: 읽기 전용과 내구화 오류를 분리하세요</summary><div><p>read-only commit의 반환 revision이 시작 revision과 달라도 성공일 수 있습니다. 반대로 WAL 내구화 이후 설치 오류는 단순 충돌과 다릅니다. Database의 poisoned 상태를 그대로 호출자에게 전파해야 합니다.</p></div></details>
-<h3>C. 엔진 콜백은 private workspace에서만 실행</h3><pre><code data-language="rust">pub fn query_with&lt;T, F&gt;(&amp;mut self, id: u64, sql: &amp;str, runner: F)
-    -&gt; io::Result&lt;T&gt;
-where
-    F: FnOnce(&amp;Path, &amp;str) -&gt; io::Result&lt;T&gt;,
-{ /* TODO: snapshot.query_with에 위임하고 오류면 E로 바꾼다 */ }</code></pre><p>기본 query는 순차 실행 엔진을 사용합니다. 9장은 같은 callback에 최적화 실행이나 읽기 전용 EXPLAIN을 연결할 수 있습니다. callback은 전달된 SQL과 workspace에 맞게 동작하는 내부 신뢰 경계입니다. 실제 committed 디렉터리에 직접 쓰거나 읽기 SQL로 분류해 놓고 파일을 변경하는 콜백은 지원 계약을 어깁니다.</p>
+<section id="s6"><h2>6. 구현 가이드</h2><div class="callout tip code-path"><span class="title">완성 코드 → 실행 → 변경 실험</span><p>아래 코드는 <a href="examples/ch08/transactions.rs">ch08/transactions.rs</a>의 실제 구현을 발췌한 것입니다. 메서드는 원본의 impl 블록 안에 놓입니다. 타입·보조 함수·이전 장 의존성까지 포함해 실행하려면 <a href="examples/mydb-source.zip" download>전체 소스 ZIP</a>을 풀고 폴더 구조를 유지하세요. 발췌만 별도 파일로 붙여 컴파일하는 예제가 아닙니다.</p><pre><code data-language="bash"># ZIP을 푼 examples 폴더에서 실행
+bash ch08/check.sh</code></pre><p>기대 결과: 모든 검사가 통과하고 종료 코드가 0입니다. 오류가 나면 표시된 FAIL 또는 실패한 테스트를 먼저 확인하세요. 아래 함수의 조건 한 곳을 바꿔 관련 검사가 실패하는지 확인한 다음 원본으로 되돌리면, 검사가 지키는 규칙을 이해할 수 있습니다.</p></div><h3>A. 활성 ID와 실패 상태 관리</h3><p>7장의 공개 API를 포함하고 작은 관리자만 추가합니다. 같은 manager를 두 세션이 번갈아 호출하면 동시 수명의 효과를 재현할 수 있습니다.</p><p class="code-reading">Transactions::begin은 활성 수와 ID 범위를 검사한 뒤 private snapshot을 만듭니다. 반환 ID로 이후 query와 commit을 찾습니다. 활성 거래의 failed 플래그는 query_with와 commit에서 함께 검사합니다.</p><p><a href="examples/ch08/transactions.rs"><code>ch08/transactions.rs:42–61</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch08/transactions.rs" data-lines="42-61">    pub fn begin(&amp;mut self) -&gt; io::Result&lt;u64&gt; {
+        self.usable()?;
+        if self.active.len() &gt;= MAX_ACTIVE {
+            return Err(bad(&quot;at most 32 active transactions&quot;));
+        }
+        let id = self.next_id;
+        let next = id
+            .checked_add(1)
+            .ok_or_else(|| bad(&quot;transaction id exhausted&quot;))?;
+        let snapshot = self.database.snapshot()?;
+        self.next_id = next;
+        self.active.insert(
+            id,
+            Active {
+                snapshot,
+                failed: false,
+            },
+        );
+        Ok(id)
+    }</code></pre><details class="deep"><summary>코드 해설 A: E 상태를 먼저 검사하세요</summary><div><p>SQL을 다시 파싱하기 전에 실패 상태인지 확인합니다. rollback은 실패 상태에서도 Snapshot을 Drop할 수 있어야 합니다. 알 수 없는 ID는 오류이고, 성공한 ID를 다시 commit할 수 없습니다.</p></div></details>
+<h3>B. 커밋 결과와 수명 정리</h3><p class="code-reading">성공한 commit은 활성 목록에서 제거합니다. 실패하면 E 상태로 남겨 ROLLBACK만 허용합니다. autocommit_with는 query 또는 commit 실패 시에도 활성 ID를 정리합니다.</p><p><a href="examples/ch08/transactions.rs"><code>ch08/transactions.rs:86–116</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · transactions.rs 86-116행</summary><pre><code data-language="rust" data-source="examples/ch08/transactions.rs" data-lines="86-116">    pub fn commit(&amp;mut self, id: u64) -&gt; io::Result&lt;u64&gt; {
+        self.usable()?;
+        let transaction = self
+            .active
+            .get_mut(&amp;id)
+            .ok_or_else(|| bad(&quot;unknown transaction&quot;))?;
+        if transaction.failed || transaction.snapshot.is_failed() {
+            transaction.failed = true;
+            return Err(bad(&quot;transaction is failed; ROLLBACK required&quot;));
+        }
+        let result = self.database.commit(&amp;mut transaction.snapshot);
+        match result {
+            Ok(revision) =&gt; {
+                self.active.remove(&amp;id);
+                Ok(revision)
+            }
+            Err(error) =&gt; {
+                self.active.get_mut(&amp;id).unwrap().failed = true;
+                if self.database.is_poisoned() {
+                    for transaction in self.active.values_mut() {
+                        transaction.failed = true;
+                    }
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!(&quot;database requires recovery; commit outcome unknown: {error}&quot;),
+                    ));
+                }
+                Err(error)
+            }
+        }
+    }</code></pre></details><p><a href="examples/ch08/transactions.rs"><code>ch08/transactions.rs:119–124</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch08/transactions.rs" data-lines="119-124">    pub fn rollback(&amp;mut self, id: u64) -&gt; io::Result&lt;()&gt; {
+        self.active
+            .remove(&amp;id)
+            .map(drop)
+            .ok_or_else(|| bad(&quot;unknown transaction&quot;))
+    }</code></pre><p><a href="examples/ch08/transactions.rs"><code>ch08/transactions.rs:128–146</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch08/transactions.rs" data-lines="128-146">    pub fn autocommit_with&lt;T, F&gt;(&amp;mut self, sql: &amp;str, runner: F) -&gt; io::Result&lt;T&gt;
+    where
+        F: FnOnce(&amp;Path, &amp;str) -&gt; io::Result&lt;T&gt;,
+    {
+        let id = self.begin()?;
+        match self.query_with(id, sql, runner) {
+            Ok(reply) =&gt; match self.commit(id) {
+                Ok(_) =&gt; Ok(reply),
+                Err(error) =&gt; {
+                    let _ = self.rollback(id);
+                    Err(error)
+                }
+            },
+            Err(error) =&gt; {
+                let _ = self.rollback(id);
+                Err(error)
+            }
+        }
+    }</code></pre><details class="deep"><summary>코드 해설 B: 읽기 전용과 내구화 오류를 분리하세요</summary><div><p>read-only commit의 반환 revision이 시작 revision과 달라도 성공일 수 있습니다. 반대로 WAL 내구화 이후 설치 오류는 단순 충돌과 다릅니다. Database의 poisoned 상태를 그대로 호출자에게 전파해야 합니다.</p></div></details>
+<h3>C. 엔진 콜백은 private workspace에서만 실행</h3><p class="code-reading">query_with는 거래 ID와 SQL, 실행 콜백을 받아 private snapshot에 위임합니다. 실행 오류를 받으면 failed를 설정합니다. 9장의 최적화 실행기도 이 경계를 통해 같은 거래 상태를 공유합니다.</p><p><a href="examples/ch08/transactions.rs"><code>ch08/transactions.rs:67–85</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch08/transactions.rs" data-lines="67-85">    pub fn query_with&lt;T, F&gt;(&amp;mut self, id: u64, sql: &amp;str, runner: F) -&gt; io::Result&lt;T&gt;
+    where
+        F: FnOnce(&amp;Path, &amp;str) -&gt; io::Result&lt;T&gt;,
+    {
+        self.usable()?;
+        let transaction = self
+            .active
+            .get_mut(&amp;id)
+            .ok_or_else(|| bad(&quot;unknown transaction&quot;))?;
+        if transaction.failed || transaction.snapshot.is_failed() {
+            transaction.failed = true;
+            return Err(bad(&quot;transaction is failed; ROLLBACK required&quot;));
+        }
+        let result = transaction.snapshot.query_with(sql, runner);
+        if result.is_err() {
+            transaction.failed = true;
+        }
+        result
+    }</code></pre><p>기본 query는 순차 실행 엔진을 사용합니다. 9장은 같은 callback에 최적화 실행이나 읽기 전용 EXPLAIN을 연결할 수 있습니다. callback은 전달된 SQL과 workspace에 맞게 동작하는 내부 신뢰 경계입니다. 실제 committed 디렉터리에 직접 쓰거나 읽기 SQL로 분류해 놓고 파일을 변경하는 콜백은 지원 계약을 어깁니다.</p>
 <h3>D. CLI 실행</h3><p>예제는 Rust 2024와 표준 라이브러리만 사용합니다. 이전 장 파일과 <code>examples/engine.rs</code>를 유지하세요. CLI는 SQL 한 문장을 한 줄로 받으며 BEGIN·COMMIT·ROLLBACK은 대소문자를 구분하지 않습니다. 세미콜론은 선택입니다. 여러 줄 문자열·문장 배치·SAVEPOINT·SET TRANSACTION은 지원하지 않습니다.</p><pre><code data-language="bash">rustc --edition=2024 examples/ch08/transactions.rs -o transactions
 ./transactions demo-db &lt;&lt;'SQL'
 CREATE TABLE people(id INT NOT NULL,name TEXT);
@@ -59,7 +131,7 @@ SELECT * FROM people ORDER BY id;
 ROLLBACK;
 SELECT * FROM people ORDER BY id;
 SQL</code></pre><p>BEGIN과 ROLLBACK은 tag·status를 JSON으로 출력합니다. 첫 SELECT에는 Roy와 Ana가 보이고, ROLLBACK 뒤에는 Roy만 보입니다. SQL 결과의 정수는 이전 장과 같은 typed JSON 문자열을 사용합니다. 중복 BEGIN과 실패 SQL은 E로 전환하며, 오류 JSON을 출력한 뒤 다음 입력을 계속 받습니다. EOF는 활성 트랜잭션을 rollback합니다.</p><p>이 장은 새로운 행·WAL 바이트 형식을 추가하지 않습니다. 실제 파일 형식과 내구화 순서는 7장의 WAL을 사용합니다. Linux의 fsync와 macOS의 F_FULLFSYNC 차이와 전원 차단 보장도 7장의 범위를 따릅니다. 여기서 강제 프로세스 종료 재열기 검사는 실제 장치 전원 차단 실험과 다릅니다.</p>
-<details class="deep"><summary>접힌 참조 구현: transactions.rs</summary><div><p><a href="examples/ch08/transactions.rs" download>transactions.rs 저장</a> · <a href="examples/ch08/check.sh" download>check.sh 저장</a>. 7장 wal.rs와 공유 engine.rs의 상대 경로를 유지하세요.</p><pre><code data-language="rust">//! Single-process snapshot transactions. This is global-revision OCC, not row MVCC.
+<details class="deep"><summary>전체 실행 소스: transactions.rs</summary><div><p><a href="examples/ch08/transactions.rs" download>transactions.rs 저장</a> · <a href="examples/ch08/check.sh" download>check.sh 저장</a>. 7장 wal.rs와 공유 engine.rs의 상대 경로를 유지하세요.</p><pre><code data-language="rust">//! Single-process snapshot transactions. This is global-revision OCC, not row MVCC.
 use std::{
     collections::HashMap,
     io::{self, BufRead},

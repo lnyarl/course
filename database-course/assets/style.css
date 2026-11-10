@@ -248,3 +248,15 @@ svg .flow { stroke-dasharray: 8 4; animation: flow 1s linear infinite; }
 pre.term { background: var(--surface-2); }
 pre.term .p { color: var(--ok); user-select: none; }
 pre.term .o { color: var(--muted); }
+
+/* 위젯별 실행 안내: 핵심 행동은 노출하고 상세 순서는 접어 둡니다. */
+.lab-guide { margin: 12px 0 16px; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--surface); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.lab-guide .lab-guide-goal { margin: 0 0 5px; font-weight: 600; color: var(--text); }
+.lab-guide .lab-guide-start { margin: 0; }
+.lab-guide details { margin: 8px 0 0; background: transparent; border: 0; padding: 0; }
+.lab-guide summary { padding: 3px 0; cursor: pointer; color: var(--accent); font-weight: 600; }
+.lab-guide summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+.lab-guide ol { padding-left: 22px; margin: 10px 0; }
+.lab-guide li { margin: 5px 0; }
+.lab-guide details p { margin: 9px 0 0; }
+@media (max-width: 480px) { .lab-guide { padding: 10px; } }

@@ -81,32 +81,164 @@
   <output id="rebalance-feedback" class="process-feedback" aria-live="polite"></output><div class="process-visual" id="rebalance-drawing"></div><p class="process-source">도식이 넓으면 좌우로 스크롤해 연결을 확인하세요.</p><div class="process-facts" id="rebalance-facts"></div><div id="rebalance-player"></div>
 </div>
 
-<section id="s7"><h2>7. 구현 가이드</h2>
+<section id="s7"><h2>7. 구현 가이드</h2><div class="callout tip code-path"><span class="title">완성 코드 → 실행 → 변경 실험</span><p>아래 코드는 <a href="examples/ch03/btree.rs">ch03/btree.rs</a>의 실제 구현을 발췌한 것입니다. 메서드는 원본의 impl 블록 안에 놓입니다. 타입·보조 함수·이전 장 의존성까지 포함해 실행하려면 <a href="examples/mydb-source.zip" download>전체 소스 ZIP</a>을 풀고 폴더 구조를 유지하세요. 발췌만 별도 파일로 붙여 컴파일하는 예제가 아닙니다.</p><pre><code data-language="bash"># ZIP을 푼 examples 폴더에서 실행
+bash ch03/check.sh</code></pre><p>기대 결과: 모든 검사가 통과하고 종료 코드가 0입니다. 오류가 나면 표시된 FAIL 또는 실패한 테스트를 먼저 확인하세요. 아래 함수의 조건 한 곳을 바꿔 관련 검사가 실패하는지 확인한 다음 원본으로 되돌리면, 검사가 지키는 규칙을 이해할 수 있습니다.</p></div>
 <p>2장의 <code>pages.rs</code>를 그대로 두고 같은 <code>examples</code> 아래 <code>ch03/btree.rs</code>를 추가합니다. 아래 Pager 어댑터가 기존 버퍼 풀을 감쌉니다. read는 슬롯 0을 Vec로 복사한 뒤 unpin하고, write는 새 페이지에 슬롯 0을 만든 뒤 프레임에 넣고 dirty로 표시합니다. 트리 코드는 프레임 번호를 다루지 않습니다.</p>
-<h3>A. 노드 형식과 경계 검색</h3><pre><code data-language="rust">enum Node {
-    Leaf { rows: Vec&lt;(i64, i64)&gt;, next: u64 },
-    Branch { keys: Vec&lt;i64&gt;, children: Vec&lt;u64&gt; },
-}
-// TODO: encode/decode. 노드 크기 = 11 + 16 × 키 개수
-// TODO: 내부 노드의 children.len() == keys.len() + 1
-// TODO: partition_point(|&amp;s| s &lt;= key)로 내려갈 자식을 고른다.</code></pre>
-<details class="deep"><summary>힌트 A: 정렬과 부호</summary><div><p>키는 엄격한 오름차순이어야 합니다. 디스크에서 읽은 바이트는 i64로 디코딩한 뒤 비교하세요. 빈 리프는 허용하지만 자식이 하나뿐인 내부 노드는 이 삽입 전용 구현에서는 만들지 않습니다. 메타데이터의 루트 번호는 0이 아니며 파일의 페이지 수보다 작아야 합니다.</p></div></details>
-<h3>B. 분할 결과를 부모로 올리기</h3><pre><code data-language="rust">// 리프에서 새 키를 넣거나 기존 값을 갱신한다.
-// TODO: 넘치면 split_off(len / 2). 오른쪽 첫 키를 separator로 복사한다.
-// TODO: right.next = old.next; left.next = right_id
-// 부모의 선택했던 자식 인덱스가 i라면:
-// TODO: keys.insert(i, separator); children.insert(i + 1, right_id)
-// 내부 노드가 넘치면:
-// TODO: mid = keys.len() / 2; keys[mid]는 부모로 이동한다.
-// TODO: 왼쪽 자식 수 = 왼쪽 키 수 + 1. 오른쪽도 같다.
-// 경로를 다 올라와도 분할 결과가 남으면 새 루트를 만들고 page 0을 갱신한다.</code></pre>
-<details class="deep"><summary>힌트 B: 같은 키와 새 루트</summary><div><p>같은 키는 기존 값을 갱신하고 바로 저장합니다. 키 수가 늘지 않으므로 분할하지 않습니다. 새 루트의 왼쪽 자식은 이전 루트입니다. 루트 번호를 메모리에서만 바꾸면 재시작 후 예전 루트를 읽게 됩니다.</p></div></details>
-<h3>C. 범위 조회와 재시작</h3><pre><code data-language="rust">// TODO: 하한이 들어갈 리프를 찾는다.
-// TODO: lo 이상 hi 이하의 키·값을 모으고 next로 이동한다.
-// TODO: key &gt; hi 또는 next == 0이면 끝낸다.
-// TODO: 잘못된 파일의 next 순환은 오류로 끝낸다.
-// TODO: 명시적 flush 시 버퍼 풀의 flush를 호출한다.</code></pre>
-<details class="deep"><summary>힌트 C: 실패한 읽기와 pin</summary><div><p>Pager.read에서 슬롯 0이 없더라도 얻었던 pin은 반납해야 합니다. 참조 구현은 결과를 먼저 변수에 담고 unpin한 뒤 반환합니다. write는 레코드가 새 페이지에 들어가는지 먼저 확인하므로 공간 부족으로 실패했을 때 pin이 남지 않습니다.</p></div></details>
+<h3>A. 노드 형식과 경계 검색</h3><p class="code-reading">Node 코덱은 리프/내부 노드를 바이트로 보존합니다. Tree::leaf는 구분 키와 같은 키를 오른쪽으로 내려 보내며 부모 경로도 반환합니다. 이 경로가 삽입 후 부모 분할을 이어 줍니다.</p><p><a href="examples/ch03/btree.rs"><code>ch03/btree.rs:54–77</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch03/btree.rs" data-lines="54-77">    fn encode(&amp;self) -&gt; Vec&lt;u8&gt; {
+        let mut b = Vec::new();
+        match self {
+            Self::Leaf { rows, next } =&gt; {
+                b.push(1);
+                b.extend_from_slice(&amp;(rows.len() as u16).to_le_bytes());
+                b.extend_from_slice(&amp;next.to_le_bytes());
+                for (key, value) in rows {
+                    b.extend_from_slice(&amp;key.to_le_bytes());
+                    b.extend_from_slice(&amp;value.to_le_bytes());
+                }
+            }
+            Self::Branch { keys, children } =&gt; {
+                b.push(2);
+                b.extend_from_slice(&amp;(keys.len() as u16).to_le_bytes());
+                b.extend_from_slice(&amp;children[0].to_le_bytes());
+                for (key, child) in keys.iter().zip(&amp;children[1..]) {
+                    b.extend_from_slice(&amp;key.to_le_bytes());
+                    b.extend_from_slice(&amp;child.to_le_bytes());
+                }
+            }
+        }
+        b
+    }</code></pre><p><a href="examples/ch03/btree.rs"><code>ch03/btree.rs:78–116</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · btree.rs 78-116행</summary><pre><code data-language="rust" data-source="examples/ch03/btree.rs" data-lines="78-116">    fn decode(b: &amp;[u8], max: usize, pages: u64) -&gt; io::Result&lt;Self&gt; {
+        if b.len() &lt; 11 {
+            return Err(bad(&quot;short node&quot;));
+        }
+        let n = u16::from_le_bytes([b[1], b[2]]) as usize;
+        if n &gt; max || b.len() != 11 + 16 * n {
+            return Err(bad(&quot;bad node size&quot;));
+        }
+        let u64_at = |at| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let i64_at = |at| i64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let valid_id = |id| id &gt; 0 &amp;&amp; id &lt; pages;
+        let keys: Vec&lt;_&gt; = (0..n).map(|i| i64_at(11 + i * 16)).collect();
+        if keys.windows(2).any(|w| w[0] &gt;= w[1]) {
+            return Err(bad(&quot;unsorted node&quot;));
+        }
+        match b[0] {
+            1 =&gt; {
+                let next = u64_at(3);
+                if next != 0 &amp;&amp; !valid_id(next) {
+                    return Err(bad(&quot;bad next leaf&quot;));
+                }
+                let rows = keys
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, k)| (k, i64_at(19 + i * 16)))
+                    .collect();
+                Ok(Self::Leaf { rows, next })
+            }
+            2 =&gt; {
+                let mut children = vec![u64_at(3)];
+                children.extend((0..n).map(|i| u64_at(19 + i * 16)));
+                if n == 0 || children.iter().any(|&amp;id| !valid_id(id)) {
+                    return Err(bad(&quot;bad branch&quot;));
+                }
+                Ok(Self::Branch { keys, children })
+            }
+            _ =&gt; Err(bad(&quot;unknown node kind&quot;)),
+        }
+    }</code></pre></details><p><a href="examples/ch03/btree.rs"><code>ch03/btree.rs:182–196</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch03/btree.rs" data-lines="182-196">    fn leaf(&amp;mut self, key: i64) -&gt; io::Result&lt;(u64, Vec&lt;(u64, usize)&gt;)&gt; {
+        let mut path = Vec::new();
+        let mut id = self.root;
+        for _ in 0..self.pager.len() {
+            match self.load(id)? {
+                Node::Leaf { .. } =&gt; return Ok((id, path)),
+                Node::Branch { keys, children } =&gt; {
+                    let i = keys.partition_point(|&amp;separator| separator &lt;= key);
+                    path.push((id, i));
+                    id = children[i];
+                }
+            }
+        }
+        Err(bad(&quot;cycle in tree&quot;))
+    }</code></pre>
+<details class="deep"><summary>코드 해설 A: 정렬과 부호</summary><div><p>키는 엄격한 오름차순이어야 합니다. 디스크에서 읽은 바이트는 i64로 디코딩한 뒤 비교하세요. 빈 리프는 허용하지만 자식이 하나뿐인 내부 노드는 이 삽입 전용 구현에서는 만들지 않습니다. 메타데이터의 루트 번호는 0이 아니며 파일의 페이지 수보다 작아야 합니다.</p></div></details>
+<h3>B. 분할 결과를 부모로 올리기</h3><p class="code-reading">Tree::set은 기존 키면 값을 교체합니다. 넘친 리프는 오른쪽 첫 키를 복사하고, 넘친 내부 노드는 가운데 키를 부모로 이동합니다. 마지막까지 carry가 남으면 새 루트를 만들고 메타데이터를 갱신합니다.</p><p><a href="examples/ch03/btree.rs"><code>ch03/btree.rs:207–254</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · btree.rs 207-254행</summary><pre><code data-language="rust" data-source="examples/ch03/btree.rs" data-lines="207-254">    fn set(&amp;mut self, key: i64, value: i64) -&gt; io::Result&lt;()&gt; {
+        let (id, mut path) = self.leaf(key)?;
+        let Node::Leaf { mut rows, next } = self.load(id)? else {
+            unreachable!()
+        };
+        match rows.binary_search_by_key(&amp;key, |r| r.0) {
+            Ok(i) =&gt; rows[i].1 = value,
+            Err(i) =&gt; rows.insert(i, (key, value)),
+        }
+        if rows.len() &lt;= self.max {
+            return self.save(id, &amp;Node::Leaf { rows, next });
+        }
+        let right_rows = rows.split_off(rows.len() / 2);
+        let mut separator = right_rows[0].0;
+        let mut right = self.new_node(&amp;Node::Leaf {
+            rows: right_rows,
+            next,
+        })?;
+        self.save(id, &amp;Node::Leaf { rows, next: right })?;
+        while let Some((parent, i)) = path.pop() {
+            let Node::Branch {
+                mut keys,
+                mut children,
+            } = self.load(parent)?
+            else {
+                return Err(bad(&quot;bad insertion path&quot;));
+            };
+            keys.insert(i, separator);
+            children.insert(i + 1, right);
+            if keys.len() &lt;= self.max {
+                return self.save(parent, &amp;Node::Branch { keys, children });
+            }
+            let mid = keys.len() / 2;
+            let right_keys = keys.split_off(mid + 1);
+            separator = keys.pop().unwrap();
+            let right_children = children.split_off(mid + 1);
+            right = self.new_node(&amp;Node::Branch {
+                keys: right_keys,
+                children: right_children,
+            })?;
+            self.save(parent, &amp;Node::Branch { keys, children })?;
+        }
+        self.root = self.new_node(&amp;Node::Branch {
+            keys: vec![separator],
+            children: vec![self.root, right],
+        })?;
+        self.save_meta()
+    }</code></pre></details>
+<details class="deep"><summary>코드 해설 B: 같은 키와 새 루트</summary><div><p>같은 키는 기존 값을 갱신하고 바로 저장합니다. 키 수가 늘지 않으므로 분할하지 않습니다. 새 루트의 왼쪽 자식은 이전 루트입니다. 루트 번호를 메모리에서만 바꾸면 재시작 후 예전 루트를 읽게 됩니다.</p></div></details>
+<h3>C. 범위 조회와 재시작</h3><p class="code-reading">범위 조회는 하한 리프에서 시작해 next를 따라갑니다. 상한을 넘으면 즉시 반환하며 방문 페이지 집합으로 순환을 거부합니다. flush는 페이지와 루트 메타데이터를 디스크에 반영하는 경계입니다.</p><p><a href="examples/ch03/btree.rs"><code>ch03/btree.rs:255–282</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch03/btree.rs" data-lines="255-282">    fn range(&amp;mut self, lo: i64, hi: i64) -&gt; io::Result&lt;Vec&lt;(i64, i64)&gt;&gt; {
+        if lo &gt; hi {
+            return Ok(vec![]);
+        }
+        let (mut id, _) = self.leaf(lo)?;
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(id) {
+                return Err(bad(&quot;cycle in leaf chain&quot;));
+            }
+            let Node::Leaf { rows, next } = self.load(id)? else {
+                return Err(bad(&quot;next points to branch&quot;));
+            };
+            for (k, v) in rows {
+                if k &gt; hi {
+                    return Ok(result);
+                }
+                if k &gt;= lo {
+                    result.push((k, v));
+                }
+            }
+            if next == 0 {
+                return Ok(result);
+            }
+            id = next;
+        }
+    }</code></pre>
+<details class="deep"><summary>코드 해설 C: 실패한 읽기와 pin</summary><div><p>Pager.read에서 슬롯 0이 없더라도 얻었던 pin은 반납해야 합니다. 참조 구현은 결과를 먼저 변수에 담고 unpin한 뒤 반환합니다. write는 레코드가 새 페이지에 들어가는지 먼저 확인하므로 공간 부족으로 실패했을 때 pin이 남지 않습니다.</p></div></details>
 <h3>D. 실행과 실제 파일 바이트</h3><p>외부 크레이트 없이 Rust 2024 표준 라이브러리만 사용합니다. 다음 폴더 구조를 유지하세요. 저장 파일은 <code>tree.pages</code>를 사용합니다. 2장의 <code>data.pages</code>는 B+트리 메타데이터가 없어 열 수 없습니다.</p><pre><code data-language="text">examples/
   ch02/pages.rs
   ch03/btree.rs
@@ -128,7 +260,7 @@ dd if=tree.pages bs=1 skip=4080 count=16 2&gt;/dev/null | od -An -tx1
 # 42 54 30 33 03 00 00 00 03 00 00 00 00 00 00 00</code></pre>
 <p><code>set</code>의 OK는 메모리 변경의 성공입니다. <code>.flush</code>, <code>.exit</code> 또는 정상 EOF에서 dirty 페이지를 쓰고 sync_all을 호출합니다. 명령 파싱 오류나 I/O 오류로 종료하면 자동 flush하지 않습니다. 기존 파일을 열 때도 생성할 때와 같은 max_keys를 지정하세요.</p>
 <p>페이지 0의 슬롯 0은 16바이트라 오프셋 4080에서 시작합니다. 메타데이터의 마지막 8바이트가 <code>03 00 …</code>이므로 루트는 p3입니다. 파일은 메타데이터 p0, 리프 p1·p2, 루트 p3의 총 4페이지로 16384바이트입니다. 위 값은 검사 스크립트가 실제로 만든 파일에서 확인합니다.</p>
-<details class="deep"><summary>접힌 참조 구현: btree.rs</summary><div><p><a href="examples/ch03/btree.rs" download>btree.rs 저장</a> · <a href="examples/ch02/pages.rs" download>2장 pages.rs 저장</a>. 경로 <code>../ch02/pages.rs</code>를 include하므로 두 파일의 상대 위치를 유지하세요. <code>storage</code> 모듈 안의 2장 main은 별도 함수이며 실행 진입점은 바깥의 main입니다.</p><pre><code data-language="rust">use std::{
+<details class="deep"><summary>전체 실행 소스: btree.rs</summary><div><p><a href="examples/ch03/btree.rs" download>btree.rs 저장</a> · <a href="examples/ch02/pages.rs" download>2장 pages.rs 저장</a>. 경로 <code>../ch02/pages.rs</code>를 include하므로 두 파일의 상대 위치를 유지하세요. <code>storage</code> 모듈 안의 2장 main은 별도 함수이며 실행 진입점은 바깥의 main입니다.</p><pre><code data-language="rust">use std::{
     io::{self, BufRead},
     path::Path,
 };

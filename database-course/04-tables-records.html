@@ -68,30 +68,95 @@
   <output id="rid-feedback" class="process-feedback" aria-live="polite"></output><div class="process-visual" id="rid-drawing"></div><p class="process-source">도식이 넓으면 좌우로 스크롤해 연결을 확인하세요.</p><div class="process-facts" id="rid-facts"></div><div id="rid-player"></div>
 </div>
 
-<section id="s7"><h2>7. 구현 가이드</h2>
+<section id="s7"><h2>7. 구현 가이드</h2><div class="callout tip code-path"><span class="title">완성 코드 → 실행 → 변경 실험</span><p>아래 코드는 <a href="examples/ch04/tables.rs">ch04/tables.rs</a>의 실제 구현을 발췌한 것입니다. 메서드는 원본의 impl 블록 안에 놓입니다. 타입·보조 함수·이전 장 의존성까지 포함해 실행하려면 <a href="examples/mydb-source.zip" download>전체 소스 ZIP</a>을 풀고 폴더 구조를 유지하세요. 발췌만 별도 파일로 붙여 컴파일하는 예제가 아닙니다.</p><pre><code data-language="bash"># ZIP을 푼 examples 폴더에서 실행
+bash ch04/check.sh</code></pre><p>기대 결과: 모든 검사가 통과하고 종료 코드가 0입니다. 오류가 나면 표시된 FAIL 또는 실패한 테스트를 먼저 확인하세요. 아래 함수의 조건 한 곳을 바꿔 관련 검사가 실패하는지 확인한 다음 원본으로 되돌리면, 검사가 지키는 규칙을 이해할 수 있습니다.</p></div>
 <p>표준 라이브러리만 사용하는 Rust 2024 예제입니다. <code>tables.rs</code>는 이전 두 장을 include하고 각 계층의 작은 API만 밖으로 내보냅니다. 원래 파일 안의 main은 모듈 내부 함수가 되고, 실행 진입점은 tables.rs의 바깥 main입니다.</p>
-<h3>A. 행 코덱을 먼저 작성하기</h3><pre><code data-language="rust">enum Kind { Int, Text }
-struct Column { name: String, kind: Kind, nullable: bool }
-enum Value { Int(i64), Text(String), Null }
-type Row = Vec&lt;Value&gt;;
-fn encode(schema: &amp;[Column], row: &amp;[Value]) -&gt; std::io::Result&lt;Vec&lt;u8&gt;&gt; {
-    // TODO: 열 개수와 타입, NOT NULL을 검사한다.
-    // TODO: 고정 영역을 0으로 만들고 NULL 비트를 설정한다.
-    // TODO: Int는 8바이트 LE, Text는 offset/length와 UTF-8 본문을 쓴다.
-    todo!()
-}</code></pre>
-<details class="deep"><summary>힌트 A: 쓰기 전에 크기와 타입 확인</summary><div><p>빈 문자열과 NULL의 셀은 다릅니다. 빈 문자열은 offset이 본문 끝을 가리키고 length가 0입니다. NULL 셀은 모두 0입니다. encode를 먼저 끝내고 나서 힙을 바꿔야 타입 오류나 너무 큰 행 때문에 이미 일부 데이터가 쓰이는 일을 줄일 수 있습니다.</p></div></details>
-<h3>B. 힙 페이지와 카탈로그 연결하기</h3><pre><code data-language="rust">// TODO: 새 힙 페이지 slot 0에 next=0의 8바이트를 저장한다.
-// TODO: append는 충분한 공간이 없으면 페이지를 바꾸지 않고 None을 반환한다.
-// TODO: 다음 페이지 할당 → 행 삽입 → 이전 last의 next 연결 → 카탈로그 last 갱신.
-// TODO: 카탈로그 직렬화가 4084바이트 안에 드는지 할당 전에 확인한다.
-// TODO: read가 없는 슬롯으로 실패해도 fetch에서 얻은 pin을 반납한다.</code></pre>
-<details class="deep"><summary>힌트 B: 슬롯 번호를 지키기</summary><div><p>페이지를 매번 새로 만들면 기존 행의 슬롯이 사라집니다. 새 페이지 생성과 카탈로그 교체만 replace를 사용하세요. 힙에 행을 추가할 때는 기존 페이지에 insert하고, next를 바꿀 때는 슬롯 0이 가리키는 8바이트만 수정합니다.</p></div></details>
-<h3>C. 기본키 색인에서 행 조회하기</h3><pre><code data-language="rust">// insert: encode → 기본키 중복 검사 → 힙 append → RID 패킹 → B+트리 set
-// get: 테이블 스키마 확인 → B+트리 get → RID 분해 → 힙 slot 읽기 → decode
-// scan: first 페이지부터 모든 행 슬롯을 읽고 next로 이동한다.
-// scan 결과는 저장 순서다. 기본키 정렬 순서를 보장하지 않는다.</code></pre>
-<details class="deep"><summary>힌트 C: 정상 실행과 트랜잭션의 차이</summary><div><p>이 예제는 하나의 insert에서 힙과 색인을 순서대로 바꿉니다. 중간 I/O 오류 후에는 중단해야 합니다. 앞 단계의 변경을 되돌리지 않으므로 에러를 무시하고 다음 요청을 처리하지 마세요. 메모리에서 성공한 행과 정상 flush한 행도 구분해야 합니다.</p></div></details>
+<h3>A. 행 코덱을 먼저 작성하기</h3><p class="code-reading">encode는 스키마와 값 배열을 받아 행 바이트를 반환합니다. 타입·NOT NULL·최종 크기 오류는 힙에 쓰기 전에 발생합니다. NULL 비트, 8바이트 셀, 문자열 본문의 위치를 위 레코드 위젯과 비교하세요.</p><p><a href="examples/ch04/tables.rs"><code>ch04/tables.rs:142–171</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · tables.rs 142-171행</summary><pre><code data-language="rust" data-source="examples/ch04/tables.rs" data-lines="142-171">fn encode(schema: &amp;[Column], row: &amp;[Value]) -&gt; io::Result&lt;Vec&lt;u8&gt;&gt; {
+    if row.len() != schema.len() {
+        return Err(bad(&quot;column count mismatch&quot;));
+    }
+    let bitmap = schema.len().div_ceil(8);
+    let fixed = 2 + bitmap + 8 * schema.len();
+    let mut b = vec![0; fixed];
+    b[..2].copy_from_slice(&amp;(schema.len() as u16).to_le_bytes());
+    for (i, (c, v)) in schema.iter().zip(row).enumerate() {
+        let at = 2 + bitmap + i * 8;
+        match (&amp;c.kind, v) {
+            (_, Value::Null) if c.nullable =&gt; b[2 + i / 8] |= 1 &lt;&lt; (i % 8),
+            (Kind::Int, Value::Int(n)) =&gt; b[at..at + 8].copy_from_slice(&amp;n.to_le_bytes()),
+            (Kind::Text, Value::Text(s)) =&gt; {
+                if b.len() + s.len() &gt; MAX_ROW {
+                    return Err(bad(&quot;row too large&quot;));
+                }
+                let offset = b.len() as u32;
+                b[at..at + 4].copy_from_slice(&amp;offset.to_le_bytes());
+                b[at + 4..at + 8].copy_from_slice(&amp;(s.len() as u32).to_le_bytes());
+                b.extend_from_slice(s.as_bytes());
+            }
+            _ =&gt; return Err(bad(&quot;type or NOT NULL constraint&quot;)),
+        }
+    }
+    if b.len() &gt; MAX_ROW {
+        return Err(bad(&quot;row too large&quot;));
+    }
+    Ok(b)
+}</code></pre></details>
+<details class="deep"><summary>코드 해설 A: 쓰기 전에 크기와 타입 확인</summary><div><p>빈 문자열과 NULL의 셀은 다릅니다. 빈 문자열은 offset이 본문 끝을 가리키고 length가 0입니다. NULL 셀은 모두 0입니다. encode를 먼저 끝내고 나서 힙을 바꿔야 타입 오류나 너무 큰 행 때문에 이미 일부 데이터가 쓰이는 일을 줄일 수 있습니다.</p></div></details>
+<h3>B. 힙 페이지와 카탈로그 연결하기</h3><p class="code-reading">Heap::append는 공간 부족 시 None을 반환하고 pin을 반납합니다. Db::insert는 그때만 새 페이지를 할당해 연결합니다. 힙의 위치를 RID로 묶어 기본키 색인에 저장하며, 이 장에는 여러 파일의 원자적 커밋이 아직 없습니다.</p><p><a href="examples/ch04/tables.rs"><code>ch04/tables.rs:60–70</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch04/tables.rs" data-lines="60-70">        pub fn append(&amp;mut self, id: u64, bytes: &amp;[u8]) -&gt; io::Result&lt;Option&lt;u16&gt;&gt; {
+            let f = self.0.fetch(id)?;
+            let free = self.0.frames[f].as_ref().unwrap().page.free();
+            let result = if bytes.len() + 4 &gt; free {
+                Ok(None)
+            } else {
+                self.0.insert(f, bytes).map(Some)
+            };
+            self.0.unpin(f)?;
+            result
+        }</code></pre><p><a href="examples/ch04/tables.rs"><code>ch04/tables.rs:414–444</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · tables.rs 414-444행</summary><pre><code data-language="rust" data-source="examples/ch04/tables.rs" data-lines="414-444">    fn insert(&amp;mut self, name: &amp;str, row: Row) -&gt; io::Result&lt;(u64, u16)&gt; {
+        let i = self.table(name)?;
+        let bytes = encode(&amp;self.tables[i].schema, &amp;row)?;
+        let Value::Int(key) = row[0] else {
+            return Err(bad(&quot;int primary key required&quot;));
+        };
+        if self.indexes.get_mut(name).unwrap().get(key)?.is_some() {
+            return Err(bad(&quot;duplicate primary key&quot;));
+        }
+        let mut page = self.tables[i].last;
+        let slot = match self.heap.append(page, &amp;bytes)? {
+            Some(slot) =&gt; slot,
+            None =&gt; {
+                let new = self.heap.allocate(&amp;0u64.to_le_bytes())?;
+                let slot = self
+                    .heap
+                    .append(new, &amp;bytes)?
+                    .ok_or_else(|| bad(&quot;row does not fit&quot;))?;
+                self.heap.link(page, new)?;
+                self.tables[i].last = new;
+                self.heap.replace(0, &amp;catalog(&amp;self.tables)?)?;
+                page = new;
+                slot
+            }
+        };
+        self.indexes
+            .get_mut(name)
+            .unwrap()
+            .set(key, pack(page, slot)?)?;
+        Ok((page, slot))
+    }</code></pre></details>
+<details class="deep"><summary>코드 해설 B: 슬롯 번호를 지키기</summary><div><p>페이지를 매번 새로 만들면 기존 행의 슬롯이 사라집니다. 새 페이지 생성과 카탈로그 교체만 replace를 사용하세요. 힙에 행을 추가할 때는 기존 페이지에 insert하고, next를 바꿀 때는 슬롯 0이 가리키는 8바이트만 수정합니다.</p></div></details>
+<h3>C. 기본키 색인에서 행 조회하기</h3><p class="code-reading">Db::get은 기본키 색인에서 RID를 받고 힙의 페이지/슬롯으로 풀어 행을 읽습니다. 마지막 decode에는 테이블의 스키마를 사용하므로 바이트만으로 타입을 추측하지 않습니다.</p><p><a href="examples/ch04/tables.rs"><code>ch04/tables.rs:445–456</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch04/tables.rs" data-lines="445-456">    fn get(&amp;mut self, name: &amp;str, key: i64) -&gt; io::Result&lt;Option&lt;Row&gt;&gt; {
+        let i = self.table(name)?;
+        let Some(rid) = self.indexes.get_mut(name).unwrap().get(key)? else {
+            return Ok(None);
+        };
+        let (page, slot) = unpack(rid)?;
+        let row = decode(&amp;self.tables[i].schema, &amp;self.heap.read(page, slot)?)?;
+        if row.first() != Some(&amp;Value::Int(key)) {
+            return Err(bad(&quot;index key and heap row disagree&quot;));
+        }
+        Ok(Some(row))
+    }</code></pre>
+<details class="deep"><summary>코드 해설 C: 정상 실행과 트랜잭션의 차이</summary><div><p>이 예제는 하나의 insert에서 힙과 색인을 순서대로 바꿉니다. 중간 I/O 오류 후에는 중단해야 합니다. 앞 단계의 변경을 되돌리지 않으므로 에러를 무시하고 다음 요청을 처리하지 마세요. 메모리에서 성공한 행과 정상 flush한 행도 구분해야 합니다.</p></div></details>
 <h3>D. 실행하기</h3><p>다음 폴더 구조를 유지하세요. 명령은 아직 SQL이 아니라 <code>|</code>로 구분한 실습용 형식입니다. 5장에서 SQL 파서를 만듭니다. 텍스트는 공백과 한글, 빈 문자열을 지원하지만 CLI에서는 <code>|</code>·줄바꿈·문자열 그대로의 NULL 토큰을 표현할 이스케이프를 제공하지 않습니다. Rust API의 Text 값은 NULL이라는 문자열도 표현할 수 있습니다.</p><pre><code data-language="text">examples/
   ch02/pages.rs
   ch03/btree.rs
@@ -116,7 +181,7 @@ dd if=demo-db/tables.pages bs=1 skip=8154 count=30 2&gt;/dev/null | od -An -tx1
 # 03 00 04 01 00 00 00 00 00 00 00 1b 00 00 00 03
 # 00 00 00 00 00 00 00 00 00 00 00 52 6f 79</code></pre>
 <p>헤더의 슬롯 수는 2입니다. slot 0은 offset=4088, length=8로 next를 담고, slot 1은 offset=4058, length=30으로 행을 담습니다. 파일 전체에서 행 시작은 <code>4096 + 4058 = 8154</code>입니다. 위 명령은 두 번째 행을 넣기 전에 실행해야 합니다. 아래 검사 스크립트가 같은 파일을 생성해 실제 바이트를 비교합니다.</p>
-<details class="deep"><summary>접힌 참조 구현: tables.rs</summary><div><p><a href="examples/ch04/tables.rs" download>tables.rs 저장</a> · <a href="examples/ch03/btree.rs" download>3장 btree.rs</a> · <a href="examples/ch02/pages.rs" download>2장 pages.rs</a>. 상대 경로를 유지하세요.</p><pre><code data-language="rust">use std::{
+<details class="deep"><summary>전체 실행 소스: tables.rs</summary><div><p><a href="examples/ch04/tables.rs" download>tables.rs 저장</a> · <a href="examples/ch03/btree.rs" download>3장 btree.rs</a> · <a href="examples/ch02/pages.rs" download>2장 pages.rs</a>. 상대 경로를 유지하세요.</p><pre><code data-language="rust">use std::{
     collections::{HashMap, HashSet},
     io::{self, BufRead},
     path::{Path, PathBuf},

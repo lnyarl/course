@@ -13,6 +13,8 @@ Rust 2024로 1~9장을 제공합니다. 1장은 독립 KV이고 2~9장은 페이
 - `ch08/transactions.rs`: 전체 DB snapshot·전역 revision OCC
 - `ch09/server.rs`: PostgreSQL v3 simple-query 서버·EXPLAIN
 
+각 장 HTML의 구현 가이드는 아래 원본에서 발췌한 완성 함수를 설명합니다. 짧은 함수는 본문에서 읽고, 긴 함수와 전체 구현은 원본 링크 또는 접힌 코드로 확인하세요. 발췌에는 주변 타입과 impl 블록이 없을 수 있으므로 실행은 전체 소스에서 합니다.
+
 1장의 독립 로그 KV는 [HTML의 참조 구현](../01-log-kv.html)과 `ch01/src/main.rs`가 같습니다. `Cargo.lock`을 포함하며 첫 빌드에는 Cargo 의존성 다운로드 또는 기존 캐시가 필요합니다. 각 검사 빌드는 임시 폴더에서 수행합니다.
 
 ```sh

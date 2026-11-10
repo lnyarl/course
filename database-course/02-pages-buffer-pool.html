@@ -72,27 +72,56 @@
 <p>여기서 writeback은 <code>write_all</code>이 끝난 상태입니다. dirty를 해제해도 저장 장치에 영구 반영됐다는 뜻은 아닙니다. 예제의 명시적 <code>flush</code>는 pin된 프레임이 없는지 확인한 뒤 dirty 페이지를 모두 쓰고 <code data-language="rust">File::sync_all</code>의 성공 여부까지 확인합니다. 실패하면 호출자에게 오류를 반환합니다. Drop에서 자동 저장하지 않습니다.</p>
 <p>Linux의 파일 동기화에는 fsync 계열 호출을 사용합니다. macOS는 fsync와 장치 캐시까지 비우도록 요청하는 F_FULLFSYNC를 구분합니다. 예제는 Rust 표준 라이브러리의 <a href="https://doc.rust-lang.org/std/fs/struct.File.html#method.sync_all">sync_all</a>에 맡깁니다. OS별 세부 보장은 구현과 장치에 따라 확인해야 합니다. <a href="https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html">Apple의 동기화 설명</a>도 참고하세요.</p>
 <div class="callout warn"><span class="title">4096바이트 쓰기는 원자적 쓰기 보장이 아닙니다</span>쓰기 도중 프로세스나 장치가 멈추면 페이지 일부만 바뀔 수 있습니다. 이 장에는 WAL, 체크섬, 트랜잭션, 다중 프로세스 파일 잠금이 없습니다. 정상 flush와 재시작 검사는 전원 차단 복구 검증을 대신하지 않습니다. 오류가 난 쓰기나 할당을 자동 복구하지 않으므로 실제 서비스 데이터에 사용하지 마세요. 7장에서 WAL과 복구 순서를 다룹니다.</div></section>
-<section id="s7"><h2>7. 구현 가이드</h2><p>1장의 로그 코드를 보존하고 페이지 모듈을 새로 작성하세요. 외부 크레이트 없이 Rust 표준 라이브러리만 사용합니다. 아래 구조를 먼저 채운 뒤 참조 구현과 비교합니다.</p>
-<h3>A. Page와 Disk</h3><pre><code data-language="rust">const SIZE: usize = 4096;
-struct Page([u8; SIZE]);
-type PageId = u64;
-impl Page {
-    fn insert(&amp;mut self, bytes: &amp;[u8]) -&gt; std::io::Result&lt;u16&gt; {
-        // TODO: 빈 값/공간 확인 → 뒤쪽에 바이트 복사 → 슬롯 기록 → 헤더 갱신
-        todo!()
-    }
-    fn get(&amp;self, slot: u16) -&gt; Option&lt;&amp;[u8]&gt; { todo!() }
-}
-// Disk: open, allocate, read, write. read_exact / write_all을 사용합니다.</code></pre>
-<details class="deep"><summary>힌트 A: 경계와 실패 순서</summary><div><p>공간 부족 여부를 어떤 수정도 하기 전에 검사하세요. 새 upper는 기존 upper − 레코드 길이입니다. 슬롯 번호는 삽입 전 n입니다. 읽기에서는 파일 전체가 아니라 페이지 하나만 읽습니다. 잘못된 magic과 범위는 디스크에서 페이지를 읽는 경계에서 검사합니다.</p></div></details>
-<h3>B. Frame과 Pool</h3><pre><code data-language="rust">struct Frame {
-    id: PageId, page: Page,
-    pins: usize, dirty: bool, referenced: bool,
-}
-// Pool: disk, frames: Vec&lt;Option&lt;Frame&gt;&gt;, hand, reads, writes
-// fetch(id) -&gt; 프레임 번호, unpin(frame), insert(frame, bytes), get(frame, slot)
-// flush() -&gt; dirty 쓰기 + sync_all. 여기서는 pin이 하나라도 남으면 거부합니다.</code></pre>
-<details class="deep"><summary>힌트 B: 교체에 실패했을 때</summary><div><p>새 페이지를 임시 배열로 읽고 검증한 뒤 기존 dirty 페이지를 쓰세요. 두 작업이 모두 성공했을 때만 프레임을 새 페이지로 교체합니다. 기존 페이지 쓰기가 실패했을 때 프레임 매핑이나 dirty를 먼저 지우면 안 됩니다. fetch의 hit에서는 반드시 pin과 참조 비트를 갱신합니다.</p></div></details>
+<section id="s7"><h2>7. 구현 가이드</h2><div class="callout tip code-path"><span class="title">완성 코드 → 실행 → 변경 실험</span><p>아래 코드는 <a href="examples/ch02/pages.rs">ch02/pages.rs</a>의 실제 구현을 발췌한 것입니다. 메서드는 원본의 impl 블록 안에 놓입니다. 타입·보조 함수·이전 장 의존성까지 포함해 실행하려면 <a href="examples/mydb-source.zip" download>전체 소스 ZIP</a>을 풀고 폴더 구조를 유지하세요. 발췌만 별도 파일로 붙여 컴파일하는 예제가 아닙니다.</p><pre><code data-language="bash"># ZIP을 푼 examples 폴더에서 실행
+bash ch02/check.sh</code></pre><p>기대 결과: 모든 검사가 통과하고 종료 코드가 0입니다. 오류가 나면 표시된 FAIL 또는 실패한 테스트를 먼저 확인하세요. 아래 함수의 조건 한 곳을 바꿔 관련 검사가 실패하는지 확인한 다음 원본으로 되돌리면, 검사가 지키는 규칙을 이해할 수 있습니다.</p></div><p>1장의 로그 코드와 별개로 완성된 페이지 모듈을 실행합니다. 외부 크레이트 없이 Rust 표준 라이브러리만 사용합니다. 아래 함수와 전체 실행 소스를 함께 확인하세요.</p>
+<h3>A. Page와 Disk</h3><p class="code-reading">Page::insert는 빈 값과 공간 부족을 먼저 거부합니다. 성공하면 본문 → 슬롯 → 헤더 순서로 수정하고 슬롯 번호를 반환합니다. get은 그 슬롯의 범위를 확인해 원래 바이트 슬라이스를 돌려줍니다.</p><p><a href="examples/ch02/pages.rs"><code>ch02/pages.rs:40–53</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch02/pages.rs" data-lines="40-53">    fn insert(&amp;mut self, bytes: &amp;[u8]) -&gt; io::Result&lt;u16&gt; {
+        if bytes.is_empty() || bytes.len() &gt; self.free().saturating_sub(SLOT) || self.free() &lt; SLOT {
+            return Err(io::Error::other(&quot;record does not fit&quot;));
+        }
+        let slot = self.count();
+        let end = self.u16(6);
+        let start = end - bytes.len();
+        self.0[start..end].copy_from_slice(bytes);
+        self.put16(HEADER + slot*SLOT, start);
+        self.put16(HEADER + slot*SLOT+2, bytes.len());
+        self.put16(4, slot+1);
+        self.put16(6, start);
+        Ok(slot as u16)
+    }</code></pre><p><a href="examples/ch02/pages.rs"><code>ch02/pages.rs:54–60</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch02/pages.rs" data-lines="54-60">    fn get(&amp;self, slot: u16) -&gt; Option&lt;&amp;[u8]&gt; {
+        let slot = slot as usize;
+        if slot &gt;= self.count() { return None; }
+        let at = HEADER + slot*SLOT;
+        let start = self.u16(at);
+        Some(&amp;self.0[start..start+self.u16(at+2)])
+    }</code></pre>
+<details class="deep"><summary>코드 해설 A: 경계와 실패 순서</summary><div><p>공간 부족 여부를 어떤 수정도 하기 전에 검사하세요. 새 upper는 기존 upper − 레코드 길이입니다. 슬롯 번호는 삽입 전 n입니다. 읽기에서는 파일 전체가 아니라 페이지 하나만 읽습니다. 잘못된 magic과 범위는 디스크에서 페이지를 읽는 경계에서 검사합니다.</p></div></details>
+<h3>B. Frame과 Pool</h3><p class="code-reading">Pool::fetch는 이미 메모리에 있는 페이지면 pin과 참조 비트를 갱신합니다. miss면 victim이 CLOCK 후보를 고르고, 새 페이지 읽기와 기존 dirty 쓰기가 성공한 뒤 프레임을 교체합니다.</p><p><a href="examples/ch02/pages.rs"><code>ch02/pages.rs:105–116</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch02/pages.rs" data-lines="105-116">    fn victim(&amp;mut self) -&gt; io::Result&lt;usize&gt; {
+        if let Some(i) = self.frames.iter().position(Option::is_none) { return Ok(i); }
+        for _ in 0..self.frames.len()*2 {
+            let i = self.hand;
+            self.hand = (self.hand+1) % self.frames.len();
+            let f = self.frames[i].as_mut().unwrap();
+            if f.pins &gt; 0 { continue; }
+            if f.referenced { f.referenced = false; continue; }
+            return Ok(i);
+        }
+        Err(busy())
+    }</code></pre><p><a href="examples/ch02/pages.rs"><code>ch02/pages.rs:128–142</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch02/pages.rs" data-lines="128-142">    fn fetch(&amp;mut self, id: PageId) -&gt; io::Result&lt;usize&gt; {
+        if let Some(i) = self.frames.iter().position(|f| f.as_ref().is_some_and(|f| f.id == id)) {
+            let f = self.frames[i].as_mut().unwrap();
+            f.pins += 1;
+            f.referenced = true;
+            return Ok(i);
+        }
+        let i = self.victim()?;
+        // Read before replacing: a failed read must not destroy the old frame.
+        let page = self.disk.read(id)?;
+        self.reads += 1;
+        self.writeback(i)?;
+        self.frames[i] = Some(Frame { id, page, pins: 1, dirty: false, referenced: true });
+        Ok(i)
+    }</code></pre>
+<details class="deep"><summary>코드 해설 B: 교체에 실패했을 때</summary><div><p>새 페이지를 임시 배열로 읽고 검증한 뒤 기존 dirty 페이지를 쓰세요. 두 작업이 모두 성공했을 때만 프레임을 새 페이지로 교체합니다. 기존 페이지 쓰기가 실패했을 때 프레임 매핑이나 dirty를 먼저 지우면 안 됩니다. fetch의 hit에서는 반드시 pin과 참조 비트를 갱신합니다.</p></div></details>
 <h3>C. 빌드와 재시작 확인</h3><p>아래는 독립 실행 예제입니다. 참조 코드와 검사 스크립트를 같은 폴더에 저장하세요. 다음 명령은 Rust 2024를 지원하는 rustc가 필요합니다.</p><pre><code data-language="bash">rustc --edition=2024 pages.rs -o pages
 ./pages data.pages
 # page=0 slot=0 value=abc
@@ -103,7 +132,7 @@ impl Page {
 od -An -tx1 -N12 data.pages
 # 50 47 30 32 01 00 fd 0f fd 0f 03 00</code></pre>
 <p>새 파일의 첫 레코드 <code>abc</code>는 오프셋 4093..4096에 있습니다. 위 12바이트는 헤더 8바이트와 슬롯 4바이트입니다. 실제 파일의 나머지 빈 공간은 0입니다. 파일 크기는 4096바이트입니다.</p>
-<details class="deep"><summary>접힌 참조 구현: pages.rs</summary><div><p><a href="examples/ch02/pages.rs" download>pages.rs 저장</a>. 아래 코드에는 12개 검사가 포함됩니다. fetch부터 unpin까지 사이에 오류가 발생한 경우도 반납을 보장하도록 개선하는 것은 실습 과제입니다.</p><pre><code data-language="rust">use std::{fs::{File, OpenOptions}, io::{self, Read, Seek, SeekFrom, Write}, path::Path};
+<details class="deep"><summary>전체 실행 소스: pages.rs</summary><div><p><a href="examples/ch02/pages.rs" download>pages.rs 저장</a>. 아래 코드에는 12개 검사가 포함됩니다. fetch부터 unpin까지 사이에 오류가 발생한 경우도 반납을 보장하도록 개선하는 것은 실습 과제입니다.</p><pre><code data-language="rust">use std::{fs::{File, OpenOptions}, io::{self, Read, Seek, SeekFrom, Write}, path::Path};
 const SIZE: usize = 4096;
 const HEADER: usize = 8;
 const SLOT: usize = 4;

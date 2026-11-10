@@ -52,37 +52,171 @@ literal   = signed_i64 | single_quoted_text | NULL</code></pre>
 <p><code data-language="sql">WHERE age &gt;= ;</code>에서 비교 연산자 다음에는 피연산자가 필요합니다. 파서는 세미콜론이 있는 byte 위치와 함께 오류를 반환합니다. 문자열의 끝 따옴표가 없으면 렉서가 문자열 시작 위치를 반환합니다. EOF에 도착해 필요한 토큰이 없으면 원문의 바이트 길이가 오류 위치입니다.</p>
 <p>참조 구현은 입력을 최대 16384 UTF-8 바이트, EOF를 제외한 토큰 1024개, 괄호·NOT 재귀 깊이 32, 표현식 노드 128개로 제한합니다. 긴 OR/AND 사슬도 노드 수를 검사합니다. 이 제한은 학습용 도구가 과도한 메모리나 재귀를 사용하지 않게 하는 범위입니다. 완전한 SQL 서버의 한계나 성능 측정치가 아닙니다.</p>
 <div class="callout tip"><span class="title">오류를 고쳐 가며 추적하세요</span>예제를 ‘구문 오류’로 바꾸고 ‘오류 단계 보기’를 누르세요. 비교 오른쪽에 20을 넣고 다시 분석하면 EOF까지 진행합니다. 세미콜론 뒤에 다른 문장을 붙이면 다시 거부합니다. 오류 입력에서 완성 AST나 실행 결과를 만들어 내지 않습니다.</div></section>
-<section id="s7"><h2>7. 구현 가이드</h2>
+<section id="s7"><h2>7. 구현 가이드</h2><div class="callout tip code-path"><span class="title">완성 코드 → 실행 → 변경 실험</span><p>아래 코드는 <a href="examples/ch05/sql.rs">ch05/sql.rs</a>의 실제 구현을 발췌한 것입니다. 메서드는 원본의 impl 블록 안에 놓입니다. 타입·보조 함수·이전 장 의존성까지 포함해 실행하려면 <a href="examples/mydb-source.zip" download>전체 소스 ZIP</a>을 풀고 폴더 구조를 유지하세요. 발췌만 별도 파일로 붙여 컴파일하는 예제가 아닙니다.</p><pre><code data-language="bash"># ZIP을 푼 examples 폴더에서 실행
+bash ch05/check.sh</code></pre><p>기대 결과: 모든 검사가 통과하고 종료 코드가 0입니다. 오류가 나면 표시된 FAIL 또는 실패한 테스트를 먼저 확인하세요. 아래 함수의 조건 한 곳을 바꿔 관련 검사가 실패하는지 확인한 다음 원본으로 되돌리면, 검사가 지키는 규칙을 이해할 수 있습니다.</p></div>
 <p>이번 장은 독립된 <code>sql.rs</code> 한 파일입니다. 저장 형식은 바꾸지 않으며 4장의 파일도 열지 않습니다. Rust 2024 표준 라이브러리만 사용합니다. 브라우저의 파서도 같은 SQL 부분집합을 구현하며 검사에서 Rust 출력과 비교합니다.</p>
-<h3>A. 위치가 있는 토큰</h3><pre><code data-language="rust">enum Kind { Word(String), Int(i64), Text(String), Sym(String), Eof }
-struct Token { kind: Kind, start: usize, end: usize }
-fn lex(sql: &amp;str) -&gt; Result&lt;Vec&lt;Token&gt;&gt; {
-    // TODO: 공백·--주석 건너뛰기 → 단어/정수/문자열/기호 → EOF
-    // TODO: 문자열의 ''를 ' 하나로 해석한다.
-    // TODO: 원문 범위는 UTF-8 바이트로 기록한다.
-    todo!()
-}</code></pre>
-<details class="deep"><summary>힌트 A: UTF-8 경계</summary><div><p>바이트 배열은 따옴표·숫자·ASCII 키워드를 찾는 데 사용합니다. 문자열 안의 한글은 <code>sql[i..].chars().next()</code>로 문자 하나를 읽고 len_utf8만큼 이동하세요. 바이트 인덱스를 아무 위치에서 문자열 슬라이스에 쓰면 UTF-8 문자 중간을 자를 수 있습니다.</p></div></details>
-<h3>B. 표현식과 재귀 호출</h3><pre><code data-language="rust">fn expr(&amp;mut self, depth: usize) -&gt; Result&lt;Expr&gt; {
-    let mut e = self.and(depth)?;
-    while self.word("or") {
-        let right = self.and(depth)?;
-        e = self.node(Expr::Or(Box::new(e), Box::new(right)))?;
+<h3>A. 위치가 있는 토큰</h3><p class="code-reading">lex는 SQL 전체를 토큰 배열로 바꿉니다. i는 UTF-8 바이트 위치이며 문자열에서는 len_utf8만큼 전진합니다. 따옴표 두 개는 값의 한 따옴표가 되고 마지막에는 EOF 토큰을 추가합니다.</p><p><a href="examples/ch05/sql.rs"><code>ch05/sql.rs:46–133</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · sql.rs 46-133행</summary><pre><code data-language="rust" data-source="examples/ch05/sql.rs" data-lines="46-133">fn lex(sql: &amp;str) -&gt; Result&lt;Vec&lt;Token&gt;&gt; {
+    if sql.len() &gt; MAX_BYTES {
+        return Err(error(MAX_BYTES, &quot;SQL exceeds 16384 UTF-8 bytes&quot;));
     }
-    Ok(e)
-}
-// TODO: and는 not을 호출하고 AND를 반복한다.
-// TODO: not은 NOT, 괄호, 비교, IS [NOT] NULL을 처리한다.
-// TODO: name()에서 예약어와 식별자 규칙을 검사한다.</code></pre>
-<details class="deep"><summary>힌트 B: 구문 검사와 의미 검사</summary><div><p>Parser에 Db나 카탈로그 참조를 넣지 마세요. CREATE의 중복 열, INSERT 열 수와 값 수의 차이, 열의 실제 타입은 다음 계층에서 확인합니다. 파서는 필요한 기호가 있는지와 허용한 문법 순서만 검사합니다. 이름의 형식·정수 범위·자원 제한은 이 파서 자체의 입력 계약입니다.</p></div></details>
-<h3>C. AST와 EOF</h3><pre><code data-language="rust">enum Statement {
-    Create { table: String, columns: Vec&lt;Column&gt; },
-    Insert { table: String, columns: Option&lt;Vec&lt;String&gt;&gt;, values: Vec&lt;Literal&gt; },
-    Select { table: String, columns: Option&lt;Vec&lt;String&gt;&gt;,
-             filter: Option&lt;Expr&gt;, order: Vec&lt;Order&gt;, limit: Option&lt;i64&gt; },
-}
-// TODO: 문장 뒤의 세미콜론을 선택적으로 한 번 읽는다.
-// TODO: 다음 토큰이 EOF인지 반드시 확인한다.</code></pre>
+    let b = sql.as_bytes();
+    let mut i = 0;
+    let mut tokens = vec![];
+    while i &lt; b.len() {
+        if b[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if b[i..].starts_with(b&quot;--&quot;) {
+            while i &lt; b.len() &amp;&amp; b[i] != b&#x27;\n&#x27; {
+                i += 1;
+            }
+            continue;
+        }
+        let start = i;
+        let kind = if b[i].is_ascii_alphabetic() || b[i] == b&#x27;_&#x27; {
+            i += 1;
+            while i &lt; b.len() &amp;&amp; (b[i].is_ascii_alphanumeric() || b[i] == b&#x27;_&#x27;) {
+                i += 1;
+            }
+            Kind::Word(sql[start..i].to_ascii_lowercase())
+        } else if b[i].is_ascii_digit()
+            || (b[i] == b&#x27;-&#x27; &amp;&amp; b.get(i + 1).is_some_and(u8::is_ascii_digit))
+        {
+            i += 1;
+            while i &lt; b.len() &amp;&amp; b[i].is_ascii_digit() {
+                i += 1;
+            }
+            Kind::Int(
+                sql[start..i]
+                    .parse()
+                    .map_err(|_| error(start, &quot;integer is outside i64&quot;))?,
+            )
+        } else if b[i] == b&#x27;\&#x27;&#x27; {
+            i += 1;
+            let mut text = String::new();
+            let mut closed = false;
+            while i &lt; b.len() {
+                if b[i] == b&#x27;\&#x27;&#x27; {
+                    if b.get(i + 1) == Some(&amp;b&#x27;\&#x27;&#x27;) {
+                        text.push(&#x27;\&#x27;&#x27;);
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    closed = true;
+                    break;
+                }
+                let ch = sql[i..].chars().next().unwrap();
+                text.push(ch);
+                i += ch.len_utf8();
+            }
+            if !closed {
+                return Err(error(start, &quot;unterminated string&quot;));
+            }
+            Kind::Text(text)
+        } else {
+            let two = b.get(i..i + 2);
+            if two.is_some_and(|s| [b&quot;&lt;=&quot;.as_slice(), b&quot;&gt;=&quot;, b&quot;&lt;&gt;&quot;, b&quot;!=&quot;].contains(&amp;s)) {
+                i += 2;
+                Kind::Sym(sql[start..i].into())
+            } else if b&quot;(),;*=&lt;&gt;&quot;.contains(&amp;b[i]) {
+                i += 1;
+                Kind::Sym(sql[start..i].into())
+            } else {
+                return Err(error(start, &quot;unsupported character&quot;));
+            }
+        };
+        tokens.push(Token {
+            kind,
+            start,
+            end: i,
+        });
+        if tokens.len() &gt; MAX_TOKENS {
+            return Err(error(start, &quot;more than 1024 tokens&quot;));
+        }
+    }
+    tokens.push(Token {
+        kind: Kind::Eof,
+        start: i,
+        end: i,
+    });
+    Ok(tokens)
+}</code></pre></details>
+<details class="deep"><summary>코드 해설 A: UTF-8 경계</summary><div><p>바이트 배열은 따옴표·숫자·ASCII 키워드를 찾는 데 사용합니다. 문자열 안의 한글은 <code>sql[i..].chars().next()</code>로 문자 하나를 읽고 len_utf8만큼 이동하세요. 바이트 인덱스를 아무 위치에서 문자열 슬라이스에 쓰면 UTF-8 문자 중간을 자를 수 있습니다.</p></div></details>
+<h3>B. 표현식과 재귀 호출</h3><p class="code-reading">Parser::expr → and → not 순서로 더 강한 결합을 먼저 구성합니다. 각 함수가 소비한 뒤의 at을 다음 호출이 이어받습니다. name은 예약어를 열 이름으로 삼지 못하게 검사합니다.</p><p><a href="examples/ch05/sql.rs"><code>ch05/sql.rs:288–295</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch05/sql.rs" data-lines="288-295">    fn expr(&amp;mut self, depth: usize) -&gt; Result&lt;Expr&gt; {
+        let mut e = self.and(depth)?;
+        while self.word(&quot;or&quot;) {
+            let right = self.and(depth)?;
+            e = self.node(Expr::Or(Box::new(e), Box::new(right)))?;
+        }
+        Ok(e)
+    }</code></pre><p><a href="examples/ch05/sql.rs"><code>ch05/sql.rs:296–303</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch05/sql.rs" data-lines="296-303">    fn and(&amp;mut self, depth: usize) -&gt; Result&lt;Expr&gt; {
+        let mut e = self.not(depth)?;
+        while self.word(&quot;and&quot;) {
+            let right = self.not(depth)?;
+            e = self.node(Expr::And(Box::new(e), Box::new(right)))?;
+        }
+        Ok(e)
+    }</code></pre><p><a href="examples/ch05/sql.rs"><code>ch05/sql.rs:304–341</code> 원본</a></p><details class="deep code-excerpt"><summary>완성 함수 펼치기 · sql.rs 304-341행</summary><pre><code data-language="rust" data-source="examples/ch05/sql.rs" data-lines="304-341">    fn not(&amp;mut self, depth: usize) -&gt; Result&lt;Expr&gt; {
+        if depth &gt; MAX_DEPTH {
+            return self.fail(&quot;expression nesting exceeds 32&quot;);
+        }
+        if self.word(&quot;not&quot;) {
+            let child = self.not(depth + 1)?;
+            return self.node(Expr::Not(Box::new(child)));
+        }
+        if self.sym(&quot;(&quot;) {
+            let child = self.expr(depth + 1)?;
+            self.expect_sym(&quot;)&quot;)?;
+            return Ok(child);
+        }
+        let left = self.operand()?;
+        if self.word(&quot;is&quot;) {
+            let negated = self.word(&quot;not&quot;);
+            self.expect_word(&quot;null&quot;)?;
+            return self.node(Expr::IsNull {
+                value: left,
+                negated,
+            });
+        }
+        let op = match &amp;self.current().kind {
+            Kind::Sym(s) =&gt; match s.as_str() {
+                &quot;=&quot; =&gt; Compare::Eq,
+                &quot;&lt;&gt;&quot; | &quot;!=&quot; =&gt; Compare::Ne,
+                &quot;&lt;&quot; =&gt; Compare::Lt,
+                &quot;&lt;=&quot; =&gt; Compare::Le,
+                &quot;&gt;&quot; =&gt; Compare::Gt,
+                &quot;&gt;=&quot; =&gt; Compare::Ge,
+                _ =&gt; return self.fail(&quot;expected comparison or IS [NOT] NULL&quot;),
+            },
+            _ =&gt; return self.fail(&quot;expected comparison or IS [NOT] NULL&quot;),
+        };
+        self.at += 1;
+        let right = self.operand()?;
+        self.node(Expr::Compare { left, op, right })
+    }</code></pre></details><p><a href="examples/ch05/sql.rs"><code>ch05/sql.rs:241–253</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch05/sql.rs" data-lines="241-253">    fn name(&amp;mut self) -&gt; Result&lt;String&gt; {
+        if let Kind::Word(s) = &amp;self.current().kind {
+            if s.len() &lt;= 32
+                &amp;&amp; s.as_bytes()[0].is_ascii_alphabetic()
+                &amp;&amp; !RESERVED.contains(&amp;s.as_str())
+            {
+                let name = s.clone();
+                self.at += 1;
+                return Ok(name);
+            }
+        }
+        self.fail(&quot;expected identifier (letter first, at most 32 bytes; no reserved word)&quot;)
+    }</code></pre>
+<details class="deep"><summary>코드 해설 B: 구문 검사와 의미 검사</summary><div><p>Parser에 Db나 카탈로그 참조를 넣지 마세요. CREATE의 중복 열, INSERT 열 수와 값 수의 차이, 열의 실제 타입은 다음 계층에서 확인합니다. 파서는 필요한 기호가 있는지와 허용한 문법 순서만 검사합니다. 이름의 형식·정수 범위·자원 제한은 이 파서 자체의 입력 계약입니다.</p></div></details>
+<h3>C. AST와 EOF</h3><p class="code-reading">parse는 토큰 배열로 Parser를 만들고 statement를 호출합니다. statement가 문장 끝의 세미콜론과 EOF를 확인하므로 첫 문장만 성공시키고 뒤 입력을 버리지 않습니다.</p><p><a href="examples/ch05/sql.rs"><code>ch05/sql.rs:456–463</code> 원본</a></p><pre><code data-language="rust" data-source="examples/ch05/sql.rs" data-lines="456-463">fn parse(sql: &amp;str) -&gt; Result&lt;Statement&gt; {
+    Parser {
+        tokens: lex(sql)?,
+        at: 0,
+        nodes: 0,
+    }
+    .statement()
+}</code></pre>
 <h3>D. 실행과 출력</h3><pre><code data-language="bash">rustc --edition=2024 examples/ch05/sql.rs -o sql
 printf '%s' 'SELECT name FROM people WHERE age &gt;= 20;' | ./sql
 printf '%s' "INSERT INTO people VALUES (1, '한글', NULL);" | ./sql --tokens
@@ -90,7 +224,7 @@ printf '%s' 'SELECT * FROM people; DROP TABLE people;' | ./sql
 # 마지막 명령: ERROR byte=... / 종료 코드 2</code></pre>
 <p>성공하면 AST 또는 토큰 JSON을 stdout에 출력합니다. 오류는 stderr에 쓰고 코드 2로 종료합니다. stdin 전체를 문장 하나로 받으므로 여러 줄 문장은 가능하지만 여러 문장은 거부합니다. i64 값과 LIMIT는 JSON에서 문자열로 내보내 JavaScript의 숫자 정밀도 손실을 피합니다. Rust AST 안에서는 실제 i64입니다.</p>
 <p>새 디스크 바이트 형식은 없습니다. 예를 들어 <code>'한글'</code> 토큰의 원문 UTF-8 바이트는 <code>27 ed 95 9c ea b8 80 27</code>이고, 값은 따옴표를 뺀 Text입니다. 토큰의 start/end로 원문 바이트를 잘랐을 때 이 범위가 맞는지 검사합니다.</p>
-<details class="deep"><summary>접힌 참조 구현: sql.rs</summary><div><p><a href="examples/ch05/sql.rs" download>sql.rs 저장</a>. 소형 수동 렉서와 재귀 하강 파서입니다. 외부 파서 라이브러리나 데이터베이스 접근은 없습니다.</p><pre><code data-language="rust">use std::{
+<details class="deep"><summary>전체 실행 소스: sql.rs</summary><div><p><a href="examples/ch05/sql.rs" download>sql.rs 저장</a>. 소형 수동 렉서와 재귀 하강 파서입니다. 외부 파서 라이브러리나 데이터베이스 접근은 없습니다.</p><pre><code data-language="rust">use std::{
     fmt,
     io::{self, Read},
 };
