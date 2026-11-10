@@ -15,7 +15,7 @@ const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=
 const server=http.createServer(async(req,res)=>{try{const u=new URL(req.url,'http://local');const f=path.resolve(root,'.'+decodeURIComponent(u.pathname)+(u.pathname.endsWith('/')?'index.html':''));if(!f.startsWith(root+path.sep)){res.writeHead(403);res.end();return}const data=await fs.readFile(f);res.writeHead(200,{'Content-Type':types[path.extname(f)]||'application/octet-stream'});res.end(data)}catch{res.writeHead(404);res.end('Not found')}});
 server.listen(0,'127.0.0.1');await once(server,'listening');const base=`http://127.0.0.1:${server.address().port}`;
 const chapters=(await Promise.all(['part-intro','part-a','part-b'].map(async n=>JSON.parse(await fs.readFile(path.join(root,'content',n+'.json'),'utf8'))))).flat().sort((a,b)=>a.id.localeCompare(b.id));
-const report={browser:'',pages:0,layoutCases:0,checks:0,errors:[],screenshots:[],scope:'Real headless Chromium: desktop/mobile rendering, interactions, SMIL/CSS motion, persistence, local browser CORS, offline file access. TLS wire handshake and other browser engines not tested.'};
+const report={browser:'',pages:0,layoutCases:0,checks:0,errors:[],screenshots:[],teaching:[],scope:'Real headless Chromium: desktop/mobile rendering, interactions, SMIL/CSS motion, persistence, local browser CORS, offline file access. TLS wire handshake and other browser engines not tested.'};
 let browser,lab,lablog='';
 const check=(condition,label)=>{report.checks++;assert.ok(condition,label)};
 try{
@@ -25,14 +25,19 @@ try{
  const pages=['index','lab-guide',...chapters.map(c=>c.slug)];
  for(const slug of pages){
   await page.goto(`${base}/${slug}.html`);await page.locator('h1').waitFor();
+  if(chapters.some(c=>c.slug===slug)){
+   const teaching=await page.evaluate(()=>({question:document.querySelector('.case-study h2')?.textContent,captions:[...document.querySelectorAll('.section table caption')].map(e=>e.textContent),kinds:[...document.querySelectorAll('.concept-figure')].map(e=>e.dataset.diagramKind),instructions:document.querySelectorAll('.experiment-steps li').length}));
+   check(!!teaching.question,slug+' concrete question');check(teaching.captions.length>=3,slug+' comparisons in explanation');check(teaching.kinds.length>=1&&teaching.kinds.every(Boolean),slug+' semantic diagram types');check(teaching.instructions>=3,slug+' prediction/action/interpretation');report.teaching.push({chapter:slug,...teaching});
+  }
   for(const width of [320,390,768,1440]){
    await page.setViewportSize({width,height:1000});
    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-   const layout=await page.evaluate(async()=>{await Promise.all([...document.images].map(i=>i.decode().catch(()=>{})));return{width:innerWidth,scroll:document.documentElement.scrollWidth,smallSvg:[...document.querySelectorAll('#simulation svg text')].filter(e=>e.getBoundingClientRect().height<10.5).map(e=>e.textContent),broken:[...document.images].filter(i=>!i.naturalWidth).map(i=>i.src),svgOverflow:[...document.querySelectorAll('#simulation svg g')].flatMap(g=>{const rect=g.querySelector('rect.box');if(!rect)return[];const b=rect.getBBox();return[...g.querySelectorAll('text')].filter(t=>{const r=t.getBBox();return r.x<b.x-1||r.x+r.width>b.x+b.width+1}).map(t=>t.textContent)})}});
+   const layout=await page.evaluate(async()=>{await Promise.all([...document.images].map(i=>i.decode().catch(()=>{})));return{width:innerWidth,scroll:document.documentElement.scrollWidth,figureOverflow:[...document.querySelectorAll('.lesson-svg')].flatMap(svg=>{const a=svg.getBoundingClientRect();return [...svg.querySelectorAll('text')].filter(t=>{const b=t.getBoundingClientRect();return b.left<a.left-2||b.right>a.right+2||b.top<a.top-2||b.bottom>a.bottom+2}).map(t=>t.textContent)}),smallSvg:[...document.querySelectorAll('#simulation svg text')].filter(e=>e.getBoundingClientRect().height<10.5).map(e=>e.textContent),broken:[...document.images].filter(i=>!i.naturalWidth).map(i=>i.src),svgOverflow:[...document.querySelectorAll('#simulation svg g')].flatMap(g=>{const rect=g.querySelector('rect.box');if(!rect)return[];const b=rect.getBBox();return[...g.querySelectorAll('text')].filter(t=>{const r=t.getBBox();return r.x<b.x-1||r.x+r.width>b.x+b.width+1}).map(t=>t.textContent)})}});
    check(layout.scroll<=layout.width,`${slug} at ${width}: horizontal overflow ${layout.scroll}`);
    check(!layout.broken.length,`${slug}: broken images`);
    check(!layout.smallSvg.length,`${slug} at ${width}: unreadable SVG text ${layout.smallSvg.join(',')}`);
    check(!layout.svgOverflow.length,`${slug} at ${width}: SVG labels overflow ${layout.svgOverflow.join(',')}`);
+   check(!layout.figureOverflow.length,`${slug} at ${width}: teaching labels outside viewBox ${layout.figureOverflow.join(',')}`);
    report.layoutCases++;
   }
   if(slug==='index'||slug==='02-dns'||slug==='06-browser-security'||slug==='07-tls'){
@@ -42,6 +47,7 @@ try{
    if(slug==='index')await page.evaluate(()=>scrollTo(0,0));else await page.locator('.lab').scrollIntoViewIfNeeded();
    const mobile=`${slug}-mobile.png`;await page.screenshot({path:path.join(qa,'screenshots',mobile)});report.screenshots.push(mobile);
   }
+  if(['02-dns','03-dns-cache','05-http-cache','06-browser-security','07-tls','09-proxies'].includes(slug)){await page.setViewportSize({width:1440,height:1100});await page.locator('.concept-figure').first().scrollIntoViewIfNeeded();const name=slug+'-concept.png';await page.locator('.concept-figure').first().screenshot({path:path.join(qa,'screenshots',name)});report.screenshots.push(name);}
   if(chapters.some(c=>c.slug===slug)){
    for(const box of await page.locator('.quiz-item').all()){
     const answer=await box.getAttribute('data-answer');await box.locator(`input[value="${answer}"]`).check();await box.locator('[data-check-quiz]').click();check((await box.locator('.feedback strong').textContent())==='정답',slug+' quiz');
@@ -69,7 +75,8 @@ try{
   check(!await page.locator('#stage svg').evaluate(s=>s.animationsPaused()),slug+' final motion not prematurely frozen');
   await page.emulateMedia({reducedMotion:'reduce'});await page.locator('#reset-step').click();await page.locator('#next-step').click();check(await page.locator('animateMotion').count()===0,slug+' reduced motion no SMIL');await page.locator('#play-step').click();check((await page.locator('.step-detail').textContent()).includes('동작 감소'),slug+' reduced motion manual only');await page.emulateMedia({reducedMotion:'no-preference'});
  }
- await page.goto(base+'/03-dns-cache.html');await page.locator('#dns-query').click();await page.locator('#dns-change').click();await page.locator('#dns-query').click();check((await page.locator('#sim-result').textContent()).includes('HIT'),'DNS cache hit');for(let i=0;i<3;i++)await page.locator('#dns-tick').click();await page.locator('#dns-query').click();check((await page.locator('#sim-result').textContent()).includes('192.0.2.20'),'DNS expiry new IP');
+ await page.goto(base+'/03-dns-cache.html');await page.locator('#dns-query').click();await page.locator('#dns-connect').click();await page.locator('#dns-change').click();await page.locator('#dns-query').click();check((await page.locator('#sim-result').textContent()).includes('HIT'),'DNS cache hit');for(let i=0;i<3;i++)await page.locator('#dns-tick').click();await page.locator('#dns-query').click();check((await page.locator('#sim-result').textContent()).includes('192.0.2.20'),'DNS expiry new IP');check((await page.locator('#dns-stage').textContent()).includes('이미 열린 연결'),'independent connection state visible');const conn=await page.locator('#dns-stage tbody tr').filter({hasText:'이미 열린 연결'}).first().textContent();check(conn.includes('192.0.2.10'),'existing connection survives refreshed DNS');
+ await page.goto(base+'/04-http.html');await page.locator('#retry-first').click();await page.locator('#retry-again').click();check((await page.locator('#retry-state').textContent()).includes('42, 43'),'POST retry can duplicate');await page.locator('#retry-reset').click();await page.locator('#retry-key').check();await page.locator('#retry-first').click();await page.locator('#retry-again').click();check(!(await page.locator('#retry-state').textContent()).includes('43'),'API idempotency contract deduplicates');
  await page.goto(base+'/05-http-cache.html');await page.locator('#cache-policy').selectOption('no-store');check((await page.locator('#cache-stage').textContent()).includes('비어 있음'),'no-store diagram');
  await page.goto(base+'/06-browser-security.html');await page.locator('#cors-method').selectOption('PUT');await page.locator('#cors-pf').uncheck();check((await page.locator('#sim-result').textContent()).includes('실제 요청 전송: 아니오'),'CORS sim preflight');
  await page.goto(base+'/08-http-versions.html');await page.locator('#stream-proto').selectOption('h3');await page.locator('#stream-loss').check();check((await page.locator('#sim-result').textContent()).includes('직접 막지'),'HTTP3 sim');
@@ -95,7 +102,7 @@ try{
  const allowLog=lablog.slice(allowStart);check(allowLog.includes('OPTIONS /cors?mode=allow'),'real preflight observed');check(allowLog.includes('GET /cors?mode=allow'),'real allowed GET after preflight');
  await lp.screenshot({path:path.join(qa,'screenshots','real-cors.png')});report.screenshots.push('real-cors.png');await labcontext.close();
  // Offline file loading: no network requests are required for lessons, figures and interactions.
- const offline=await browser.newContext({offline:true});const op=await offline.newPage();await op.goto(pathToFileURL(path.join(root,'03-dns-cache.html')).href);await op.locator('#dns-query').click();check((await op.locator('#sim-result').textContent()).includes('MISS'),'offline file interaction');check(await op.locator('picture img').evaluate(i=>i.complete&&i.naturalWidth>0),'offline image');await offline.close();
+ const offline=await browser.newContext({offline:true});const op=await offline.newPage();await op.goto(pathToFileURL(path.join(root,'03-dns-cache.html')).href);await op.locator('#dns-query').click();check((await op.locator('#sim-result').textContent()).includes('MISS'),'offline file interaction');check(await op.locator('.lesson-svg').first().isVisible(),'offline semantic figure');await offline.close();
  check(report.errors.length===0,'no page JS exceptions');report.result='PASS';await context.close();
 }catch(e){report.result='FAIL';report.failure=e.stack;console.error(e.stack);process.exitCode=1}
 finally{await browser?.close();lab?.kill();server.close();await fs.writeFile(path.join(qa,'browser-results.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2))}

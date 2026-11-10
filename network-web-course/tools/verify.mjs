@@ -8,6 +8,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 if(!process.argv[2]) throw new Error('Provide an existing jsdom/lib/api.js path. No dependencies are installed by this script.');
 const {JSDOM}=await import(pathToFileURL(path.resolve(process.argv[2])).href);
 const source=fs.readFileSync(path.join(root,'assets/course.js'),'utf8');
+const teaching=fs.readFileSync(path.join(root,'assets/teaching-ui.js'),'utf8');
 const chapters=['part-intro','part-a','part-b'].flatMap(n=>JSON.parse(fs.readFileSync(path.join(root,'content',n+'.json'),'utf8'))).sort((a,b)=>a.id.localeCompare(b.id));
 let assertions=0;
 const ok=(x,msg)=>{assert.ok(x,msg);assertions++};
@@ -15,17 +16,21 @@ for(const c of chapters){
  const html=fs.readFileSync(path.join(root,c.slug+'.html'),'utf8');
  const dom=new JSDOM(html,{url:'https://network-course.test/'+c.slug+'.html',runScripts:'outside-only'}),w=dom.window,d=w.document;
  w.matchMedia=q=>({matches:q.includes('reduced-motion')});w.ResizeObserver=class{observe(){}};
- w.eval(source);
+ w.eval(teaching);w.eval(source);
  const q=s=>d.querySelector(s), click=s=>{ok(q(s),'exists '+s);q(s).click()}, set=(s,v)=>{let e=q(s);if(e.type==='checkbox')e.checked=v;else e.value=v;e.dispatchEvent(new w.Event('input',{bubbles:true}));e.dispatchEvent(new w.Event('change',{bubbles:true}))};
  ok(q('#simulation').textContent.length>100,'simulation mounted '+c.id);
+ ok(q('.case-study')&&q('.case-answer'),'case and causal answer '+c.id);
+ ok(d.querySelectorAll('.section table').length>=3,'comparisons in context '+c.id);
+ ok(d.querySelectorAll('.concept-figure').length>0,'semantic figures '+c.id);
+ ok(q('.experiment-steps li'),'guided experiment '+c.id);
  ok(!q('#simulation').textContent.includes('自'),'Korean text '+c.id);
  click('#theme');ok(d.documentElement.dataset.theme==='dark','theme dark');click('#theme');ok(d.documentElement.dataset.theme==='light','theme light');
  click('#complete');ok(q('#complete').getAttribute('aria-pressed')==='true','progress');click('#complete');ok(q('#complete').getAttribute('aria-pressed')==='false','uncomplete');
  for(const box of d.querySelectorAll('.quiz-item')){box.querySelector('button').click();ok(box.querySelector('.feedback').textContent.includes('선택'),'no answer feedback');box.querySelector(`input[value="${box.dataset.answer}"]`).click();box.querySelector('button').click();ok(box.querySelector('.feedback strong').textContent==='정답','quiz '+c.id)}
  const out=()=>q('#sim-result')?.textContent||'';
  if(['01','02','07'].includes(c.id)) {const before=q('.step-detail h3').textContent;click('#next-step');ok(q('.step-detail h3').textContent!==before,'step advances');click('#reset-step');ok(q('.step-detail h3').textContent===before,'step reset');while(!q('#next-step').disabled)click('#next-step');ok(q('#next-step').disabled,'terminal');click('#reset-step');click('#play-step');ok(q('.step-detail').textContent.includes('동작 감소'),'reduced motion');}
- if(c.id==='03'){click('#dns-query');ok(out().includes('MISS'),'DNS initial miss');click('#dns-change');click('#dns-query');ok(out().includes('HIT')&&out().includes('192.0.2.10'),'DNS retained old');for(let i=0;i<3;i++)click('#dns-tick');click('#dns-query');ok(out().includes('MISS')&&out().includes('192.0.2.20'),'DNS expiry refresh');click('#dns-reset');ok(out().includes('0회'),'DNS reset');}
- if(c.id==='04'){click('[data-line="7"]');ok(out().includes('octet'),'message explanation');click('[data-line="9"]');ok(out().includes('13바이트'),'body length');}
+ if(c.id==='03'){click('#dns-query');ok(out().includes('MISS'),'DNS initial miss');click('#dns-connect');click('#dns-change');click('#dns-query');ok(out().includes('HIT')&&out().includes('192.0.2.10'),'DNS retained old');for(let i=0;i<3;i++)click('#dns-tick');click('#dns-query');ok(out().includes('MISS')&&out().includes('192.0.2.20'),'DNS expiry refresh');ok(q('#dns-stage').textContent.includes('이미 열린 연결'),'connection state visible');ok(q('#dns-stage').textContent.includes('192.0.2.10'),'old connection survives DNS refresh');click('#dns-reset');ok(out().includes('0회'),'DNS reset');}
+ if(c.id==='04'){click('[data-line="7"]');ok(out().includes('octet'),'message explanation');click('[data-line="9"]');ok(out().includes('13바이트'),'body length');click('#retry-first');click('#retry-again');ok(q('#retry-state').textContent.includes('42, 43'),'POST duplicate without key');click('#retry-reset');q('#retry-key').checked=true;q('#retry-key').dispatchEvent(new w.Event('change'));click('#retry-first');click('#retry-again');ok(!q('#retry-state').textContent.includes('43'),'idempotency contract one order');}
  if(c.id==='05'){ok(out().includes('fresh'),'fresh');set('#cache-changed',true);ok(out().includes('fresh'),'fresh even changed');set('#cache-age',90);ok(out().includes('200'),'stale changed');set('#cache-changed',false);ok(out().includes('304'),'stale unchanged');set('#cache-policy','no-store');ok(out().includes('저장하지'),'no store');set('#cache-policy','no-cache');set('#cache-age',0);ok(out().includes('304'),'no-cache validation');}
  if(c.id==='06'){ok(out().includes('차단'),'CORS default blocked');set('#cors-allow','exact');ok(out().includes('JS 응답 읽기: 허용'),'CORS exact');set('#cors-allow','star');set('#cors-credentials',true);ok(out().includes('JS 응답 읽기: 차단'),'CORS star credentials');set('#cors-custom',true);set('#cors-pf',false);ok(out().includes('실제 요청 전송: 아니오'),'CORS preflight stop');set('#cors-cross','same');ok(out().includes('JS 응답 읽기: 허용'),'same origin bypass');}
  if(c.id==='08'){set('#stream-proto','h2');set('#stream-loss',true);ok(out().includes('TCP 바이트'),'h2 loss');set('#stream-proto','h3');ok(out().includes('직접 막지'),'h3 loss');}

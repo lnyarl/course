@@ -9,3 +9,48 @@
 .diagram.is-paused .route{animation-play-state:paused}
 
 .controls.grid label:has(>input[type=checkbox]){display:flex;align-items:center;gap:10px;min-height:44px}
+
+/* The page follows a worked question; figures express topology, time or decisions. */
+.case-study{margin:34px 0;padding:26px 0;border-block:2px solid var(--accent)}
+.case-study h2{font-size:28px;max-width:780px;margin:10px 0 16px}
+.prediction{padding:14px 18px;border-left:3px solid var(--blue);background:var(--paper);margin:20px 0}
+.prediction p{margin:7px 0 0}.case-answer{padding:30px 0;border-bottom:1px solid var(--line)}
+.concept-maps{padding:22px 0}.concept-figure{margin:24px 0 38px;border-block:1px solid var(--line);padding:22px 0}
+.concept-figure figcaption{display:grid;gap:6px;margin:0 0 18px;font-size:18px}
+.concept-figure figcaption span{font-size:14px;color:var(--muted)}
+.figure-scroll,.sequence-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-color:var(--accent) var(--bg)}
+.lesson-svg,.teaching-svg{display:block;width:100%;height:auto;background:var(--paper)}
+.figure-reading{font-size:15px;margin:16px 0 0;line-height:1.8}
+.concept-figure::after{content:'모바일에서는 그림 안을 좌우로 스크롤해 메시지와 조건을 읽으세요.';display:block;color:var(--muted);font-size:12px;margin-top:10px}
+.lesson-svg text{font-family:inherit}.experiment-steps{font-size:14px;padding-left:22px;margin-bottom:25px}.experiment-reading{border-top:1px solid var(--line);padding-top:18px;margin-top:25px}
+.state-table caption,table caption{text-align:left;font-weight:650;color:var(--ink);font-size:16px;padding:15px 0 10px;caption-side:top}
+.state-table{margin:0 0 18px;min-width:540px}.state-table th[scope=row]{background:var(--bg);color:var(--ink);font-weight:500}
+.section table{min-width:600px;font-size:14px}.section table caption{font-size:16px}.section thead th{white-space:normal}
+.section tbody th[scope=row]{background:var(--paper);color:var(--ink);font-weight:650}
+.section td{line-height:1.75}.section td code{white-space:normal}
+.teaching-svg .lifeline{stroke:var(--line);stroke-dasharray:4 6;stroke-width:1.5}
+.teaching-svg .actor-box{fill:var(--soft);stroke:var(--line)}
+.teaching-svg .actor-label{font-size:15px;font-weight:650;fill:var(--ink)}
+.teaching-svg .sequence-note{font-size:13px;fill:var(--muted)}
+.teaching-svg .message-line{fill:none;stroke:var(--accent);stroke-width:1.7}
+.teaching-svg .message-line.response{stroke-dasharray:5 4}
+.teaching-svg .message-mask{fill:var(--paper)}
+.teaching-svg .message-label{font-size:14px;fill:var(--ink)}
+.teaching-svg .message.pending{opacity:.33}.teaching-svg .message.current .message-label{font-weight:700;fill:var(--accent)}
+.teaching-svg .event-number{font:12px var(--mono);fill:var(--muted)}
+.teaching-svg .local-action{fill:var(--soft);stroke:var(--accent)}
+.teaching-svg .protection-band,.teaching-svg .encrypted{fill:var(--soft);stroke:var(--accent);stroke-dasharray:5 4}
+.teaching-svg .plaintext{fill:var(--bg);stroke:var(--orange);stroke-dasharray:5 4}
+.teaching-svg .blocked-line{fill:none;stroke:var(--red);stroke-width:2;stroke-dasharray:3 7}
+.cache-clock{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:20px 0}.cache-clock span{color:var(--muted);font-size:14px}
+.ttl-track{height:12px;background:var(--line);border-radius:3px;flex-basis:100%;overflow:hidden}.ttl-track i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.segment{height:100%;position:absolute;top:0;background:var(--accent);transition:width .3s,left .3s}.segment.waiting{background:var(--orange);background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,color-mix(in srgb,var(--paper) 25%,transparent) 4px,color-mix(in srgb,var(--paper) 25%,transparent) 8px)}
+.lane-axis{display:flex;justify-content:space-between;padding-left:100px;padding-right:80px;font:12px var(--mono);margin-bottom:10px}.lane-legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:14px 0}.lane-legend .key{display:inline-block;width:16px;height:9px;background:var(--accent);margin-right:6px}.lane-legend .waiting-key{background:var(--orange)}
+@media(max-width:760px){.case-study{padding:22px 0}.case-study h2{font-size:24px}.prediction{padding:12px 14px}.lab .sequence-scroll{margin-inline:0}.lane-axis{padding-left:80px;padding-right:70px}.concept-figure figcaption{font-size:17px}}
+@media print{.figure-scroll,.sequence-scroll{overflow:visible}.lesson-svg,.teaching-svg{min-width:0!important}.concept-figure::after{display:none}.concept-figure{break-inside:avoid}.table-wrap{overflow:visible}.state-table,.section table{min-width:0}}
+.segment span{font-size:11px;line-height:28px;display:block;text-align:center;color:var(--ink)}
+.figure-scroll:focus-visible,.sequence-scroll:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.table-wrap:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.diagram-direction{font-size:13px;color:var(--muted);margin:18px 0 6px}.diagram-direction strong{color:var(--ink);margin-right:8px}.mobile-diagram-hint{display:none;font-size:13px;color:var(--muted);margin:5px 0 20px}
+@media(max-width:760px){.mobile-diagram-hint{display:block}}
+.retry-experiment{margin-top:35px;padding-top:22px;border-top:1px solid var(--line)}
