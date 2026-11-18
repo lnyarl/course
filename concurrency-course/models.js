@@ -4,16 +4,16 @@
 const names = ['A','B','C','D','E','F','G','H'];
 class StackModel {
   constructor(){this.reset();}
-  reset(){this.index=0;this.stack=[];this.heap={};this.result=null;this.done=false;this.message='main()을 호출하기 전입니다.';}
+  reset(){this.index=0;this.stack=[];this.heap={};this.result=null;this.done=false;this.message='Main()을 호출하기 전입니다.';}
   step(){
     const events=[
-      ()=>{this.stack.push({name:'main',line:1,locals:'아직 없음'});this.message='CPU가 main의 첫 명령을 실행합니다. 호출 프레임을 쌓습니다.';},
-      ()=>{this.heap['0x10']={value:21};this.stack[0].line=2;this.stack[0].locals='box → 0x10';this.message='힙에 객체를 만들고 main의 지역 변수 box에 참조를 보관합니다.';},
-      ()=>{this.stack[0].line=3;this.stack.push({name:'double',line:5,locals:'x = 21'});this.message='double을 호출합니다. 같은 스레드의 스택에 프레임을 더합니다.';},
+      ()=>{this.stack.push({name:'Main',line:1,locals:'아직 없음'});this.message='CPU가 Main의 첫 명령을 실행합니다. 호출 프레임을 쌓습니다.';},
+      ()=>{this.heap['0x10']={value:21};this.stack[0].line=2;this.stack[0].locals='box → 0x10';this.message='힙에 객체를 만들고 Main의 지역 변수 box에 참조를 보관합니다.';},
+      ()=>{this.stack[0].line=3;this.stack.push({name:'Double',line:5,locals:'x = 21'});this.message='Double을 호출합니다. 같은 스레드의 스택에 프레임을 더합니다.';},
       ()=>{this.stack[1].line=6;this.stack[1].locals='x = 21, result = 42';this.message='CPU가 21 × 2를 계산합니다. 힙의 value는 아직 21입니다.';},
-      ()=>{this.stack.pop();this.stack[0].locals='box → 0x10, result = 42';this.result=42;this.message='double이 42를 반환하고 프레임이 제거됩니다. main으로 돌아옵니다.';},
-      ()=>{this.heap['0x10'].value=42;this.stack[0].line=4;this.message='main이 반환값 42를 힙 객체의 value에 씁니다.';},
-      ()=>{this.stack=[];this.message='main이 반환했습니다. 객체의 실제 회수 시점은 런타임의 메모리 관리 방식에 따릅니다.';}
+      ()=>{this.stack.pop();this.stack[0].locals='box → 0x10, result = 42';this.result=42;this.message='Double이 42를 반환하고 프레임이 제거됩니다. Main으로 돌아옵니다.';},
+      ()=>{this.heap['0x10'].value=42;this.stack[0].line=4;this.message='Main이 반환값 42를 힙 객체의 value에 씁니다.';},
+      ()=>{this.stack=[];this.message='Main이 반환했습니다. 객체의 실제 회수 시점은 런타임의 메모리 관리 방식에 따릅니다.';}
     ];if(this.done)return;events[this.index++]();this.done=this.index===events.length;
   }
 }

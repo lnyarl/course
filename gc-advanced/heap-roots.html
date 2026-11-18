@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>힙 누수와 gcroot 분석 · C# 가비지 컬렉션 심화</title>
+<link rel="stylesheet" href="../shared/advanced.css">
+</head>
+<body>
+<header><a href="../index.html">코스 목록</a><a href="index.html">C# 가비지 컬렉션 심화</a></header>
+<main>
+<h1>힙 누수와 gcroot 분석</h1>
+<p class="connection">선수 장 · <a href="../CSharp_GC_학습자료.html#handles">GC 핸들과 약한 참조</a></p>
+<p class="lead">GC 핸들과 약한 참조를 배웠다면 이제 화면을 닫았는데 객체가 남는 이유를 실제 root 경로로 찾습니다. 객체 수 증가와 도달 가능한 불필요한 객체를 구분합니다.</p>
+<section><h2>타입 크기에서 보유 경로로</h2>
+<p>작은 로컬 앱에서 static 이벤트 구독이나 상한 없는 캐시에 수백 개의 실습 객체를 넣고 반복 생성·해제를 관찰합니다. 관리 객체가 도달 가능하면 더는 업무에 필요 없어도 GC는 회수하지 않습니다. 단순히 GC.Collect를 자주 호출하는 방법은 보유 참조를 제거하지 않습니다.</p>
+<p><code>dotnet-dump collect -p PID</code>로 자기 실습 프로세스의 자료를 만들고 analyze에서 <code>dumpheap -stat</code>로 타입별 규모를 봅니다. 의심 타입의 객체 주소를 찾은 뒤 <code>gcroot 주소</code>로 누가 붙잡는지 따라갑니다. 타입이 크다는 관측과 그 참조가 불필요하다는 업무 판단은 별도입니다.</p></section>
+<section><h2>수정 전후의 같은 경로 비교</h2>
+<p>이벤트 예는 생성 때 <code>publisher.Changed += handler</code>, 수명 종료 때 <code>-= handler</code>를 같은 소유자에 둡니다. 람다를 새로 만들어 빼면 등록한 delegate와 다른 객체일 수 있으므로 실제 구독 대상을 보관합니다. 캐시는 상한·만료가 있는 정책으로 수명을 정합니다.</p>
+<p>GCHandle을 직접 만든 예라면 Free 책임과 callback 종료를 연결합니다. 핸들만 해제해도 외부 코드가 이미 사용 중인 상태를 무시해서는 안 됩니다. 수정 뒤 같은 입력과 대기 조건으로 다시 수집하고 객체 수·root 경로·활성 구독 수가 줄었는지 비교합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>실습 객체에 연속 번호를 붙이고 static 이벤트 구독을 등록·해제하는 두 모드를 만드세요. 동일 횟수 실행 후 작은 로컬 dump를 비교하고 root에서 이벤트 publisher→delegate→대상 객체를 찾습니다. 해제 모드에서 업무상 수명이 끝난 객체가 더 이상 같은 경로로 보유되지 않는지 확인하세요.</p>
+<details><summary>이벤트 구독을 유지</summary><p>static publisher가 살아 있으면 delegate를 통해 대상도 남을 수 있습니다. 도달성 기반 GC가 정상 작동해도 생기는 보유입니다.</p></details>
+<details><summary>정확한 delegate 구독 해제</summary><p>그 보유 경로가 끊깁니다. 다른 root가 남을 수 있으므로 구독 해제 한 번으로 모든 누수가 해결됐다고 단정하지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>강제 GC는 비교를 위한 작은 실습에서만 사용하고 운영 처방으로 제시하지 않습니다. 진단 절로 돌아가 반복 증가·root·업무 수명을 함께 해석합니다.</p><p>관련 기존 장 · <a href="../CSharp_GC_학습자료.html#diag">진단과 체크리스트</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/core/diagnostics/debug-memory-leak">관리 메모리 누수 진단</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-dump">dotnet-dump와 SOS 명령</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="gc-pause-traces.html">다음 심화 · GC trace와 일시정지 분석</a></nav>
+</main>
+<script defer src="../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

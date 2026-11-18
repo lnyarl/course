@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KMDF 요청 취소·완료 캡스톤 · Windows 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Windows 커널 심화</a></header>
+<main>
+<h1>KMDF 요청 취소·완료 캡스톤</h1>
+<p class="connection">선수 장 · <a href="../14-driver-development.html">커널 드라이버 개발</a></p>
+<p class="lead">14장의 요청 완료 규칙을 timer·work item·사용자 취소가 만나는 상황으로 확장합니다. 완료를 두 번 하지 않는 것과 사용 중 상태를 먼저 해제하지 않는 것을 함께 지켜야 합니다.</p>
+<section><h2>요청 소유권과 취소 콜백</h2>
+<p>프레임워크 큐에 남은 미전달 요청의 취소와 드라이버가 이미 소유한 WDFREQUEST의 취소는 책임이 다릅니다. 드라이버가 보류 요청의 취소를 처리하려면 WdfRequestMarkCancelableEx와 EvtRequestCancel 등 해당 계약을 사용합니다. 취소 가능 등록의 반환 상태를 확인하고 취소와 정상 완료 사이의 승자를 하나로 정해야 합니다.</p>
+<p>정상 완료 쪽에서 WdfRequestUnmarkCancelable을 호출했을 때 STATUS_CANCELLED이면 이미 취소 경로가 요청을 소유할 수 있습니다. 이 경우 정상 경로가 다시 완료하거나 즉시 관련 상태를 해제하면 안 됩니다. 한쪽이 완료권을 얻었다는 상태 변화와 실제 WdfRequestComplete, 워크 종료, 메모리 회수는 서로 다른 사건입니다.</p></section>
+<section><h2>네 가지 순서로 설계를 검증하기</h2>
+<p>최소 상태 표는 Pending, Completing, Canceling, Finished로 잡을 수 있습니다. 락 또는 프레임워크 동기화로 Pending에서 완료권을 얻는 전이를 한 번만 허용하고, 완료 이후 timer/work가 요청에 접근하지 않게 정리합니다. 상태 이름만 추가해도 안전해지는 것은 아니며 각 콜백이 어느 락과 IRQL에서 전이하는지 실제 API 계약과 맞춰야 합니다.</p>
+<p>검증 표에는 정상 완료만 도착, 취소가 먼저 도착, 완료권 획득과 취소가 겹침, 장치 제거 중 보류 요청이라는 네 경우를 둡니다. 각 경우에서 최종 completion 수가 1이고 남은 콜백 참조가 0이 된 뒤 자원을 회수하는지 확인합니다. 이 캡스톤은 취약한 드라이버를 만들어 시스템을 크래시시키는 과제가 아닙니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>공식 WDF 취소 문서를 옆에 두고 Pending 요청 카드 하나와 timer·cancel 두 사건을 종이로 진행합니다. API 성공/STATUS_CANCELLED 분기마다 완료권 소유자를 적고, 다른 경로가 요청을 만지지 않는지 확인하세요. 새 드라이버 로드나 Driver Verifier 강제 실패는 실행하지 않습니다.</p>
+<details><summary>UnmarkCancelable 성공 후 정상 완료</summary><p>예상 상태 규칙: 정상 경로가 완료를 책임지고 이후 취소 경로는 같은 요청을 완료하지 않습니다. 실제 드라이버의 해당 반환값·동기화 규칙과 대조해야 합니다.</p></details>
+<details><summary>취소가 먼저 소유권을 얻어 STATUS_CANCELLED</summary><p>예상 상태 규칙: 정상 경로는 완료를 중복 수행하지 않고 취소 경로의 종료·참조 정리를 기다리는 설계를 따릅니다. 단순한 요청 포인터 검사만으로 수명을 보장할 수 없습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 자료는 요청 소유권 설계·문서 대조 실습이며 드라이버 바이너리를 구현하거나 검증한 결과가 아닙니다. 다음 디버깅 장에서는 IRP·스택·남은 작업을 통해 이 불변식을 관측하는 방법을 연결합니다.</p><p>관련 기존 장 · <a href="../15-debugging.html">커널 디버깅과 크래시 분석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/canceling-i-o-requests">WDF I/O 요청 취소 책임</a></li><li><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestunmarkcancelable">WdfRequestUnmarkCancelable 반환 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="wpr-wpa-critical-path.html">이전 심화 · WPR·WPA로 실행과 대기 분리하기</a><a href="../index.html">기존 코스 목차</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

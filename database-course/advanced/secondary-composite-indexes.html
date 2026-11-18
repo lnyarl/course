@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>보조·복합 색인과 범위 계획 · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 데이터베이스 구현 심화</a></header>
+<main>
+<h1>보조·복합 색인과 범위 계획</h1>
+<p class="connection">선수 장 · <a href="../03-btree.html">기존 3장 · B+트리의 범위 검색</a></p>
+<p class="lead">기본키 하나를 찾던 B+트리에 tenant와 시각을 함께 넣으면 어떤 질의를 줄일 수 있을까요? 같은 데이터도 색인 열 순서에 따라 연속으로 읽을 수 있는 구간이 달라집니다. 이 단원은 색인 존재 여부가 아니라 실제 읽는 키 구간과 최종 결과를 분리합니다.</p>
+<section><h2>사전식 순서로 탐색 구간 만들기</h2>
+<p>네 행을 (tenant,time,name)=(1,10,A),(1,20,B),(2,10,C),(2,20,D)로 둡니다. (tenant,time) 색인은 (1,10),(1,20),(2,10),(2,20) 순서입니다. tenant=1 AND time&gt;=15는 (1,15)부터 tenant=1의 끝까지만 읽으면 되므로 이 데이터에서는 B 하나가 후보입니다. 키를 문자열로 단순 연결하면 2와 10의 순서나 경계가 깨질 수 있으므로 타입별 비교 또는 순서 보존 인코딩을 정해야 합니다.</p>
+<p>(time,tenant) 색인은 (10,1),(10,2),(20,1),(20,2) 순서입니다. time&gt;=15 구간에는 B·D가 들어가며 tenant 조건은 후보를 읽은 뒤 한 번 더 검사합니다. 이것은 선두 열 등가 조건이 없는 색인은 절대 사용할 수 없다는 뜻이 아닙니다. 실제 제품은 skip scan 등 다른 전략을 택할 수 있고, 여기서는 연속 구간 한 개를 읽는 작은 모형만 비교합니다.</p></section>
+<section><h2>보조 색인의 중복과 유지 비용</h2>
+<p>보조 키는 유일하지 않을 수 있습니다. (city=Seoul,RID1),(city=Seoul,RID2)처럼 같은 값의 여러 행을 보존하려면 leaf 값에 RID 목록을 두거나 (city,primaryKey)를 복합 키로 정합니다. 한 개의 해시 값만 남겨 덮어쓰면 결과가 줄어듭니다. NULL의 순서와 문자열 collation도 색인 비교와 질의 비교에 동일하게 적용해야 합니다.</p>
+<p>보조 색인을 추가하면 INSERT·UPDATE·DELETE의 수정 대상 파일도 늘어납니다. 데이터와 보조 색인이 같은 커밋에 들어가야 하며 색인 빌드 중 쓰기를 허용한다면 스냅샷 이후의 변경을 따라잡는 절차가 필요합니다. 비교 실험에서는 후보 엔트리 수, 힙 접근 수, 반환 행 수를 각각 기록하세요. 엔트리를 한 개 읽었다는 값이 물리 디스크 I/O 한 번을 뜻하지는 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>네 행을 두 가지 순서로 직접 정렬한 뒤 tenant=1 AND time&gt;=15의 시작 키와 끝 경계를 표시하세요. 조건을 선택해 후보와 반환 결과를 비교합니다. 별도 PostgreSQL 임시 테이블에서 확인한다면 두 CREATE INDEX를 번갈아 만들고 EXPLAIN (ANALYZE, BUFFERS)를 읽되, 이 작은 데이터에서는 순차 스캔 선택도 정상임을 기록하세요.</p>
+<details><summary>색인 (tenant,time)</summary><p>연속 범위의 후보는 B 1개이고 반환 행도 B 1개입니다. tenant 등가 조건 안에서 time 하한으로 시작할 수 있습니다.</p></details>
+<details><summary>색인 (time,tenant)</summary><p>time 하한 구간의 후보는 B·D 2개이고 tenant 필터 뒤 B만 남습니다. 결과는 같지만 후보가 다릅니다.</p></details>
+<details><summary>보조 키 중복을 단일 값으로 덮어씀</summary><p>같은 city의 두 행 중 하나만 남는 잘못된 모형입니다. 중복 보존을 검사하지 않으면 빠른 색인이 틀린 결과를 만듭니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>예상 후보 수는 지정한 네 행과 단일 범위 탐색의 계산 결과이며 제품 벤치마크가 아닙니다. 현재 mydb는 기본키 색인만 연결합니다. 보조 색인·collation·온라인 빌드는 별도 구현입니다. 9장으로 돌아가 결과 동등성을 유지하면서 계획 비용을 비교하세요.</p><p>관련 기존 장 · <a href="../09-server-optimizer.html">기존 9장 · 접근 경로 선택</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.postgresql.org/docs/18/indexes-multicolumn.html">PostgreSQL 18 · 복합 색인의 탐색 조건</a></li><li><a href="https://www.postgresql.org/docs/18/indexes-ordering.html">PostgreSQL 18 · 색인과 정렬</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="updates-deletes-space-reuse.html">이전 심화 · UPDATE·DELETE와 저장 공간 회수</a><a href="sql-joins-aggregation.html">다음 심화 · SQL JOIN·집계와 중복·NULL 계약</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>느린 의존성과 종료를 포함한 서비스 실험 · Node.js 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Node.js 심화</a></header>
+<main>
+<h1>느린 의존성과 종료를 포함한 서비스 실험</h1>
+<p class="connection">선수 장 · <a href="../13-errors-resilience.html#s6">데드라인과 재시도</a></p>
+<p class="lead">외부 의존성이 느려진 순간 서버도 종료된다면 timeout·재시도·drain이 서로 영향을 줍니다. 개별 복원력 패턴을 하나의 요청 수명에 적용합니다.</p>
+<section><h2>하나의 마감과 여러 대기 경계</h2>
+<p>자신의 로컬 upstream에 고정 지연을 넣고 Node 서버가 fetch로 호출하게 합니다. 요청을 받은 시점의 총 마감에서 큐 대기와 시도 시간을 함께 사용합니다. 재시도마다 원래의 전체 timeout을 새로 주면 사용자 마감보다 오래 실행되는 작업이 남을 수 있습니다.</p>
+<p><code>AbortSignal.timeout</code>과 <code>AbortSignal.any</code>로 자체 시간 제한과 종료 요청을 연결할 수 있습니다. 연결한 signal을 실제 하위 API에 전달하고 응답 본문도 소비하거나 취소해 정리합니다. 취소는 외부 서버에 이미 반영된 효과의 롤백이 아니므로 읽기 실습부터 시작합니다.</p></section>
+<section><h2>종료 뒤 새 유입과 진행 중 작업</h2>
+<p>종료 신호를 받으면 새 작업 접수를 중단하고 HTTP 서버의 close 흐름과 in-flight 요청 수를 연결합니다. <code>server.close()</code> 완료만 기다리는 코드가 background worker나 외부 연결의 수명까지 끝냈다고 가정하지 않습니다. 처리 중 ID와 종료 기한을 명시합니다.</p>
+<p>drain 시간이 끝나면 무엇을 포기하고 무엇을 영속 저장에서 재처리할지 정합니다. <code>process.exit()</code>로 즉시 끝내면 아직 남은 응답·로그가 전송되지 않을 수 있습니다. 자연 종료 경로와 유한한 강제 종료 예산을 분리하고, 종료 시작 이후 새 작업을 받지 않는 불변식을 검사합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>작은 로컬 Node 서버와 upstream 두 개를 띄우고 읽기 요청만 사용하세요. 정상/지연 upstream에서 같은 입력을 보낸 뒤 처리 중 종료 신호를 줍니다. 접수·시도·완료·취소·종료 후 유입 수를 ID로 맞추고, 총 마감과 drain 기한을 바꾸어 비교하세요.</p>
+<details><summary>하위 지연이 총 마감을 초과</summary><p>클라이언트 실패와 서버의 실제 작업 종료 시점이 다를 수 있습니다. 하위 취소와 자원 정리 관측이 필요합니다.</p></details>
+<details><summary>종료 뒤에도 새 작업 접수</summary><p>기한 내 drain이 끝나지 않을 수 있습니다. 입장 중단과 기존 작업 마무리가 별도 단계임을 드러냅니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>타인의 서비스에 부하를 보내지 않으며 영속 큐의 내부 구현을 대신하지 않습니다. 배포 장으로 돌아가 플랫폼 종료 유예와 이 실험의 기한을 맞춥니다.</p><p>관련 기존 장 · <a href="../14-production-deployment.html#s4">정상 종료</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://nodejs.org/docs/latest-v22.x/api/globals.html#class-abortsignal">AbortSignal API</a></li><li><a href="https://nodejs.org/docs/latest-v22.x/api/http.html#serverclosecallback">HTTP server.close</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="native-postmortem.html">이전 심화 · 네이티브 종료와 사후 분석 자료</a><a href="diagnostic-artifacts.html">다음 심화 · 실제 자료로 푸는 장애 분석</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

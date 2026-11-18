@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VFS 객체에서 ext4 저널까지 · 리눅스 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">리눅스 커널 심화</a></header>
+<main>
+<h1>VFS 객체에서 ext4 저널까지</h1>
+<p class="connection">선수 장 · <a href="../17-vfs.html">파일 디스크립터와 VFS</a></p>
+<p class="lead">17장의 fd·열린 파일·inode 관계를 실제 파일 시스템의 저장 경로로 이어갑니다. 이름과 열린 참조의 수명, 캐시 데이터와 저널 transaction을 같은 객체라고 읽지 않습니다.</p>
+<section><h2>이름 조회와 열린 파일의 별도 수명</h2>
+<p>경로 탐색은 dentry 캐시와 inode lookup을 통해 대상 객체를 찾습니다. 열린 file은 파일 위치와 연산·참조를 유지하며 fd 테이블 항목이 이를 가리킵니다. hard link로 여러 이름이 같은 inode를 가리킬 수 있고 unlink가 한 이름을 지워도 열린 file 참조가 즉시 없어지는 것은 아닙니다.</p>
+<p>캐시에 dentry가 있다는 사실은 최신 권한·파일 상태 확인을 생략해도 된다는 뜻이 아닙니다. rename·mount·동시 변경과 경합하는 path walk는 정확성 규칙을 지켜야 합니다. 소스에서는 fs/namei.c의 이름 해석과 file_operations를 통한 실제 읽기를 구분하고, 함수 이름을 찾은 다음 락·참조 획득·오류 반환 경로를 함께 읽습니다.</p></section>
+<section><h2>page cache·block mapping·journal의 서로 다른 상태</h2>
+<p>파일 offset의 데이터는 page cache를 통해 읽고 더러워질 수 있으며, 실제 저장 위치는 파일 시스템의 block mapping이 정합니다. ext4의 extent와 jbd2 저널은 이 배치·메타데이터 일관성에 관여합니다. write가 사용자 버퍼를 받았다고 장치 기록과 journal commit이 모두 끝났다고 판단할 수 없습니다.</p>
+<p>저널의 메타데이터 일관성과 애플리케이션의 여러 파일 트랜잭션은 다릅니다. ext4의 data mode에 따라 데이터·메타데이터 기록 관계도 달라집니다. 임시 파일을 쓰고 fsync한 뒤 rename하고 부모 디렉터리를 동기화하는 18장의 패턴을 읽을 때 파일 내용, 새 이름의 가시성, 장애 후 이름 보존을 각각 어떤 호출이 다루는지 표시하세요.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>자신이 만든 임시 파일만 대상으로 열기→unlink→열린 fd 읽기→close 순서를 종이에 추적하거나 개발 환경의 기존 17장 예제를 실행합니다. findmnt -T .로 현재 파일 시스템 종류·옵션을 읽고, 다른 형식의 결과를 ext4 실측으로 기록하지 않습니다.</p>
+<details><summary>이름을 지웠지만 열린 fd를 유지</summary><p>예상: 해당 열린 참조로 읽을 수 있고 마지막 참조가 닫히기 전까지 자원 수명이 남을 수 있습니다. 실제 결과는 소유한 임시 파일의 읽기 결과로 확인합니다.</p></details>
+<details><summary>write 성공 후 fsync 없이 종료</summary><p>예상 판정: 실행 중 가시성과 정전 내구성을 분리해야 합니다. 프로세스만 종료한 실험에서 내용이 남았다고 전원 차단 보존을 입증할 수 없습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>파일 시스템 손상이나 강제 재부팅을 유발하지 않습니다. 18장으로 이동해 정상 API 순서와 내구성 주장의 조건을 맞추세요. DB의 WAL·트랜잭션과 파일 시스템 저널을 같은 것으로 취급하지 않습니다.</p><p>관련 기존 장 · <a href="../18-durability.html">파일 시스템과 저장의 보장</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/filesystems/vfs.html">VFS dentry·inode·file 객체</a></li><li><a href="https://docs.kernel.org/6.18/filesystems/ext4/journal.html">ext4 jbd2 저널의 보장 경계</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="kvm-vcpu-boundary.html">이전 심화 · KVM VM·vCPU와 호스트 실행 경계</a><a href="../index.html">기존 코스 목차</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

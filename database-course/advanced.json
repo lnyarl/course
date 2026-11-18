@@ -1,0 +1,421 @@
+{
+  "title": "Rust 데이터베이스 구현 심화",
+  "intro": "기존 9장의 실제 엔진을 기준으로 저장 변경·관계 연산·자원 제한·통계·행 버전·페이지 복구를 단계적으로 넓힙니다. 조건 선택 실험의 출력은 명시한 모형의 예상값이며, 아래 기능이 기존 Rust 엔진에 모두 구현되어 있음을 뜻하지 않습니다.",
+  "units": [
+    {
+      "slug": "updates-deletes-space-reuse",
+      "title": "UPDATE·DELETE와 저장 공간 회수",
+      "before": {
+        "href": "04-tables-records.html",
+        "label": "기존 4장 · 테이블과 RID"
+      },
+      "after": {
+        "href": "07-wal-recovery.html",
+        "label": "기존 7장 · 여러 파일의 원자적 복구"
+      },
+      "opening": "4장은 행을 힙에 넣고 기본키에서 RID를 찾습니다. 이제 이름이 길어져 같은 슬롯에 들어가지 않는 UPDATE와 DELETE를 추가해 봅니다. 행 바이트만 지우면 색인이 이미 다른 행이 된 슬롯을 가리킬 수 있습니다. 목표는 행·색인·공간 관리의 세 변화를 한 연산으로 설명하는 것입니다.",
+      "sections": [
+        {
+          "title": "위치와 정체성을 분리하기",
+          "body": [
+            "학습 모형에서 슬롯은 (page=3, slot=2), 내용은 id=10·name=A입니다. 페이지 안 압축으로 바이트가 이동해도 슬롯 번호는 유지하고 슬롯 디렉터리의 offset만 바꾸면 RID가 유지됩니다. 반대로 삭제한 슬롯을 id=20에 재사용하면 위치가 같아도 다른 행입니다. 오래된 색인이나 호출자가 남아 있다면 단순 RID 비교로는 이를 알아낼 수 없습니다.",
+            "재사용을 허용하는 확장 설계에서는 슬롯 generation을 증가시키거나, 오래된 참조가 없음을 증명한 후 재사용합니다. 예를 들어 (3,2,g=4)를 삭제한 다음 새 행은 (3,2,g=5)에 놓고, g=4 조회는 stale RID 오류로 거절합니다. 이는 현재 mydb RID에 이미 있는 필드가 아니라 이 단원에서 비교하는 설계입니다. 빈 슬롯 수와 연속 빈 공간도 별도로 세어야 합니다."
+          ]
+        },
+        {
+          "title": "힙·색인·커밋의 변경을 묶기",
+          "body": [
+            "기본키를 10에서 11로 바꾸면 새 키 중복 검사, 힙 행 변경, 옛 색인 제거, 새 색인 삽입이 모두 성공해야 합니다. 한 단계만 먼저 영속화하면 키 10이 사라졌는데 키 11로도 못 찾거나 두 키가 같은 행을 가리킬 수 있습니다. 기존 7장의 private workspace를 재사용한다면 이 변경들을 workspace에서 끝낸 후 하나의 WAL 커밋으로 설치하는 경계를 유지합니다.",
+            "불변식은 살아 있는 각 기본키가 정확히 한 행으로 연결되고, 색인이 가리킨 행의 기본키가 조회 키와 같다는 것입니다. DELETE는 색인 엔트리와 행의 생존 상태를 함께 바꿉니다. 공간을 즉시 줄이는 일은 별도입니다. 살아 있는 참조를 검증하기 전에 빈 슬롯을 재사용하지 말고, 삭제·커밋·회수의 상태를 분리해서 기록하세요."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "먼저 삭제 후 재사용된 (3,2)가 무엇을 반환해야 할지 예측하세요. 아래 조건을 선택해 키→RID→행 경로를 비교하고, 종이에 슬롯 generation과 색인 엔트리를 적습니다. 실제 파일 검증으로 확장할 때는 임시 DB 사본에만 변경을 넣고 삭제 전·workspace 수정 후·커밋 후 각각 재열어 동일한 불변식을 검사합니다.",
+        "cases": [
+          {
+            "label": "generation 없이 슬롯 재사용",
+            "result": "옛 색인이 (3,2)를 그대로 읽으면 id=20을 id=10의 결과로 잘못 반환할 수 있습니다. 위치의 재사용과 행의 동일성을 혼동한 반례입니다."
+          },
+          {
+            "label": "generation 검사 후 재사용",
+            "result": "옛 (3,2,4) 참조는 거절되고 새 (3,2,5)는 id=20을 읽습니다. id=10의 색인도 같은 커밋에서 제거해야 합니다."
+          },
+          {
+            "label": "workspace 수정 후 커밋 전 중단",
+            "result": "home에 변경을 쓰지 않은 모형에서는 재열기 후 id=10이 남습니다. 커밋 뒤라면 id=10은 없어야 하며 반쪽 색인 상태는 실패입니다."
+          }
+        ]
+      },
+      "limit": "조건 선택 결과는 상태 전이의 예상값입니다. 현재 mydb SQL은 UPDATE·DELETE를 지원하지 않으며, 이 단원이 Rust 엔진에 해당 명령을 추가한 것은 아닙니다. 행 MVCC를 도입하면 삭제 표시와 실제 공간 회수 사이에 스냅샷 수명이 추가됩니다. 다음에는 기존 7장의 다중 파일 커밋 순서와 비교하세요.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/storage-page-layout.html",
+          "label": "PostgreSQL 18 · 슬롯과 페이지 구조"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/dml-update.html",
+          "label": "PostgreSQL 18 · UPDATE"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/dml-delete.html",
+          "label": "PostgreSQL 18 · DELETE"
+        }
+      ]
+    },
+    {
+      "slug": "secondary-composite-indexes",
+      "title": "보조·복합 색인과 범위 계획",
+      "before": {
+        "href": "03-btree.html",
+        "label": "기존 3장 · B+트리의 범위 검색"
+      },
+      "after": {
+        "href": "09-server-optimizer.html",
+        "label": "기존 9장 · 접근 경로 선택"
+      },
+      "opening": "기본키 하나를 찾던 B+트리에 tenant와 시각을 함께 넣으면 어떤 질의를 줄일 수 있을까요? 같은 데이터도 색인 열 순서에 따라 연속으로 읽을 수 있는 구간이 달라집니다. 이 단원은 색인 존재 여부가 아니라 실제 읽는 키 구간과 최종 결과를 분리합니다.",
+      "sections": [
+        {
+          "title": "사전식 순서로 탐색 구간 만들기",
+          "body": [
+            "네 행을 (tenant,time,name)=(1,10,A),(1,20,B),(2,10,C),(2,20,D)로 둡니다. (tenant,time) 색인은 (1,10),(1,20),(2,10),(2,20) 순서입니다. tenant=1 AND time>=15는 (1,15)부터 tenant=1의 끝까지만 읽으면 되므로 이 데이터에서는 B 하나가 후보입니다. 키를 문자열로 단순 연결하면 2와 10의 순서나 경계가 깨질 수 있으므로 타입별 비교 또는 순서 보존 인코딩을 정해야 합니다.",
+            "(time,tenant) 색인은 (10,1),(10,2),(20,1),(20,2) 순서입니다. time>=15 구간에는 B·D가 들어가며 tenant 조건은 후보를 읽은 뒤 한 번 더 검사합니다. 이것은 선두 열 등가 조건이 없는 색인은 절대 사용할 수 없다는 뜻이 아닙니다. 실제 제품은 skip scan 등 다른 전략을 택할 수 있고, 여기서는 연속 구간 한 개를 읽는 작은 모형만 비교합니다."
+          ]
+        },
+        {
+          "title": "보조 색인의 중복과 유지 비용",
+          "body": [
+            "보조 키는 유일하지 않을 수 있습니다. (city=Seoul,RID1),(city=Seoul,RID2)처럼 같은 값의 여러 행을 보존하려면 leaf 값에 RID 목록을 두거나 (city,primaryKey)를 복합 키로 정합니다. 한 개의 해시 값만 남겨 덮어쓰면 결과가 줄어듭니다. NULL의 순서와 문자열 collation도 색인 비교와 질의 비교에 동일하게 적용해야 합니다.",
+            "보조 색인을 추가하면 INSERT·UPDATE·DELETE의 수정 대상 파일도 늘어납니다. 데이터와 보조 색인이 같은 커밋에 들어가야 하며 색인 빌드 중 쓰기를 허용한다면 스냅샷 이후의 변경을 따라잡는 절차가 필요합니다. 비교 실험에서는 후보 엔트리 수, 힙 접근 수, 반환 행 수를 각각 기록하세요. 엔트리를 한 개 읽었다는 값이 물리 디스크 I/O 한 번을 뜻하지는 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "네 행을 두 가지 순서로 직접 정렬한 뒤 tenant=1 AND time>=15의 시작 키와 끝 경계를 표시하세요. 조건을 선택해 후보와 반환 결과를 비교합니다. 별도 PostgreSQL 임시 테이블에서 확인한다면 두 CREATE INDEX를 번갈아 만들고 EXPLAIN (ANALYZE, BUFFERS)를 읽되, 이 작은 데이터에서는 순차 스캔 선택도 정상임을 기록하세요.",
+        "cases": [
+          {
+            "label": "색인 (tenant,time)",
+            "result": "연속 범위의 후보는 B 1개이고 반환 행도 B 1개입니다. tenant 등가 조건 안에서 time 하한으로 시작할 수 있습니다."
+          },
+          {
+            "label": "색인 (time,tenant)",
+            "result": "time 하한 구간의 후보는 B·D 2개이고 tenant 필터 뒤 B만 남습니다. 결과는 같지만 후보가 다릅니다."
+          },
+          {
+            "label": "보조 키 중복을 단일 값으로 덮어씀",
+            "result": "같은 city의 두 행 중 하나만 남는 잘못된 모형입니다. 중복 보존을 검사하지 않으면 빠른 색인이 틀린 결과를 만듭니다."
+          }
+        ]
+      },
+      "limit": "예상 후보 수는 지정한 네 행과 단일 범위 탐색의 계산 결과이며 제품 벤치마크가 아닙니다. 현재 mydb는 기본키 색인만 연결합니다. 보조 색인·collation·온라인 빌드는 별도 구현입니다. 9장으로 돌아가 결과 동등성을 유지하면서 계획 비용을 비교하세요.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/indexes-multicolumn.html",
+          "label": "PostgreSQL 18 · 복합 색인의 탐색 조건"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/indexes-ordering.html",
+          "label": "PostgreSQL 18 · 색인과 정렬"
+        }
+      ]
+    },
+    {
+      "slug": "sql-joins-aggregation",
+      "title": "SQL JOIN·집계와 중복·NULL 계약",
+      "before": {
+        "href": "06-query-executor.html",
+        "label": "기존 6장 · pull 실행기와 조인 API"
+      },
+      "after": {
+        "href": "05-sql-parser.html",
+        "label": "기존 5장 · JOIN을 AST에 연결할 자리"
+      },
+      "opening": "6장의 조인 API가 맞더라도 SQL 파서와 바인딩에 연결되지 않으면 SELECT의 일부일 뿐입니다. 두 주문과 같은 키의 두 고객 행을 조인해 봅니다. 관계형 질의의 결과는 자동으로 중복 제거되는 집합이 아니므로, 물리 알고리즘을 바꿔도 행의 개수와 NULL 처리가 같아야 합니다.",
+      "sections": [
+        {
+          "title": "논리 결과를 먼저 고정하기",
+          "body": [
+            "주문을 (orderId,customerId)=(1,10),(2,10),(3,NULL), 고객을 (customerId,name)=(10,A),(10,B),(NULL,N)로 둡니다. 등가 INNER JOIN은 1-A,1-B,2-A,2-B 네 행입니다. NULL=NULL 비교는 TRUE가 아니므로 주문 3과 고객 N은 매치되지 않습니다. customerId가 실제 기본키라면 고객 중복 자체를 거절해야 하지만, 이 실험은 비유일 조인 키의 중복을 보려는 입력입니다.",
+            "LEFT JOIN은 주문 3을 오른쪽 값이 NULL인 행 하나로 추가해 총 다섯 행이 됩니다. 따라서 LEFT JOIN 결과의 COUNT(*)는 5, COUNT(name)은 4입니다. name별 GROUP BY를 하면 A=2, B=2, NULL=1이고 HAVING COUNT(*)>=2는 A·B 그룹만 남깁니다. WHERE는 그룹을 만들기 전 행을 거르고 HAVING은 집계 후 그룹을 거른다는 실행 위치를 지켜야 합니다."
+          ]
+        },
+        {
+          "title": "파서·바인더·물리 연산자의 계약",
+          "body": [
+            "AST에는 좌우 입력, 조인 종류, ON 표현식, 그룹 키와 집계 표현식을 구분해 담습니다. 바인더는 o.customer_id와 c.customer_id를 서로 다른 입력 슬롯으로 해석하고, 모호한 무수식 열 이름을 오류로 처리합니다. 해시 조인은 키당 행 목록을 보관해야 네 결과를 보존합니다. merge join도 같은 키의 좌우 연속 구간을 모두 조합해야 합니다.",
+            "실행 검사는 nested loop를 작은 데이터의 기준 결과로 삼고 hash·merge의 결과를 순서 없는 다중집합으로 비교합니다. ORDER BY가 없으면 출력 순서를 같은 계약으로 요구하지 않습니다. 빈 입력, 모든 키 NULL, 같은 키가 양쪽에 여러 번 나오는 입력을 포함하고, 집계의 빈 입력에서 COUNT와 SUM의 차이도 별도로 정합니다. 조인의 빠르기보다 결과 계약을 먼저 고정하는 이유입니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "INNER와 LEFT에서 결과 행 수를 먼저 예측한 뒤 조건을 선택하세요. 종이에 네 개의 10=10 조합을 그려 봅니다. 별도 SQL 환경에서는 VALUES로 위 두 입력을 CTE로 만들고 INNER JOIN, LEFT JOIN, COUNT(*)·COUNT(name)을 실행해 예상값과 비교하세요. 기존 mydb의 SQL에 JOIN을 보낸 것으로 가정하지 않습니다.",
+        "cases": [
+          {
+            "label": "INNER JOIN, 중복 보존",
+            "result": "행은 1-A,1-B,2-A,2-B의 4개입니다. 고객 키당 마지막 행만 보존한 해시 테이블은 이 수를 줄이므로 잘못된 구현입니다."
+          },
+          {
+            "label": "LEFT JOIN과 COUNT",
+            "result": "행은 5개이며 COUNT(*)=5, COUNT(name)=4입니다. 매치되지 않은 주문 3도 한 행으로 보존됩니다."
+          },
+          {
+            "label": "LEFT JOIN 뒤 GROUP BY·HAVING",
+            "result": "A=2, B=2, NULL=1을 만든 뒤 HAVING COUNT(*)>=2를 적용하면 A와 B만 남습니다. NULL 그룹을 ON의 NULL 등가 매치와 혼동하면 안 됩니다."
+          }
+        ]
+      },
+      "limit": "조건 선택은 정확히 지정한 유한 입력의 계산입니다. 현재 엔진의 조인 API를 SQL JOIN·집계로 확장해 컴파일한 결과는 아닙니다. 메모리에 안 들어오는 그룹과 조인은 다음 외부 연산 주제이며, 구현할 때는 5장 AST와 6장 바인딩을 함께 수정해야 합니다.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/queries-table-expressions.html",
+          "label": "PostgreSQL 18 · JOIN·GROUP BY·HAVING"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/functions-aggregate.html",
+          "label": "PostgreSQL 18 · 집계 함수의 NULL·빈 입력"
+        }
+      ]
+    },
+    {
+      "slug": "external-sort-hash-spill",
+      "title": "메모리보다 큰 정렬과 해시의 spill",
+      "before": {
+        "href": "06-query-executor.html",
+        "label": "기존 6장 · 입력을 모으는 Sort"
+      },
+      "after": {
+        "href": "09-server-optimizer.html",
+        "label": "기존 9장 · 자원 예산과 실행 관측"
+      },
+      "opening": "6장의 Sort는 첫 결과를 내기 전에 입력을 모두 모읍니다. 메모리 한도가 세 정수인데 입력이 여덟 개라면 어떻게 정렬할까요? 데이터를 디스크로 내리는 spill은 단순히 임시 파일 하나를 추가하는 일이 아니라 메모리 상한·병합 횟수·실패 후 정리 계약을 새로 만드는 일입니다.",
+      "sections": [
+        {
+          "title": "정렬 run 생성과 제한된 병합",
+          "body": [
+            "입력 [9,1,8,2,7,3,6,4]를 세 항목씩 읽어 정렬하면 run은 [1,8,9], [2,3,7], [4,6]입니다. 두 run씩만 병합하는 모형에서는 첫 두 run을 [1,2,3,7,8,9]로 합치고, 남은 [4,6]과 다시 합쳐 [1,2,3,4,6,7,8,9]를 얻습니다. 병합 때는 각 입력의 현재 항목과 출력 버퍼를 관리하며 원래 입력 전체를 다시 메모리에 올리지 않습니다.",
+            "실제 바이트 예산에는 값의 크기뿐 아니라 정렬 키·행 참조·버퍼·파일 핸들이 들어갑니다. 이 단원의 세 항목 한도는 알고리즘을 보여 주는 값 단위 모형입니다. 같은 키의 행 순서를 보존해야 한다면 안정 정렬 조건이나 명시적 tie-breaker를 정하고, 임시 파일 형식도 길이·타입·손상 검증을 포함해야 합니다."
+          ]
+        },
+        {
+          "title": "해시 partition의 편향과 실패 경계",
+          "body": [
+            "해시 조인이나 집계에서 build 상태가 커지면 키의 해시로 여러 임시 partition에 나누고 각 partition을 차례로 처리할 수 있습니다. 그러나 같은 핫 키가 전체의 90%이면 그 행들은 같은 partition으로 다시 모입니다. partition 수 증가만으로 그 키의 상태가 작아지지 않으므로 재귀 partition, 다른 조인 알고리즘, 큰 그룹의 별도 처리 중 무엇을 사용할지 정해야 합니다.",
+            "질의가 취소되거나 임시 디스크가 가득 차면 일부 run이 남을 수 있습니다. 임시 파일은 질의별 소유 디렉터리와 생성 목록으로 관리하고, 자신이 만든 파일만 정리합니다. 출력이 완성되기 전 결과 파일을 최종 결과로 게시하지 않습니다. 검증에서는 정렬된 결과의 다중집합, 메모리 상한, 열린 파일 수, 취소 후 임시 파일 잔존을 따로 관찰합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "입력 여덟 개를 종이에 세 개씩 나눠 각 run을 쓰고, fan-in 2에서 병합할 쌍을 예측하세요. 아래 조건으로 run 수와 핫 키 분포를 확인합니다. 실제 확장은 임시 작업 폴더에서만 만들고, 취소를 주입한 뒤 그 폴더의 소유 파일만 남았는지 확인하세요.",
+        "cases": [
+          {
+            "label": "run 용량 3, 병합 fan-in 2",
+            "result": "초기 run 3개가 병합 후 2개, 마지막에 1개가 됩니다. 최종 출력은 [1,2,3,4,6,7,8,9]입니다."
+          },
+          {
+            "label": "run 용량 8",
+            "result": "초기 run 하나로 정렬할 수 있습니다. 이 입력에서는 병합 단계가 없지만, 실제 바이트 예산이 충분하다는 보장은 별도입니다."
+          },
+          {
+            "label": "100행 중 같은 키 90행",
+            "result": "키 기준 해시 partition은 그 90행을 같은 쪽에 둡니다. partition 수만 늘려도 핫 키 집합은 쪼개지지 않습니다."
+          }
+        ]
+      },
+      "limit": "여기의 run·partition은 유한 자료의 조작 모형이며 디스크 처리량 측정이 아닙니다. 현재 Rust 실행기는 외부 정렬과 spill을 구현하지 않습니다. 임시 I/O, 압축, 병렬 실행을 붙일 때는 9장의 비용 숫자와 실제 메모리·파일 계측을 분리해야 합니다.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/runtime-config-resource.html",
+          "label": "PostgreSQL 18 · work_mem과 임시 디스크 자원"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/using-explain.html",
+          "label": "PostgreSQL 18 · Sort와 실행 관측"
+        }
+      ]
+    },
+    {
+      "slug": "statistics-cost-optimization",
+      "title": "통계·선택도와 비용 기반 계획 선택",
+      "before": {
+        "href": "09-server-optimizer.html",
+        "label": "기존 9장 · 기본키/순차 접근 선택"
+      },
+      "after": {
+        "href": "06-query-executor.html",
+        "label": "기존 6장 · 계획과 실제 행 수 대조"
+      },
+      "opening": "현재 엔진은 작은 고정 비용식으로 접근 경로를 고릅니다. 조건을 두 개 붙이면 반환 행 수를 얼마나 줄일 수 있을까요? 각각 30%인 두 조건의 결과가 반드시 9%인 것은 아닙니다. 통계가 틀리면 올바른 알고리즘을 갖고도 더 비싼 계획을 선택할 수 있습니다.",
+      "sections": [
+        {
+          "title": "단일 열 분포와 열 사이의 상관",
+          "body": [
+            "10,000행에서 status=open이 3,000행, region=KR도 3,000행이라고 합시다. 두 사건을 독립으로 가정하면 교집합 추정은 10000×0.3×0.3=900행입니다. 하지만 open인 행이 정확히 KR인 행과 같으면 실제 교집합은 3,000행입니다. 같은 단일 열 빈도에서도 결합 분포가 달라질 수 있음을 이 예가 보여 줍니다.",
+            "통계 수집은 전체 행 수, NULL 비율, 자주 나오는 값과 빈도, 히스토그램, distinct 추정 등을 계획 입력으로 제공합니다. 조건 결합이 중요하면 다중 열 통계가 독립 가정의 오차를 줄이는 근거가 될 수 있습니다. 통계는 보통 표본과 과거 시점의 요약이므로 최근 대량 변경이나 특정 값의 편향에서 실제 실행과 계속 대조해야 합니다."
+          ]
+        },
+        {
+          "title": "비용식의 단위와 오차를 드러내기",
+          "body": [
+            "이 단원의 비용 모형을 SeqScan=10000, Index=100+4×후보행수로 고정합니다. 독립 추정 900이면 Index=3700으로 색인을 고릅니다. 실제 후보가 3000이면 Index의 모형 비용은 12100으로 SeqScan보다 큽니다. 결합 빈도를 3000으로 바로 추정하면 처음부터 SeqScan을 고를 수 있습니다. 이 숫자는 설명용 비용 단위이며 ms·물리 읽기 수가 아닙니다.",
+            "좋은 검증은 두 계획의 결과가 같음을 먼저 확인하고, estimated rows와 actual rows가 어디서 갈라지는지 찾습니다. SQL 제품에서는 ANALYZE로 통계를 갱신하고 EXPLAIN (ANALYZE, BUFFERS)의 연산별 행 수·반복 횟수·버퍼 관측을 읽습니다. EXPLAIN ANALYZE는 질의를 실제 실행하므로 연습에는 임시 SELECT 데이터만 사용하세요. 실제 계획 선택은 페이지 분포·캐시·정렬·병렬성까지 영향을 받습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "두 조건의 빈도를 각각 0.3으로 고정하고 독립/완전 상관 조건에서 교집합을 예측하세요. 조건별 추정 행 수와 실제 모형 비용을 계산해 어느 계획이 싼지 비교합니다. 제품 실습은 임시 테이블의 SELECT만 대상으로 통계 전후 EXPLAIN을 저장하세요.",
+        "cases": [
+          {
+            "label": "독립 분포, 교집합 900행",
+            "result": "추정 900이 실제와 같고 Index 비용 3700이 SeqScan 10000보다 작습니다. 이 비용식에서는 색인 선택이 유리합니다."
+          },
+          {
+            "label": "완전 상관, 독립 가정 유지",
+            "result": "추정 900으로 Index를 골랐지만 실제 후보 3000의 비용은 12100입니다. 결과는 맞더라도 계획 선택은 비쌉니다."
+          },
+          {
+            "label": "완전 상관, 결합 빈도 반영",
+            "result": "추정 3000으로 Index 12100과 SeqScan 10000을 비교해 SeqScan을 고릅니다. 정확한 결합 정보가 선택을 바꿉니다."
+          }
+        ]
+      },
+      "limit": "선택형 계산은 고정 비용식의 결과입니다. PostgreSQL이나 mydb에서 이 시간 차이를 측정했다고 해석하지 않습니다. 현재 엔진에 히스토그램·다중 계획 탐색을 추가한 것도 아닙니다. 실행기에서 반환 행 수와 후보 행 수를 구분한 다음 통계 수집기를 설계하세요.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/planner-stats.html",
+          "label": "PostgreSQL 18 · 단일 열·확장 통계"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/using-explain.html",
+          "label": "PostgreSQL 18 · 추정과 실제 실행 비교"
+        }
+      ]
+    },
+    {
+      "slug": "row-mvcc-vacuum",
+      "title": "행 MVCC·색인 가시성과 버전 회수",
+      "before": {
+        "href": "08-transactions.html",
+        "label": "기존 8장 · 전체 DB 스냅샷과 OCC"
+      },
+      "after": {
+        "href": "04-tables-records.html",
+        "label": "기존 4장 · RID·행·색인 연결"
+      },
+      "opening": "8장의 전체 파일 복사 방식에서는 오래된 reader가 자신의 사본을 읽습니다. 행 버전을 공유하는 방식으로 바꾸면 reader마다 무엇을 볼 수 있는지와 언제 옛 버전을 지울지가 새 문제가 됩니다. 같은 행의 두 버전을 놓고 가시성·색인 접근·회수 기준을 차례로 분리합니다.",
+      "sections": [
+        {
+          "title": "행 버전의 가시성을 먼저 계산하기",
+          "body": [
+            "모형은 모든 변경이 커밋 순번으로 완전히 정렬되며 진행 중 writer가 없다고 제한합니다. 행 v1은 생성 8·종료 12, v2는 생성 12·종료 없음입니다. 스냅샷 s가 볼 조건은 created<=s이고 deleted가 없거나 s<deleted인 것입니다. s=10은 v1, s=15는 v2를 읽습니다. 행 내용에 최신 포인터 하나만 두고 모두에게 v2를 돌려주면 s=10의 반복 읽기가 깨집니다.",
+            "실제 DB의 트랜잭션 ID는 단순한 커밋 시각과 같지 않으며, 활성·중단·커밋 상태와 스냅샷의 활성 ID 집합 등을 함께 고려합니다. 위 부등식은 현재 단원의 한정된 모델 규칙입니다. 이를 PostgreSQL의 모든 xmin/xmax 판정식으로 복사하거나, 값 하나의 최신성 검사만으로 직렬화를 얻었다고 주장하면 안 됩니다."
+          ]
+        },
+        {
+          "title": "색인에서 발견한 후보와 회수 가능한 버전",
+          "body": [
+            "색인이 RID를 반환했다고 그 버전을 현재 reader에게 보여 줘도 된다는 뜻은 아닙니다. 힙의 가시성 검사 또는 별도의 검증 가능한 가시성 정보가 필요합니다. UPDATE로 보조 키가 바뀌면 과거 스냅샷이 옛 키 경로로 접근할 수 있는지도 설계해야 합니다. 인덱스에서 옛 키를 즉시 지우는 선택은 과거 reader를 위한 경로까지 없앨 수 있습니다.",
+            "스냅샷 10이 살아 있으면 종료 순번 12인 v1을 아직 회수할 수 없습니다. 그 reader가 끝나고 모든 활성 스냅샷이 15 이상이면 이 단순 모형의 v1은 필요하지 않습니다. 그렇다고 참조 중인 메모리나 모든 색인 엔트리를 무조건 재사용할 수는 없습니다. 물리 pin·색인 정리·로그 복구의 조건을 함께 만족시킨 후 회수해야 합니다. 장기 reader가 공간 회수를 늦추는 이유가 여기 있습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "v1=[8,12), v2=[12,∞)를 종이에 그리고 스냅샷 10·15의 읽기 결과를 예측하세요. 아래 조건에서 보이는 버전과 회수 가능성을 확인합니다. 실제 PostgreSQL 비교 실험은 임시 테이블과 두 세션을 사용해 REPEATABLE READ reader를 유지한 채 writer를 커밋하고, reader 종료 전후의 관측을 비교하세요.",
+        "cases": [
+          {
+            "label": "스냅샷 10과 15가 동시에 살아 있음",
+            "result": "10은 v1, 15는 v2를 읽습니다. v1은 10에게 필요하므로 종료 순번 12만 보고 지울 수 없습니다."
+          },
+          {
+            "label": "스냅샷 10 종료, 최소 활성 스냅샷 15",
+            "result": "이 가시성 모형에서는 v1이 더 이상 필요하지 않습니다. 실제 물리 회수는 pin·색인·로그 조건까지 확인해야 합니다."
+          },
+          {
+            "label": "색인 후보를 가시성 검사 없이 반환",
+            "result": "스냅샷 10에게 v2를 보여 주는 반례입니다. 색인을 탔다는 사실만으로 버전 가시성이 증명되지 않습니다."
+          }
+        ]
+      },
+      "limit": "현재 mydb는 whole-DB snapshot과 전역 revision OCC를 사용하며 행 MVCC·Vacuum을 구현하지 않습니다. 이 단원의 커밋 순번 모형은 활성 writer와 write skew를 다루지 않습니다. Rust 구현 확장은 버전 가시성, 색인 유지, 회수의 세 단계로 나누고 기존 4장의 RID 계약을 다시 검토해야 합니다.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/mvcc-intro.html",
+          "label": "PostgreSQL 18 · MVCC 개요"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/routine-vacuuming.html",
+          "label": "PostgreSQL 18 · 버전과 공간 정리"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/transaction-iso.html",
+          "label": "PostgreSQL 18 · 격리 수준"
+        }
+      ]
+    },
+    {
+      "slug": "page-wal-checkpoint",
+      "title": "페이지 WAL·반복 REDO와 체크포인트",
+      "before": {
+        "href": "07-wal-recovery.html",
+        "label": "기존 7장 · 전체 파일 afterimage WAL"
+      },
+      "after": {
+        "href": "02-pages-buffer-pool.html",
+        "label": "기존 2장 · dirty 페이지와 writeback"
+      },
+      "opening": "7장은 전체 파일의 afterimage를 기록해 복구를 단순화했습니다. 큰 DB에서 페이지 변경만 기록하려면, 로그와 데이터 페이지가 어느 순번까지 내구화됐는지를 따로 추적해야 합니다. 같은 REDO를 두 번 적용하지 않는 규칙과 체크포인트 이후 로그를 남기는 이유를 작은 페이지 하나로 살펴봅니다.",
+      "sections": [
+        {
+          "title": "WAL-before-data와 pageLSN",
+          "body": [
+            "초기 페이지의 pageLSN은 40이고, 변경 레코드의 LSN은 60이라고 합시다. dirty 페이지를 LSN 60 상태로 데이터 파일에 쓰기 전에 해당 로그가 포함된 WAL을 영속화해야 합니다. 데이터 페이지가 60인데 durable WAL은 40뿐이면 장애 후 그 페이지 변화의 원인을 재구성할 수 없는 잘못된 순서입니다. 버퍼 풀의 dirty 해제와 WAL flush는 서로 다른 사건입니다.",
+            "복구 모형은 커밋된 레코드만 대상으로 pageLSN<recordLSN일 때 REDO하고, 성공한 페이지의 pageLSN을 recordLSN으로 바꿉니다. 페이지가 40이면 60을 적용하고, 이미 60이면 건너뜁니다. 다시 복구해도 같은 결과가 되는 멱등성의 조건입니다. 실제 REDO 레코드 종류·동시성·LSN 비교는 엔진마다 다르므로 이것을 모든 DB의 완전한 복구 알고리즘으로 보지 않습니다."
+          ]
+        },
+        {
+          "title": "체크포인트와 찢어진 페이지의 경계",
+          "body": [
+            "체크포인트를 기록했다고 모든 dirty 페이지가 자동으로 저장된 것은 아닙니다. 이 모형에서 페이지가 여전히 40이고 변경 60이 메모리에만 있다면 복구에 필요한 60의 로그를 버릴 수 없습니다. 로그 회수 경계는 체크포인트 이름이 아니라 아직 저장되지 않은 변경과 필요한 복구 시작점으로 정해야 합니다. 페이지 flush와 체크포인트 상태를 따로 관측하세요.",
+            "pageLSN을 읽을 수 없는 찢어진 페이지는 단순 비교만으로 복구할 수 없습니다. 손상 검출, 신뢰할 수 있는 전체 페이지 이미지 또는 다른 복구 수단이 필요합니다. 변경량 delta는 올바른 기준 페이지가 있다는 전제를 가질 수 있습니다. steal 버퍼 풀로 미커밋 페이지까지 내보낸다면 UNDO와 트랜잭션 상태 추적이 추가되며, REDO 규칙 하나가 ARIES 전체를 대체하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "WAL flush·페이지 flush·중단의 순서를 먼저 적고 조건별로 복구 결과를 예측하세요. 아래 모형에서 pageLSN과 durable WAL 경계를 비교합니다. 실제 확장 검사는 임시 DB 사본에만 장애 지점을 넣고, 복구를 두 번 반복한 파일 바이트와 조회 결과가 같은지 확인하세요.",
+        "cases": [
+          {
+            "label": "durable WAL=60, pageLSN=40",
+            "result": "커밋된 LSN 60의 변경을 REDO하고 pageLSN을 60으로 만듭니다. 같은 복구를 다시 하면 60은 건너뜁니다."
+          },
+          {
+            "label": "durable WAL=60, pageLSN=60",
+            "result": "해당 변경은 이미 페이지에 반영되어 있어 재적용하지 않습니다. LSN은 작업의 반영 여부를 판정하는 조건입니다."
+          },
+          {
+            "label": "durable WAL=40인데 페이지 60을 먼저 저장",
+            "result": "WAL-before-data 위반입니다. 이 상태를 정상 복구 성공으로 표시하지 않고 쓰기 순서의 오류로 분류해야 합니다."
+          },
+          {
+            "label": "체크포인트 기록, 페이지는 여전히 40",
+            "result": "변경 60이 아직 필요하므로 이 모형에서는 해당 로그를 회수할 수 없습니다. 체크포인트 완료와 dirty 페이지 저장을 혼동한 반례입니다."
+          }
+        ]
+      },
+      "limit": "숫자는 복구 규칙을 보여 주는 순번이지 처리 시간이나 실제 디스크 측정값이 아닙니다. 기존 Rust 예제는 전체 파일 afterimage·no-steal 방식으로 남아 있습니다. 페이지 WAL·UNDO·찢어진 페이지 처리는 독립 구현 단계이며, 2장 버퍼 풀의 교체·flush와 연결해야 합니다.",
+      "sources": [
+        {
+          "href": "https://www.postgresql.org/docs/18/wal-intro.html",
+          "label": "PostgreSQL 18 · WAL 순서와 복구 원칙"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/wal-configuration.html",
+          "label": "PostgreSQL 18 · 체크포인트와 WAL 설정"
+        },
+        {
+          "href": "https://www.postgresql.org/docs/18/storage-page-layout.html",
+          "label": "PostgreSQL 18 · 페이지 헤더와 LSN"
+        }
+      ]
+    }
+  ]
+}

@@ -99,9 +99,9 @@
       <tr><td>TTY (터미널)</td><td><b>동기</b></td><td>비동기</td><td>로컬 개발에서 대량 로그는 체감 느림</td></tr>
       <tr><td>파이프/소켓 (<b>컨테이너 stdout</b>, <code>| tee</code>)</td><td><b>비동기</b></td><td>동기</td><td>루프를 안 막지만, 소비자가 느리면 <b>메모리에 쌓이고</b> <code>process.exit()</code> 시 <b>유실</b></td></tr>
     </table></div>
-    <p>컨테이너 환경의 stdout은 거의 항상 파이프입니다. 직접 확인해 볼 수 있습니다. 아래 첫 명령은 파이프 버퍼(Linux 기본 64KiB)만큼만 나오고 나머지는 <code>process.exit()</code>에 의해 버려집니다.</p>
+    <p>컨테이너 환경의 stdout은 거의 항상 파이프입니다. 직접 확인해 볼 수 있습니다. POSIX에서 아래 첫 명령은 전송이 끝나기 전에 종료되어 일부 출력이 유실될 수 있습니다. 남는 바이트 수는 OS의 파이프 용량과 소비 속도에 따라 달라집니다.</p>
 <pre><code>$ node -e "process.stdout.write('x'.repeat(5e6)); process.exit(0)" | wc -c
-   65536
+   # 5000000보다 작을 수 있음. 정확한 값은 환경에 따라 다름
 $ node -e "process.stdout.write('x'.repeat(5e6)); process.exit(0)" &gt; out.txt; wc -c &lt; out.txt
  5000000</code></pre>
     <p>즉 <b><code>console.log</code>는 컨테이너에서 "안전한 비동기"가 아닙니다.</b> 백프레셔(6장)를 무시하므로 로그 소비자(Docker 로깅 드라이버, fluent-bit)가 밀리면 쓰기 큐가 힙에 쌓여 OOM까지 갈 수 있고, 크래시 직전의 가장 중요한 로그가 사라집니다. 또 JSON 직렬화와 문자열 포맷은 메인 스레드 CPU를 씁니다.</p>
@@ -458,7 +458,7 @@ process.report.writeReport('/tmp/hang.json');   // 또는 process.report.getRepo
 
   <h2>실습 과제</h2>
   <ol>
-    <li><b>stdout 유실 재현.</b> 2.1절의 두 명령을 실행해 파이프에서 64KiB만 남는 것을 확인하고, <code>process.exit(0)</code>를 <code>process.exitCode = 0</code>으로 바꿔 전체가 출력되는지 확인하세요. 이어서 pino 기본 로거로 같은 양을 찍고 <code>process.exit()</code> 해도 유실이 없는지(동기 목적지) 확인합니다.</li>
+    <li><b>stdout 유실 재현.</b> 2.1절의 두 명령을 실행해 POSIX 파이프에서 수신 바이트가 원래 크기보다 줄 수 있음을 확인하고, <code>process.exit(0)</code>를 <code>process.exitCode = 0</code>으로 바꿔 전체가 출력되는지 확인하세요. 이어서 pino 기본 로거로 같은 양을 찍고 <code>process.exit()</code> 해도 유실이 없는지(동기 목적지) 확인합니다.</li>
     <li><b>버킷 설계 검증.</b> prom-client로 두 히스토그램(버킷 A: 기본, 버킷 B: SLO 300ms 근처 촘촘)에 같은 지연 샘플(로그정규, 예: <code>Math.exp(Math.log(0.08) + 0.8 * gaussian())</code>)을 10만 개 넣고, <code>/metrics</code>를 Prometheus에 스크레이프시켜 <code>histogram_quantile(0.99, ...)</code>를 비교하세요. 샘플 배열에서 직접 구한 p99와의 오차를 기록합니다.</li>
     <li><b>트레이스 연결.</b> 두 개의 Express 서비스(A가 B를 undici로 호출)에 <code>--require @opentelemetry/auto-instrumentations-node/register</code>와 OTLP → Jaeger(docker)를 붙이고, A의 pino 로그에 mixin으로 trace_id를 찍어 Jaeger UI의 트레이스와 로그의 trace_id가 일치하는지 확인하세요. 그다음 B 호출을 <code>setTimeout</code> 안에서 만든 커스텀 큐로 옮겨 트레이스가 끊기는지, <code>context.with</code>로 복구되는지 확인합니다.</li>
   </ol>
@@ -492,7 +492,7 @@ process.report.writeReport('/tmp/hang.json');   // 또는 process.report.getRepo
         const deficit = Math.max(0, bps - cons);
         memPerMin = deficit * 60;
         loss = Math.min(bps, 65536 + deficit * 5); // 파이프 버퍼 + 수 초 적체분
-        note = deficit > 0 ? `소비자(${(cons / 1e6).toFixed(0)}MB/s)보다 생성이 빨라 초당 ${MM.bytes(deficit)}가 힙의 쓰기 큐에 적체된다. 백프레셔가 없으므로 OOM으로 간다.` : "소비자가 따라잡고 있다. 그래도 process.exit() 시 파이프 버퍼(64KiB)와 미전송 큐는 유실된다.";
+        note = deficit > 0 ? `소비자(${(cons / 1e6).toFixed(0)}MB/s)보다 생성이 빨라 초당 ${MM.bytes(deficit)}가 힙의 쓰기 큐에 적체된다. 백프레셔가 없으므로 OOM으로 간다.` : "소비자가 따라잡고 있다. 그래도 process.exit() 시 아직 OS에 전달하지 않은 쓰기 큐는 유실될 수 있다.";
       } else {
         // 워커 transport: 메인은 링 버퍼에 복사만(≈0.5µs/라인). 링 버퍼(기본 수 MB) 차면 메인이 동기 대기
         ioMs = rate * 0.5 / 1000;

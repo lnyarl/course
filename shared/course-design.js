@@ -11,6 +11,43 @@
   const path = decodeURIComponent(location.pathname);
   const course = path.match(/([^/]+)-course(?:\/|$)/)?.[1] || (path.includes('CSharp_GC_') ? 'gc' : 'library');
   root.dataset.course = course;
+  if (course !== 'library') {
+    const advanced = document.createElement('script');
+    advanced.src = new URL('shared/advanced-links.generated.js', base).href;
+    advanced.onload = () => {
+      const relative = path.slice(decodeURIComponent(base.pathname).length).normalize();
+      const routes = window.CourseAdvancedLinks?.[relative.endsWith('/') ? relative + 'index.html' : relative];
+      if (!routes) return;
+      const connect = () => {
+        const main = document.querySelector('main');
+        if (!main) return;
+        const nav = document.createElement('nav');
+        nav.className = 'advanced-context';
+        nav.setAttribute('aria-label', '심화 학습');
+        function refresh() {
+          const fragment = location.hash.slice(1);
+          const items = new Map([...(routes[''] || []), ...(routes[fragment] || [])].map(item => [item.href, item]));
+          nav.replaceChildren();
+          for (const item of items.values()) {
+            const a = document.createElement('a');
+            a.href = new URL(item.href, base).href;
+            a.textContent = item.label;
+            nav.append(a);
+          }
+          if (items.size && !main.contains(nav)) main.append(nav);
+          if (!items.size) nav.remove();
+        }
+        refresh();
+        window.addEventListener('hashchange', refresh);
+        new MutationObserver(() => {
+          if (!main.contains(nav) && nav.childElementCount) main.append(nav);
+        }).observe(main, {childList: true});
+      };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', connect, {once: true});
+      else connect();
+    };
+    document.head.append(advanced);
+  }
   const courseTitles = {"aspnet-core": "ASP.NET Core 구조와 동작", "network-web": "웹 네트워크", "concurrency": "C# 동시성과 비동기", "os-memory": "운영체제 메모리 관리", "windows-kernel": "Windows 커널", "linux-kernel": "리눅스 커널", "tcpip": "TCP/IP", "nodejs-advanced": "Node.js", "gc": "C# 가비지 컬렉션", "container-runtime": "Rust 컨테이너 런타임 구현", "distributed-queue": "C# 메시지 큐 구현", "database": "Rust 데이터베이스 구현", "category-theory": "C# 범주론", "utility-ai": "효용 기반 AI"};
   const light = () => { if (root.dataset.theme !== 'light') root.dataset.theme = 'light'; };
   light();
@@ -42,6 +79,7 @@
       const back = document.createElement('a');
       back.className = 'design-course-link';
       back.href = course === 'gc' ? '#toc' : 'index.html';
+      if (course === 'os-memory') back.href = 'index.html#course-contents';
       back.textContent = '코스 목차';
       bar.append(back);
       document.body.prepend(bar);

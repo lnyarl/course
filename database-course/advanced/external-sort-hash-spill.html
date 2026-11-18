@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메모리보다 큰 정렬과 해시의 spill · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 데이터베이스 구현 심화</a></header>
+<main>
+<h1>메모리보다 큰 정렬과 해시의 spill</h1>
+<p class="connection">선수 장 · <a href="../06-query-executor.html">기존 6장 · 입력을 모으는 Sort</a></p>
+<p class="lead">6장의 Sort는 첫 결과를 내기 전에 입력을 모두 모읍니다. 메모리 한도가 세 정수인데 입력이 여덟 개라면 어떻게 정렬할까요? 데이터를 디스크로 내리는 spill은 단순히 임시 파일 하나를 추가하는 일이 아니라 메모리 상한·병합 횟수·실패 후 정리 계약을 새로 만드는 일입니다.</p>
+<section><h2>정렬 run 생성과 제한된 병합</h2>
+<p>입력 [9,1,8,2,7,3,6,4]를 세 항목씩 읽어 정렬하면 run은 [1,8,9], [2,3,7], [4,6]입니다. 두 run씩만 병합하는 모형에서는 첫 두 run을 [1,2,3,7,8,9]로 합치고, 남은 [4,6]과 다시 합쳐 [1,2,3,4,6,7,8,9]를 얻습니다. 병합 때는 각 입력의 현재 항목과 출력 버퍼를 관리하며 원래 입력 전체를 다시 메모리에 올리지 않습니다.</p>
+<p>실제 바이트 예산에는 값의 크기뿐 아니라 정렬 키·행 참조·버퍼·파일 핸들이 들어갑니다. 이 단원의 세 항목 한도는 알고리즘을 보여 주는 값 단위 모형입니다. 같은 키의 행 순서를 보존해야 한다면 안정 정렬 조건이나 명시적 tie-breaker를 정하고, 임시 파일 형식도 길이·타입·손상 검증을 포함해야 합니다.</p></section>
+<section><h2>해시 partition의 편향과 실패 경계</h2>
+<p>해시 조인이나 집계에서 build 상태가 커지면 키의 해시로 여러 임시 partition에 나누고 각 partition을 차례로 처리할 수 있습니다. 그러나 같은 핫 키가 전체의 90%이면 그 행들은 같은 partition으로 다시 모입니다. partition 수 증가만으로 그 키의 상태가 작아지지 않으므로 재귀 partition, 다른 조인 알고리즘, 큰 그룹의 별도 처리 중 무엇을 사용할지 정해야 합니다.</p>
+<p>질의가 취소되거나 임시 디스크가 가득 차면 일부 run이 남을 수 있습니다. 임시 파일은 질의별 소유 디렉터리와 생성 목록으로 관리하고, 자신이 만든 파일만 정리합니다. 출력이 완성되기 전 결과 파일을 최종 결과로 게시하지 않습니다. 검증에서는 정렬된 결과의 다중집합, 메모리 상한, 열린 파일 수, 취소 후 임시 파일 잔존을 따로 관찰합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>입력 여덟 개를 종이에 세 개씩 나눠 각 run을 쓰고, fan-in 2에서 병합할 쌍을 예측하세요. 아래 조건으로 run 수와 핫 키 분포를 확인합니다. 실제 확장은 임시 작업 폴더에서만 만들고, 취소를 주입한 뒤 그 폴더의 소유 파일만 남았는지 확인하세요.</p>
+<details><summary>run 용량 3, 병합 fan-in 2</summary><p>초기 run 3개가 병합 후 2개, 마지막에 1개가 됩니다. 최종 출력은 [1,2,3,4,6,7,8,9]입니다.</p></details>
+<details><summary>run 용량 8</summary><p>초기 run 하나로 정렬할 수 있습니다. 이 입력에서는 병합 단계가 없지만, 실제 바이트 예산이 충분하다는 보장은 별도입니다.</p></details>
+<details><summary>100행 중 같은 키 90행</summary><p>키 기준 해시 partition은 그 90행을 같은 쪽에 둡니다. partition 수만 늘려도 핫 키 집합은 쪼개지지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>여기의 run·partition은 유한 자료의 조작 모형이며 디스크 처리량 측정이 아닙니다. 현재 Rust 실행기는 외부 정렬과 spill을 구현하지 않습니다. 임시 I/O, 압축, 병렬 실행을 붙일 때는 9장의 비용 숫자와 실제 메모리·파일 계측을 분리해야 합니다.</p><p>관련 기존 장 · <a href="../09-server-optimizer.html">기존 9장 · 자원 예산과 실행 관측</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.postgresql.org/docs/18/runtime-config-resource.html">PostgreSQL 18 · work_mem과 임시 디스크 자원</a></li><li><a href="https://www.postgresql.org/docs/18/using-explain.html">PostgreSQL 18 · Sort와 실행 관측</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="sql-joins-aggregation.html">이전 심화 · SQL JOIN·집계와 중복·NULL 계약</a><a href="statistics-cost-optimization.html">다음 심화 · 통계·선택도와 비용 기반 계획 선택</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>재전송 판단과 꼬리 손실 · TCP/IP 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">TCP/IP 심화</a></header>
+<main>
+<h1>재전송 판단과 꼬리 손실</h1>
+<p class="connection">선수 장 · <a href="../07-reliability.html">7장 TCP 신뢰성</a></p>
+<p class="lead">7장의 중복 ACK 방식에서는 마지막 데이터가 빠지면 이후에 도착할 데이터가 없어서 손실 신호가 부족합니다.</p>
+<section><h2>SACK과 발신 시각</h2>
+<p>SACK 블록은 받은 바이트 범위입니다. 발신자는 누적 ACK 이후의 미확인 바이트 범위와 각 범위의 최근 송신 시각을 연관 지어, 먼저 보낸 데이터보다 나중에 보낸 데이터가 이미 확인됐는지 봅니다.</p>
+<p>RACK은 시간으로 손실을 추정하며 재정렬을 기다리는 여유를 둡니다. 뒤 구간이 먼저 도착했다는 사실 하나로 앞 구간을 즉시 재전송하면 도착 순서만 바뀐 경우에도 재전송이 발생합니다.</p></section>
+<section><h2>마지막 구간에 추가 피드백 만들기</h2>
+<p>TLP는 ACK가 충분하지 않을 때 탐침을 보내 피드백을 얻습니다. 보낼 새 데이터가 있으면 새 데이터로, 없으면 규칙에 따라 아직 확인되지 않은 데이터로 탐침을 만들 수 있습니다.</p>
+<p>캡처에 같은 seq가 반복됐다고 RTO가 발생했다고 판단하지 않습니다. 송신 시각, ACK·SACK 범위, 송신측 타이머와 혼잡 윈도우 변화를 같은 시간선에 놓고 탐침과 손실 판정을 구분합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>A·B·C를 0·1·2ms에 보낸 상황을 그리고 각 사례에서 언제 다음 증거를 얻을 수 있는지 먼저 적으세요.</p>
+<details><summary>C가 먼저 확인되고 B가 여유 내 도착</summary><p>재정렬 가능성이 남습니다. B도 여유 내 확인되면 B 재전송을 피할 수 있습니다.</p></details>
+<details><summary>A와 B만 확인되고 C는 꼬리 손실</summary><p>추가 데이터가 없으므로 중복 ACK만 기다리면 신호가 부족합니다. 탐침에서 새 ACK를 얻는 시간선과 RTO까지 기다리는 시간선을 분리합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>시각은 알고리즘 비교용 입력입니다. 다음 장에서는 손실 판정의 결과로 송신량을 조절하는 규칙을 다룹니다.</p><p>관련 기존 장 · <a href="../08-congestion.html">8장 혼잡 제어</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc8985.html">RFC 8985</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="socket-server.html">다음 심화 · 논블로킹 소켓과 메시지 수명</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

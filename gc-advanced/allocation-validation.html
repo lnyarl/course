@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>할당 최적화를 검증하는 실험 · C# 가비지 컬렉션 심화</title>
+<link rel="stylesheet" href="../shared/advanced.css">
+</head>
+<body>
+<header><a href="../index.html">코스 목록</a><a href="index.html">C# 가비지 컬렉션 심화</a></header>
+<main>
+<h1>할당 최적화를 검증하는 실험</h1>
+<p class="connection">선수 장 · <a href="../CSharp_GC_학습자료.html#hidden">숨은 할당 찾기</a></p>
+<p class="lead">new를 지웠는데도 allocation profile이 달라지지 않을 수 있습니다. 숨은 할당 퀴즈를 실제 컴파일·측정과 전체 작업 결과로 연결합니다.</p>
+<section><h2>컴파일과 실행에서 만들어지는 객체</h2>
+<p>캡처 람다, boxing, 문자열 조합, async 상태의 할당은 코드 표면의 new 개수와 같지 않습니다. JIT의 탈출 분석·캐시·동기 완료에 따라 특정 할당이 없어질 수도 있으므로 런타임·빌드·입력을 고정합니다. struct 사용만으로 모든 값이 스택에 놓인다고 설명하지 않습니다.</p>
+<p>작은 후보 두 개를 BenchmarkDotNet의 <code>[MemoryDiagnoser]</code>와 <code>[Benchmark]</code>로 비교하고 반환값이 실제로 소비되게 합니다. 메서드가 다른 일을 하거나 결과를 계산하지 않아 빠른 것은 같은 최적화가 아닙니다. IL의 boxing·closure와 실행 시 할당 관측을 각각 확인합니다.</p></section>
+<section><h2>미세 벤치마크에서 요청 부하까지</h2>
+<p>연산당 Allocated와 GC 횟수는 다른 단위입니다. 도구가 표시하는 Gen0 값의 기준 연산 수를 확인하고, GC가 한 번도 잡히지 않았다고 할당이 0이었다고 말하지 않습니다. 미세 벤치마크는 네트워크·DB·큐를 포함한 전체 API 지연을 재현하지 않습니다.</p>
+<p>효과가 큰 후보만 실제 요청 경로에 적용하고 동일 부하에서 정확한 결과·할당률·CPU·pause·지연을 다시 봅니다. pool이나 캐시가 allocation을 줄이면서 보유 메모리를 늘릴 수 있으므로 생존량과 전체 메모리도 확인합니다. 복잡성이 늘어난 부분은 예외·취소·수명 회귀를 검사합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>정상 문자열 formatting 또는 배열 변환 함수 두 버전을 같은 결과 계약으로 만드세요. Release에서 BDN으로 할당/시간을 비교하고 생성 결과가 같은지 별도 검사합니다. 이후 자신의 로컬 API 한 경로에서 같은 입력을 반복해 전체 allocation rate와 지연이 실제로 바뀌는지 확인하세요.</p>
+<details><summary>미세 경로의 할당만 감소</summary><p>후보의 국소 비용 감소를 지지합니다. 전체 API가 외부 I/O에 지배되면 지연 개선은 작을 수 있습니다.</p></details>
+<details><summary>최적화가 결과·수명 규칙을 바꿈</summary><p>빠른 수치가 나와도 동등한 작업 비교가 아닙니다. 정확성과 예외·취소 정리를 복원한 뒤 다시 측정해야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>예측한 배율을 실행 결과로 표시하지 않습니다. 진단 절로 돌아가 입력·관측값·개선 효과·남은 한계를 함께 제출합니다.</p><p>관련 기존 장 · <a href="../CSharp_GC_학습자료.html#diag">진단 결과 해석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://benchmarkdotnet.org/articles/configs/diagnosers.html">BenchmarkDotNet diagnosers</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-counters">dotnet-counters</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="gc-container-capacity.html">이전 심화 · Server GC·DATAS·컨테이너 용량 실험</a><a href="../CSharp_GC_학습자료.html">기존 코스 목차</a></nav>
+</main>
+<script defer src="../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

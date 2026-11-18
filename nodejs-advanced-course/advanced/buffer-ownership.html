@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buffer·바이너리 파서·메모리 소유권 · Node.js 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Node.js 심화</a></header>
+<main>
+<h1>Buffer·바이너리 파서·메모리 소유권</h1>
+<p class="connection">선수 장 · <a href="../05-v8-memory-gc.html#s8">힙 밖의 Buffer 메모리</a></p>
+<p class="lead">작은 subarray만 보관했는데 큰 Buffer가 계속 살아 있을 수 있습니다. GC 지표에서 본 backing store를 네트워크 파서의 바이트 수명으로 연결합니다.</p>
+<section><h2>뷰와 복사본이 보유하는 메모리</h2>
+<p><code>Buffer.subarray(start, end)</code>는 같은 backing store를 보는 뷰입니다. 작은 범위를 사용해도 원래 저장소의 수명이 이어질 수 있습니다. <code>Buffer.from(view)</code>로 필요한 바이트를 복사하는 선택은 복사 비용과 오래 보유하는 메모리 사이의 절충입니다.</p>
+<p><code>process.memoryUsage()</code>의 heapUsed, external, arrayBuffers와 RSS를 함께 봅니다. arrayBuffers는 external에 포함되므로 둘을 더해 독립 메모리처럼 세지 않습니다. 참조를 지워도 RSS가 즉시 줄어든다는 보장은 없으며, GC·allocator·OS 반환의 서로 다른 시점을 구분해야 합니다.</p></section>
+<section><h2>파서가 소유권을 넘기는 시점</h2>
+<p>4바이트 길이 헤더 파서는 먼저 누적 바이트가 4개인지 확인하고 <code>readUInt32BE(0)</code>으로 길이를 읽습니다. 허용 범위를 검사한 뒤 본문이 모두 있을 때만 메시지를 전달합니다. 처리 중인 뷰를 보관한 채 누적 버퍼를 재사용하면 데이터 수명이 섞이므로 복사 또는 소유권 이전을 계약으로 정합니다.</p>
+<p>UTF-8 문자가 청크 경계에 걸릴 수 있으므로 청크마다 독립적으로 toString을 호출하는 방식과 <code>StringDecoder.write/end</code>를 비교합니다. 헤더·본문·남은 다음 프레임을 각각 추적하고, 완성 메시지 개수와 소켓 read 횟수를 같은 값으로 세지 않습니다. 입력 상한과 느린 소비자에 대한 역압력도 필요합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>새 로컬 스크립트에서 큰 Buffer의 16바이트 subarray를 보관한 경우와 Buffer.from으로 복사한 경우를 비교하세요. 별도 실험으로 정상 한글 문자열의 UTF-8 바이트를 한 바이트씩 StringDecoder에 넣고 원문과 일치하는지 검사합니다. ASCII/한글 레코드 두 개를 나누거나 묶어 파서에 전달하세요.</p>
+<details><summary>작은 뷰가 큰 저장소를 참조</summary><p>보관한 논리 길이와 실제 backing store 크기가 다를 수 있습니다. retained 경로와 arrayBuffers 지표로 확인해야 합니다.</p></details>
+<details><summary>분할 UTF-8를 하나의 디코더로 처리</summary><p>남은 바이트가 다음 청크와 결합되어 정상 문자열을 복원합니다. 청크 경계 자체를 문자·메시지 경계로 가정할 필요가 없습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>메모리 수치를 한 번만 보고 누수를 확정하지 않습니다. 스트림 장에서 완성 메시지의 소비 속도까지 제한해 전체 버퍼 예산을 연결합니다.</p><p>관련 기존 장 · <a href="../06-streams-backpressure.html#s7">Transform과 청크 경계</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://nodejs.org/docs/latest-v22.x/api/buffer.html#bufsubarraystart-end">Buffer.subarray</a></li><li><a href="https://nodejs.org/docs/latest-v22.x/api/string_decoder.html">StringDecoder</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="shared-worker-pipeline.html">다음 심화 · 공유 메모리 워커 파이프라인</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>async 상태 머신과 awaiter · C# 동시성과 비동기 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 동시성과 비동기 심화</a></header>
+<main>
+<h1>async 상태 머신과 awaiter</h1>
+<p class="connection">선수 장 · <a href="../index.html#week-5">Task와 비동기 상태 머신</a></p>
+<p class="lead">첫 미완료 await에서 호출자로 돌아오는 로그를 이제 컴파일러가 보존하는 상태로 설명합니다. 소스 한 줄과 재개 지점을 연결하면 예외와 자원 수명도 읽을 수 있습니다.</p>
+<section><h2>호출 프레임에서 보존 상태로</h2>
+<p><code>async Task&lt;int&gt;</code> 메서드는 호출되면 실행을 시작하고, awaiter의 <code>IsCompleted</code>가 참이면 중단 없이 결과를 사용합니다. 미완료라면 이후에 필요한 상태와 재개 위치를 남기고 continuation을 등록합니다. await가 매번 새 스레드로 이동하거나 반드시 한 번 양보하는 문법은 아닙니다.</p>
+<p>컴파일러가 만든 <code>MoveNext</code>를 볼 때 상태 번호, builder, awaiter, await를 넘어 쓰이는 지역 값을 찾습니다. 소스의 모든 지역 변수가 항상 같은 방식으로 힙에 저장되는 것은 아닙니다. Debug와 Release의 생성 코드 모양도 다르므로 관찰한 빌드 설정과 실제 실행 여부를 함께 기록합니다.</p></section>
+<section><h2>완료·실패가 전달되는 경로</h2>
+<p><code>var x = await source; return x + 1;</code>의 흐름을 awaiter 획득 → 완료 검사 → 미완료 등록 → 재개 → <code>GetResult()</code> 순서로 펼칩니다. GetResult에서 실패가 다시 관찰되고, async 메서드의 실패는 반환 Task로 전달됩니다. await 앞뒤 로그만으로 내부 상태 머신 필드 배치를 추정하지 말고 생성 코드를 대조합니다.</p>
+<p><code>using</code>이나 <code>finally</code>가 await를 감싸면 자원 정리도 상태 머신의 실행 흐름에 포함됩니다. 호출자가 Task를 버렸다고 정리가 완료된 것은 아닙니다. 외부 사건을 Task로 바꾸는 <code>TaskCompletionSource</code>도 완료를 보고하는 수단이며, 작업의 수명과 취소 연결은 별도로 구현해야 합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>기존 05TaskAwait 실습의 복사본에서 <code>Task.CompletedTask</code>를 기다리는 경로와 미완료 TaskCompletionSource를 기다리는 경로를 나누세요. 호출 직후 Task 상태와 로그를 예상한 뒤 실행합니다. IDE의 생성 코드 보기나 IL 도구로 상태/awaiter를 찾고, source를 실패 완료시켰을 때 finally와 호출자의 catch 순서를 기록하세요.</p>
+<details><summary>이미 완료된 Task를 await</summary><p>그 자리에서 다음 문장으로 진행할 수 있습니다. 호출자에게 돌아가기 전 실행된 로그가 늘어나도 비동기 계약을 위반하지 않습니다.</p></details>
+<details><summary>미완료 Task가 나중에 실패</summary><p>호출자는 먼저 Task를 받고, 재개 시 GetResult 경로에서 실패를 관찰합니다. 반환 Task와 await 호출자의 예외 처리로 오류가 전달됩니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>생성 코드의 필드명·상태 번호는 언어 계약이 아닙니다. 실제 취소와 여러 실패를 어떻게 정리할지는 다음 실패·취소 장에서 이어집니다.</p><p>관련 기존 장 · <a href="../index.html#week-7">실패·취소와 정리</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/task-asynchronous-programming-model">Task 기반 비동기 모델</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.iasyncstatemachine">IAsyncStateMachine 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="threadpool-starvation.html">이전 심화 · ThreadPool과 starvation 진단</a><a href="async-contexts.html">다음 심화 · 재개 위치와 실행 문맥</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

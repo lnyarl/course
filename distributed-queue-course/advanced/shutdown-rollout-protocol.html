@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정상 종료·롤링 교체와 프로토콜 진화 · C# 메시지 큐 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 메시지 큐 구현 심화</a></header>
+<main>
+<h1>정상 종료·롤링 교체와 프로토콜 진화</h1>
+<p class="connection">선수 장 · <a href="../07-concurrency-backpressure.html">기존 7장 · bounded Channel과 drain</a></p>
+<p class="lead">프로세스에 종료 신호를 보냈는데 Worker가 작업을 받는 중입니다. 즉시 취소하면 아직 ACK하지 않은 결과가 남고, 끝없이 기다리면 배포가 끝나지 않습니다. 기존 drain의 범위를 네트워크 접수·임대·결과·ACK·호환 버전으로 넓혀 하나의 종료 순서를 정의합니다.</p>
+<section><h2>접수 중단과 받은 일의 완료를 분리하기</h2>
+<p>종료 순서를 신규 readiness 해제·새 Publish/Pull 중단·접수 채널 완료·이미 받은 작업의 결과 저장 및 ACK·연결 종료로 정합니다. 신규 접수 중단 전의 작업은 accepted ID 집합에 포함하고, 그 뒤 요청은 명시적으로 거절하거나 재시도 가능 응답을 돌려줍니다. WriteAsync가 성공한 것과 결과가 완료된 것을 같은 완료 상태로 합치지 않습니다.</p>
+<p>종료 제한 시간에 남은 작업은 성공으로 꾸미지 않습니다. 예를 들어 미ACK 임대 M1의 결과를 아직 저장하지 못했다면 ACK하지 않고 lease 반환 또는 만료 후 재전달로 설명해야 합니다. .NET Generic Host의 StopAsync·종료 토큰과 실제 프로세스를 강제 종료하는 외부 유예 시간은 서로 다른 경계입니다. 애플리케이션이 20초 drain을 요구한다면 외부 종료 유예가 그보다 충분한지도 따로 확인해야 합니다.</p></section>
+<section><h2>혼합 버전에서 읽을 수 있는 계약 유지하기</h2>
+<p>길이 프레임 안의 명령에 version과 requestId를 명시하고, v2가 새 필드를 보내도 v1이 어떻게 반응할지 정합니다. 선택 필드의 기본값을 유지하는 확장과 필드 의미·단위를 바꾸는 비호환 변경을 구분합니다. 같은 timeout=1000이 v1에서는 ms, v2에서는 초라면 타입이 정수라는 이유만으로 호환된다고 볼 수 없습니다.</p>
+<p>호환 배포는 새 형식을 읽을 수 있는 소비자를 먼저 준비한 뒤 생산자를 전환하는 순서를 비교합니다. 영속 로그의 schema version은 네트워크 버전과 별도로 기록하고, 오래된 바이너리로 롤백할 때 새 로그를 읽을 수 있는지 확인해야 합니다. 실험 행렬은 v1→v1, v1→v2, v2→v1, v2→v2와 종료 중 재시도를 포함합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>accepted={M1,M2}, 완료={M1}, 미ACK={M2}에서 종료 신호를 넣는다고 가정하세요. 조건별로 응답·결과·임대 상태를 예측합니다. 실제 실습은 별도 임시 프로세스에서 정상 종료와 강제 종료를 나누고, 두 버전의 작은 프레임 fixture를 교차 디코딩하세요.</p>
+<details><summary>접수 중단 뒤 M2 완료·ACK, 유예 시간 충분</summary><p>새 작업은 거절하고 accepted 두 ID는 완료로 설명됩니다. drain이 끝난 다음 프로세스를 종료할 수 있습니다.</p></details>
+<details><summary>M2 미완료 상태에서 유예 만료</summary><p>M2를 성공 ACK하지 않습니다. 재전달 대상 또는 미완료 상태로 남기고 결과 멱등 경계로 다음 시도를 보호해야 합니다.</p></details>
+<details><summary>v2가 기존 정수 필드 단위를 변경</summary><p>v1이 읽을 수 있어도 의미 호환성이 깨집니다. 새 필드나 새 명령 버전으로 구분하고 명시적으로 거절해야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>수명주기·호환 행렬의 모형입니다. WorkerLab drain은 한 프로세스의 정상 Channel 경로만 실행합니다. 운영 배포의 readiness·SIGTERM·외부 강제 종료와 모든 버전 조합을 검증한 결과가 아닙니다. 다음에는 2장의 framing 검증과 호환 오류 응답을 연결하세요.</p><p>관련 기존 장 · <a href="../02-tcp-protocol.html">기존 2장 · 길이 프레임과 요청 계약</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/core/extensions/generic-host">Microsoft · Generic Host의 종료 수명</a></li><li><a href="https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services?view=aspnetcore-10.0">Microsoft · Hosted service의 종료와 취소</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="transactional-outbox-inbox.html">이전 심화 · 트랜잭셔널 Outbox·Inbox와 두 커밋 경계</a><a href="raft-election-log-matching.html">다음 심화 · Raft 선출·영속 투표와 로그 일치</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,324 @@
+{
+  "title": "C# 가비지 컬렉션 심화",
+  "intro": "기존 할당·도달성·정지·수명 설명을 실제 진단 절차와 자원 소유권으로 확장합니다. 모든 실험은 작은 로컬 자료를 사용하며 GC 모델·예상 관측·실제 측정을 구분합니다.",
+  "units": [
+    {
+      "slug": "heap-roots",
+      "title": "힙 누수와 gcroot 분석",
+      "before": {
+        "href": "CSharp_GC_학습자료.html#handles",
+        "label": "GC 핸들과 약한 참조"
+      },
+      "after": {
+        "href": "CSharp_GC_학습자료.html#diag",
+        "label": "진단과 체크리스트"
+      },
+      "opening": "GC 핸들과 약한 참조를 배웠다면 이제 화면을 닫았는데 객체가 남는 이유를 실제 root 경로로 찾습니다. 객체 수 증가와 도달 가능한 불필요한 객체를 구분합니다.",
+      "sections": [
+        {
+          "title": "타입 크기에서 보유 경로로",
+          "body": [
+            "작은 로컬 앱에서 static 이벤트 구독이나 상한 없는 캐시에 수백 개의 실습 객체를 넣고 반복 생성·해제를 관찰합니다. 관리 객체가 도달 가능하면 더는 업무에 필요 없어도 GC는 회수하지 않습니다. 단순히 GC.Collect를 자주 호출하는 방법은 보유 참조를 제거하지 않습니다.",
+            "`dotnet-dump collect -p PID`로 자기 실습 프로세스의 자료를 만들고 analyze에서 `dumpheap -stat`로 타입별 규모를 봅니다. 의심 타입의 객체 주소를 찾은 뒤 `gcroot 주소`로 누가 붙잡는지 따라갑니다. 타입이 크다는 관측과 그 참조가 불필요하다는 업무 판단은 별도입니다."
+          ]
+        },
+        {
+          "title": "수정 전후의 같은 경로 비교",
+          "body": [
+            "이벤트 예는 생성 때 `publisher.Changed += handler`, 수명 종료 때 `-= handler`를 같은 소유자에 둡니다. 람다를 새로 만들어 빼면 등록한 delegate와 다른 객체일 수 있으므로 실제 구독 대상을 보관합니다. 캐시는 상한·만료가 있는 정책으로 수명을 정합니다.",
+            "GCHandle을 직접 만든 예라면 Free 책임과 callback 종료를 연결합니다. 핸들만 해제해도 외부 코드가 이미 사용 중인 상태를 무시해서는 안 됩니다. 수정 뒤 같은 입력과 대기 조건으로 다시 수집하고 객체 수·root 경로·활성 구독 수가 줄었는지 비교합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "실습 객체에 연속 번호를 붙이고 static 이벤트 구독을 등록·해제하는 두 모드를 만드세요. 동일 횟수 실행 후 작은 로컬 dump를 비교하고 root에서 이벤트 publisher→delegate→대상 객체를 찾습니다. 해제 모드에서 업무상 수명이 끝난 객체가 더 이상 같은 경로로 보유되지 않는지 확인하세요.",
+        "cases": [
+          {
+            "label": "이벤트 구독을 유지",
+            "result": "static publisher가 살아 있으면 delegate를 통해 대상도 남을 수 있습니다. 도달성 기반 GC가 정상 작동해도 생기는 보유입니다."
+          },
+          {
+            "label": "정확한 delegate 구독 해제",
+            "result": "그 보유 경로가 끊깁니다. 다른 root가 남을 수 있으므로 구독 해제 한 번으로 모든 누수가 해결됐다고 단정하지 않습니다."
+          }
+        ]
+      },
+      "limit": "강제 GC는 비교를 위한 작은 실습에서만 사용하고 운영 처방으로 제시하지 않습니다. 진단 절로 돌아가 반복 증가·root·업무 수명을 함께 해석합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/debug-memory-leak",
+          "label": "관리 메모리 누수 진단"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-dump",
+          "label": "dotnet-dump와 SOS 명령"
+        }
+      ]
+    },
+    {
+      "slug": "gc-pause-traces",
+      "title": "GC trace와 일시정지 분석",
+      "before": {
+        "href": "CSharp_GC_학습자료.html#phases",
+        "label": "GC 단계와 스레드 정지"
+      },
+      "after": {
+        "href": "CSharp_GC_학습자료.html#diag",
+        "label": "실제 진단 흐름"
+      },
+      "opening": "GC 자체가 짧은데 응답 정지는 길 수 있습니다. 정지 단계 그림을 실제 이벤트의 시각과 대응해 수집 시간과 사용자 지연을 구분합니다.",
+      "sections": [
+        {
+          "title": "한 개의 GC 시간으로 합치지 않기",
+          "body": [
+            "blocking GC는 관리 스레드 정지 요청, 정지 도달, 수집 작업, 재개의 경계를 가집니다. background GC는 일부 일을 애플리케이션과 겹쳐 진행하므로 전체 수집 경과 시간이 그대로 stop-the-world 시간은 아닙니다. 같은 이름의 GC 이벤트라도 어느 경계를 잰 값인지 확인합니다.",
+            "요청 지연에는 실행 대기·외부 I/O·락도 포함됩니다. p99가 튄 시점에 GC가 있었다는 상관만으로 인과를 확정하지 않습니다. allocation rate, 생존·승격량, 세대, pause와 같은 시간대의 CPU·대기 정보를 같이 수집합니다."
+          ]
+        },
+        {
+          "title": "원시 이벤트를 읽는 코드 흐름",
+          "body": [
+            "자신의 로컬 프로세스에서 `dotnet-counters monitor -p PID --counters System.Runtime`로 추세를 보고, 필요한 구간을 `dotnet-trace collect -p PID --profile gc-verbose`로 남깁니다. 실행한 도구의 지원 profile과 런타임을 먼저 확인합니다. trace의 GC 시작·종료와 suspension 관련 이벤트를 별도 구간으로 읽습니다.",
+            "코드에서는 `GC.GetGCMemoryInfo()`의 세대·승격·단편화·pause 관련 관측을 같은 작업 ID와 시점에 기록할 수 있습니다. 이 API의 마지막 GC 정보와 수집 구간 전체의 누적 통계를 혼동하지 않습니다. 진단 도구의 오버헤드를 포함한 실행과 최종 성능 비교 실행도 구분합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "짧게 할당하고 버리는 모드와 일부 객체를 여러 batch 동안 보유하는 모드를 만드세요. 동일 총 입력으로 trace와 경과 시간을 저장하고 세대별 횟수·승격량·pause를 비교합니다. 먼저 어떤 모드에서 오래 사는 객체가 늘지 예상한 뒤 실제 trace와 맞는지 확인하세요.",
+        "cases": [
+          {
+            "label": "대부분 빠르게 도달성을 잃음",
+            "result": "젊은 세대 중심으로 회수될 가능성이 큽니다. 횟수만 아니라 생존량과 실제 pause를 함께 봅니다."
+          },
+          {
+            "label": "여러 batch 동안 객체를 보유",
+            "result": "승격과 오래된 세대 비용이 달라질 수 있습니다. 보유를 끝낸 직후 메모리가 바로 내려간다고 가정하지 않습니다."
+          }
+        ]
+      },
+      "limit": "trace 수집과 분석 도구에 따라 표시하는 항목이 다릅니다. 제공되지 않은 실제 pause 값을 예시 숫자로 대신하지 말고 진단 절의 관측 기록으로 연결합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace",
+          "label": "dotnet-trace"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/performance",
+          "label": "GC와 성능 분석"
+        }
+      ]
+    },
+    {
+      "slug": "pool-memory-ownership",
+      "title": "풀링·Span·Memory와 버퍼 소유권",
+      "before": {
+        "href": "CSharp_GC_학습자료.html#loh",
+        "label": "LOH와 POH"
+      },
+      "after": {
+        "href": "CSharp_GC_학습자료.html#hidden",
+        "label": "숨은 할당 찾기"
+      },
+      "opening": "큰 버퍼를 풀에 돌려도 프로세스 메모리가 바로 줄지 않을 수 있습니다. LOH 할당 감소와 보유 메모리, 그리고 사용 가능한 버퍼의 수명을 나눕니다.",
+      "sections": [
+        {
+          "title": "빌린 배열과 유효 데이터의 범위",
+          "body": [
+            "`ArrayPool<byte>.Shared.Rent(length)`가 준 배열은 요청보다 길 수 있습니다. 실제 데이터 길이를 따로 보관하고 소비자에게 `buffer.AsMemory(0, used)`만 넘깁니다. 배열 전체를 응답에 쓰면 이번 작업이 채우지 않은 범위까지 보낼 수 있습니다.",
+            "finally의 Return은 해당 버퍼를 더는 쓰지 않는 시점과 일치해야 합니다. 비동기 전송을 시작만 하고 반환하면 전송 중 다른 작업이 같은 배열을 수정할 수 있습니다. 필요한 I/O와 소비자 완료를 await한 뒤 반납하고, 민감한 데이터라면 지울 범위와 정책을 정합니다."
+          ]
+        },
+        {
+          "title": "뷰는 소유권을 연장하지 않는다",
+          "body": [
+            "Span은 연속 메모리의 뷰이며 저장소를 새로 소유하지 않습니다. Memory를 사용해 async 경계에 값을 보관해도 풀 버퍼의 임대 기간이 자동으로 길어지지 않습니다. 소유자가 언제 반납 가능한지, 하위 호출이 완료 후 참조를 보유하는지 계약이 필요합니다.",
+            "코드 흐름을 `Rent → 유효 범위 채움 → await 소비 → finally Return`으로 그립니다. pool 도입 전후에는 연산당 신규 할당, GC 횟수, 동시 사용 버퍼, 풀에 보유한 메모리를 구분합니다. 적은 allocation과 작은 RSS는 같은 지표가 아닙니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "자신의 로컬 변환 함수에서 고정 길이 배열 생성과 ArrayPool 대여를 비교하세요. 정상·예외·취소 경로에 대여/반납 수를 세고 모든 소비 완료 뒤 수가 맞는지 검사합니다. 일부러 배열보다 작은 used 범위를 사용해 소비 결과에 그 범위만 포함되는지도 확인하세요.",
+        "cases": [
+          {
+            "label": "사용 완료 뒤 한 번 반납",
+            "result": "버퍼 임대가 닫히고 재사용할 수 있습니다. 풀은 배열을 보유할 수 있어 RSS가 즉시 감소할 필요는 없습니다."
+          },
+          {
+            "label": "I/O 완료 전에 반납",
+            "result": "뷰가 남아 있어도 버퍼 소유권은 끝났습니다. 다른 임대와 겹쳐 결과가 달라질 수 있어 반납 위치를 뒤로 옮겨야 합니다."
+          }
+        ]
+      },
+      "limit": "사용 후 반납된 버퍼를 읽는 코드를 정상 계약으로 만들지 않습니다. 숨은 할당 절에서는 pool 이익과 수명 복잡성을 같은 측정 조건으로 비교합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/memory-t-usage-guidelines",
+          "label": "Memory<T> 사용 지침"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1",
+          "label": "ArrayPool<T>"
+        }
+      ]
+    },
+    {
+      "slug": "interop-safehandle",
+      "title": "interop·SafeHandle·비관리 메모리",
+      "before": {
+        "href": "CSharp_GC_학습자료.html#final",
+        "label": "Finalizer와 Dispose"
+      },
+      "after": {
+        "href": "CSharp_GC_학습자료.html#handles",
+        "label": "GC 핸들의 수명"
+      },
+      "opening": "Dispose를 구현했어도 네이티브 호출이 끝나기 전에 핸들을 닫으면 안 됩니다. 마지막 정리와 현재 사용 중인 작업의 수명을 한 경계로 연결합니다.",
+      "sections": [
+        {
+          "title": "핸들 소유자와 호출 수명",
+          "body": [
+            "파일 실습에서는 `File.OpenHandle`이 반환하는 SafeFileHandle을 using으로 소유하고 `RandomAccess.Read(handle, buffer, offset)`의 호출 범위를 따라갑니다. 외부 핸들을 raw 정수로 복사하면 래퍼 객체의 생존과 실제 네이티브 사용이 분리될 수 있습니다. 직접 finalizer를 추가하는 것보다 표준 SafeHandle 소유권을 먼저 사용합니다.",
+            "P/Invoke가 SafeHandle을 인자로 받는 정상 패턴과, raw 포인터를 받은 네이티브 코드가 나중에 callback하는 비동기 패턴은 수명이 다릅니다. 비동기 작업은 시작 호출이 돌아왔을 때 끝난 것이 아니므로 완료·취소 관측 뒤에 버퍼 pin과 callback 참조를 해제해야 합니다. GC.KeepAlive 하나가 동시 Dispose나 전체 비동기 수명 계약을 대신하지 않습니다."
+          ]
+        },
+        {
+          "title": "비관리 할당과 GC에 주는 정보",
+          "body": [
+            "작은 관리 래퍼가 큰 비관리 메모리를 소유하면 관리 힙 크기만으로 비용을 파악하기 어렵습니다. 직접 할당을 소유하는 경우 `GC.AddMemoryPressure(bytes)`와 실제 해제 때의 `RemoveMemoryPressure(bytes)`를 같은 크기로 짝지을 수 있습니다. 메모리 압박 정보는 실제 메모리를 해제하는 API가 아닙니다.",
+            "할당 성공 뒤 소유권 확정, 정상 Dispose, 부분 초기화 실패, 중복 Dispose를 따라가며 실제 native free가 한 번만 일어나는지 확인합니다. callback에 GCHandle을 썼다면 callback을 더 받지 않는다는 근거가 생긴 뒤 Free합니다. finalizer는 시간과 실행 순서를 보장하는 주 경로로 삼지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "먼저 표준 파일 SafeHandle을 여는 작은 로컬 예제를 만들고 정상·예외 경로에서 using이 닫히는지 확인하세요. 직접 네이티브 할당을 가진 기존 학습 래퍼가 있다면 작은 할당만 사용해 성공/해제/실패 수를 집계하고 압박 정보의 추가·제거 크기가 맞는지 검사하세요.",
+        "cases": [
+          {
+            "label": "완료를 관측한 뒤 소유자가 해제",
+            "result": "사용 중인 자원과 해제된 자원의 경계를 설명할 수 있습니다. Dispose와 GC 메모리 회수 시점도 구분됩니다."
+          },
+          {
+            "label": "시작 호출 반환을 비동기 완료로 오인",
+            "result": "callback과 버퍼가 아직 필요할 수 있습니다. 완료·취소 join과 해제 책임을 먼저 정해야 합니다."
+          }
+        ]
+      },
+      "limit": "외부 메모리 손상이나 취약점 재현은 다루지 않습니다. 다음 핸들 절에서는 루트 역할과 외부 자원 수명이 서로 다른 이유를 비교합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/standard/native-interop/best-practices",
+          "label": "네이티브 interop 지침"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/api/system.gc.addmemorypressure",
+          "label": "GC.AddMemoryPressure"
+        }
+      ]
+    },
+    {
+      "slug": "gc-container-capacity",
+      "title": "Server GC·DATAS·컨테이너 용량 실험",
+      "before": {
+        "href": "CSharp_GC_학습자료.html#modes",
+        "label": "GC 모드와 DATAS"
+      },
+      "after": {
+        "href": "CSharp_GC_학습자료.html#container",
+        "label": "컨테이너 런타임 설정"
+      },
+      "opening": "코어가 많은 호스트에서 작은 컨테이너를 실행하면 같은 앱도 GC와 메모리 사용이 달라질 수 있습니다. 모드 선택을 실제 제한과 할당 패턴의 조합으로 검사합니다.",
+      "sections": [
+        {
+          "title": "설정값과 실제 사용량 구분하기",
+          "body": [
+            "Server GC와 Workstation GC는 처리량·스레드·힙 구성이 다릅니다. DATAS는 Server GC의 힙과 예산을 애플리케이션 크기에 맞게 조정하는 정책입니다. 사용 런타임의 활성 설정을 확인하고 고정된 코어당 힙 그림을 모든 버전의 실제 상태로 해석하지 않습니다.",
+            "`GCSettings.IsServerGC`와 `GC.GetConfigurationVariables()`로 적용 구성을 기록합니다. 설정한 HeapCount와 동적으로 사용 중인 힙 수는 같은 관측이 아닐 수 있으므로 실제 힙 수가 필요하면 지원되는 trace 분석 자료로 확인합니다. `GC.GetGCMemoryInfo`의 committed/heap/fragmentation과 프로세스 RSS도 구분합니다."
+          ]
+        },
+        {
+          "title": "예산을 넘는 위치를 찾기",
+          "body": [
+            "GC HeapHardLimit은 전체 프로세스 RSS 한도가 아닙니다. native 라이브러리, 스레드 스택, 코드와 각종 버퍼에 예산이 더 필요합니다. 같은 입력에서 관리 힙이 작아도 컨테이너 한도를 넘을 수 있으므로 총 사용량과 제한 초과 종료를 함께 관측합니다.",
+            "코드 변경 없이 runtimeconfig.json의 Server GC·DATAS·하드 리밋 조건을 한 가지씩 바꾸어 비교합니다. HeapHardLimit 같은 설정의 JSON 숫자와 환경 변수의 진수 규칙을 공식 문서에서 확인합니다. 원하는 설정을 썼다는 사실과 런타임에 실제 적용됐다는 확인을 분리합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "자신의 작은 할당 실습 앱을 같은 이미지에서 실행하고 메모리/CPU 제한 두 수준을 정하세요. 입력·생존율을 고정해 Workstation, Server의 관측을 비교하고 지원되는 런타임에서 DATAS 활성 조건을 바꿉니다. 모드·설정·RSS·committed bytes·GC pause·완료 작업 수를 함께 저장하세요.",
+        "cases": [
+          {
+            "label": "GC 힙만 한도 아래로 제한",
+            "result": "프로세스의 다른 메모리는 별도로 늘 수 있습니다. HeapHardLimit 준수만으로 컨테이너 생존을 보장하지 못합니다."
+          },
+          {
+            "label": "동일 입력에 모드·제한 변경",
+            "result": "처리량·pause·보유 메모리의 절충이 달라질 수 있습니다. 특정 모드가 항상 빠르거나 작다는 결론 대신 관측한 조건을 제시합니다."
+          }
+        ]
+      },
+      "limit": "기존 컨테이너를 재설정하지 말고 실습용 환경에서만 비교합니다. 다음 설정 절에서는 실제 적용값과 버전·CPU·메모리 경계를 함께 적습니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/runtime-config/garbage-collector",
+          "label": "GC 런타임 구성"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/workstation-server-gc",
+          "label": "Workstation과 Server GC"
+        }
+      ]
+    },
+    {
+      "slug": "allocation-validation",
+      "title": "할당 최적화를 검증하는 실험",
+      "before": {
+        "href": "CSharp_GC_학습자료.html#hidden",
+        "label": "숨은 할당 찾기"
+      },
+      "after": {
+        "href": "CSharp_GC_학습자료.html#diag",
+        "label": "진단 결과 해석"
+      },
+      "opening": "new를 지웠는데도 allocation profile이 달라지지 않을 수 있습니다. 숨은 할당 퀴즈를 실제 컴파일·측정과 전체 작업 결과로 연결합니다.",
+      "sections": [
+        {
+          "title": "컴파일과 실행에서 만들어지는 객체",
+          "body": [
+            "캡처 람다, boxing, 문자열 조합, async 상태의 할당은 코드 표면의 new 개수와 같지 않습니다. JIT의 탈출 분석·캐시·동기 완료에 따라 특정 할당이 없어질 수도 있으므로 런타임·빌드·입력을 고정합니다. struct 사용만으로 모든 값이 스택에 놓인다고 설명하지 않습니다.",
+            "작은 후보 두 개를 BenchmarkDotNet의 `[MemoryDiagnoser]`와 `[Benchmark]`로 비교하고 반환값이 실제로 소비되게 합니다. 메서드가 다른 일을 하거나 결과를 계산하지 않아 빠른 것은 같은 최적화가 아닙니다. IL의 boxing·closure와 실행 시 할당 관측을 각각 확인합니다."
+          ]
+        },
+        {
+          "title": "미세 벤치마크에서 요청 부하까지",
+          "body": [
+            "연산당 Allocated와 GC 횟수는 다른 단위입니다. 도구가 표시하는 Gen0 값의 기준 연산 수를 확인하고, GC가 한 번도 잡히지 않았다고 할당이 0이었다고 말하지 않습니다. 미세 벤치마크는 네트워크·DB·큐를 포함한 전체 API 지연을 재현하지 않습니다.",
+            "효과가 큰 후보만 실제 요청 경로에 적용하고 동일 부하에서 정확한 결과·할당률·CPU·pause·지연을 다시 봅니다. pool이나 캐시가 allocation을 줄이면서 보유 메모리를 늘릴 수 있으므로 생존량과 전체 메모리도 확인합니다. 복잡성이 늘어난 부분은 예외·취소·수명 회귀를 검사합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "정상 문자열 formatting 또는 배열 변환 함수 두 버전을 같은 결과 계약으로 만드세요. Release에서 BDN으로 할당/시간을 비교하고 생성 결과가 같은지 별도 검사합니다. 이후 자신의 로컬 API 한 경로에서 같은 입력을 반복해 전체 allocation rate와 지연이 실제로 바뀌는지 확인하세요.",
+        "cases": [
+          {
+            "label": "미세 경로의 할당만 감소",
+            "result": "후보의 국소 비용 감소를 지지합니다. 전체 API가 외부 I/O에 지배되면 지연 개선은 작을 수 있습니다."
+          },
+          {
+            "label": "최적화가 결과·수명 규칙을 바꿈",
+            "result": "빠른 수치가 나와도 동등한 작업 비교가 아닙니다. 정확성과 예외·취소 정리를 복원한 뒤 다시 측정해야 합니다."
+          }
+        ]
+      },
+      "limit": "예측한 배율을 실행 결과로 표시하지 않습니다. 진단 절로 돌아가 입력·관측값·개선 효과·남은 한계를 함께 제출합니다.",
+      "sources": [
+        {
+          "href": "https://benchmarkdotnet.org/articles/configs/diagnosers.html",
+          "label": "BenchmarkDotNet diagnosers"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-counters",
+          "label": "dotnet-counters"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사용자 공간에서 해결하는 페이지 폴트 · 운영체제 메모리 관리 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">운영체제 메모리 관리 심화</a></header>
+<main>
+<h1>사용자 공간에서 해결하는 페이지 폴트</h1>
+<p class="connection">선수 장 · <a href="../06-virtual-memory-page-fault.html">가상 메모리와 페이지 폴트</a></p>
+<p class="lead">6장에서는 커널이 PTE를 채워 명령을 재개했습니다. userfaultfd는 등록된 범위의 일부 fault 처리를 사용자 공간의 별도 관리 스레드로 넘길 수 있게 합니다.</p>
+<section><h2>등록·알림·해결·재개의 네 사건</h2>
+<p>일반 흐름은 userfaultfd 생성, UFFDIO_API 협상, UFFDIO_REGISTER로 관리 범위 등록, 관리 스레드의 read/poll, UFFDIO_COPY 또는 UFFDIO_ZEROPAGE로 해결입니다. fault를 일으킨 스레드는 해결 전까지 대기할 수 있습니다. 관리 스레드가 페이지 내용을 준비해 PTE를 채우는 단계와 원래 접근이 재개하는 단계를 분리해서 기록합니다.</p>
+<p>등록만 했다고 모든 종류의 매핑과 모든 fault 모드를 처리할 수 있는 것은 아닙니다. missing·write-protect·minor 모드와 매핑 유형에 따라 지원을 협상해야 합니다. UFFD_USER_MODE_ONLY는 사용자 모드 fault 처리로 범위를 제한하며 권한 정책도 별개입니다. 기능이 거절되면 관리자가 보안 설정을 낮추도록 요구하지 말고 현재 환경의 제약으로 남깁니다.</p></section>
+<section><h2>fault 처리자 자신이 기다리는 순환을 피하기</h2>
+<p>관리 스레드의 소스 버퍼나 로그 경로가 같은 미해결 범위를 필요로 하면 처리자가 자기 작업을 기다리는 순환이 생길 수 있습니다. fault를 일으키는 Worker와 handler가 서로 다른 책임을 가져야 하며 handler가 사용할 버퍼와 종료 경로를 먼저 준비해야 합니다. 예제에서는 익명 페이지 한 장과 별도 소스 버퍼로 범위를 작게 잡습니다.</p>
+<p>동시에 unmap·리맵·프로세스 종료가 일어나면 알림의 주소가 처음 등록 때의 수명을 유지한다고 가정할 수 없습니다. 주소 범위의 소유자와 종료 프로토콜을 두고 처리 중 요청을 정리해야 합니다. fault를 해결한 횟수는 애플리케이션의 모든 읽기 횟수가 아니며 이미 매핑된 페이지의 반복 읽기는 같은 missing 이벤트를 다시 만들지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>공식 userfaultfd 예제의 API 순서를 읽고 한 페이지의 상태를 미매핑→fault 대기→COPY 완료→재개로 추적하세요. 실행 환경이 이미 준비된 경우에만 일반 사용자 범위 한 페이지를 등록해 첫 접근과 반복 접근의 handler 로그를 비교합니다. 권한·기능 오류는 그대로 기록하며 설정을 변경하지 않습니다.</p>
+<details><summary>한 페이지를 첫 접근한 뒤 반복해서 읽기</summary><p>예상 결과: missing handler가 매핑을 해결한 뒤 같은 페이지의 반복 읽기는 새 missing 처리를 요구하지 않습니다. 실제 이벤트 수는 실행 로그로 별도 확인해야 합니다.</p></details>
+<details><summary>handler가 해결하지 않은 상태에서 Worker가 접근</summary><p>예상 결과: Worker의 해당 접근은 해결 전까지 진행하지 못할 수 있습니다. 이때 CPU 사용률이 낮아도 지연이 사라진 것은 아닙니다. 기다린 시간을 실측했다면 측정 구간을 함께 기록합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>페이지를 원격 저장소에서 가져오거나 live migration을 수행하는 완성 시스템은 아닙니다. API 상태 흐름을 이해한 뒤 11장의 mmap·COW와 비교해 누가 페이지 내용을 소유하고 언제 공유가 갈라지는지 확인합니다.</p><p>관련 기존 장 · <a href="../11-cow-mmap-pagecache.html">Copy-on-Write, mmap, 페이지 캐시</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/admin-guide/mm/userfaultfd.html">userfaultfd 설계·모드·API</a></li><li><a href="https://man7.org/linux/man-pages/man2/userfaultfd.2.html">userfaultfd 인터페이스와 예제</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="dma-pinning-and-reclaim.html">이전 심화 · DMA 주소와 페이지 고정의 비용</a><a href="memory-tiering-migration.html">다음 심화 · NUMA 이동과 계층형 메모리 정책</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

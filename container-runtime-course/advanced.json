@@ -1,0 +1,332 @@
+{
+  "title": "Rust 컨테이너 런타임 구현 심화",
+  "intro": "기존 myctr의 namespace·자원·이미지·OCI 구현을 바탕으로 실패 복구와 다중 구성 요소의 수명을 학습합니다. 현재 구현된 보호 기능과 추가 설계 범위를 구분하고 정상 입력·원장·읽기 전용 관측으로 검증합니다.",
+  "units": [
+    {
+      "slug": "oci-lifecycle-recovery",
+      "title": "OCI 상태 전이와 생성 실패 복구",
+      "before": {
+        "href": "09-oci-runtime-spec.html",
+        "label": "OCI 런타임 스펙"
+      },
+      "after": {
+        "href": "04-cgroups-v2.html",
+        "label": "cgroups v2 자원 제한"
+      },
+      "opening": "9장의 create와 start를 분리한 뒤에는 런타임 명령 자체가 도중에 실패했을 때 남은 상태를 설명해야 합니다. 상태 파일·프로세스·cgroup이 항상 동시에 바뀌는 것은 아닙니다.",
+      "sections": [
+        {
+          "title": "명령 결과와 컨테이너 상태를 분리하기",
+          "body": [
+            "OCI runtime의 creating·created·running·stopped 상태는 런타임이 보고하는 생명주기입니다. create는 namespace·마운트·자원을 준비하고 사용자 프로그램 실행 전 경계를 만들며, start는 실행을 진행시킵니다. state 조회의 PID와 상태만으로 초기화 중인 모든 자원이 정상이라고 결론내리지 않습니다. 기존 myctr의 상태 조회 코드가 어떤 근거로 stopped를 판단하는지 읽으세요.",
+            "create 도중 자식은 만들어졌지만 상태 파일을 쓰기 전에 부모가 실패할 수 있습니다. 반대로 상태 파일은 있는데 자식이 이미 종료됐을 수도 있습니다. 컨테이너 ID별 동시 명령을 직렬화하고, 상태를 임시 파일에 쓴 뒤 교체하는 절차와 자원 획득표를 둡니다. 파일 교체의 원자성과 정전 내구성은 별도이며 PID 숫자의 재사용도 복구 판단에 포함합니다."
+          ]
+        },
+        {
+          "title": "rollback을 반복해도 이웃 자원을 지우지 않기",
+          "body": [
+            "실패 복구에서는 이번 생성이 소유한 cgroup·mount·FIFO·자식만 정리해야 합니다. 이름이 비슷한 기존 디렉터리를 찾아 무조건 지우는 방식은 올바른 소유권 계약이 아닙니다. 생성 단계마다 획득 여부와 정확한 경로를 기록하면 반쯤 준비된 상태도 역순으로 설명할 수 있습니다.",
+            "동시에 start와 delete가 오면 각각 상태 파일을 따로 읽고 판단하는 것만으로는 충분하지 않습니다. 상태 확인과 해당 전이를 하나의 잠금 범위로 묶거나 동등한 직렬화가 필요합니다. 불변식은 stopped 자원의 정리가 새 running 세대의 자원을 해제하지 않는 것입니다. 강제 삭제도 실행 중 작업 종료와 자원 회수의 완료 조건을 명확히 해야 합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "9장의 코드를 읽고 clone·cgroup 생성·FIFO 생성·state 저장·start의 각 지점에 실패 카드를 한 장씩 놓습니다. 파일이나 프로세스를 실제로 종료시키지 말고 획득표에 남을 자원과 재실행 때의 처리 방식을 적습니다. 기존 전용 실습이 있다면 자신이 만든 컨테이너의 state 조회만 비교하세요.",
+        "cases": [
+          {
+            "label": "자식 생성 후 state 저장 전 실패",
+            "result": "예상 설계 판정: 상태 파일 부재가 자식 부재를 뜻하지 않습니다. 부모가 소유한 자식 식별과 획득표로 정리할 경로가 필요합니다. 이 카드 결과는 실제 장애 주입 로그가 아닙니다."
+          },
+          {
+            "label": "두 번째 delete가 이미 정리된 ID에 도착",
+            "result": "예상 설계 판정: 명령의 계약에 맞는 부재 결과를 반환하고 다른 세대·다른 컨테이너 자원은 건드리지 않아야 합니다. 실제 idempotency는 반복 명령의 로그로 검증해야 합니다."
+          }
+        ]
+      },
+      "limit": "여기서는 myctr에 복구 기능을 추가하거나 호스트 자원을 삭제하지 않습니다. 4장으로 돌아가 cgroup의 프로세스 수명과 디렉터리 제거 조건을 이 상태 전이표에 연결하세요.",
+      "sources": [
+        {
+          "href": "https://github.com/opencontainers/runtime-spec/blob/main/runtime.md",
+          "label": "OCI runtime 상태와 생명주기"
+        },
+        {
+          "href": "https://man7.org/linux/man-pages/man2/pidfd_open.2.html",
+          "label": "PID 재사용과 안정적 프로세스 참조"
+        }
+      ]
+    },
+    {
+      "slug": "shim-exec-console",
+      "title": "shim·exec·콘솔의 서로 다른 수명",
+      "before": {
+        "href": "09-oci-runtime-spec.html",
+        "label": "OCI 런타임 스펙"
+      },
+      "after": {
+        "href": "02-uts-pid-namespace.html",
+        "label": "UTS · PID 네임스페이스"
+      },
+      "opening": "9장에서 Docker가 런타임 명령을 호출하는 흐름을 봤습니다. 명령 프로세스가 끝난 뒤에도 컨테이너는 실행될 수 있으므로 감시·종료 코드·stdio를 맡는 주체가 필요합니다.",
+      "sections": [
+        {
+          "title": "짧게 실행되는 runtime과 오래 살아 있는 shim",
+          "body": [
+            "containerd runtime v2에서는 shim이 task 서비스와 런타임 실행을 연결하는 역할을 맡습니다. OCI create/start 명령의 종료와 컨테이너 init의 종료를 같은 이벤트로 처리하면 실행 중 컨테이너를 이미 끝난 것으로 보고할 수 있습니다. 누가 init을 감시하고 종료 상태를 전달하며 stdio 참조를 유지하는지 소유권을 그려야 합니다.",
+            "daemon 연결이 끊기거나 관리 프로세스가 재시작해도 기존 task의 상태와 종료 이벤트를 어떻게 회복할지 별도 계약이 필요합니다. 이벤트 재전달·조회·중복 처리를 구분하고 task ID와 exec ID, 프로세스 세대를 함께 기록합니다. 기존 myctr의 기능이 containerd shim 서비스 전체를 구현했다고 가정하지 않습니다."
+          ]
+        },
+        {
+          "title": "exec·attach·TTY를 하나의 명령으로 합치지 않기",
+          "body": [
+            "exec는 기존 격리 환경에서 새 프로세스를 만드는 작업이고 attach는 이미 있는 프로세스의 입출력에 연결하는 작업입니다. 새 프로세스는 namespace 합류뿐 아니라 cgroup·자격·capability·seccomp·작업 디렉터리 계약도 이어야 합니다. 특히 PID namespace 합류는 호출자가 즉시 새 PID를 얻는 동작과 다르므로 setns 뒤 생성 경계를 검토합니다.",
+            "TTY에서는 pseudoterminal, console 전달, 창 크기와 제어 시그널 처리가 추가됩니다. stdout 파이프의 참조가 남아 있으면 읽는 쪽이 EOF를 늦게 볼 수 있고, 터미널 연결 종료가 컨테이너의 모든 프로세스 종료와 같지 않을 수도 있습니다. 프로세스 종료·fd close·콘솔 detach의 세 타임라인을 따로 기록하면 멈춘 attach를 잘못된 생존 판정으로 읽지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "새 exec·TTY 기능을 실행하기 전에 9장의 지원/미지원 표와 containerd shim API를 대조합니다. 교육용으로 runtime 명령 R, init I, 관리 연결 M, stdout fd F 카드 네 개를 두고 R 종료와 I 종료를 따로 진행하세요. 실제 terminal을 끊거나 다른 컨테이너에 attach하지 않습니다.",
+        "cases": [
+          {
+            "label": "create/start 명령 R만 종료",
+            "result": "예상 상태: I는 계속 실행될 수 있고 shim/관리 주체가 상태·입출력을 유지해야 합니다. R의 exit 0을 I의 업무 완료로 세면 안 됩니다."
+          },
+          {
+            "label": "I 종료 뒤 F의 다른 참조가 남음",
+            "result": "예상 상태: 프로세스 종료와 stdout EOF 관측이 다른 시점일 수 있습니다. 실제 어떤 참조가 남았는지는 fd 소유자 조사로 확인해야 합니다."
+          }
+        ]
+      },
+      "limit": "기존 myctr의 exec·TTY 미지원 경계를 유지하며 shim 구현을 새로 제공하지 않습니다. 2장의 PID1·자식 수거를 다시 읽어 감시 프로세스와 종료 이벤트의 책임을 맞춥니다.",
+      "sources": [
+        {
+          "href": "https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md",
+          "label": "containerd runtime v2와 shim"
+        },
+        {
+          "href": "https://man7.org/linux/man-pages/man2/setns.2.html",
+          "label": "namespace 합류와 자식 생성 경계"
+        },
+        {
+          "href": "https://man7.org/linux/man-pages/man7/pty.7.html",
+          "label": "pseudoterminal 입출력 계약"
+        }
+      ]
+    },
+    {
+      "slug": "rootless-composition",
+      "title": "rootless 권한·자원·파일 소유권 조합",
+      "before": {
+        "href": "05-user-namespace.html",
+        "label": "user 네임스페이스와 rootless"
+      },
+      "after": {
+        "href": "06-network.html",
+        "label": "컨테이너 네트워크"
+      },
+      "opening": "5장의 단일 UID 매핑은 안의 UID0과 바깥 일반 사용자를 연결했습니다. 다중 사용자 이미지·cgroup 제한·네트워크까지 조합하려면 각각 다른 권한 위임이 필요합니다.",
+      "sections": [
+        {
+          "title": "ID 대응표는 호스트 권한 획득이 아니다",
+          "body": [
+            "uid_map·gid_map은 안과 밖의 ID 범위를 연결합니다. subordinate ID를 쓰는 구성에서는 /etc/subuid·/etc/subgid 할당과 newuidmap/newgidmap 도우미의 승인 범위를 확인합니다. 일반 사용자가 임의의 호스트 ID 범위를 선택할 수 있다고 설명하면 안 됩니다. 이미 있는 할당을 읽는 일과 시스템 계정 매핑을 새로 승인하는 일도 구분합니다.",
+            "이미지 파일의 소유 ID가 대응표에 없으면 안에서 보이는 ID나 파일 접근 결과가 기대와 달라질 수 있습니다. 단일 ID rootless가 UID1·UID1000의 모든 파일 작업까지 지원한다는 결론은 나오지 않습니다. idmapped mount 같은 방법도 커널·파일 시스템·권한 제약을 확인해야 하며 단순 chown과 동일한 동작으로 취급하지 않습니다."
+          ]
+        },
+        {
+          "title": "cgroup·네트워크 위임은 별도 계약",
+          "body": [
+            "user namespace를 만들었다고 호스트의 cgroup tree에 새 제한을 자유롭게 쓸 수 있는 것은 아닙니다. 위임된 subtree와 controller·파일 쓰기 권한을 확인하고, 부모의 제한보다 자식이 넓어질 수 없다는 계층 규칙을 유지합니다. 호스트 메모리가 남는데도 rootless 작업이 제한되는 경우 부모와 자기 cgroup을 함께 조사합니다.",
+            "새 network namespace 안에서의 capability와 호스트 bridge·방화벽을 바꿀 권한은 다릅니다. rootless 네트워크는 사용자 공간 전달이나 별도 도우미 등 선택한 구조의 성능·주소·포트 제약을 가집니다. 기존 6장의 rootful veth/bridge/NAT 성공을 rootless 성공 증거로 재사용하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "기존에 준비된 자신의 rootless 컨테이너에서 id, cat /proc/self/uid_map, cat /proc/self/gid_map, cat /proc/self/cgroup만 읽습니다. 매핑·위임·네트워크 모드를 표의 서로 다른 열에 기록하고, 권한이 없다고 관리자 설정을 자동 변경하지 않습니다.",
+        "cases": [
+          {
+            "label": "UID0 하나만 바깥 일반 사용자에 매핑",
+            "result": "예상 판정: 안의 root가 호스트 root가 되지 않으며 다른 ID 사용은 별도 지원이 필요합니다. 파일 접근은 실제 소유권과 권한을 읽어 확인합니다."
+          },
+          {
+            "label": "userns 가능하지만 cgroup 쓰기 권한 없음",
+            "result": "예상 판정: ID 격리와 자원 위임이 별개이므로 모순이 아닙니다. 현재 실행을 무제한으로 우회시키지 말고 미지원 조합으로 기록합니다."
+          }
+        ]
+      },
+      "limit": "rootless 환경을 새로 설치하거나 권한 위임을 변경하지 않습니다. 기존 myctr의 단일 매핑·이미지 모드 제한을 확인한 뒤 6장에서 어느 주체가 호스트 네트워크를 구성하는지 연결합니다.",
+      "sources": [
+        {
+          "href": "https://man7.org/linux/man-pages/man7/user_namespaces.7.html",
+          "label": "user namespace의 ID·권한 범위"
+        },
+        {
+          "href": "https://docs.kernel.org/admin-guide/cgroup-v2.html",
+          "label": "cgroup v2 위임과 계층 규칙"
+        },
+        {
+          "href": "https://docs.kernel.org/filesystems/idmappings.html",
+          "label": "파일 시스템 ID 매핑"
+        }
+      ]
+    },
+    {
+      "slug": "cni-ipam-cleanup",
+      "title": "CNI·IPAM과 네트워크 자원 회수",
+      "before": {
+        "href": "06-network.html",
+        "label": "컨테이너 네트워크"
+      },
+      "after": {
+        "href": "09-oci-runtime-spec.html",
+        "label": "OCI 런타임 스펙"
+      },
+      "opening": "6장의 veth·bridge·DNS를 플러그인 호출 계약으로 확장합니다. 성공한 ADD 하나만 보는 대신 IP 할당 뒤 연결 구성이 실패한 경우의 정리 책임을 추적합니다.",
+      "sections": [
+        {
+          "title": "CNI가 교환하는 식별자와 결과",
+          "body": [
+            "CNI는 런타임과 네트워크 플러그인 사이의 구성·실행 프로토콜을 정의합니다. CNI_COMMAND, CNI_CONTAINERID, CNI_NETNS, CNI_IFNAME 같은 입력과 stdin의 설정, stdout의 결과를 구분합니다. 동일한 컨테이너 ID라도 network attachment나 인터페이스가 다르면 별도 자원일 수 있으므로 ID 하나로 모든 연결을 덮어쓰지 않습니다.",
+            "IPAM은 주소·경로 등 필요한 할당을 맡는 별도 책임입니다. 네트워크 플러그인이 veth를 만들었고 IPAM이 IP를 골랐다고 전체 연결이 사용 가능하다는 뜻은 아닙니다. ADD 결과가 어느 인터페이스·주소·route에 적용됐는지, 다음 체인 플러그인에 무엇을 넘기는지 정확히 보관해야 합니다."
+          ]
+        },
+        {
+          "title": "부분 성공과 DEL 반복을 설계하기",
+          "body": [
+            "IP 할당 후 veth 설정이 실패하면 성공 응답을 못 받았어도 할당이 남을 수 있습니다. 런타임은 ADD 실패·중단 경로에서도 해당 attachment의 DEL 정리를 고려해야 하며, namespace가 이미 사라진 상황의 정리도 가능해야 합니다. DEL은 컨테이너의 업무 완료가 아니라 연결 자원의 반환입니다.",
+            "정리의 불변식은 살아 있는 다른 attachment의 주소·인터페이스를 건드리지 않으면서 실패한 attachment의 할당을 회수하는 것입니다. 같은 정리를 반복할 수 있고 이미 없는 자원을 적절히 처리해야 합니다. 호스트의 공통 bridge·공통 NAT 정책과 실행별 veth/IPAM 상태도 소유권이 다릅니다. 기존 myctr는 CNI 플러그인을 구현하지 않으므로 이 계약을 자동으로 만족한다고 가정하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "호스트에서 ADD/DEL을 실행하지 말고 세 개의 원장 카드(IP 할당, veth 생성, 런타임 성공 기록)를 만듭니다. 실패를 두 번째 단계에 놓고 attachment ID별 정리 결과를 계산합니다. 이미 설치된 CNI 설정이 있다면 읽기만 하고 다른 런타임의 자원을 지우지 않습니다.",
+        "cases": [
+          {
+            "label": "IP 할당 성공 후 veth 구성 실패",
+            "result": "예상 모델 결과: 런타임 성공 기록이 없어도 IPAM 할당을 회수해야 합니다. 성공 응답 부재를 자원 부재로 간주하면 누수가 남습니다."
+          },
+          {
+            "label": "동일 attachment의 DEL이 두 번 도착",
+            "result": "예상 모델 결과: 두 번째 정리가 다른 attachment를 지우거나 새 오류 상태를 만들지 않아야 합니다. 실제 플러그인의 결과는 전용 실습에서 반복 호출로 별도 검증합니다."
+          }
+        ]
+      },
+      "limit": "실제 IPAM·CNI 네트워크를 설치하거나 호스트 연결을 바꾸지 않습니다. 9장 lifecycle에 attachment 원장을 연결해 생성 실패와 컨테이너 삭제가 같은 정리 계약을 쓰도록 설계합니다.",
+      "sources": [
+        {
+          "href": "https://www.cni.dev/docs/spec/",
+          "label": "CNI 실행·ADD/DEL·IPAM 규약"
+        }
+      ]
+    },
+    {
+      "slug": "image-store-atomicity-gc",
+      "title": "이미지 저장소의 게시·동시성·GC",
+      "before": {
+        "href": "08-oci-image-overlayfs.html",
+        "label": "OCI 이미지와 overlayfs"
+      },
+      "after": {
+        "href": "09-oci-runtime-spec.html",
+        "label": "OCI 런타임 스펙"
+      },
+      "opening": "8장에서 digest로 blob을 식별했습니다. 다운로드가 중단되거나 두 pull이 겹칠 때는 내용 주소만으로 저장소의 원자적 게시와 수명 관리가 완성되지 않습니다.",
+      "sections": [
+        {
+          "title": "검증되지 않은 임시 blob을 참조로 게시하지 않기",
+          "body": [
+            "OCI descriptor는 mediaType·digest·size 등으로 대상을 설명합니다. 다운로드 바이트의 크기와 digest를 확인한 뒤 불변 blob 이름으로 게시하고, manifest·tag 참조는 필요한 하위 객체가 준비된 뒤 갱신합니다. 완료 전에 ref를 먼저 바꾸면 이름 조회는 성공하지만 실제 레이어가 없는 상태를 만들 수 있습니다.",
+            "같은 digest를 두 pull이 받으면 임시 파일을 각자 분리하고 최종 게시 단계에서 동일 내용의 불변 객체로 수렴시킵니다. 파일 교체의 원자성은 독자에게 반쯤 쓴 파일을 보이지 않게 하는 데 도움을 주지만 crash 후 보존에는 파일·디렉터리 동기화와 저장 장치 계약도 필요합니다. 검증 실패 객체는 정상 cache hit로 취급하지 않습니다."
+          ]
+        },
+        {
+          "title": "참조 해제와 실행 중 레이어 수명",
+          "body": [
+            "태그 하나를 지워도 다른 manifest나 실행 중 컨테이너가 같은 레이어를 참조할 수 있습니다. GC의 root에는 이름 있는 이미지뿐 아니라 실제 runtime·snapshot 참조 등 선택한 저장소 구조의 생존 근거가 포함돼야 합니다. 단순한 디렉터리 마지막 접근 시각이나 tag 개수만으로 실행 중 lower layer를 지우면 안 됩니다.",
+            "압축 레이어 해제도 저장소 입력 경계입니다. 정상 레이어만 사용하더라도 예상 해제 크기·파일 수·경로 정책과 소유권을 제한해 자원 폭주를 막습니다. 본 실습은 악성 archive를 제작하거나 취약점을 재현하지 않습니다. 삭제 후보를 계산한 dry-run 목록과 실제 unlink를 분리하면 참조 추적 오류를 검토할 수 있습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "자신이 가진 작은 정상 fixture 파일의 크기와 sha256sum을 읽습니다. 원장에 blob B, manifest M1·M2, 실행 참조 R을 두고 M1 태그 삭제와 R 종료를 차례로 적용해 GC 후보를 계산하세요. 실제 이미지 cache 파일은 삭제하지 않습니다.",
+        "cases": [
+          {
+            "label": "M1 삭제 후 M2와 R이 B를 계속 참조",
+            "result": "예상 원장 결과: B는 삭제 후보가 아닙니다. tag 하나가 없어졌다는 사실만으로 공간을 즉시 회수할 수 없습니다."
+          },
+          {
+            "label": "다운로드 중단으로 임시 blob만 존재",
+            "result": "예상 원장 결과: 검증 전 ref를 게시하지 않았다면 정상 독자는 그 임시 파일을 이미지로 선택하지 않습니다. 실제 crash 복구 내구성은 별도 파일 시스템 시험이 필요합니다."
+          }
+        ]
+      },
+      "limit": "기존 image.rs에 GC·동시 pull을 구현했다고 주장하지 않습니다. 9장 실행 lifecycle의 rootfs 참조를 저장소 원장과 연결해 컨테이너 종료와 이미지 삭제를 다른 전이로 관리합니다.",
+      "sources": [
+        {
+          "href": "https://github.com/opencontainers/image-spec/blob/main/descriptor.md",
+          "label": "OCI descriptor의 digest·size"
+        },
+        {
+          "href": "https://github.com/opencontainers/image-spec/blob/main/image-layout.md",
+          "label": "OCI 이미지 레이아웃과 참조"
+        }
+      ]
+    },
+    {
+      "slug": "isolation-failure-matrix",
+      "title": "격리·자원 제한의 통합 검증",
+      "before": {
+        "href": "07-security.html",
+        "label": "보안 강화: capabilities · seccomp"
+      },
+      "after": {
+        "href": "09-oci-runtime-spec.html",
+        "label": "OCI 런타임 스펙"
+      },
+      "opening": "7장의 capability·seccomp와 9장의 read-only rootfs·maskedPaths·readonlyPaths는 이미 서로 다른 보호 경계를 다룹니다. 정상 요청이 어느 경계에서 거절되는지와 종료 뒤 무엇이 남는지를 행렬로 검증합니다.",
+      "sections": [
+        {
+          "title": "허용·거부 결과마다 전제 조건을 확인하기",
+          "body": [
+            "root.readonly는 루트 파일 시스템 쓰기를 제한하고, readonlyPaths는 지정 경로의 쓰기 제한, maskedPaths는 특정 경로의 노출을 다룹니다. 별도로 쓰기 가능한 mount가 있으면 read-only rootfs여도 그 mount에 쓰는 동작은 가능할 수 있습니다. capability·seccomp·파일 권한의 거절도 원인이 다르므로 같은 EPERM 문자열로 한 정책의 성공을 확정하지 않습니다.",
+            "테스트 전에 대상 파일·경로가 존재하는지와 예상 mount·소유권을 확인합니다. 없는 파일을 읽지 못한 결과를 접근 제어 성공으로 세면 안 됩니다. 기존 myctr의 device 제어나 LSM 적용 여부는 지원 표와 설정으로 확인하고, 미지원 항목을 주변 보호 기능이 대신 보장한다고 설명하지 않습니다."
+          ]
+        },
+        {
+          "title": "자원 정책과 정리 불변식을 함께 보기",
+          "body": [
+            "CPU quota는 처리량·지연을 제한할 수 있고 memory.max는 회수 후에도 한도를 맞추지 못하면 cgroup OOM으로 이어질 수 있습니다. 이 단원은 호스트 자원을 소진해 이를 재현하지 않습니다. 실행할 검증은 작고 정상적인 작업과 읽기 전용 memory.events·cpu.stat 관찰로 제한하고 변화가 없으면 미관측으로 기록합니다.",
+            "정리 검증은 작업 종료 코드뿐 아니라 자신의 실행별 cgroup·veth·임시 upper/work·resolver 파일이 남았는지를 확인합니다. 공통 bridge·공통 cache는 실행별 자원과 다르므로 남았다는 이유만으로 누수라고 세지 않습니다. 불변식은 종료한 실행이 더 이상 사용하는 전용 자원이 없고, 다른 실행의 자원은 그대로라는 것입니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "전용으로 준비된 정상 실습 컨테이너에서만 /proc/self/mountinfo·자신의 cgroup 통계·runtime state를 읽습니다. read-only rootfs 시험은 그 컨테이너 안의 /course-write-check 같은 무해한 임시 이름에만 쓰기를 시도하고, 허용된 임시 mount와 비교합니다. 환경이 없으면 표의 예상 결과만 작성하고 실행 완료로 표시하지 않습니다.",
+        "cases": [
+          {
+            "label": "read-only rootfs의 일반 경로에 작은 파일 쓰기",
+            "result": "예상: 해당 mount의 읽기 전용 제한으로 쓰기가 거절됩니다. 정확한 errno와 mount 옵션을 함께 기록해야 어떤 경계가 작동했는지 설명할 수 있습니다."
+          },
+          {
+            "label": "별도로 허용된 writable 임시 mount에 같은 쓰기",
+            "result": "예상: 그 mount와 파일 권한이 허용하면 성공할 수 있습니다. root.readonly와 모순이 아니며 테스트 뒤 자신이 만든 파일만 정리합니다. 호스트 경로에는 실행하지 않습니다."
+          }
+        ]
+      },
+      "limit": "탈출·권한 상승·자원 고갈·취약점 재현을 수행하지 않습니다. 9장의 OCI 설정으로 돌아가 각 행의 입력과 실제 지원 기능을 연결하고 수행한 정상 검증·미지원·미실행을 분리해 보고합니다.",
+      "sources": [
+        {
+          "href": "https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md",
+          "label": "OCI Linux의 maskedPaths·readonlyPaths·자원 설정"
+        },
+        {
+          "href": "https://docs.kernel.org/admin-guide/cgroup-v2.html",
+          "label": "cgroup v2 자원 정책과 관측"
+        },
+        {
+          "href": "https://docs.kernel.org/userspace-api/seccomp_filter.html",
+          "label": "seccomp 필터의 경계"
+        }
+      ]
+    }
+  ]
+}

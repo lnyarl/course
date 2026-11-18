@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>공유 메모리 워커 파이프라인 · Node.js 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Node.js 심화</a></header>
+<main>
+<h1>공유 메모리 워커 파이프라인</h1>
+<p class="connection">선수 장 · <a href="../09-multicore-workers-cluster.html#s6">Atomics와 스레드 동기화</a></p>
+<p class="lead">공유 Buffer를 쓰면 복사 비용은 줄일 수 있지만 누가 어느 슬롯을 읽고 쓰는지 결정해야 합니다. Atomics 연산 하나를 아는 것에서 bounded 전달 프로토콜로 확장합니다.</p>
+<section><h2>단일 생산자·소비자의 상태 규약</h2>
+<p>처음에는 생산자 하나와 소비자 하나만 둡니다. N개 슬롯의 head/tail을 공유 Int32Array에 저장하고 nextTail이 head와 같으면 full, head와 tail이 같으면 empty로 정합니다. 이 방식은 슬롯 하나를 비워 두므로 실제 용량은 N-1입니다. 여러 생산자용 알고리즘으로 그대로 일반화하지 않습니다.</p>
+<p>생산자는 빈 슬롯의 데이터를 쓴 뒤 Atomics.store로 tail을 공개합니다. 소비자는 공개된 tail을 확인한 뒤 데이터를 읽고 head를 진행시킵니다. 사용 중 슬롯의 소유자가 겹치지 않는 것이 핵심 불변식입니다. 공유 저장소의 존재만으로 객체나 작업 큐의 thread safety가 생기지는 않습니다.</p></section>
+<section><h2>대기·종료·실패를 한 프로토콜로</h2>
+<p>worker에서 현재 head 또는 tail 값을 읽고 조건을 다시 검사한 뒤 <code>Atomics.wait(control, index, observed, timeout)</code>를 호출합니다. 그 사이 값이 바뀌면 wait가 not-equal로 돌아올 수 있으므로 predicate 반복문을 유지합니다. notify는 조건이 참이라는 결과값이 아니라 다시 확인할 계기입니다.</p>
+<p>closed 플래그를 정하고 변경 때 대기 중인 양쪽 위치에 notify를 보냅니다. worker의 error/exit도 부모가 관측하여 남은 상대가 영원히 기다리지 않게 합니다. 주 이벤트 루프에서 블로킹 wait를 쓰지 않고, 종료 뒤 worker와 버퍼 소유권을 정리합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>정수 sequence 1~1000을 전달하는 SPSC ring을 자기 worker 두 개로 구성하세요. 슬롯 N=8에서 예상 용량 7을 먼저 계산하고 소비자를 일부러 늦춥니다. 입력·소비 sequence가 정확히 같은지, full 상태에서 추가 쓰기가 없는지, 빈 상태 종료 알림 뒤 두 worker가 끝나는지 확인하세요.</p>
+<details><summary>소비자 지연으로 full</summary><p>생산자는 다른 슬롯을 덮지 않고 대기해야 합니다. 빠른 생산이 데이터 유실로 바뀌지 않는지 sequence로 검사합니다.</p></details>
+<details><summary>empty에서 종료 요청</summary><p>closed 상태를 알리고 notify하면 대기자가 조건을 다시 읽어 종료할 수 있습니다. 메시지만 보내고 shared wait를 깨우지 않으면 남을 수 있습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 설계는 SPSC 학습 예이며 MPMC 큐나 영속 전달 보장이 아닙니다. 네이티브 비동기 장에서는 같은 소유권·대기·종료 원칙이 JS 경계에도 필요함을 비교합니다.</p><p>관련 기존 장 · <a href="../19-native-addons-wasm.html#s4">네이티브 비동기 전달</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://nodejs.org/docs/latest-v22.x/api/worker_threads.html">worker_threads와 공유 메모리</a></li><li><a href="https://tc39.es/ecma262/multipage/structured-data.html#sec-atomics-object">ECMAScript Atomics 명세</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="buffer-ownership.html">이전 심화 · Buffer·바이너리 파서·메모리 소유권</a><a href="package-runtime-matrix.html">다음 심화 · 패키지 호환성과 런타임 업그레이드</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

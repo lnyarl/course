@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>소비자 그룹·할당 epoch와 재분배 · C# 메시지 큐 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 메시지 큐 구현 심화</a></header>
+<main>
+<h1>소비자 그룹·할당 epoch와 재분배</h1>
+<p class="connection">선수 장 · <a href="../08-partitioning.html">기존 8장 · 키와 파티션 배치</a></p>
+<p class="lead">파티션 네 개를 Worker 두 명에게 나눴는데 한 Worker가 멈췄습니다. 새 Worker에게 파티션을 넘겨도 옛 Worker는 계속 계산할 수 있습니다. 그룹 할당은 누가 새 작업을 받을지 정하는 문제이고, 오래된 실행의 권한을 회수하는 문제와 외부 결과를 보호하는 문제는 따로 남습니다.</p>
+<section><h2>할당 소유권을 epoch로 표시하기</h2>
+<p>초기 할당을 epoch 7에서 W1={P0,P1}, W2={P2,P3}로 고정합니다. W1 장애 후 epoch 8에서 W2={P0,P1,P2,P3}가 됩니다. Pull·checkpoint·ACK 요청에 할당 epoch를 포함하고 Broker는 현재 소유자와 epoch를 검사합니다. epoch 7의 W1이 돌아와도 새 임대를 만들거나 epoch 8의 진행 위치를 덮어쓰게 해서는 안 됩니다.</p>
+<p>전달 토큰은 개별 작업 임대를, 할당 epoch는 그룹 내 파티션 소유권을 구분합니다. 같은 epoch 안에서도 재전달마다 토큰이 바뀔 수 있습니다. 저장 시스템이 fencing token을 검사하지 않는다면 Broker가 옛 ACK를 거절해도 W1의 외부 쓰기를 멈추지는 못합니다. 5장의 업무 ID 멱등성과 결과 저장 경계를 함께 적용해야 합니다.</p></section>
+<section><h2>회수·이전·재시작의 순서를 관측하기</h2>
+<p>정상 재분배에서는 이전 소유자에게 신규 Pull을 중단시키고 진행 중 작업을 drain하거나 임대 만료로 반환시킵니다. 다음 소유자는 마지막으로 확정된 상태에서 시작합니다. key 순서를 요구한다면 같은 키의 앞 작업이 이전 소유자에서 미완료인 동안 뒤 작업을 새 소유자에서 실행해도 되는지를 명시해야 합니다. 파티션이 같다는 사실만으로 이 순서가 자동 보장되지는 않습니다.</p>
+<p>하트비트 timeout은 장애 의심을 만드는 관측이지 프로세스 정지의 증명은 아닙니다. 테스트에서는 W1을 실제 종료하는 경우와 메시지만 지연시키는 경우를 나눕니다. 현재 epoch별 소유자, 새 임대 수, 거절된 옛 요청 수, 미ACK 작업 수를 함께 기록하세요. 정상 전환의 짧은 중단과 두 소유자에게 동시에 권한을 주는 오류를 구분할 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>종이에 epoch 7·8의 P0 소유자를 표시한 뒤 지연된 W1의 요청을 어떻게 처리할지 예측하세요. 조건별로 Pull/ACK와 외부 결과를 따로 확인합니다. 실제 확장 시에는 임시 그룹에서 W1의 하트비트만 지연시키고, 살아 있는 옛 Worker가 epoch 8의 상태를 바꾸지 못하는지 검사하세요.</p>
+<details><summary>epoch 8 게시 뒤 W1의 epoch 7 Pull</summary><p>현재 소유권 검사에서 거절해야 합니다. 옛 프로세스가 살아 있다는 사실이 최신 할당 권한을 주지는 않습니다.</p></details>
+<details><summary>옛 ACK 거절, 외부 저장소는 fencing 미지원</summary><p>Broker 상태는 보호되지만 W1의 외부 부작용은 계속될 수 있습니다. 결과 ID 멱등 또는 저장소 fencing이 별도로 필요합니다.</p></details>
+<details><summary>같은 키의 앞 작업 미완료 상태에서 뒤 작업 시작</summary><p>파티션만 같은 상태에서는 완료 순서가 뒤집힐 수 있습니다. 키별 동시 실행·재시도 정책까지 검사해야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>고정 파티션의 재분배 상태 모형이며 Kafka·RabbitMQ 그룹 프로토콜을 구현한 예제는 아닙니다. ClusterLab의 routing epoch 실험을 그룹 소유권 설계와 비교할 수 있지만 같은 계약이라고 단정하지 않습니다. 다음에는 4장의 lease token과 이 단원의 assignment epoch가 막는 오류를 각각 적어 보세요.</p><p>관련 기존 장 · <a href="../04-ack-lease.html">기존 4장 · 전달 토큰과 오래된 ACK</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://kafka.apache.org/41/implementation/distribution/">Apache Kafka · 파티션과 그룹 관리</a></li><li><a href="https://www.rabbitmq.com/docs/consumers">RabbitMQ · 소비자 수명과 전달 제어</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="segments-snapshots-retention.html">이전 심화 · 로그 세그먼트·스냅샷과 중복 방지 기록 보존</a><a href="transactional-outbox-inbox.html">다음 심화 · 트랜잭셔널 Outbox·Inbox와 두 커밋 경계</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

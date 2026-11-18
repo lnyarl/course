@@ -295,14 +295,15 @@ static void uv__read(uv_stream_t* stream) {
 
   <section id="s8">
     <h2>8. stdio·파이프·TTY의 특이점</h2>
-    <p><code>process.stdout</code>과 <code>process.stderr</code>는 fd 1, 2가 무엇에 연결되어 있느냐에 따라 <b>완전히 다른 스트림 클래스</b>로 만들어지고, 쓰기의 동기/비동기 여부도 달라집니다. 공식 문서의 표를 옮기면:</p>
+    <p><code>process.stdout</code>과 <code>process.stderr</code>는 fd 1, 2가 무엇에 연결되어 있느냐에 따라 <b>완전히 다른 스트림 클래스</b>로 만들어지고, 쓰기의 동기/비동기 여부도 달라집니다. <a href="https://nodejs.org/download/release/v22.10.0/docs/api/process.html#a-note-on-process-io">Node 22 공식 문서의 분류</a>는 다음과 같습니다:</p>
     <div class="tbl-wrap"><table class="sync-tbl">
       <tr><th>fd 1의 종류</th><th>클래스</th><th>Linux/macOS</th><th>Windows</th><th>비고</th></tr>
       <tr><td>파일 (<code>node app.js &gt; out.log</code>)</td><td><code>fs.SyncWriteStream</code></td><td class="s">동기</td><td class="s">동기</td><td>디스크가 느리면 console.log가 루프를 막는다</td></tr>
       <tr><td>TTY (터미널)</td><td><code>tty.WriteStream</code></td><td class="s">동기</td><td class="a">비동기</td><td>터미널이 느리면(원격 ssh) 블로킹</td></tr>
-      <tr><td>파이프/소켓 (<code>node app.js | …</code>, Docker 로그 드라이버, PM2)</td><td><code>net.Socket</code></td><td class="s">Linux 동기 / <span class="a">macOS 비동기</span></td><td class="s">동기</td><td>Linux 파이프 버퍼 64KiB가 차면 블로킹</td></tr>
+      <tr><td>파이프/소켓 (<code>node app.js | …</code>, Docker 로그 드라이버, PM2)</td><td><code>net.Socket</code></td><td class="a">비동기</td><td class="s">동기</td><td>POSIX에서는 소비자가 느리면 Node의 쓰기 버퍼가 쌓일 수 있음</td></tr>
     </table></div>
-    <p>즉 <b>리눅스 프로덕션에서 <code>console.log</code>는 사실상 항상 동기</b>입니다. 로그 수집기가 파이프 반대편을 느리게 읽으면 64KiB 버퍼가 차는 순간 <code>write(2)</code>가 블로킹되고 이벤트 루프가 멈춥니다. "로그를 많이 찍었더니 서비스가 느려졌다"의 정체이고, 15장의 pino 비동기 transport(워커 스레드로 로그를 넘김)가 해법입니다. 반대로 이 동기성 덕에 <code>process.exit()</code> 직전의 로그가 유실되지 않는 장점도 있습니다(macOS 파이프 제외).</p>
+    <p>Linux와 macOS의 <b>파이프 stdout은 비동기</b>입니다. 로그 수집기가 느릴 때 <code>process.stdout.write()</code>의 반환값 <code>false</code>를 무시하면 Node의 쓰기 버퍼가 늘 수 있습니다. <code>console.log()</code>도 생산자에게 역압력을 전달하지 않으므로 로그량을 제한하고 버퍼 증가를 관측해야 합니다. 문자열 포맷·직렬화 비용은 메인 스레드에 남습니다. 파일이나 POSIX TTY처럼 동기 출력인 대상에서는 쓰기 자체가 이벤트 루프를 막을 수 있습니다.</p>
+    <p><code>process.exit()</code>는 아직 전송하지 않은 비동기 출력을 버릴 수 있습니다. <code>process.exitCode</code>를 설정하고 출력 완료를 기다린 뒤 자연 종료하는 흐름과, 제한 시간 뒤 강제 종료하는 흐름을 구분하세요. 로그 목적지와 transport의 버퍼·flush·종료 정책은 <a href="15-observability.html#s2">15장</a>에서 이어서 다룹니다.</p>
     <p><code>process.stdin</code>도 마찬가지로 TTY면 <code>tty.ReadStream</code>(raw 모드 가능), 파이프면 <code>net.Socket</code>, 파일이면 <code>fs.ReadStream</code>(스레드풀)입니다. stdin이 TTY일 때 <code>process.stdin.on('data')</code>를 붙이는 순간 핸들이 ref되어 프로세스가 종료되지 않는 것도 자주 묻는 현상입니다.</p>
   </section>
 
@@ -358,7 +359,7 @@ setInterval(() =&gt; {
     <li>slow I/O(<code>getaddrinfo</code>)는 동시 ⌈N/2⌉개로 제한. 기본 풀에서 <code>dns.lookup</code> 동시성은 2.</li>
     <li>풀 사용: fs 비동기, dns.lookup, crypto 비동기(pbkdf2·scrypt·randomBytes·WebCrypto), zlib 비동기, 많은 네이티브 애드온. 비사용: net/http/tls(TLS 연산은 메인 동기!), 모든 Sync, createHash.</li>
     <li>readFile 하나 = open + fstat + read×청크 + close 왕복. 작은 파일 다수는 Sync가 빠를 수 있고, 큰 파일은 스트림.</li>
-    <li>Linux 프로덕션에서 stdout(파일·TTY·파이프)은 동기. 로그 폭주 = 루프 블로킹.</li>
+    <li>stdout 쓰기는 파일·POSIX TTY에서 동기, POSIX 파이프에서 비동기다. 느린 소비자 앞에서 동기 출력의 루프 정지와 비동기 출력의 버퍼 누적을 구분한다.</li>
     <li>io_uring은 Node 20.3에서 켜졌다가 CVE로 기본 비활성(<code>UV_USE_IO_URING=1</code>로 옵트인).</li>
     <li>진단: 스레드풀 프로브(randomBytes 왕복) + 루프 지연을 함께 본다. 튜닝: I/O 지배면 풀을 키우고, CPU 지배면 프로세스를 늘린다.</li>
   </ul></div>
@@ -390,11 +391,11 @@ setInterval(() =&gt; {
   </div>
   <div class="quiz" data-answer="0">
     <div class="q">Linux 컨테이너에서 stdout이 Docker 로그 드라이버 파이프에 연결되어 있다. 로그 수집이 느려지면?</div>
-    <button class="opt">파이프 버퍼(64KiB)가 찬 뒤 write(2)가 블로킹되어 이벤트 루프가 멈춘다</button>
-    <button class="opt">로그가 메모리에 무한히 쌓이고 루프는 영향 없다</button>
+    <button class="opt">stdout 쓰기는 비동기이며, 역압력을 무시하면 Node의 쓰기 버퍼가 커질 수 있다</button>
+    <button class="opt">출력이 비동기이므로 메모리와 CPU에는 어떤 영향도 없다</button>
     <button class="opt">스레드풀 워커가 대신 쓰므로 영향 없다</button>
     <button class="opt">libuv가 자동으로 로그를 버린다</button>
-    <div class="explain">Linux에서 파이프로의 stdout 쓰기는 동기입니다. pino 비동기 transport처럼 워커 스레드로 로그를 넘기는 구조가 해법입니다(15장).</div>
+    <div class="explain">Linux를 포함한 POSIX의 파이프 stdout 쓰기는 비동기입니다. 생산 속도가 소비 속도보다 빠르면 역압력을 전달하거나 로그를 제한해야 합니다. 버퍼 누적과 메인 스레드의 포맷 비용을 함께 관측합니다(15장).</div>
   </div>
   <div class="quiz" data-answer="2">
     <div class="q">메인 모듈 첫 줄에 <code>process.env.UV_THREADPOOL_SIZE = '32'</code>를 썼는데 효과가 없다. 가장 가능성 높은 이유는?</div>
@@ -413,7 +414,9 @@ for (let i = 0; i &lt; 8; i++) crypto.pbkdf2('pw', 'salt', 300_000, 64, 'sha512'
 const t = performance.now();
 fs.readFile(__filename, () =&gt; console.log('readFile took', (performance.now() - t).toFixed(1), 'ms'));</code></pre></li>
     <li><b>slow I/O 제한 관찰.</b> 존재하지 않는 DNS 서버를 가리키도록(<code>/etc/resolv.conf</code>를 건드리지 말고, 네트워크 차단 혹은 느린 리졸버로 흉내) <code>dns.lookup</code> 6건을 동시에 던지고 각 완료 시각을 찍어 보세요. 기대: 완료가 2건씩 묶여서 일어남(타임아웃 길이마다 2건). <code>dns.resolve4</code> 6건은 동시에 완료됨.</li>
-    <li><b>stdout 동기성 확인.</b> <code>node -e "for(let i=0;i&lt;1e5;i++)console.log('x'.repeat(100))" | (sleep 5; cat &gt; /dev/null)</code>을 Linux에서 실행하고 node 프로세스가 5초간 블로킹되는지(<code>time</code>으로) 확인하세요. macOS에서는 비동기라 즉시 종료되지 않을 수 있지만 메모리에 버퍼링됩니다.</li>
+    <li><b>stdout 전송과 종료 비교.</b> Linux나 macOS에서 아래 두 명령의 수신 바이트 수를 비교하세요. 첫 명령은 즉시 종료하여 일부 출력이 유실될 수 있고, 두 번째는 활성 출력이 끝날 때까지 기다려 5,000,000바이트를 보냅니다. 첫 결과의 정확한 크기는 OS와 소비 속도에 따라 달라집니다. 전체 파이프라인이 끝나는 시간만으로 Node의 이벤트 루프가 블로킹됐다고 판단하지 마세요.
+<pre><code data-language="bash">node -e "process.stdout.write('x'.repeat(5e6)); process.exit(0)" | wc -c
+node -e "process.stdout.write('x'.repeat(5e6)); process.exitCode = 0" | wc -c</code></pre></li>
   </ol>
 </main>
 

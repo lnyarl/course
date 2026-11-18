@@ -1,0 +1,430 @@
+{
+  "title": "ASP.NET Core 구조와 동작 심화",
+  "intro": "기존 요청·DI·SQL·권한·운영 설명을 실제 수명과 실패 경계로 확장합니다. 코드 흐름과 로컬 실험 절차를 제공하며 가상 예상 결과를 실행 완료 기록으로 취급하지 않습니다.",
+  "units": [
+    {
+      "slug": "streaming-pipelines",
+      "title": "Kestrel·Pipelines와 스트리밍 업로드",
+      "before": {
+        "href": "index.html#chapter-2",
+        "label": "HTTP 서버의 책임"
+      },
+      "after": {
+        "href": "index.html#chapter-17",
+        "label": "페이지·스트리밍·최적화"
+      },
+      "opening": "큰 파일을 요청당 byte 배열 하나로 읽으면 동시 업로드 수만큼 메모리가 늘어납니다. 서버의 바이트 처리 경계에서 버퍼를 누가 소유하고 언제 돌려주는지 따라갑니다.",
+      "sections": [
+        {
+          "title": "본문을 끝까지 모으기 전에 처리하기",
+          "body": [
+            "먼저 `await request.Body.CopyToAsync(destination, requestAborted)`처럼 작은 버퍼로 복사하는 기준 경로를 만듭니다. 전체 본문을 문자열로 바꾸는 경로와 같은 입력으로 비교합니다. Content-Length가 없거나 실제 본문과 다를 수 있으므로 수신한 바이트를 누적해 애플리케이션의 허용 상한도 검사합니다.",
+            "Kestrel·앞단 프록시·앱의 크기와 시간 제한은 서로 다른 경계입니다. endpoint 로그 없이 거절됐다면 요청이 없었다는 뜻이 아닙니다. 거절 위치, 저장한 바이트 수, 임시 파일 정리 결과를 함께 남기고 성공 응답 전에 필요한 저장 완료 조건을 정의합니다."
+          ]
+        },
+        {
+          "title": "PipeReader의 소유권을 읽는 순서",
+          "body": [
+            "`var read = await request.BodyReader.ReadAsync(ct)`가 준 Buffer는 여러 구간의 ReadOnlySequence일 수 있습니다. 처리한 위치를 consumed, 더 확인한 위치를 examined로 계산하고 `AdvanceTo(consumed, examined)`를 호출합니다. AdvanceTo 뒤의 메모리 참조를 보관하거나 같은 바이트를 다음 호출에서 다시 처리하지 않는 불변식이 필요합니다.",
+            "부분 레코드가 남으면 미소비 구간은 보존하고 새 데이터가 필요한 위치까지 examined를 옮깁니다. examined를 잘못 주면 같은 버퍼를 반복해서 받거나 데이터가 있는데도 다음 입력을 기다릴 수 있습니다. framework가 제공한 BodyReader의 수명과 자신이 만든 PipeReader의 CompleteAsync 책임도 구분합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "로컬 업로드 endpoint를 두 개 만들어 같은 작은 파일을 전체 버퍼링과 스트리밍으로 저장하세요. 전송량 상한과 요청 중단 토큰을 적용한 뒤 파일 크기·동시 요청 수·소비 속도를 한 가지씩 바꿉니다. 저장 파일 해시와 임시 파일 잔존 수, 프로세스 메모리를 함께 비교하세요.",
+        "cases": [
+          {
+            "label": "소비자가 느린 스트리밍",
+            "result": "수신 흐름에 역압력이 전달될 수 있고 전체 본문 보관을 줄입니다. 연결과 저장 자원은 더 오래 유지될 수 있습니다."
+          },
+          {
+            "label": "전송 도중 클라이언트 중단",
+            "result": "하위 복사에 토큰을 전달하고 finally에서 임시 파일을 정리해야 합니다. 이미 완료한 외부 효과까지 자동 롤백되지는 않습니다."
+          }
+        ]
+      },
+      "limit": "이 단원은 로컬 업로드의 메모리·수명 계약입니다. 실제 프록시 제한은 그 구성을 포함한 별도 검사로 확인하고, 최적화 장에서 응답 스트리밍의 실패 경계와 비교합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/standard/io/pipelines",
+          "label": "System.IO.Pipelines"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/mvc/models/file-uploads",
+          "label": "ASP.NET Core 파일 업로드"
+        }
+      ]
+    },
+    {
+      "slug": "endpoint-execution",
+      "title": "라우팅·binding·validation·filter의 실행 경로",
+      "before": {
+        "href": "index.html#chapter-6",
+        "label": "미들웨어의 진입과 복귀"
+      },
+      "after": {
+        "href": "index.html#chapter-8",
+        "label": "API 계약과 오류"
+      },
+      "opening": "같은 잘못된 입력도 라우트가 맞지 않은 경우와 DTO 검증이 실패한 경우의 응답이 다릅니다. 미들웨어 순서에서 endpoint 내부의 처리 단계로 내려갑니다.",
+      "sections": [
+        {
+          "title": "실행되지 않은 단계를 찾기",
+          "body": [
+            "라우팅은 후보와 metadata를 결정하고 binding은 경로·query·본문 값을 매개변수로 만듭니다. endpoint filter는 매개변수가 준비된 endpoint 호출을 감싸는 확장 지점입니다. JSON 파싱이 먼저 실패하면 endpoint 본문이나 해당 filter의 로그가 없을 수 있으므로 로그 부재만으로 요청 도착을 부정하지 않습니다.",
+            "`app.MapGet(\"/items/{id:int}\", (int id) => Results.Ok(id))`에서 숫자가 아닌 경로는 int 제약을 만족하지 않아 endpoint 선택에서 벗어납니다. 반면 선택된 endpoint의 int query 매개변수 변환 실패는 다른 경로입니다. 정상·라우트 불일치·변환 오류·업무 거절의 응답을 따로 표로 만듭니다."
+          ]
+        },
+        {
+          "title": "일관된 오류 계약을 만드는 코드 흐름",
+          "body": [
+            "Minimal API에서는 endpoint의 입력 검사나 `AddEndpointFilter`에서 명시적으로 `Results.ValidationProblem`을 반환하는 작은 기준을 시작점으로 삼습니다. Controller의 `[ApiController]` 기반 모델 검증과 같은 단계·기본 동작이라고 가정하지 않습니다. 버전과 등록 방식에 따라 제공되는 자동 검증을 확인합니다.",
+            "filter가 외부 호출을 하거나 DB를 읽어 판단한다면 단순 형식 검증과 업무 검증의 책임이 섞일 수 있습니다. 형식·범위 → 신원·리소스 정책 → 상태 변경의 구간을 표시하고, 각 거절에 안정된 오류 유형과 추적 ID를 둡니다. framework 예외 메시지를 그대로 외부 계약으로 삼지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "로컬 서버의 미들웨어, endpoint filter, handler에 단계 로그를 넣으세요. 정상 JSON, 깨진 JSON, 범위를 벗어난 유효 JSON, int 라우트 불일치 네 요청을 보내고 어떤 로그가 생길지 먼저 예상합니다. Controller 버전도 만들면 입력과 성공·오류 의미를 같게 두고 실제 차이를 기록하세요.",
+        "cases": [
+          {
+            "label": "파싱할 수 없는 JSON",
+            "result": "handler 전에 실패할 수 있으므로 handler의 수동 업무 검증 로그가 없어도 이상하지 않습니다. 실제 상태 코드를 응답에서 확인합니다."
+          },
+          {
+            "label": "형식은 맞지만 업무 상한 초과",
+            "result": "binding 이후의 정책에서 거절합니다. 형식 오류와 구분된 응답 의미를 유지해야 클라이언트가 다음 행동을 정할 수 있습니다."
+          }
+        ]
+      },
+      "limit": "동일 상태 코드만으로 모든 실패가 같은 단계였다고 판단하지 않습니다. API 계약 장에서 오류 형식과 테스트 케이스를 이 단계 표에 맞춰 정리합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding",
+          "label": "Minimal API binding"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/min-api-filters",
+          "label": "Minimal API filters"
+        }
+      ]
+    },
+    {
+      "slug": "ef-transactions-races",
+      "title": "EF Core 저장·트랜잭션·경합 실험",
+      "before": {
+        "href": "index.html#chapter-9",
+        "label": "LINQ 아래의 SQL과 트랜잭션"
+      },
+      "after": {
+        "href": "index.html#chapter-14",
+        "label": "테스트가 증명하는 범위"
+      },
+      "opening": "한 요청에서 저장이 성공해도 두 요청이 같은 버전을 갱신하면 다른 문제가 생깁니다. LINQ와 SQL의 연결을 실제 제약조건과 충돌 결과까지 확인합니다.",
+      "sections": [
+        {
+          "title": "두 context가 같은 과거를 읽었을 때",
+          "body": [
+            "서로 다른 DbContext에서 같은 행을 읽고 각각 값을 바꿉니다. Version 속성에 `IsConcurrencyToken()`을 설정하면 UPDATE의 조건에 읽었던 버전이 포함됩니다. 애플리케이션 관리 Guid 버전이라면 새 갱신마다 `Guid.NewGuid()`를 지정하는 코드도 함께 구현해야 합니다.",
+            "A를 SaveChangesAsync한 뒤 B를 저장하면 B가 본 버전이 더는 맞지 않아 `DbUpdateConcurrencyException`을 받을 수 있습니다. 낙관적 충돌은 모든 입력 오류나 unique 위반과 같은 예외가 아닙니다. 충돌 후 현재 값을 다시 읽고 재계산할지 사용자에게 돌려줄지 업무 계약으로 정합니다."
+          ]
+        },
+        {
+          "title": "DB가 최종 불변식을 지키게 하기",
+          "body": [
+            "같은 접수 키를 동시에 추가하지 못하게 하려면 메모리의 선행 조회만으로 부족합니다. 실제 테이블의 unique constraint가 최종 경쟁을 조정하고, provider가 돌려주는 제약 위반을 앱의 충돌 계약으로 변환합니다. DbContext를 여러 병렬 작업에서 공유하지 않습니다.",
+            "여러 변경을 하나의 DB 트랜잭션에 묶는 것과 외부 HTTP 효과를 함께 원자화하는 것은 다릅니다. 실행 전략이 재시도하는 단위를 읽고, 사용자가 시작한 트랜잭션을 그 전략과 함께 쓸 때의 공식 패턴을 확인합니다. 재시도해도 안전한 작업 키와 결과 기록이 없으면 중복 효과가 생길 수 있습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "운영과 같은 종류의 로컬 테스트 DB를 준비하거나 차이를 명시한 관계형 SQLite 실습을 만드세요. 두 context에서 같은 버전을 읽고 A 저장 후 B 저장을 시도합니다. 이어 unique 키가 같은 두 삽입의 결과와 실행 SQL을 기록하고, 각 실패가 서로 다른 계약으로 응답되는지 검사하세요.",
+        "cases": [
+          {
+            "label": "버전 조건 없는 갱신",
+            "result": "나중 저장이 앞선 변경을 덮을 수 있습니다. 요청마다 성공 응답만 세면 잃은 변경을 놓칩니다."
+          },
+          {
+            "label": "concurrency token과 unique 제약 적용",
+            "result": "갱신 충돌과 중복 삽입을 DB 결과로 분류할 수 있습니다. 충돌을 감지했다고 업무 재계산 정책까지 자동으로 정해지지는 않습니다."
+          }
+        ]
+      },
+      "limit": "SQLite나 InMemory 테스트의 성공을 다른 provider의 격리·SQL 의미로 일반화하지 않습니다. 테스트 장에서는 실제 DB를 포함한 경합 경로를 검증 범위로 표시합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/ef/core/saving/concurrency",
+          "label": "EF Core 동시성 충돌"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/ef/core/saving/transactions",
+          "label": "EF Core 트랜잭션"
+        }
+      ]
+    },
+    {
+      "slug": "authentication-policies",
+      "title": "인증 scheme·리소스 policy·키 수명",
+      "before": {
+        "href": "index.html#chapter-11",
+        "label": "인증과 리소스 권한"
+      },
+      "after": {
+        "href": "index.html#chapter-14",
+        "label": "API 통합 테스트"
+      },
+      "opening": "로그인한 사용자만 허용한 뒤에도 다른 사람의 작업을 읽을 수 있다면 리소스 정책이 빠진 것입니다. 테스트용 신원과 실제 자격 증명 검증을 분리해 범위를 확인합니다.",
+      "sections": [
+        {
+          "title": "신원 선택과 리소스 결정",
+          "body": [
+            "인증 scheme은 어떤 handler가 쿠키나 bearer 자격 증명을 읽을지 정합니다. `RequireAuthorization`은 선택한 정책과 신원을 연결하지만, 특정 작업의 소유자를 자동으로 판단하지는 않습니다. 작업을 로드한 뒤 `IAuthorizationService.AuthorizeAsync(user, resource, policy)`로 자원별 조건을 평가하는 흐름을 그립니다.",
+            "자신의 실습 계정 A·B와 A의 작업 하나로 본인 조회, 다른 사용자 조회, 미인증 조회를 나눕니다. 읽기와 취소는 다른 권한일 수 있습니다. 없는 리소스와 권한 없는 리소스를 같은 404로 감출지는 API 정책이며, 표준 401·403·리다이렉트와 혼동하지 않습니다."
+          ]
+        },
+        {
+          "title": "자격 증명과 키를 갱신하는 경계",
+          "body": [
+            "JWT 검증은 서명 외에 발급자·대상·만료와 허용한 알고리즘을 다룹니다. 키 회전에서는 새 토큰 발급과 이미 발급된 토큰 검증의 유예가 겹칩니다. 키가 바뀌었다고 기존 요청이나 모든 세션이 자동으로 폐기되는 것은 아니므로 갱신·철회 정책을 별도로 정합니다.",
+            "쿠키 기반 앱에서는 Data Protection 키가 여러 인스턴스 사이의 쿠키 해독과 배포 뒤 세션 유지에 영향을 줍니다. 개발용 임시 키 저장과 운영용 키 저장 수명을 구분합니다. 테스트에서 인증을 fake handler로 바꾸면 업무 인가를 검사할 수 있지만 실제 토큰 서명·키 회전 검증은 빠졌다고 기록합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "본인이 관리하는 로컬 테스트 앱과 정상 자격 증명만 사용하세요. A·B·미인증의 조회/취소 응답 표를 만들고 실제 인증 scheme으로 실행합니다. 별도 테스트에서는 fake handler로 바꿔 결과를 비교하고, 개발 키 저장을 유지한 재시작과 새 저장소의 재시작에서 기존 쿠키가 어떻게 달라지는지 관측하세요.",
+        "cases": [
+          {
+            "label": "인증만 검사하고 소유권 정책 생략",
+            "result": "신원은 확인됐어도 리소스별 허용 여부는 결정되지 않았습니다. 실습의 A/B 권한 표가 이 공백을 드러냅니다."
+          },
+          {
+            "label": "정책과 실제 인증 검증을 각각 검사",
+            "result": "리소스 규칙의 결과와 자격 증명 검증 결과를 분리해 설명할 수 있습니다. fake 인증 테스트를 실제 키 수명 검사로 보고하지 않습니다."
+          }
+        ]
+      },
+      "limit": "이 단원은 정상 계정의 권한 경계 검증입니다. 자격 증명 위조나 공격 재현은 포함하지 않습니다. 다음 통합 테스트에서 신원·리소스·저장의 실제 경로를 함께 검증합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/resource-based",
+          "label": "리소스 기반 인가"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/overview",
+          "label": "Data Protection 구성"
+        }
+      ]
+    },
+    {
+      "slug": "httpclient-resilience",
+      "title": "HttpClient 연결 수명과 복원력",
+      "before": {
+        "href": "index.html#chapter-12",
+        "label": "비동기와 취소"
+      },
+      "after": {
+        "href": "index.html#chapter-15",
+        "label": "관측 가능한 서비스"
+      },
+      "opening": "비동기 외부 호출을 해도 연결이 고갈되거나 이름 변경이 늦게 반영될 수 있습니다. await 계약에서 연결 풀과 전체 호출 예산으로 범위를 넓힙니다.",
+      "sections": [
+        {
+          "title": "클라이언트 객체와 연결 풀의 수명",
+          "body": [
+            "요청마다 새 SocketsHttpHandler를 만들고 버리면 연결 재사용을 잃습니다. 오래 쓰는 HttpClient에 `PooledConnectionLifetime`을 설정하는 방식과 `IHttpClientFactory`가 handler 수명을 관리하는 방식을 비교합니다. factory가 만든 HttpClient를 Dispose하는 것과 매번 새 연결 풀을 파괴하는 것은 같은 동작이 아닙니다.",
+            "DNS는 이미 열린 연결에 매 요청마다 적용되는 조회가 아닙니다. 연결 수명과 새 연결 생성 시점을 함께 봐야 합니다. 한 서버의 연결 수, 실제 동시 요청 수, 풀 대기 시간은 프로토콜과 제한에 따라 다르며 이름 하나를 설정했다고 모든 종류의 외부 호출이 무제한 병렬이 되지는 않습니다."
+          ]
+        },
+        {
+          "title": "타임아웃을 전체 작업 예산으로 연결하기",
+          "body": [
+            "요청 중단 토큰과 자체 마감 토큰을 연결한 뒤 `SendAsync`뿐 아니라 응답 본문 읽기에도 전달합니다. `HttpCompletionOption.ResponseHeadersRead`를 쓴다면 헤더 수신 완료와 본문 완료가 다른 시점입니다. response를 using으로 정리하고, 본문을 읽지 않는 실패 경로가 연결 재사용에 주는 영향도 확인합니다.",
+            "재시도마다 새 HttpRequestMessage를 만들고 응답을 정리합니다. 이미 전송한 본문을 그대로 재사용할 수 있는지와 총 예산이 남았는지를 먼저 검사합니다. 상태를 바꾸는 요청이 timeout났다면 상대가 이미 반영했을 수 있으므로 안정된 멱등 키와 정책 없이 재시도 횟수만 늘리지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "로컬 upstream에 지연 100ms와 1초인 정상 경로를 만들고 호출 앱에서 총 예산을 고정하세요. 요청 중단, 헤더만 빠른 응답/느린 본문, 동시 요청 수 증가를 따로 시험합니다. client 생성 횟수보다 실제 연결·풀 대기·완료 수와 취소 후 upstream 상태를 비교하세요.",
+        "cases": [
+          {
+            "label": "헤더 수신만 끝난 뒤 본문이 지연",
+            "result": "SendAsync 완료를 전체 외부 호출 완료로 세면 실제 대기를 놓칩니다. 본문 읽기까지 같은 마감과 정리 책임이 필요합니다."
+          },
+          {
+            "label": "여러 계층이 각자 재시도",
+            "result": "전체 시도 수와 대기가 증폭될 수 있습니다. 호출 체인에서 재시도 소유자와 총 마감을 하나의 계약으로 정합니다."
+          }
+        ]
+      },
+      "limit": "고정된 연결 수명은 DNS나 서비스 발견의 모든 문제를 해결하지 않습니다. 운영 장에서는 연결 생성·대기·외부 처리 시간을 trace로 나눠 관측합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient-guidelines",
+          "label": "HttpClient 수명 지침"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/extensions/httpclient-factory",
+          "label": "IHttpClientFactory"
+        }
+      ]
+    },
+    {
+      "slug": "durable-outbox",
+      "title": "영속 접수·Outbox·worker 복구",
+      "before": {
+        "href": "index.html#chapter-13",
+        "label": "백그라운드 작업과 유한 큐"
+      },
+      "after": {
+        "href": "index.html#chapter-14",
+        "label": "실패를 재현하는 테스트"
+      },
+      "opening": "202를 반환한 직후 프로세스가 끝나면 메모리 Channel의 접수는 사라질 수 있습니다. 요청이 끝난 시점과 복구할 근거가 생긴 시점을 일치시킵니다.",
+      "sections": [
+        {
+          "title": "DB 변경과 발행 의도를 같이 저장하기",
+          "body": [
+            "작업 행과 Outbox 행을 같은 데이터베이스 트랜잭션에서 저장합니다. `SaveChangesAsync`와 commit이 끝나기 전에 영속 접수 성공을 알리지 않습니다. 두 테이블을 따로 커밋하면 작업만 있고 발행 의도가 없거나 그 반대인 실패 구간이 남습니다.",
+            "relay는 미발행 Outbox를 읽어 브로커로 보내고 발행 상태를 기록합니다. 전송 성공 뒤 상태 기록 전에 멈추면 같은 이벤트를 다시 보낼 수 있습니다. Outbox는 외부 전송을 DB 트랜잭션으로 합치는 기술이 아니라, 발행 의도를 잃지 않고 중복 가능한 전달을 이어 가는 구조입니다."
+          ]
+        },
+        {
+          "title": "소유권·효과·ACK의 순서를 검증하기",
+          "body": [
+            "worker는 작업별 DI scope에서 저장소를 열고 처리 결과와 처리 ID를 같은 영속 경계에 남깁니다. 그 뒤 전달 ACK를 보냅니다. 결과 저장 후 ACK 전 중단을 복구하려면 재전달된 ID의 효과를 다시 적용하지 않는 계약이 필요합니다.",
+            "여러 relay가 같은 Outbox를 잡는 경우에는 잠금이나 만료 가능한 claim으로 소유를 조정합니다. claim 토큰이 바뀐 뒤 오래된 소유자가 상태를 덮어쓰지 못하게 조건부 갱신합니다. 상위 취소가 도착했다고 이미 커밋한 효과를 되돌린 것처럼 응답하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "로컬 DB에 job/outbox/processed-ID를 만들고 접수→relay→worker를 작은 별도 단계로 실행하세요. DB commit 직후, publish 직후, 결과 commit 직후에 다음 단계를 중단하는 플래그를 넣습니다. 재실행 후 유실된 ID·중복 전달·중복 효과를 따로 집계하세요.",
+        "cases": [
+          {
+            "label": "브로커 전송 후 발행 표시 전 중단",
+            "result": "Outbox가 다시 전송될 수 있습니다. 같은 이벤트 ID를 유지해 소비자가 중복 효과를 구분해야 합니다."
+          },
+          {
+            "label": "결과 커밋 후 ACK 전 중단",
+            "result": "재전달 자체는 정상입니다. 처리 ID와 결과가 같은 트랜잭션이면 이미 끝난 효과를 생략하고 전달을 완료할 수 있습니다."
+          }
+        ]
+      },
+      "limit": "이 단원은 복구 계약이며 특정 브로커의 exactly-once를 보장하지 않습니다. 메시지 큐 코스의 ACK/lease와 연결하고 통합 테스트에서 실제 중단 경계를 검사합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/azure/architecture/databases/guide/transactional-outbox-cosmos",
+          "label": "Transactional Outbox 개념"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service",
+          "label": "BackgroundService의 scoped 서비스"
+        }
+      ]
+    },
+    {
+      "slug": "admission-control",
+      "title": "Rate limiting·timeout·과부하 제어",
+      "before": {
+        "href": "index.html#chapter-16",
+        "label": "부하와 처리량 측정"
+      },
+      "after": {
+        "href": "index.html#chapter-15",
+        "label": "준비 상태와 안전한 종료"
+      },
+      "opening": "느려진 서버가 모든 요청을 받아들이면 처리한 결과도 클라이언트 timeout 뒤에 도착할 수 있습니다. 유한 큐의 원리를 HTTP 입장 정책으로 연결합니다.",
+      "sections": [
+        {
+          "title": "속도·동시성·대기열을 따로 제한하기",
+          "body": [
+            "토큰 버킷 같은 rate limiter는 시간당 허용량을, concurrency limiter는 동시에 점유할 permit 수를 제한합니다. 느린 요청이 많으면 낮은 요청률에서도 동시성은 높을 수 있습니다. QueueLimit은 실행 permit과 별도로 대기 요청의 상한을 정합니다.",
+            "`AddRateLimiter`에서 이름 있는 concurrency 정책의 PermitLimit과 QueueLimit을 작게 정하고 endpoint에 `RequireRateLimiting`을 연결합니다. 메타데이터를 쓰는 정책은 라우팅 결과 뒤에 적용되게 구성합니다. 거절 상태와 클라이언트의 재시도 안내도 API 계약으로 명시합니다."
+          ]
+        },
+        {
+          "title": "취소 전달과 다중 인스턴스 경계",
+          "body": [
+            "요청 timeout middleware는 실행 중인 계산을 강제로 제거하지 않습니다. 하위 I/O에 취소 토큰을 전달하고 CPU 루프도 협력적으로 확인해야 자원을 돌려받습니다. timeout 응답을 썼다고 DB commit이 롤백됐다는 뜻은 아닙니다.",
+            "프로세스 안 limiter를 인스턴스 세 개에 놓으면 전체 허용량이 단일 인스턴스 설정과 같지 않습니다. 사용자·조직·경로 중 어떤 키로 나눌지, 공유 제한 저장소가 실패하면 어떤 기능을 수용할지 정책을 정합니다. 계수기를 분산했다는 사실만으로 공정성이나 업무 정확성이 생기지는 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "로컬 endpoint에 지연 500ms를 주고 concurrency permit 2, 대기열 2를 설정하세요. 정상 부하와 짧은 작은 burst를 비교해 실행 중·대기·거절·완료 수를 기록합니다. 대기열 0과 2를 비교하고 취소 후 permit이 회수되는지도 확인하세요.",
+        "cases": [
+          {
+            "label": "permit 2, 대기열 0",
+            "result": "실행 여유를 넘는 요청은 기다리지 않고 거절됩니다. 수용한 요청의 완료와 빠른 거절을 따로 집계합니다."
+          },
+          {
+            "label": "대기열 확대만 적용",
+            "result": "burst를 흡수할 수 있지만 처리 용량은 그대로여서 대기 시간이 증가할 수 있습니다. 성공률과 timeout을 함께 봐야 합니다."
+          }
+        ]
+      },
+      "limit": "실습은 자신이 띄운 로컬 서버에 작은 부하만 사용합니다. 다음 운영 장에서는 거절 증가와 readiness 실패를 같은 신호로 취급하지 않고 회복 과정을 관측합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit",
+          "label": "ASP.NET Core rate limiting"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/performance/timeouts",
+          "label": "요청 timeout middleware"
+        }
+      ]
+    },
+    {
+      "slug": "integration-rehearsal",
+      "title": "API 통합 테스트와 배포 리허설",
+      "before": {
+        "href": "index.html#chapter-14",
+        "label": "테스트의 증거 범위"
+      },
+      "after": {
+        "href": "index.html#chapter-18",
+        "label": "최종 설계 판단"
+      },
+      "opening": "가짜 저장소의 테스트가 통과해도 배포된 Kestrel에서 인증·DB·worker가 이어지는지는 알 수 없습니다. 테스트가 지나간 경로를 실제 요청과 배포 산출물로 연결합니다.",
+      "sections": [
+        {
+          "title": "테스트 호스트와 실제 전송 경로",
+          "body": [
+            "`WebApplicationFactory<Program>`로 앱을 구성하고 CreateClient로 접수·조회·권한·취소를 검사합니다. 외부 의존성 중 무엇을 대체했는지 적고 관계형 제약을 검증하려면 실제 테스트 DB와 마이그레이션을 포함합니다. 응답만 아니라 저장 결과와 Outbox/작업 상태도 같은 ID로 확인합니다.",
+            "기본 TestServer는 실제 Kestrel 소켓·TLS·프록시 경로를 지나지 않습니다. 게시한 앱을 로컬 Kestrel로 실행한 smoke test와 브라우저 쿠키/CORS 검사는 별도입니다. 인증을 fake로 교체했다면 실제 자격 증명 검증이 빠졌다는 범위를 유지합니다."
+          ]
+        },
+        {
+          "title": "신구 호환성과 종료를 리허설하기",
+          "body": [
+            "새 컬럼 추가 → 신구 버전이 함께 읽고 쓰기 → 새 코드로 전환 → 오래된 필드 제거 순서를 표로 만듭니다. 앱만 이전 버전으로 되돌려도 새 데이터 형식이 읽히는지 검사해야 합니다. 데이터 변환을 되돌리지 못하는데 배포 롤백을 완료했다고 쓰지 않습니다.",
+            "진행 중 요청과 worker 작업을 만든 뒤 신규 접수 중단·readiness 전환·drain·종료를 순서대로 관측합니다. 호스트 timeout과 플랫폼 종료 유예 안에 끝내지 못한 일은 영속 상태로 복구해야 합니다. deploy 로그, 정상 요청 성공, 중단 후 복구를 서로 다른 증거로 제출합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "동일 입력과 작업 ID로 단위 테스트, WebApplicationFactory+테스트 DB, 실제 Kestrel 요청의 검증 표를 만드세요. 자기 로컬 앱 두 버전을 같은 호환 스키마로 실행하고 진행 중 작업이 있는 상태에서 한 버전을 종료합니다. 누락·재전달·권한 결과와 rollback 뒤 조회를 확인하세요.",
+        "cases": [
+          {
+            "label": "테스트 호스트와 fake 의존성만 통과",
+            "result": "업무 규칙과 가짜 계약에 대한 증거입니다. 실제 SQL·소켓·쿠키·프록시 성공까지 확대할 수 없습니다."
+          },
+          {
+            "label": "실제 저장과 종료 후 복구까지 관측",
+            "result": "해당 버전·환경·입력의 연결 경로를 입증합니다. 모든 부하와 장애에서 안전하다는 일반 보증은 아닙니다."
+          }
+        ]
+      },
+      "limit": "운영 배포를 이 실험의 일부로 자동 수행하지 않습니다. 최종 설계 문서는 요구·선택·관측·미검증을 구분하고 측정된 병목을 기준으로 다음 최적화를 정합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests",
+          "label": "ASP.NET Core 통합 테스트"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services",
+          "label": "Hosted Service 수명과 종료"
+        }
+      ]
+    }
+  ]
+}

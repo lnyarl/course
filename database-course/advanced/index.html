@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust 데이터베이스 구현 심화 · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a></header>
+<main>
+<h1>Rust 데이터베이스 구현 심화</h1>
+<p class="lead">기존 9장의 실제 엔진을 기준으로 저장 변경·관계 연산·자원 제한·통계·행 버전·페이지 복구를 단계적으로 넓힙니다. 조건 선택 실험의 출력은 명시한 모형의 예상값이며, 아래 기능이 기존 Rust 엔진에 모두 구현되어 있음을 뜻하지 않습니다.</p>
+<p><a href="../index.html">기존 코스 목차</a></p>
+<ol class="units">
+<li><a href="updates-deletes-space-reuse.html">UPDATE·DELETE와 저장 공간 회수</a><p>4장은 행을 힙에 넣고 기본키에서 RID를 찾습니다. 이제 이름이 길어져 같은 슬롯에 들어가지 않는 UPDATE와 DELETE를 추가해 봅니다. 행 바이트만 지우면 색인이 이미 다른 행이 된 슬롯을 가리킬 수 있습니다. 목표는 행·색인·공간 관리의 세 변화를 한 연산으로 설명하는 것입니다.</p></li>
+<li><a href="secondary-composite-indexes.html">보조·복합 색인과 범위 계획</a><p>기본키 하나를 찾던 B+트리에 tenant와 시각을 함께 넣으면 어떤 질의를 줄일 수 있을까요? 같은 데이터도 색인 열 순서에 따라 연속으로 읽을 수 있는 구간이 달라집니다. 이 단원은 색인 존재 여부가 아니라 실제 읽는 키 구간과 최종 결과를 분리합니다.</p></li>
+<li><a href="sql-joins-aggregation.html">SQL JOIN·집계와 중복·NULL 계약</a><p>6장의 조인 API가 맞더라도 SQL 파서와 바인딩에 연결되지 않으면 SELECT의 일부일 뿐입니다. 두 주문과 같은 키의 두 고객 행을 조인해 봅니다. 관계형 질의의 결과는 자동으로 중복 제거되는 집합이 아니므로, 물리 알고리즘을 바꿔도 행의 개수와 NULL 처리가 같아야 합니다.</p></li>
+<li><a href="external-sort-hash-spill.html">메모리보다 큰 정렬과 해시의 spill</a><p>6장의 Sort는 첫 결과를 내기 전에 입력을 모두 모읍니다. 메모리 한도가 세 정수인데 입력이 여덟 개라면 어떻게 정렬할까요? 데이터를 디스크로 내리는 spill은 단순히 임시 파일 하나를 추가하는 일이 아니라 메모리 상한·병합 횟수·실패 후 정리 계약을 새로 만드는 일입니다.</p></li>
+<li><a href="statistics-cost-optimization.html">통계·선택도와 비용 기반 계획 선택</a><p>현재 엔진은 작은 고정 비용식으로 접근 경로를 고릅니다. 조건을 두 개 붙이면 반환 행 수를 얼마나 줄일 수 있을까요? 각각 30%인 두 조건의 결과가 반드시 9%인 것은 아닙니다. 통계가 틀리면 올바른 알고리즘을 갖고도 더 비싼 계획을 선택할 수 있습니다.</p></li>
+<li><a href="row-mvcc-vacuum.html">행 MVCC·색인 가시성과 버전 회수</a><p>8장의 전체 파일 복사 방식에서는 오래된 reader가 자신의 사본을 읽습니다. 행 버전을 공유하는 방식으로 바꾸면 reader마다 무엇을 볼 수 있는지와 언제 옛 버전을 지울지가 새 문제가 됩니다. 같은 행의 두 버전을 놓고 가시성·색인 접근·회수 기준을 차례로 분리합니다.</p></li>
+<li><a href="page-wal-checkpoint.html">페이지 WAL·반복 REDO와 체크포인트</a><p>7장은 전체 파일의 afterimage를 기록해 복구를 단순화했습니다. 큰 DB에서 페이지 변경만 기록하려면, 로그와 데이터 페이지가 어느 순번까지 내구화됐는지를 따로 추적해야 합니다. 같은 REDO를 두 번 적용하지 않는 규칙과 체크포인트 이후 로그를 남기는 이유를 작은 페이지 하나로 살펴봅니다.</p></li>
+</ol>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

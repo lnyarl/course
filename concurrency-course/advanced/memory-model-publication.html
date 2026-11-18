@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.NET 메모리 모델과 안전한 공개 · C# 동시성과 비동기 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 동시성과 비동기 심화</a></header>
+<main>
+<h1>.NET 메모리 모델과 안전한 공개</h1>
+<p class="connection">선수 장 · <a href="../index.html#week-4">공유 상태: 경쟁과 락</a></p>
+<p class="lead">카운터의 lost update를 막았더라도 “준비됨”을 본 소비자가 관련 데이터까지 안전하게 읽는지는 별도 문제입니다. 공유 상태 장의 원자성을 가시성과 공개 순서로 확장합니다.</p>
+<section><h2>원자적 필드와 복합 불변식</h2>
+<p>정수 필드 하나의 읽기·쓰기가 나뉘지 않는 것과 <code>잔액 + 예약금 = 총액</code>이라는 관계를 보장하는 것은 다릅니다. <code>Interlocked.Increment</code>는 한 위치의 원자적 갱신에 맞지만 두 필드를 각각 증가시키는 사이에 독자가 들어오면 중간 상태를 읽을 수 있습니다. 함께 참이어야 할 조건을 먼저 적고 모든 접근 경로가 같은 동기화 규칙을 쓰게 합니다.</p>
+<p>두 필드의 일관된 조회가 필요하면 같은 <code>lock</code> 안에서 읽거나, 완성한 불변 snapshot 객체의 참조를 한 번 교체합니다. snapshot 안의 List를 교체 뒤에도 수정하면 불변 공개가 아닙니다. <code>volatile</code> 필드를 추가하는 것만으로 읽기·검사·쓰기 전체가 임계 구역이 되지는 않습니다.</p></section>
+<section><h2>완성한 값을 공개하는 코드 흐름</h2>
+<p>생산자 하나가 <code>payload = 42; Volatile.Write(ref ready, 1);</code>을 실행하고, 소비자는 <code>Volatile.Read(ref ready) == 1</code>을 확인한 뒤 payload를 읽는 단방향 예를 따라갑니다. release 성격의 쓰기와 acquire 성격의 읽기를 연결해 앞서 완성한 상태를 공개합니다. 이 예에서는 payload를 공개 뒤에 다시 수정하지 않는 조건이 중요합니다.</p>
+<p>코드를 읽을 때 데이터 작성, 공개 신호, 신호 관측, 데이터 사용의 네 위치를 표시합니다. 다음 요청에도 ready를 0과 1로 재사용하면 어느 세대의 payload인지 식별하는 문제가 추가됩니다. 세대 번호·락·메시지 전달 중 하나로 새 계약을 정해야 하며, 단일 공개 예의 결론을 그대로 재사용하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>실습용 콘솔에서 생산자·소비자 각 하나와 한 번만 공개하는 payload를 만드세요. 데이터와 신호의 순서를 표시하고 Volatile 버전과 같은 lock으로 전체 상태를 읽는 버전의 불변식을 먼저 예상합니다. 여러 필드를 독립적으로 Interlocked 갱신하는 예에는 Barrier로 중간 관측 지점을 만들어 보세요.</p>
+<details><summary>하나의 snapshot을 완성한 뒤 공개</summary><p>소비자는 자신이 읽은 snapshot 참조 안의 일관된 값을 사용합니다. 이후 수정이 없다는 조건으로 여러 필드의 세대가 섞이지 않습니다.</p></details>
+<details><summary>두 필드를 각각 원자 갱신하고 중간에서 조회</summary><p>각 필드는 안전하게 갱신돼도 복합 관계는 깨질 수 있습니다. 강제한 중간 관측은 원자성과 트랜잭션의 차이를 보여 줍니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>동기화 없는 코드를 반복 실행해 오류가 나오지 않았다는 사실은 메모리 모델의 증명이 아닙니다. 다음 상태 머신 장에서는 공유 상태가 스레드 사이뿐 아니라 await 전후에도 이어진다는 점을 연결합니다.</p><p>관련 기존 장 · <a href="../index.html#week-5">Task와 비동기 상태 머신</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.threading.volatile">Volatile 클래스</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.threading.interlocked">Interlocked 클래스</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="threadpool-starvation.html">다음 심화 · ThreadPool과 starvation 진단</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

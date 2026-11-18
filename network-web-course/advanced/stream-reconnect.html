@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>느린 소비자와 스트리밍 재연결 · 웹 네트워크 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">웹 네트워크 심화</a></header>
+<main>
+<h1>느린 소비자와 스트리밍 재연결</h1>
+<p class="connection">선수 장 · <a href="../08-http-versions.html">8장 스트리밍</a></p>
+<p class="lead">배포 뒤 연결은 다시 열렸지만 일부 이벤트가 빠졌습니다. 연결 복구와 커서에 따른 데이터 복구를 따로 설계합니다.</p>
+<section><h2>재연결 뒤 보내는 첫 데이터</h2>
+<p>SSE는 이벤트 ID를 보내고 재연결 때 마지막 ID를 확인할 수 있습니다. 보관 범위에 이후 이벤트가 있어야 이어받을 수 있으며 범위를 넘으면 스냅샷 후 새 커서를 정합니다.</p>
+<p>WebSocket에 업무 이벤트의 재전달이나 중복 제거가 기본 포함되는 것은 아닙니다. 업무 메시지에 시퀀스를 두고 이미 적용한 번호를 다시 처리하지 않도록 합의합니다.</p></section>
+<section><h2>소비 속도와 배포 종료</h2>
+<p>느린 소비자에게 데이터를 계속 보관하면 연결당 버퍼가 증가합니다. 이벤트 종류별로 병합 가능성, 버퍼 제한, 연결을 닫은 뒤 재동기화의 의미를 결정합니다.</p>
+<p>배포 시 새 연결을 받지 않는 단계와 기존 연결을 끝내는 단계를 분리합니다. 종료 지점이 바뀌어도 커서에 접근할 수 있는지 확인하고 프록시 유휴 타임아웃과 함께 맞춥니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>이벤트 1~6 중 사용자가 3까지 반영했다고 기록합니다. 새 서버의 보관 범위가 다를 때 첫 응답을 정하세요. 웹 네트워크 코스 폴더에서 <code>python3 tools/advanced_stream_lab.py</code>를 실행해 보관 범위가 4~6인 서버의 커서 3, 5, 2 결과도 비교하세요.</p>
+<details><summary>4~6이 보관됨</summary><p>4부터 재전송하고 이미 반영한 이전 이벤트에는 상태 변경을 반복하지 않습니다.</p></details>
+<details><summary>6만 보관됨</summary><p>4~5를 재전달할 수 없으므로 스냅샷으로 동기화한 뒤 새 커서에서 구독합니다.</p></details></section><p>실습 코드 · <a href="../tools/advanced_stream_lab.py">로컬 TCP/HTTP 이어받기 실습</a></p>
+<section><h2>실습의 경계와 다음 장</h2><p>코드 실습은 루프백 HTTP에서 유한한 이벤트 응답을 확인합니다. 이 예제의 409는 스냅샷을 요구하는 애플리케이션 규칙입니다. 브라우저 EventSource 자동 재연결, 무기한 스트림, 실제 배포 종료는 검증하지 않습니다. 9장에서 종료 지점과 새 연결의 대상 선택을 관찰합니다.</p><p>관련 기존 장 · <a href="../09-proxies.html">9장 프록시와 로드밸런서</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc6455.html">RFC 6455</a></li><li><a href="https://html.spec.whatwg.org/multipage/server-sent-events.html">WHATWG HTML · SSE</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="h2-h3-internals.html">이전 심화 · HTTP/2와 HTTP/3의 흐름 제어</a><a href="deadline-overload.html">다음 심화 · 타임아웃 예산과 과부하 전파</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

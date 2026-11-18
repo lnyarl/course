@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DMA 주소와 페이지 고정의 비용 · 운영체제 메모리 관리 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">운영체제 메모리 관리 심화</a></header>
+<main>
+<h1>DMA 주소와 페이지 고정의 비용</h1>
+<p class="connection">선수 장 · <a href="../09-kernel-allocators.html">커널 할당자: Buddy와 Slab/SLUB</a></p>
+<p class="lead">9장에서 연속 페이지와 GFP 계약을 봤습니다. 장치가 사용하는 버퍼는 CPU가 읽는 포인터와 주소·소유권·회수 조건이 다릅니다.</p>
+<section><h2>CPU 포인터와 장치 주소를 분리하기</h2>
+<p>사용자 가상 주소, 커널 가상 주소, CPU 물리 주소, 장치 DMA 주소는 같은 숫자라고 가정하면 안 됩니다. 드라이버의 dma_map_single 또는 dma_map_sg가 장치 접근에 사용할 매핑을 만들고, IOMMU가 있으면 장치 주소가 다시 변환될 수 있습니다. scatter-gather가 지원되면 버퍼 전체가 하나의 물리 연속 영역일 필요도 없습니다.</p>
+<p>매핑 성공 후에는 CPU와 장치 중 누가 버퍼를 사용해도 되는지 정해야 합니다. streaming DMA의 재사용에서는 dma_sync_single_for_cpu/device 같은 동기화가 필요할 수 있으며 coherent DMA도 명령·소유권 게시 순서까지 무조건 보장하지 않습니다. 장치 접근 종료를 확인하기 전에 unmap하거나 메모리를 해제하지 않는 것이 수명 불변식입니다.</p></section>
+<section><h2>mlock과 DMA pin이 남기는 서로 다른 제약</h2>
+<p>mlock은 주소 범위의 페이지를 RAM에 상주시켜 스왑되지 않게 하는 계약입니다. 같은 물리 프레임에 고정하거나 장치 DMA의 안전성을 제공하는 계약은 아닙니다. pin_user_pages 계열은 DMA가 참조하는 페이지의 수명과 회수·이동을 구분해 추적합니다. FOLL_LONGTERM 같은 장기 사용 제약도 별도로 검토해야 합니다.</p>
+<p>고정된 페이지가 많으면 가용 메모리 총량이 남아도 migration·compaction이 필요한 큰 할당을 만족시키기 어려울 수 있습니다. mlock 때문에 회수 불가능한 양이 늘어난 상황과 DMA pin 때문에 이동이 막힌 상황을 같은 카운터 하나로 판정하지 않습니다. /proc/meminfo의 Mlocked·Unevictable과 /proc/buddyinfo는 서로 다른 관측이며 단독으로 DMA pin 총량을 완전 설명하지 못합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>장치나 커널 설정을 변경하지 않고 /proc/meminfo에서 Mlocked·Unevictable을 읽고 /proc/buddyinfo의 order별 빈 블록을 기록합니다. 이어 16페이지 중 짝수 8페이지가 고정된 종이 모델에서 연속 8페이지 할당 가능 여부를 계산하세요. 실제 관측값과 종이 모델의 예상 결과를 다른 칸에 적습니다.</p>
+<details><summary>총 8페이지 여유가 있으나 교대로 고정 페이지 존재</summary><p>예상 모델 결과: 여유 페이지가 서로 떨어져 있고 고정 페이지를 이동할 수 없다면 연속 8페이지를 만들 수 없습니다. 총량만으로 성공을 보장할 수 없습니다.</p></details>
+<details><summary>장치가 사용을 마치고 pin을 해제한 경우</summary><p>예상 모델 결과: 이동 가능성 제약은 줄지만 실제 compaction 성공은 다른 페이지 유형·동시 할당에도 의존합니다. 카운터 스냅샷만으로 성공했다고 보고하지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>여기서는 실제 장치 DMA를 실행하지 않습니다. 주소·매핑·수명 규칙을 읽고 관측 한계를 확인합니다. 12장 회수에서는 회수 가능한 페이지와 이동 가능한 페이지가 왜 다른 집합인지 연결하세요.</p><p>관련 기존 장 · <a href="../12-linux-reclaim-oom.html">Linux 메모리 회수, swap, OOM, cgroup</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/core-api/dma-api-howto.html">DMA mapping API와 주소·소유권</a></li><li><a href="https://docs.kernel.org/core-api/pin_user_pages.html">DMA pin과 장기 페이지 고정</a></li><li><a href="https://man7.org/linux/man-pages/man2/mlock.2.html">mlock의 RAM 상주 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="publication-order-and-lifetime.html">이전 심화 · 메모리 게시 순서와 객체 수명</a><a href="userfaultfd-paging.html">다음 심화 · 사용자 공간에서 해결하는 페이지 폴트</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

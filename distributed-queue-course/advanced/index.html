@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C# 메시지 큐 구현 심화 · C# 메시지 큐 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a></header>
+<main>
+<h1>C# 메시지 큐 구현 심화</h1>
+<p class="lead">기존 1~10장의 실행 예제를 바탕으로 로그 수명·소비자 소유권·업무 DB 경계·배포·합의의 다음 규칙을 다룹니다. 조건별 출력은 지정한 상태 모형의 예상값이며, 새로운 운영 Broker 기능을 모두 구현한 결과로 표시하지 않습니다.</p>
+<p><a href="../index.html">기존 코스 목차</a></p>
+<ol class="units">
+<li><a href="segments-snapshots-retention.html">로그 세그먼트·스냅샷과 중복 방지 기록 보존</a><p>로그를 계속 덧붙이면 작업이 끝나도 파일과 재생 시간이 늘어납니다. Ready만 저장하고 옛 로그를 지워도 될까요? 완료 ID와 재시도 상태까지 복원하지 못하면 이미 끝난 작업이 다시 실행될 수 있습니다. 로그를 지우는 기준을 보관량이 아니라 복구 가능한 상태의 경계로 정합니다.</p></li>
+<li><a href="consumer-groups-rebalance.html">소비자 그룹·할당 epoch와 재분배</a><p>파티션 네 개를 Worker 두 명에게 나눴는데 한 Worker가 멈췄습니다. 새 Worker에게 파티션을 넘겨도 옛 Worker는 계속 계산할 수 있습니다. 그룹 할당은 누가 새 작업을 받을지 정하는 문제이고, 오래된 실행의 권한을 회수하는 문제와 외부 결과를 보호하는 문제는 따로 남습니다.</p></li>
+<li><a href="transactional-outbox-inbox.html">트랜잭셔널 Outbox·Inbox와 두 커밋 경계</a><p>주문을 DB에 저장한 뒤 Publish하려는데 그 사이 서버가 종료됐습니다. 순서를 뒤집어 Publish부터 해도 DB 저장 전에 종료될 수 있습니다. 두 시스템의 호출 순서만 바꾸는 대신, 업무 데이터와 발행할 의도를 같은 DB 트랜잭션에 남기는 구조를 살펴봅니다.</p></li>
+<li><a href="shutdown-rollout-protocol.html">정상 종료·롤링 교체와 프로토콜 진화</a><p>프로세스에 종료 신호를 보냈는데 Worker가 작업을 받는 중입니다. 즉시 취소하면 아직 ACK하지 않은 결과가 남고, 끝없이 기다리면 배포가 끝나지 않습니다. 기존 drain의 범위를 네트워크 접수·임대·결과·ACK·호환 버전으로 넓혀 하나의 종료 순서를 정의합니다.</p></li>
+<li><a href="raft-election-log-matching.html">Raft 선출·영속 투표와 로그 일치</a><p>정적 리더의 로그 사본이 두 개 있어도 누구를 새 리더로 뽑아도 되는 것은 아닙니다. 더 최신인 로그를 잃은 후보가 리더가 되거나 같은 term에서 두 후보에게 투표하면 서로 다른 미래가 생길 수 있습니다. 선출의 비교 기준과 AppendEntries의 이전 로그 검사를 나눠 살펴봅니다.</p></li>
+<li><a href="raft-commit-snapshot-validation.html">Raft 커밋·스냅샷 설치와 장애 불변식</a><p>이전 term의 항목이 과반수에 복제되었다면 곧바로 커밋할 수 있을까요? 오래 뒤처진 follower에게 로그 전체를 보내기 어렵다면 무엇을 스냅샷에 담아야 할까요? 커밋 순번과 적용 순번, snapshot의 경계를 분리해 완료 작업이 되살아나지 않는지 점검합니다.</p></li>
+</ol>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

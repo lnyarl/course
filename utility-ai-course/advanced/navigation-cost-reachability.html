@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>이동 비용·도달 가능성과 공간 평가 · 효용 기반 AI 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">효용 기반 AI 심화</a></header>
+<main>
+<h1>이동 비용·도달 가능성과 공간 평가</h1>
+<p class="connection">선수 장 · <a href="../08-context-targets.html">기존 8장 · 거리와 타깃 평가</a></p>
+<p class="lead">가장 가까운 빵집으로 골랐는데 길이 막혀 도착하지 못합니다. 현재 Hamlet의 Manhattan 거리와 x·y 이동은 장애물이 없는 모형입니다. 길찾기의 실제 경로 비용과 도달 가능성을 효용 평가에 넣되, 비싼 탐색을 모든 후보에 매번 수행하지 않는 단계를 설계합니다.</p>
+<section><h2>직선 거리·최단 경로·실행 실패 구분하기</h2>
+<p>4방향으로 한 칸 움직이는 비용은 1입니다. 격자 범위는 0≤x≤2, 0≤y≤3이며 범위 밖으로 이동할 수 없습니다. 주민은 (0,0), B는 (2,0), C는 (0,3)에 있습니다. 벽은 (1,0),(1,1)입니다. Manhattan 거리는 B=2,C=3이지만 B의 우회 최단 경로는 (0,1)→(0,2)→(1,2)→(2,2)→(2,1)→(2,0)의 비용 6이고 C는 비용 3입니다. 나머지 효용이 같다면 경로 비용을 쓰는 선택은 C로 바뀝니다.</p>
+<p>도달 불가를 큰 유한 거리와 혼동하지 말고 별도 상태로 표시합니다. Unity NavMesh.CalculatePath 계열을 연결할 때도 반환 여부만 보지 말고 PathComplete·PathPartial·PathInvalid 같은 경로 상태를 확인해야 합니다. 경로가 부분적으로 존재한다는 것과 목표에 도착할 수 있다는 것은 다릅니다. 이 단원의 격자는 NavMesh의 실제 탐색 결과가 아니라 정확한 작은 비교 모형입니다.</p></section>
+<section><h2>후보 축소와 경로 캐시의 무효화</h2>
+<p>먼저 값싼 거리·태그·명백한 불가능 조건으로 후보를 줄이고, 남은 후보에 경로 비용을 계산할 수 있습니다. 그러나 단순히 가까운 N개만 남기면 멀지만 매우 가치 있는 대상을 버릴 수 있습니다. 정확한 최댓값을 유지하려면 제외 후보의 가능한 점수 상한으로 현재 승자를 이길 수 없음을 확인하거나, 근사 탐색이라는 정책을 명시해야 합니다.</p>
+<p>경로 캐시 키에는 출발 지역·목표·이동 능력·navigation revision 같은 정보를 포함합니다. 문이 닫히거나 길이 바뀌면 이전 결과가 유효하지 않을 수 있습니다. 선택 후 실행 직전에도 도달 가능성이나 예약이 변했는지 확인하고, 실패하면 예약을 해제하고 재평가합니다. 점수가 좋았다는 이유만으로 run이 성공한다고 가정하면 행동이 멈출 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>좌표와 두 벽을 종이에 그려 B·C의 최단 경로 길이를 먼저 세세요. 아래 조건에서 선택을 비교합니다. 별도 실습은 이 작은 격자에 BFS를 작성해 경로를 검산하고, 벽을 추가할 때 캐시 revision을 바꾼 결과와 바꾸지 않은 결과를 대조하는 방식입니다.</p>
+<details><summary>장애물 무시, Manhattan 거리만 사용</summary><p>B=2,C=3이므로 B를 고릅니다. 직선에 가까운 거리는 실제 우회 비용을 반영하지 않습니다.</p></details>
+<details><summary>두 벽 반영, 4방향 최단 경로 사용</summary><p>B=6,C=3이므로 나머지 효용이 같으면 C를 고릅니다. 경로 좌표를 따라 비용을 직접 검산할 수 있습니다.</p></details>
+<details><summary>B로 가는 길을 완전히 차단</summary><p>B는 도달 불가 후보로 구분해야 합니다. 과거의 유한 거리 캐시를 그대로 사용하면 실행이 실패할 수 있습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>4방향 단위 비용 격자의 예상 결과이며 실제 엔진의 navigation 성능 측정이 아닙니다. uai.js에 A*·NavMesh를 추가한 상태도 아닙니다. 대각선·가속·군집 회피·동적 장애물은 별도 모델입니다. 다음에는 9장의 평가/실행 경계에 경로 실패를 반환하도록 설계하세요.</p><p>관련 기존 장 · <a href="../09-engine-architecture.html">기존 9장 · 평가와 실행의 계약</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.unity3d.com/ScriptReference/AI.NavMesh.CalculatePath.html">Unity · NavMesh.CalculatePath와 경로 상태</a></li><li><a href="https://www.gameaipro.com/GameAIPro2/GameAIPro2_Chapter31_Spatial_Reasoning_for_Strategic_Decision_Making.pdf">Game AI Pro 2 · 공간 표현과 의사결정</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="perception-memory-beliefs.html">이전 심화 · 지각·기억과 불확실한 정보</a><a href="reservations-roles-coordination.html">다음 심화 · 예약·역할과 여러 행위자의 조정</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

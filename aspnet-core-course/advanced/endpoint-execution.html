@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>라우팅·binding·validation·filter의 실행 경로 · ASP.NET Core 구조와 동작 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">ASP.NET Core 구조와 동작 심화</a></header>
+<main>
+<h1>라우팅·binding·validation·filter의 실행 경로</h1>
+<p class="connection">선수 장 · <a href="../index.html#chapter-6">미들웨어의 진입과 복귀</a></p>
+<p class="lead">같은 잘못된 입력도 라우트가 맞지 않은 경우와 DTO 검증이 실패한 경우의 응답이 다릅니다. 미들웨어 순서에서 endpoint 내부의 처리 단계로 내려갑니다.</p>
+<section><h2>실행되지 않은 단계를 찾기</h2>
+<p>라우팅은 후보와 metadata를 결정하고 binding은 경로·query·본문 값을 매개변수로 만듭니다. endpoint filter는 매개변수가 준비된 endpoint 호출을 감싸는 확장 지점입니다. JSON 파싱이 먼저 실패하면 endpoint 본문이나 해당 filter의 로그가 없을 수 있으므로 로그 부재만으로 요청 도착을 부정하지 않습니다.</p>
+<p><code>app.MapGet(&quot;/items/{id:int}&quot;, (int id) =&gt; Results.Ok(id))</code>에서 숫자가 아닌 경로는 int 제약을 만족하지 않아 endpoint 선택에서 벗어납니다. 반면 선택된 endpoint의 int query 매개변수 변환 실패는 다른 경로입니다. 정상·라우트 불일치·변환 오류·업무 거절의 응답을 따로 표로 만듭니다.</p></section>
+<section><h2>일관된 오류 계약을 만드는 코드 흐름</h2>
+<p>Minimal API에서는 endpoint의 입력 검사나 <code>AddEndpointFilter</code>에서 명시적으로 <code>Results.ValidationProblem</code>을 반환하는 작은 기준을 시작점으로 삼습니다. Controller의 <code>[ApiController]</code> 기반 모델 검증과 같은 단계·기본 동작이라고 가정하지 않습니다. 버전과 등록 방식에 따라 제공되는 자동 검증을 확인합니다.</p>
+<p>filter가 외부 호출을 하거나 DB를 읽어 판단한다면 단순 형식 검증과 업무 검증의 책임이 섞일 수 있습니다. 형식·범위 → 신원·리소스 정책 → 상태 변경의 구간을 표시하고, 각 거절에 안정된 오류 유형과 추적 ID를 둡니다. framework 예외 메시지를 그대로 외부 계약으로 삼지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>로컬 서버의 미들웨어, endpoint filter, handler에 단계 로그를 넣으세요. 정상 JSON, 깨진 JSON, 범위를 벗어난 유효 JSON, int 라우트 불일치 네 요청을 보내고 어떤 로그가 생길지 먼저 예상합니다. Controller 버전도 만들면 입력과 성공·오류 의미를 같게 두고 실제 차이를 기록하세요.</p>
+<details><summary>파싱할 수 없는 JSON</summary><p>handler 전에 실패할 수 있으므로 handler의 수동 업무 검증 로그가 없어도 이상하지 않습니다. 실제 상태 코드를 응답에서 확인합니다.</p></details>
+<details><summary>형식은 맞지만 업무 상한 초과</summary><p>binding 이후의 정책에서 거절합니다. 형식 오류와 구분된 응답 의미를 유지해야 클라이언트가 다음 행동을 정할 수 있습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>동일 상태 코드만으로 모든 실패가 같은 단계였다고 판단하지 않습니다. API 계약 장에서 오류 형식과 테스트 케이스를 이 단계 표에 맞춰 정리합니다.</p><p>관련 기존 장 · <a href="../index.html#chapter-8">API 계약과 오류</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding">Minimal API binding</a></li><li><a href="https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/min-api-filters">Minimal API filters</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="streaming-pipelines.html">이전 심화 · Kestrel·Pipelines와 스트리밍 업로드</a><a href="ef-transactions-races.html">다음 심화 · EF Core 저장·트랜잭션·경합 실험</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

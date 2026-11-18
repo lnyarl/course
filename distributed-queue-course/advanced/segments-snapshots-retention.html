@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그 세그먼트·스냅샷과 중복 방지 기록 보존 · C# 메시지 큐 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 메시지 큐 구현 심화</a></header>
+<main>
+<h1>로그 세그먼트·스냅샷과 중복 방지 기록 보존</h1>
+<p class="connection">선수 장 · <a href="../03-wal-recovery.html">기존 3장 · append 로그와 재열기</a></p>
+<p class="lead">로그를 계속 덧붙이면 작업이 끝나도 파일과 재생 시간이 늘어납니다. Ready만 저장하고 옛 로그를 지워도 될까요? 완료 ID와 재시도 상태까지 복원하지 못하면 이미 끝난 작업이 다시 실행될 수 있습니다. 로그를 지우는 기준을 보관량이 아니라 복구 가능한 상태의 경계로 정합니다.</p>
+<section><h2>스냅샷은 현재 상태와 재생 시작점의 묶음</h2>
+<p>세그먼트 S0에는 순번 1~100, S1에는 101~200이 있다고 합시다. 순번 150까지 적용한 스냅샷을 만들었다면 Ready·InFlight·Retry·DLQ·완료 ID와 payload 충돌 검사 정보, 마지막 적용 순번 150을 함께 기록해야 합니다. 복구는 스냅샷에서 시작해 151 이후만 재생합니다. 스냅샷 도중 상태가 바뀐다면 일관된 버전을 복사하거나 상태 소유자가 기준 순번을 고정하는 절차가 필요합니다.</p>
+<p>스냅샷을 임시 파일에 완전히 쓰고 검증·내구화한 후 manifest로 게시합니다. 그 전에 S0를 지우면 스냅샷 작성 중 종료됐을 때 원상태를 복원할 수 없습니다. 게시 후에도 S1은 151~200이 필요하므로 통째로 삭제할 수 없습니다. 새 스냅샷과 남은 세그먼트로 같은 상태가 복원되는지 검증한 뒤 오래된 세그먼트만 회수합니다.</p></section>
+<section><h2>메시지 보존과 dedup 보존은 다른 정책</h2>
+<p>완료된 작업의 큰 payload를 회수하는 시점과 해당 ID를 다시 수락하지 않아야 하는 시점은 다를 수 있습니다. 최대 재전송 기간이 7일이라면 완료 직후 payload를 지우더라도 7일 동안 ID·요청 fingerprint·결과 위치를 남기는 설계를 비교할 수 있습니다. 하지만 실제로 7일 뒤에도 옛 생산자가 재전송할 수 있다면 그 기간만으로 중복 부작용 방지가 증명되지 않습니다.</p>
+<p>기존 WorkerLab의 ResultStore는 결과와 ID를 같은 레코드에 보관하며 삭제를 구현하지 않습니다. 이 설계에서 로그를 단순 크기 기준으로 자르면 보장의 범위가 바뀝니다. 보존 기간을 둘 때는 생산자 재시도 상한, 운영 재투입, 백업 복원, 외부 결과 조회의 수명을 함께 명시하고, 보존 범위를 벗어난 요청에 새 작업으로 접수할지 오류로 거절할지 계약으로 정해야 합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>스냅샷 적용 순번 150과 두 세그먼트의 구간을 적고 지워도 되는 파일을 예측하세요. 아래 조건을 비교한 뒤, 임시 폴더에서 스냅샷 게시 전·후 각각 종료한 복구 경로를 설계합니다. 실제 로그 삭제는 실험 사본에서만 수행하고 정상 복구의 Ready·Done ID 집합을 기준으로 대조하세요.</p>
+<details><summary>스냅샷 미게시, S0 삭제</summary><p>복구에 필요한 1~100 기록을 잃을 수 있습니다. 작성 중인 임시 스냅샷은 안전한 대체물이 아닙니다.</p></details>
+<details><summary>스냅샷 150 게시, S0만 회수</summary><p>스냅샷과 S1의 151~200을 재생해 200까지 복원할 수 있습니다. S1 전체는 아직 필요합니다.</p></details>
+<details><summary>Ready만 저장하고 완료 ID 제거</summary><p>재전송된 완료 작업을 처음 보는 ID로 취급할 수 있습니다. 큐 깊이가 같아도 멱등 보장은 달라집니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>구간 계산과 복구 상태 비교의 모형입니다. 현재 Journal·ResultStore에 세그먼트 교체나 자동 compaction을 구현한 것은 아닙니다. 정전 내구성을 주장하려면 파일뿐 아니라 manifest·rename·디렉터리·장치의 보장도 확인해야 합니다. 다음에는 완료 ID가 사라졌을 때의 5장 재전달 결과와 비교하세요.</p><p>관련 기존 장 · <a href="../05-idempotency.html">기존 5장 · 영속 중복 방지 경계</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rabbitmq.com/docs/streams">RabbitMQ · append 로그와 보존 정책</a></li><li><a href="https://etcd.io/docs/v3.6/op-guide/maintenance/">etcd · compaction·snapshot·디스크 유지 관리</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="consumer-groups-rebalance.html">다음 심화 · 소비자 그룹·할당 epoch와 재분배</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

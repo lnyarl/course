@@ -200,7 +200,7 @@ textarea.seq { width: 100%; font-family: var(--mono); font-size: 13px; min-heigh
     <p>실행 시점 바인딩이 있으면 OS는 프로세스를 실행 도중에 다른 위치로 옮길 수 있다. 내용을 복사하고 base만 바꾸면 끝이다. 같은 원리로 프로세스를 통째로 디스크(<b>백킹 스토어</b>)에 내보냈다가 나중에 <b>다른 위치로</b> 다시 들여올 수도 있다. 이것이 고전적 <b>스와핑(swapping)</b>이다. 실행 중인 프로세스 메모리의 합이 물리 메모리보다 커도 되므로 멀티프로그래밍 정도를 높일 수 있다.</p>
     <p>문제는 비용이다. 100 MB 프로세스를 50 MB/s HDD로 내보내고 다른 프로세스를 들여오면 왕복 4초가 걸린다. 2 GB/s NVMe라도 0.1초다. 스케줄러의 타임 슬라이스는 수 ms이므로, 프로세스를 통째로 옮기는 스와핑은 문맥 교환 수단으로 쓸 수 없다. 그래서 현대 OS는 <b>페이지 단위</b>로 필요한 부분만 내보내고 들여온다(06·07장). Linux에서 "swap"이라는 말은 이 페이지 단위 스왑을 뜻한다.</p>
     <div class="callout warn"><span class="title">옮길 수 없는 메모리: I/O와 pinning</span>
-      장치가 DMA로 어떤 프로세스의 버퍼에 쓰는 중이라면 그 메모리는 옮기거나 내보낼 수 없다. 장치는 물리 주소로 쓰기 때문에, 옮기면 다른 프로세스의 메모리를 덮어쓴다. 고전적 해법은 두 가지다. ① 그 프로세스는 스왑하지 않거나, ② 장치는 항상 커널 버퍼에만 쓰게 하고 커널이 복사한다(이중 버퍼링). 이 문제는 지금도 그대로다. RDMA의 메모리 등록, GPU용 pinned host memory, Linux의 <code>pin_user_pages()</code>, <code>mlock()</code>은 모두 "이 물리 페이지는 움직이지 마라"는 약속이다. 고정된 페이지가 많아지면 압축(7절)과 회수(12장)가 막혀 시스템 전체에 문제가 생긴다.</div>
+      장치가 DMA로 접근 중인 버퍼는 장치와의 매핑 계약을 유지해야 한다. 장치는 CPU 가상 주소가 아니라 DMA 주소를 사용하며, IOMMU가 있으면 그 주소도 물리 주소로 변환된다. 장치가 계속 사용하는 페이지를 매핑 갱신 없이 옮기거나 해제하면 잘못된 메모리에 접근할 수 있다. Linux의 <code>pin_user_pages()</code>는 이런 DMA용 페이지 고정을 다루며, RDMA 등록이나 GPU용 pinned host memory에서도 페이지 수명이 중요하다. 반면 <code>mlock()</code>은 가상 주소 범위의 페이지를 RAM에 상주시켜 <b>스왑되지 않도록</b> 하는 인터페이스다. 같은 물리 프레임에 계속 머무르거나 DMA가 안전하다는 보장은 아니다. 장기 pinning은 페이지 이동·압축을 제한할 수 있고, mlock은 회수 가능한 메모리를 줄인다. 두 제약을 구분해야 원인을 정확히 진단할 수 있다. <a href="https://docs.kernel.org/core-api/pin_user_pages.html">DMA pinning 계약</a> · <a href="https://man7.org/linux/man-pages/man2/mlock.2.html">mlock의 상주 보장</a>.</div>
     <p>모바일 OS는 전통적으로 디스크 스왑을 쓰지 않았다. 플래시 수명과 지연 때문이다. 대신 메모리가 부족하면 백그라운드 앱을 종료하고(Android의 lmkd, iOS의 jetsam), 메모리를 압축해 RAM 안에 보관한다(Android zram, iOS·macOS 메모리 압축). "프로세스 전체를 내보낸다"는 고전 스와핑의 발상은, 앱 하나를 통째로 정리하는 형태로 살아 있는 셈이다.</p>
   </section>
 
@@ -252,7 +252,7 @@ textarea.seq { width: 100%; font-family: var(--mono); font-size: 13px; min-heigh
     <div class="callout deep"><span class="title">이 문제는 지금 어디에 있나</span>
       <ul style="margin:4px 0 0">
         <li><b>malloc</b>: 힙 안에서 가변 크기 블록을 관리하는 것이 정확히 이 문제다. glibc는 크기별 bin(사실상 크기 클래스별 best fit), jemalloc·tcmalloc은 크기 클래스(slab 방식)로 외부 단편화를 내부 단편화로 바꾼다(10장).</li>
-        <li><b>커널의 연속 물리 메모리</b>: 페이징 덕분에 대부분의 할당은 연속일 필요가 없다. 그래도 DMA 버퍼, huge page(2 MB/1 GB)는 물리적으로 연속이어야 한다. Linux buddy allocator는 2의 거듭제곱 블록으로 이를 관리한다(09장). <code>cat /proc/buddyinfo</code>에서 큰 order의 빈 블록이 0이면 물리 메모리가 단편화된 것이다.</li>
+        <li><b>커널의 연속 물리 메모리</b>: 페이징 덕분에 대부분의 할당은 연속일 필요가 없다. 대형 페이지(예: 2 MB/1 GB)나 일부 장치의 DMA 버퍼는 물리 연속 영역이 필요하다. 모든 DMA 버퍼가 그런 것은 아니다. 장치의 scatter-gather 지원과 IOMMU·DMA 매핑 방식에 따라 여러 물리 페이지를 사용할 수 있다. Linux buddy allocator는 2의 거듭제곱 블록으로 이를 관리한다(09장). <code>cat /proc/buddyinfo</code>에서 큰 order의 빈 블록이 0이면 물리 메모리가 단편화된 것이다.</li>
         <li><b>GPU 메모리, 메모리 풀, 아레나</b>: 페이징이 없거나 큰 연속 블록이 필요한 곳에서 같은 전략 선택이 반복된다. "총 여유는 4 GB인데 2 GB 텐서 할당이 실패한다"는 딥러닝 프레임워크의 OOM은 외부 단편화의 교과서적 사례다.</li>
       </ul></div>
   </section>

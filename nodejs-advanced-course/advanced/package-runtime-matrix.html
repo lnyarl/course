@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>패키지 호환성과 런타임 업그레이드 · Node.js 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Node.js 심화</a></header>
+<main>
+<h1>패키지 호환성과 런타임 업그레이드</h1>
+<p class="connection">선수 장 · <a href="../08-module-system.html#s5">exports와 조건부 해석</a></p>
+<p class="lead">앱 소스의 import가 같아도 exports 조건이나 네이티브 바이너리 때문에 업그레이드 결과가 달라질 수 있습니다. 모듈 해석에서 소비자 환경별 검증 행렬로 이동합니다.</p>
+<section><h2>공개 표면과 두 소비자</h2>
+<p>작은 테스트 패키지에 exports를 두고 CJS 소비자와 ESM 소비자를 따로 만듭니다. <code>require(&quot;pkg&quot;)</code>와 <code>import ... from &quot;pkg&quot;</code>가 선택하는 엔트리를 로그로 확인합니다. 두 엔트리가 별도의 상태 객체를 만들면 같은 패키지를 두 방식으로 읽은 소비자가 서로 다른 singleton을 볼 수 있습니다.</p>
+<p>내부 파일 경로를 직접 참조하는 소비자는 공개 exports 경계를 벗어납니다. package.json의 type, 파일 확장자, import/require 조건을 함께 검사합니다. TypeScript 타입 검사가 통과해도 실제 Node가 선택한 런타임 파일이 맞다는 증거는 아니므로 설치된 패키지 산출물로 실행합니다.</p></section>
+<section><h2>호환성 행렬에 포함할 축</h2>
+<p>지원하기로 정한 Node 메이저별로 CJS/ESM·정상 시작·종료·주요 API를 실행하고 <code>process.version</code>과 <code>process.versions</code>를 결과에 남깁니다. lockfile로 의존성을 고정한 비교와 의존성 업데이트를 함께 한 비교를 분리해야 원인을 좁힐 수 있습니다.</p>
+<p>Node-API를 사용해도 플랫폼·아키텍처·런타임이 제공하는 API 버전과 외부 공유 라이브러리 조건은 남습니다. V8 API에 직접 의존한 애드온과 Node-API ABI 계약을 구분합니다. 빌드 머신에서 실행됐다는 사실만으로 배포 이미지의 libc·아키텍처 호환성을 주장하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>자신의 작은 패키지를 임시 프로젝트에 설치해 CJS/ESM 소비자 두 개를 실행하세요. 지원할 두 Node 버전에서 같은 lockfile과 입력으로 반복하고 공개 API 결과·선택된 엔트리·종료 코드를 기록합니다. 네이티브 의존성이 있으면 실제 배포 이미지에서도 같은 smoke test를 수행하세요.</p>
+<details><summary>소스만 실행하고 패키지 산출물 생략</summary><p>잘못된 exports 대상이나 배포 누락 파일을 놓칠 수 있습니다. 소비자가 설치할 형태의 파일을 검사해야 합니다.</p></details>
+<details><summary>버전·모듈 방식·배포 환경을 나눠 검사</summary><p>어느 축에서 달라졌는지 좁힐 수 있습니다. 한 행의 성공을 전체 지원 범위 성공으로 확대하지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>실험은 지원 범위를 스스로 정한 로컬 패키지에 한정합니다. 다음 배포 장에서는 빌드한 산출물의 기동·의존성·종료를 동일하게 확인합니다.</p><p>관련 기존 장 · <a href="../14-production-deployment.html#s10">기동과 배포 산출물</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://nodejs.org/docs/latest-v22.x/api/packages.html">Node 패키지와 exports</a></li><li><a href="https://nodejs.org/docs/latest-v22.x/api/n-api.html#node-api-version-matrix">Node-API 버전 행렬</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="shared-worker-pipeline.html">이전 심화 · 공유 메모리 워커 파이프라인</a><a href="native-postmortem.html">다음 심화 · 네이티브 종료와 사후 분석 자료</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

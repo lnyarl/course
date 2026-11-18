@@ -8,7 +8,7 @@
     { id: "04", file: "04-v8-jit-optimization.html", title: "V8 JIT와 최적화·역최적화", part: "런타임 내부", desc: "Ignition→Sparkplug→Maglev→TurboFan, 히든 클래스, 인라인 캐시, deopt" },
     { id: "05", file: "05-v8-memory-gc.html", title: "V8 메모리 구조와 GC", part: "런타임 내부", desc: "Young/Old 세대, Scavenger, Mark-Compact, Orinoco, 힙 플래그 튜닝" },
     { id: "06", file: "06-streams-backpressure.html", title: "스트림과 백프레셔", part: "런타임 내부", desc: "highWaterMark, Readable 상태 머신, pipeline, 웹 스트림 상호운용" },
-    { id: "07", file: "07-async-internals.html", title: "비동기 내부: Promise, async_hooks, ALS", part: "런타임 내부", desc: "마이크로태스크 큐의 실체, await 변환, AsyncLocalStorage, 컨텍스트 전파" },
+    { id: "07", file: "07-async-internals.html", title: "비동기 내부: Promise, async_hooks, AsyncLocalStorage", part: "런타임 내부", desc: "마이크로태스크 큐의 실체, await 변환, AsyncLocalStorage, 컨텍스트 전파" },
     { id: "08", file: "08-module-system.html", title: "모듈 시스템: CJS·ESM·로더", part: "런타임 내부", desc: "해석 알고리즘, exports 맵, 순환 참조, require(esm), 커스텀 훅" },
     // Part 2. 성능과 진단
     { id: "09", file: "09-multicore-workers-cluster.html", title: "멀티코어: Worker, Cluster, 자식 프로세스", part: "성능과 진단", desc: "worker_threads vs cluster vs child_process, SharedArrayBuffer/Atomics, IPC" },

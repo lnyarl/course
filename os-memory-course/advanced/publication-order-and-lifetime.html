@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메모리 게시 순서와 객체 수명 · 운영체제 메모리 관리 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">운영체제 메모리 관리 심화</a></header>
+<main>
+<h1>메모리 게시 순서와 객체 수명</h1>
+<p class="connection">선수 장 · <a href="../13-numa-hugepages-cache.html">NUMA, Huge Page, 캐시와 메모리 모델</a></p>
+<p class="lead">13장의 캐시 일관성은 한 주소의 값을 조율합니다. 이제 data와 ready 두 주소 사이의 게시 순서, 그리고 게시된 객체를 언제 해제할 수 있는지 따로 다룹니다.</p>
+<section><h2>값의 가시성과 실행 순서를 연결하기</h2>
+<p>생산자가 data=42 뒤 ready=1을 썼다는 소스 순서만으로 소비자가 ready==1일 때 반드시 data==42를 읽는다고 단정할 수 없습니다. 커널 코드의 게시 패턴은 smp_store_release(&amp;ready, 1)과 smp_load_acquire(&amp;ready)를 짝지어 생각합니다. acquire가 그 release의 값을 관찰했다는 관계가 있어야 앞선 초기화와 뒤따른 읽기를 연결할 수 있습니다.</p>
+<p>READ_ONCE와 WRITE_ONCE는 지정 접근의 컴파일러 변형을 제어하는 도구이며 모든 CPU 순서 보장을 대신하지 않습니다. 사용자 C/C++에서는 언어의 atomic 객체와 memory_order 계약을 사용해야 합니다. 일반 변수에 경쟁 접근을 만들고 반복 실행한 결과로 C 언어 메모리 모델을 증명할 수는 없습니다. Linux의 LKMM litmus도 커널 모델을 위한 도구라 관리 언어의 volatile과 그대로 등치하지 않습니다.</p></section>
+<section><h2>게시된 포인터를 읽었다고 수명이 확보되지는 않는다</h2>
+<p>갱신자가 포인터 P를 새 객체로 바꾼 직후 옛 객체를 free하면, 이미 옛 P를 읽은 독자가 해제된 메모리를 사용할 수 있습니다. acquire는 초기화된 값을 보는 순서 문제를 해결하지만 객체를 계속 살아 있게 만드는 참조 소유권은 별도입니다. 잠금, 올바른 참조 획득, RCU grace period 같은 수명 프로토콜이 필요합니다.</p>
+<p>ABA에서는 주소 P가 A→B→A로 돌아와 포인터 비교만으로 변화가 없었다고 오판할 수 있습니다. 버전 태그는 변경 감지에 도움을 줄 수 있어도 이미 해제된 객체를 역참조하는 안전성을 자동 해결하지 않습니다. 불변식은 독자가 사용할 수 있는 동안 해당 객체의 회수가 금지된다는 것입니다. 14장의 메모리 보호 기능은 수명 계약을 설계하는 작업을 대신하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>프로그램에 의도적 데이터 경쟁을 넣지 말고 종이 타임라인을 그립니다. 생산자의 초기화·release 게시, 소비자의 acquire 관찰·객체 사용, 갱신자의 unlink·회수를 사건 카드로 놓으세요. 각 조건에서 허용되는 결과와 아직 확보하지 못한 수명 조건을 설명합니다.</p>
+<details><summary>release와 acquire가 같은 게시를 연결</summary><p>예상 논증: 소비자가 ready의 release 값을 acquire로 관찰했다면 게시 전 data 초기화를 그 뒤 읽기보다 앞에 둡니다. 실제 하드웨어 실행을 측정한 결과는 아닙니다.</p></details>
+<details><summary>순서 있는 게시 직후 옛 객체 회수</summary><p>예상 판정: 게시 순서는 맞아도 기존 독자가 끝나기 전 free는 안전하지 않습니다. 옛 독자 종료 또는 별도 참조 해제 사건이 회수보다 앞에 있어야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 실험은 허용 결과와 객체 수명의 조건을 분석하며 lock-free 알고리즘을 구현하거나 성능을 측정하지 않습니다. 이후 메모리 보안 장에서는 보호 기능이 감지하는 오류와 설계가 예방해야 할 오류를 구분합니다.</p><p>관련 기존 장 · <a href="../14-memory-security.html">메모리 보안: 하드웨어·OS의 메모리 보호 메커니즘</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/core-api/wrappers/memory-barriers.html">Linux 메모리 배리어의 보장 범위</a></li><li><a href="https://docs.kernel.org/RCU/whatisRCU.html">RCU의 게시·독자·회수 관계</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="cache-latency-bandwidth.html">이전 심화 · 캐시 지연과 메모리 대역폭</a><a href="dma-pinning-and-reclaim.html">다음 심화 · DMA 주소와 페이지 고정의 비용</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

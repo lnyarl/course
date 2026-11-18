@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTTP 본문 경계를 확인하기 · 웹 네트워크 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">웹 네트워크 심화</a></header>
+<main>
+<h1>HTTP 본문 경계를 확인하기</h1>
+<p class="connection">선수 장 · <a href="../04-http.html">4장 HTTP 메시지</a></p>
+<p class="lead">한 번 받은 바이트 묶음이 HTTP 요청 하나라는 가정을 버리고, 앞단과 업스트림이 하나의 본문을 어떻게 완료하는지 봅니다.</p>
+<section><h2>선언 길이와 실제 바이트</h2>
+<p>Content-Length는 전송된 옥텟 수를 나타냅니다. 길이가 정해진 바디는 필요한 바이트가 모일 때까지 보류하고, 이미 받은 다음 메시지의 바이트는 현재 바디에 넣지 않습니다.</p>
+<p>정해진 길이를 채우기 전에 EOF가 오면 완료 이벤트를 내보내지 않습니다. 요청 크기 상한과 연결 종료 정책을 적어 두면 서비스 로직과 전송 형식의 실패를 구분할 수 있습니다.</p></section>
+<section><h2>두 홉의 관측값</h2>
+<p>프록시는 앞쪽에서 받은 메시지를 뒤쪽 연결의 프로토콜로 다시 표현할 수 있습니다. 버퍼링과 스트리밍에 따라 수신 완료 시각과 앱 전달 시각은 달라집니다.</p>
+<p>요청 ID, 관찰한 바이트 수, 응답 생성자, 종료 원인을 남깁니다. JSON 파싱이 성공하는 사례와 전송 메시지가 올바르게 끝난 사례는 같은 검사 결과가 아닙니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>정상 본문 abcde를 2와 3바이트 덩어리로 나누고 남은 길이와 완료 횟수를 써 보세요.</p>
+<details><summary>선언 5바이트, 두 덩어리 도착</summary><p>첫 2바이트는 보류하고, 모인 5바이트를 요청 한 건으로 제공합니다.</p></details>
+<details><summary>선언 5바이트, 2바이트 뒤 EOF</summary><p>불완전 본문으로 기록하며 요청 완료는 0건입니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>정상 프레이밍과 조기 종료만 비교합니다. 다음 프록시 장에서는 앞·뒤 연결의 경계를 독립적으로 관찰합니다.</p><p>관련 기존 장 · <a href="../09-proxies.html">9장 프록시</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc9112.html">RFC 9112</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="dnssec-validation.html">이전 심화 · DNSSEC 검증과 장애 진단</a><a href="tls-certificate-lifecycle.html">다음 심화 · 인증서 회전과 mTLS 신원</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

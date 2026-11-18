@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>이미지 저장소의 게시·동시성·GC · Rust 컨테이너 런타임 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 컨테이너 런타임 구현 심화</a></header>
+<main>
+<h1>이미지 저장소의 게시·동시성·GC</h1>
+<p class="connection">선수 장 · <a href="../08-oci-image-overlayfs.html">OCI 이미지와 overlayfs</a></p>
+<p class="lead">8장에서 digest로 blob을 식별했습니다. 다운로드가 중단되거나 두 pull이 겹칠 때는 내용 주소만으로 저장소의 원자적 게시와 수명 관리가 완성되지 않습니다.</p>
+<section><h2>검증되지 않은 임시 blob을 참조로 게시하지 않기</h2>
+<p>OCI descriptor는 mediaType·digest·size 등으로 대상을 설명합니다. 다운로드 바이트의 크기와 digest를 확인한 뒤 불변 blob 이름으로 게시하고, manifest·tag 참조는 필요한 하위 객체가 준비된 뒤 갱신합니다. 완료 전에 ref를 먼저 바꾸면 이름 조회는 성공하지만 실제 레이어가 없는 상태를 만들 수 있습니다.</p>
+<p>같은 digest를 두 pull이 받으면 임시 파일을 각자 분리하고 최종 게시 단계에서 동일 내용의 불변 객체로 수렴시킵니다. 파일 교체의 원자성은 독자에게 반쯤 쓴 파일을 보이지 않게 하는 데 도움을 주지만 crash 후 보존에는 파일·디렉터리 동기화와 저장 장치 계약도 필요합니다. 검증 실패 객체는 정상 cache hit로 취급하지 않습니다.</p></section>
+<section><h2>참조 해제와 실행 중 레이어 수명</h2>
+<p>태그 하나를 지워도 다른 manifest나 실행 중 컨테이너가 같은 레이어를 참조할 수 있습니다. GC의 root에는 이름 있는 이미지뿐 아니라 실제 runtime·snapshot 참조 등 선택한 저장소 구조의 생존 근거가 포함돼야 합니다. 단순한 디렉터리 마지막 접근 시각이나 tag 개수만으로 실행 중 lower layer를 지우면 안 됩니다.</p>
+<p>압축 레이어 해제도 저장소 입력 경계입니다. 정상 레이어만 사용하더라도 예상 해제 크기·파일 수·경로 정책과 소유권을 제한해 자원 폭주를 막습니다. 본 실습은 악성 archive를 제작하거나 취약점을 재현하지 않습니다. 삭제 후보를 계산한 dry-run 목록과 실제 unlink를 분리하면 참조 추적 오류를 검토할 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>자신이 가진 작은 정상 fixture 파일의 크기와 sha256sum을 읽습니다. 원장에 blob B, manifest M1·M2, 실행 참조 R을 두고 M1 태그 삭제와 R 종료를 차례로 적용해 GC 후보를 계산하세요. 실제 이미지 cache 파일은 삭제하지 않습니다.</p>
+<details><summary>M1 삭제 후 M2와 R이 B를 계속 참조</summary><p>예상 원장 결과: B는 삭제 후보가 아닙니다. tag 하나가 없어졌다는 사실만으로 공간을 즉시 회수할 수 없습니다.</p></details>
+<details><summary>다운로드 중단으로 임시 blob만 존재</summary><p>예상 원장 결과: 검증 전 ref를 게시하지 않았다면 정상 독자는 그 임시 파일을 이미지로 선택하지 않습니다. 실제 crash 복구 내구성은 별도 파일 시스템 시험이 필요합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>기존 image.rs에 GC·동시 pull을 구현했다고 주장하지 않습니다. 9장 실행 lifecycle의 rootfs 참조를 저장소 원장과 연결해 컨테이너 종료와 이미지 삭제를 다른 전이로 관리합니다.</p><p>관련 기존 장 · <a href="../09-oci-runtime-spec.html">OCI 런타임 스펙</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://github.com/opencontainers/image-spec/blob/main/descriptor.md">OCI descriptor의 digest·size</a></li><li><a href="https://github.com/opencontainers/image-spec/blob/main/image-layout.md">OCI 이미지 레이아웃과 참조</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="cni-ipam-cleanup.html">이전 심화 · CNI·IPAM과 네트워크 자원 회수</a><a href="isolation-failure-matrix.html">다음 심화 · 격리·자원 제한의 통합 검증</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

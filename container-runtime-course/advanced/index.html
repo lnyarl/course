@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust 컨테이너 런타임 구현 심화 · Rust 컨테이너 런타임 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a></header>
+<main>
+<h1>Rust 컨테이너 런타임 구현 심화</h1>
+<p class="lead">기존 myctr의 namespace·자원·이미지·OCI 구현을 바탕으로 실패 복구와 다중 구성 요소의 수명을 학습합니다. 현재 구현된 보호 기능과 추가 설계 범위를 구분하고 정상 입력·원장·읽기 전용 관측으로 검증합니다.</p>
+<p><a href="../index.html">기존 코스 목차</a></p>
+<ol class="units">
+<li><a href="oci-lifecycle-recovery.html">OCI 상태 전이와 생성 실패 복구</a><p>9장의 create와 start를 분리한 뒤에는 런타임 명령 자체가 도중에 실패했을 때 남은 상태를 설명해야 합니다. 상태 파일·프로세스·cgroup이 항상 동시에 바뀌는 것은 아닙니다.</p></li>
+<li><a href="shim-exec-console.html">shim·exec·콘솔의 서로 다른 수명</a><p>9장에서 Docker가 런타임 명령을 호출하는 흐름을 봤습니다. 명령 프로세스가 끝난 뒤에도 컨테이너는 실행될 수 있으므로 감시·종료 코드·stdio를 맡는 주체가 필요합니다.</p></li>
+<li><a href="rootless-composition.html">rootless 권한·자원·파일 소유권 조합</a><p>5장의 단일 UID 매핑은 안의 UID0과 바깥 일반 사용자를 연결했습니다. 다중 사용자 이미지·cgroup 제한·네트워크까지 조합하려면 각각 다른 권한 위임이 필요합니다.</p></li>
+<li><a href="cni-ipam-cleanup.html">CNI·IPAM과 네트워크 자원 회수</a><p>6장의 veth·bridge·DNS를 플러그인 호출 계약으로 확장합니다. 성공한 ADD 하나만 보는 대신 IP 할당 뒤 연결 구성이 실패한 경우의 정리 책임을 추적합니다.</p></li>
+<li><a href="image-store-atomicity-gc.html">이미지 저장소의 게시·동시성·GC</a><p>8장에서 digest로 blob을 식별했습니다. 다운로드가 중단되거나 두 pull이 겹칠 때는 내용 주소만으로 저장소의 원자적 게시와 수명 관리가 완성되지 않습니다.</p></li>
+<li><a href="isolation-failure-matrix.html">격리·자원 제한의 통합 검증</a><p>7장의 capability·seccomp와 9장의 read-only rootfs·maskedPaths·readonlyPaths는 이미 서로 다른 보호 경계를 다룹니다. 정상 요청이 어느 경계에서 거절되는지와 종료 뒤 무엇이 남는지를 행렬로 검증합니다.</p></li>
+</ol>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

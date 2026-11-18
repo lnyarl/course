@@ -14,7 +14,7 @@
     { id: "11", file: "11-cow-mmap-pagecache.html", title: "Copy-on-Write, mmap, 페이지 캐시", part: "심화" },
     { id: "12", file: "12-linux-reclaim-oom.html", title: "Linux 메모리 회수, swap, OOM, cgroup", part: "심화" },
     { id: "13", file: "13-numa-hugepages-cache.html", title: "NUMA, Huge Page, 캐시와 메모리 모델", part: "심화" },
-    { id: "14", file: "14-memory-security.html", title: "메모리 보안: ASLR, NX, KPTI, MTE", part: "심화" },
+    { id: "14", file: "14-memory-security.html", title: "메모리 보안: 하드웨어·OS의 메모리 보호 메커니즘", part: "심화" },
     { id: "15", file: "15-virtualization-memory.html", title: "가상화와 메모리: EPT, Ballooning, KSM", part: "심화" },
     { id: "16", file: "16-practice-diagnostics.html", title: "실전 진단 도구와 종합 문제", part: "실전" },
   ];

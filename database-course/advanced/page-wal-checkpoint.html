@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>페이지 WAL·반복 REDO와 체크포인트 · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 데이터베이스 구현 심화</a></header>
+<main>
+<h1>페이지 WAL·반복 REDO와 체크포인트</h1>
+<p class="connection">선수 장 · <a href="../07-wal-recovery.html">기존 7장 · 전체 파일 afterimage WAL</a></p>
+<p class="lead">7장은 전체 파일의 afterimage를 기록해 복구를 단순화했습니다. 큰 DB에서 페이지 변경만 기록하려면, 로그와 데이터 페이지가 어느 순번까지 내구화됐는지를 따로 추적해야 합니다. 같은 REDO를 두 번 적용하지 않는 규칙과 체크포인트 이후 로그를 남기는 이유를 작은 페이지 하나로 살펴봅니다.</p>
+<section><h2>WAL-before-data와 pageLSN</h2>
+<p>초기 페이지의 pageLSN은 40이고, 변경 레코드의 LSN은 60이라고 합시다. dirty 페이지를 LSN 60 상태로 데이터 파일에 쓰기 전에 해당 로그가 포함된 WAL을 영속화해야 합니다. 데이터 페이지가 60인데 durable WAL은 40뿐이면 장애 후 그 페이지 변화의 원인을 재구성할 수 없는 잘못된 순서입니다. 버퍼 풀의 dirty 해제와 WAL flush는 서로 다른 사건입니다.</p>
+<p>복구 모형은 커밋된 레코드만 대상으로 pageLSN&lt;recordLSN일 때 REDO하고, 성공한 페이지의 pageLSN을 recordLSN으로 바꿉니다. 페이지가 40이면 60을 적용하고, 이미 60이면 건너뜁니다. 다시 복구해도 같은 결과가 되는 멱등성의 조건입니다. 실제 REDO 레코드 종류·동시성·LSN 비교는 엔진마다 다르므로 이것을 모든 DB의 완전한 복구 알고리즘으로 보지 않습니다.</p></section>
+<section><h2>체크포인트와 찢어진 페이지의 경계</h2>
+<p>체크포인트를 기록했다고 모든 dirty 페이지가 자동으로 저장된 것은 아닙니다. 이 모형에서 페이지가 여전히 40이고 변경 60이 메모리에만 있다면 복구에 필요한 60의 로그를 버릴 수 없습니다. 로그 회수 경계는 체크포인트 이름이 아니라 아직 저장되지 않은 변경과 필요한 복구 시작점으로 정해야 합니다. 페이지 flush와 체크포인트 상태를 따로 관측하세요.</p>
+<p>pageLSN을 읽을 수 없는 찢어진 페이지는 단순 비교만으로 복구할 수 없습니다. 손상 검출, 신뢰할 수 있는 전체 페이지 이미지 또는 다른 복구 수단이 필요합니다. 변경량 delta는 올바른 기준 페이지가 있다는 전제를 가질 수 있습니다. steal 버퍼 풀로 미커밋 페이지까지 내보낸다면 UNDO와 트랜잭션 상태 추적이 추가되며, REDO 규칙 하나가 ARIES 전체를 대체하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>WAL flush·페이지 flush·중단의 순서를 먼저 적고 조건별로 복구 결과를 예측하세요. 아래 모형에서 pageLSN과 durable WAL 경계를 비교합니다. 실제 확장 검사는 임시 DB 사본에만 장애 지점을 넣고, 복구를 두 번 반복한 파일 바이트와 조회 결과가 같은지 확인하세요.</p>
+<details><summary>durable WAL=60, pageLSN=40</summary><p>커밋된 LSN 60의 변경을 REDO하고 pageLSN을 60으로 만듭니다. 같은 복구를 다시 하면 60은 건너뜁니다.</p></details>
+<details><summary>durable WAL=60, pageLSN=60</summary><p>해당 변경은 이미 페이지에 반영되어 있어 재적용하지 않습니다. LSN은 작업의 반영 여부를 판정하는 조건입니다.</p></details>
+<details><summary>durable WAL=40인데 페이지 60을 먼저 저장</summary><p>WAL-before-data 위반입니다. 이 상태를 정상 복구 성공으로 표시하지 않고 쓰기 순서의 오류로 분류해야 합니다.</p></details>
+<details><summary>체크포인트 기록, 페이지는 여전히 40</summary><p>변경 60이 아직 필요하므로 이 모형에서는 해당 로그를 회수할 수 없습니다. 체크포인트 완료와 dirty 페이지 저장을 혼동한 반례입니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>숫자는 복구 규칙을 보여 주는 순번이지 처리 시간이나 실제 디스크 측정값이 아닙니다. 기존 Rust 예제는 전체 파일 afterimage·no-steal 방식으로 남아 있습니다. 페이지 WAL·UNDO·찢어진 페이지 처리는 독립 구현 단계이며, 2장 버퍼 풀의 교체·flush와 연결해야 합니다.</p><p>관련 기존 장 · <a href="../02-pages-buffer-pool.html">기존 2장 · dirty 페이지와 writeback</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.postgresql.org/docs/18/wal-intro.html">PostgreSQL 18 · WAL 순서와 복구 원칙</a></li><li><a href="https://www.postgresql.org/docs/18/wal-configuration.html">PostgreSQL 18 · 체크포인트와 WAL 설정</a></li><li><a href="https://www.postgresql.org/docs/18/storage-page-layout.html">PostgreSQL 18 · 페이지 헤더와 LSN</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="row-mvcc-vacuum.html">이전 심화 · 행 MVCC·색인 가시성과 버전 회수</a><a href="../index.html">기존 코스 목차</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

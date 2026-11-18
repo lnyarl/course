@@ -107,7 +107,7 @@
   <section id="s2">
     <h2>2. uv_run의 실제 구조: 6개 페이즈</h2>
     <p>Node.js 프로세스가 메인 모듈을 다 실행하고 나면 C++ 레이어(<code>src/api/embed_helpers.cc</code>의 <code>SpinEventLoop</code>)가 <code>uv_run(loop, UV_RUN_DEFAULT)</code>를 호출합니다. libuv의 <code>src/unix/core.c</code>에 있는 이 함수가 바로 "이벤트 루프"입니다. 핵심만 추리면 다음과 같습니다.</p>
-<pre><code>int uv_run(uv_loop_t* loop, uv_run_mode mode) {
+<pre><code data-language="c">int uv_run(uv_loop_t* loop, uv_run_mode mode) {
   r = uv__loop_alive(loop);             // 활성 핸들/요청/closing 핸들이 있는가?
   if (!r) uv__update_time(loop);
 
@@ -379,7 +379,7 @@ setInterval(() =&gt; {
           <tr><td>정규식 백트래킹(ReDoS)</td><td>무한대</td><td>16장. 입력 길이 제한, RE2</td></tr>
           <tr><td>큰 배열의 <code>sort</code>, 중첩 루프, 템플릿 렌더링</td><td>데이터 크기 비례</td><td>청크 분할 + <code>setImmediate</code> 양보, 워커</td></tr>
           <tr><td>GC 일시정지(Mark-Compact)</td><td>힙 크기 비례, 수십~수백 ms</td><td>5장. 힙 압력 줄이기, 누수 제거</td></tr>
-          <tr><td>동기 로깅(<code>console.log</code>를 파이프로)</td><td>버퍼 차면 블로킹</td><td>15장. pino + 비동기 transport</td></tr>
+          <tr><td>동기 출력(파일, POSIX TTY, Windows 파이프)</td><td>쓰기 완료까지 블로킹</td><td>15장. 출력 대상·로그량·transport 확인. POSIX 파이프는 비동기이며 느린 소비자에서는 버퍼 누적을 관측</td></tr>
         </table></div>
       </div>
     </div>

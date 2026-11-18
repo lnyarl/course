@@ -436,6 +436,14 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     buildNav();
+    const chapter = CHAPTERS.find(c => c.id === document.body.dataset.chapter);
+    if (chapter) {
+      const label = document.querySelector(".chapter-head .label");
+      if (label) label.textContent = `${chapter.part} · Chapter ${chapter.id}`;
+      document.querySelectorAll('.chapter-head .source a[href*="milewski-"]').forEach(a => { a.textContent = "원문 PDF"; });
+      const toc = document.querySelector("nav.toc");
+      if (toc && !toc.querySelector("b")) toc.prepend(el("b", null, "목차"));
+    }
     initQuizzes();
     initTabs();
   });

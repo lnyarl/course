@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>통계·선택도와 비용 기반 계획 선택 · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 데이터베이스 구현 심화</a></header>
+<main>
+<h1>통계·선택도와 비용 기반 계획 선택</h1>
+<p class="connection">선수 장 · <a href="../09-server-optimizer.html">기존 9장 · 기본키/순차 접근 선택</a></p>
+<p class="lead">현재 엔진은 작은 고정 비용식으로 접근 경로를 고릅니다. 조건을 두 개 붙이면 반환 행 수를 얼마나 줄일 수 있을까요? 각각 30%인 두 조건의 결과가 반드시 9%인 것은 아닙니다. 통계가 틀리면 올바른 알고리즘을 갖고도 더 비싼 계획을 선택할 수 있습니다.</p>
+<section><h2>단일 열 분포와 열 사이의 상관</h2>
+<p>10,000행에서 status=open이 3,000행, region=KR도 3,000행이라고 합시다. 두 사건을 독립으로 가정하면 교집합 추정은 10000×0.3×0.3=900행입니다. 하지만 open인 행이 정확히 KR인 행과 같으면 실제 교집합은 3,000행입니다. 같은 단일 열 빈도에서도 결합 분포가 달라질 수 있음을 이 예가 보여 줍니다.</p>
+<p>통계 수집은 전체 행 수, NULL 비율, 자주 나오는 값과 빈도, 히스토그램, distinct 추정 등을 계획 입력으로 제공합니다. 조건 결합이 중요하면 다중 열 통계가 독립 가정의 오차를 줄이는 근거가 될 수 있습니다. 통계는 보통 표본과 과거 시점의 요약이므로 최근 대량 변경이나 특정 값의 편향에서 실제 실행과 계속 대조해야 합니다.</p></section>
+<section><h2>비용식의 단위와 오차를 드러내기</h2>
+<p>이 단원의 비용 모형을 SeqScan=10000, Index=100+4×후보행수로 고정합니다. 독립 추정 900이면 Index=3700으로 색인을 고릅니다. 실제 후보가 3000이면 Index의 모형 비용은 12100으로 SeqScan보다 큽니다. 결합 빈도를 3000으로 바로 추정하면 처음부터 SeqScan을 고를 수 있습니다. 이 숫자는 설명용 비용 단위이며 ms·물리 읽기 수가 아닙니다.</p>
+<p>좋은 검증은 두 계획의 결과가 같음을 먼저 확인하고, estimated rows와 actual rows가 어디서 갈라지는지 찾습니다. SQL 제품에서는 ANALYZE로 통계를 갱신하고 EXPLAIN (ANALYZE, BUFFERS)의 연산별 행 수·반복 횟수·버퍼 관측을 읽습니다. EXPLAIN ANALYZE는 질의를 실제 실행하므로 연습에는 임시 SELECT 데이터만 사용하세요. 실제 계획 선택은 페이지 분포·캐시·정렬·병렬성까지 영향을 받습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>두 조건의 빈도를 각각 0.3으로 고정하고 독립/완전 상관 조건에서 교집합을 예측하세요. 조건별 추정 행 수와 실제 모형 비용을 계산해 어느 계획이 싼지 비교합니다. 제품 실습은 임시 테이블의 SELECT만 대상으로 통계 전후 EXPLAIN을 저장하세요.</p>
+<details><summary>독립 분포, 교집합 900행</summary><p>추정 900이 실제와 같고 Index 비용 3700이 SeqScan 10000보다 작습니다. 이 비용식에서는 색인 선택이 유리합니다.</p></details>
+<details><summary>완전 상관, 독립 가정 유지</summary><p>추정 900으로 Index를 골랐지만 실제 후보 3000의 비용은 12100입니다. 결과는 맞더라도 계획 선택은 비쌉니다.</p></details>
+<details><summary>완전 상관, 결합 빈도 반영</summary><p>추정 3000으로 Index 12100과 SeqScan 10000을 비교해 SeqScan을 고릅니다. 정확한 결합 정보가 선택을 바꿉니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>선택형 계산은 고정 비용식의 결과입니다. PostgreSQL이나 mydb에서 이 시간 차이를 측정했다고 해석하지 않습니다. 현재 엔진에 히스토그램·다중 계획 탐색을 추가한 것도 아닙니다. 실행기에서 반환 행 수와 후보 행 수를 구분한 다음 통계 수집기를 설계하세요.</p><p>관련 기존 장 · <a href="../06-query-executor.html">기존 6장 · 계획과 실제 행 수 대조</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.postgresql.org/docs/18/planner-stats.html">PostgreSQL 18 · 단일 열·확장 통계</a></li><li><a href="https://www.postgresql.org/docs/18/using-explain.html">PostgreSQL 18 · 추정과 실제 실행 비교</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="external-sort-hash-spill.html">이전 심화 · 메모리보다 큰 정렬과 해시의 spill</a><a href="row-mvcc-vacuum.html">다음 심화 · 행 MVCC·색인 가시성과 버전 회수</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

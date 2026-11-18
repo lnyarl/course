@@ -1,0 +1,295 @@
+{
+  "title": "C# 범주론 심화",
+  "intro": "기존 31장의 순서와 원전 대응을 유지하고, Applicative·순회·효과 조합·명령 해석·표현식 언어를 별도 응용 단원으로 연결합니다. C# 구체 타입의 계산과 일반 수학적 법칙, 브라우저 예상 결과와 실제 .NET 실행 증거를 구분합니다.",
+  "units": [
+    {
+      "slug": "applicative-independent-effects",
+      "title": "Applicative와 독립적인 효과 결합",
+      "before": {
+        "href": "07-functors.html",
+        "label": "기존 7장 · 한 값의 Map"
+      },
+      "after": {
+        "href": "20-monads.html",
+        "label": "기존 20장 · 값에 의존하는 Bind"
+      },
+      "opening": "회원 폼의 이름과 나이를 각각 검사하려고 합니다. Map은 한 효과 안의 값 하나를 바꾸고, Bind는 앞 결과를 읽어 다음 계산을 만듭니다. 두 검사 결과를 모두 얻어 User를 만드는 중간 구조를 정의하면, 독립된 입력의 오류를 한 번에 모으는 정책을 분명하게 설명할 수 있습니다.",
+      "sections": [
+        {
+          "title": "함수를 문맥 안에서 적용하는 연산",
+          "body": [
+            "Applicative의 핵심을 Pure:A→F<A>, Apply:F<A→B>×F<A>→F<B>로 적습니다. C#에서는 모든 F를 받는 가상 고차 타입 문법을 쓰지 말고 Option이나 Validation 같은 구체 타입에 메서드를 정의합니다. 두 값 결합은 이항 함수를 커링해 Map으로 첫 인수를 적용하고 Apply로 둘째 인수를 넣는 구조입니다.",
+            "법칙은 항등 적용, 순수 값의 함수 적용 보존, 적용의 합성, 순수 인수와 적용의 호환을 요구합니다. 이름이 Apply인 메서드가 있다는 것만으로 성립하지 않습니다. 예를 들어 Pure(identity)를 적용했는데 Some(3)이 None으로 바뀐다면 항등법칙에 어긋납니다. 효과의 결과와 오류의 순서를 어떤 동등성으로 비교할지도 정해야 합니다."
+          ]
+        },
+        {
+          "title": "오류 누적과 다음 계산의 의존성을 구분하기",
+          "body": [
+            "Validation은 Valid(value) 또는 Invalid(errors)로 둡니다. 이름 오류 [name]와 나이 오류 [age]를 결합하면 [name,age]를 반환하고 User는 만들지 않습니다. 두 Invalid의 결합은 리스트 연결이며, 결합법칙을 갖는 오류 누적 연산을 사용해야 합니다. 반면 첫 오류에서 끝내는 Result Bind는 다음 계산을 실행하지 않아 그 뒤 오류를 수집하지 않을 수 있습니다.",
+            "독립적으로 주어진 두 검사를 결합한다는 성질이 병렬 실행이나 새 스레드를 뜻하지는 않습니다. 검사 함수의 실행 순서·취소·예외는 구현 계약입니다. 또한 앞 단계에서 읽은 customerId로 다음 조회를 선택하려면 값에 의존하는 연결이 필요합니다. 오류 누적 Applicative와 fail-fast Bind를 같은 객체에 넣고 아무 법칙 검토 없이 호환된다고 가정하지 마세요."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "이름=\"\", 나이=\"x\"의 오류 개수를 먼저 예측하세요. 조건별로 두 독립 검사와 결합 결과를 확인합니다. C# 확장 실습에서는 Valid/Invalid 두 생성자를 가진 작은 타입과 Apply를 작성해 Pure(identity), 오류 리스트 연결의 두 괄호 순서, 정상 입력의 User 생성 결과를 검사하세요.",
+        "cases": [
+          {
+            "label": "두 입력 모두 잘못됨, Validation 누적",
+            "result": "결과는 Invalid([name,age])입니다. 독립된 두 검사를 평가하고 오류를 순서대로 연결한 이 정책의 결과입니다."
+          },
+          {
+            "label": "첫 검사 실패에서 끝내는 Result Bind",
+            "result": "결과는 첫 name 오류이며 나이 검사에 도달하지 않습니다. 오류 1개라는 값은 나이가 올바르다는 뜻이 아닙니다."
+          },
+          {
+            "label": "이름=Roy, 나이=30, 두 입력 정상",
+            "result": "Valid(User(Roy,30))을 만듭니다. Pure(identity)를 적용해도 같은 값을 보존해야 합니다."
+          }
+        ]
+      },
+      "limit": "조건 선택은 명시한 Option/Validation 정책의 유한 계산입니다. C# BCL에 이 단원의 Validation 타입이 자동 제공된다는 뜻이 아니며 네트워크 병렬 실행을 구현하지 않습니다. 다음에는 20장의 Bind와 비교해 앞 값에 의존하는 계산이 언제 필요한지 구분하세요.",
+      "sources": [
+        {
+          "href": "https://www.staff.city.ac.uk/~ross/papers/Applicative.html",
+          "label": "McBride·Paterson · Applicative Programming with Effects"
+        },
+        {
+          "href": "https://www.cs.ox.ac.uk/publications/publication1409-abstract.html",
+          "label": "Gibbons·Oliveira · 효과 있는 순회와 Applicative"
+        }
+      ]
+    },
+    {
+      "slug": "traversable-sequence-structure",
+      "title": "Traversable·sequence와 구조를 보존하는 순회",
+      "before": {
+        "href": "08-functoriality.html",
+        "label": "기존 8장 · 자료형에서 얻는 Map"
+      },
+      "after": {
+        "href": "10-natural-transformations.html",
+        "label": "기존 10장 · 자연성과 문맥 변환"
+      },
+      "opening": "문자열 배열을 정수로 파싱하면 배열 안에 성공과 실패가 섞입니다. List<Option<int>>와 Option<List<int>>는 다른 타입입니다. 모든 항목을 성공했을 때만 완성 배열을 받거나, 모든 실패 위치를 모으는 순회를 통해 구조와 효과를 바꾸는 조건을 살펴봅니다.",
+      "sections": [
+        {
+          "title": "Map 다음에 남는 중첩의 방향",
+          "body": [
+            "각 문자열을 ParseOption으로 바꾸면 [Some(1),None,Some(3)] 같은 배열을 얻습니다. Sequence는 List<F<A>>→F<List<A>> 방향으로 문맥을 옮기고, Traverse는 Map으로 효과를 만든 뒤 Sequence한 것입니다. Option 정책에서는 하나라도 None이면 전체가 None이고, 모두 Some이면 입력 순서대로 값을 모읍니다. 실패 원인을 전달해야 한다면 Option 대신 오류 정보를 가진 문맥을 골라야 합니다.",
+            "빈 배열의 Sequence는 None이 아니라 Pure([])입니다. 처리할 효과가 없어도 빈 구조 자체는 성공적으로 만들 수 있기 때문입니다. [Some(1),Some(2),Some(3)]을 [3,2,1]로 뒤집는 구현은 단순히 모두 성공했다는 조건을 넘어서 원래 순서 의미를 바꿉니다. 어떤 자료구조의 어떤 순회를 정의하는지부터 고정해야 합니다."
+          ]
+        },
+        {
+          "title": "효과 정책과 순회 법칙을 함께 검사하기",
+          "body": [
+            "같은 입력 [\"1\",\"x\",\"y\"]에 fail-fast Result를 쓰면 첫 실패만 보일 수 있고, 오류 누적 Validation을 쓰면 index 1·2의 두 오류를 얻습니다. 자료형을 방문하는 규칙과 효과를 결합하는 규칙을 분리하면 파서와 오류 정책을 재사용할 수 있습니다. 오류 메시지에 위치를 붙여 중복 문자열의 실패도 구분하세요.",
+            "Identity 효과로 Traverse하면 일반 Map과 같은 구조가 나와야 하고, 효과를 두 겹 결합한 순회와 단계적으로 순회한 결과의 호환도 확인해야 합니다. 유한 배열에서는 빈 배열·한 원소·중복·실패 위치를 전수 검사할 수 있습니다. 무한 스트림의 종료·엄격한 C# 평가·I/O 자원 정리는 이 유한 구조의 법칙만으로 해결되지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "[Some(1),None,Some(3)]과 빈 배열의 결과를 먼저 예측하세요. 아래 조건을 선택한 다음 입력 순서와 출력 타입을 적습니다. C# 연습에서는 배열 전용 SequenceOption을 만들고 빈 배열·모두 성공·가운데 실패·끝 실패의 네 경우를 검사한 뒤, Validation으로 바꿔 오류 위치가 보존되는지 비교하세요.",
+        "cases": [
+          {
+            "label": "모두 Some인 배열",
+            "result": "결과는 Some([1,2,3])입니다. 배열 순서·원소 수·중복을 보존합니다."
+          },
+          {
+            "label": "가운데 항목이 None",
+            "result": "결과는 None입니다. [1,3]만 반환하는 것은 실패 항목을 필터링한 다른 계약입니다."
+          },
+          {
+            "label": "빈 배열",
+            "result": "결과는 Some([])입니다. 빈 입력은 성공한 빈 구조이며 실패 상태와 구별해야 합니다."
+          },
+          {
+            "label": "Validation으로 x·y 두 실패 누적",
+            "result": "Invalid([index1,index2])를 얻습니다. 순회가 방문 위치를 보존하고 효과 정책이 두 오류를 결합합니다."
+          }
+        ]
+      },
+      "limit": "배열에 대한 구체적 순회 모형이며 임의의 F를 C# 고차 타입으로 구현한 것은 아닙니다. 모든 IEnumerable이 유한·순수·재열거 가능하다고 가정하지 마세요. 다음에는 10장의 자연변환을 순회 전후에 적용한 두 경로가 호환되는지 비교할 수 있습니다.",
+      "sources": [
+        {
+          "href": "https://www.cs.ox.ac.uk/publications/publication1409-abstract.html",
+          "label": "Gibbons·Oliveira · The Essence of the Iterator Pattern"
+        },
+        {
+          "href": "https://hackage.haskell.org/package/base/docs/Data-Traversable.html",
+          "label": "Haskell base · Traversable의 연산과 법칙"
+        }
+      ]
+    },
+    {
+      "slug": "effect-order-transformers",
+      "title": "오류·상태·로그 효과의 조합 순서",
+      "before": {
+        "href": "21-monads-effects.html",
+        "label": "기존 21장 · Reader·Writer·State"
+      },
+      "after": {
+        "href": "22-monads-categorically.html",
+        "label": "기존 22장 · 합성과 법칙"
+      },
+      "opening": "카운터를 5에서 6으로 바꾼 뒤 오류가 났습니다. 호출자는 새 상태 6을 볼 수 있을까요? 두 효과를 모두 사용했다는 설명만으로는 답이 정해지지 않습니다. 오류가 상태 결과를 감싸는지, 상태가 오류 결과를 감싸는지 타입을 펼쳐 보면 정책 차이를 직접 읽을 수 있습니다.",
+      "sections": [
+        {
+          "title": "바깥 구조가 실패 때 남는 정보를 정한다",
+          "body": [
+            "첫 타입을 S→Result<(A,S)>로 둡니다. 성공이면 값과 다음 상태를 반환하지만 오류이면 Result의 실패 분기만 남아 다음 상태가 없습니다. 둘째는 S→(Result<A>,S)입니다. 실패해도 쌍의 두 번째 성분으로 상태를 반환할 수 있습니다. C#에서는 Result를 이 교재의 성공/오류 합 타입으로 정의한 뒤 구체 Func 타입으로 표현할 수 있으며, 이 이름이 표준 BCL 타입이라는 뜻은 아닙니다.",
+            "초기 상태 5에서 증가 후 실패하는 순수 계산을 전개하면 첫 모형은 Error(\"boom\"), 둘째는 (Error(\"boom\"),6)입니다. 첫 결과에 새 상태가 없다는 것이 이미 수행한 DB 변경이나 전역 변수 변경을 되돌렸다는 뜻은 아닙니다. 이 비교는 입력과 반환값으로만 상태를 전달하는 순수 계산에 한정합니다."
+          ]
+        },
+        {
+          "title": "로그 보존과 catch 이후의 의미",
+          "body": [
+            "로그도 Result<(A,Log)>이면 실패 때 로그를 반환할 자리가 없고, (Result<A>,Log)이면 실패와 로그를 함께 보존할 수 있습니다. 읽은 설정·증가한 상태·기록한 로그가 오류 처리 이후 어떤 형태로 보이는지 API 계약으로 정해야 합니다. 같은 효과 이름을 나열한 두 stack이 서로 교환 가능하다고 가정하면 디버그 로그나 업무 상태를 잃을 수 있습니다.",
+            "오류를 catch하고 대체 계산을 실행할 때 어떤 상태에서 다시 시작하는지도 비교합니다. 원래 상태 5인지 실패 직전 상태 6인지 타입과 Bind·Catch 정의로 정해야 합니다. 변환기를 여러 겹 쌓는 일반 라이브러리보다 두 구체 타입의 Pure·Bind·실패 처리를 먼저 전개하고, 작은 상태와 오류 입력에서 양쪽 결과를 검증하는 편이 계산 경계를 이해하기 쉽습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "초기 5→증가→오류의 반환 타입을 먼저 쓰고 아래 두 조합을 선택하세요. C# 실습은 전역 카운터 없이 Func를 두 종류로 정의하고 같은 입력 5를 넣습니다. 성공 경로·실패 경로·catch 후 재시작의 결과와 로그를 각각 출력해 비교하세요.",
+        "cases": [
+          {
+            "label": "S→Result<(A,S)>에서 증가 후 실패",
+            "result": "결과는 Error(boom)이며 반환된 다음 상태가 없습니다. 외부 세계를 롤백했다는 증거는 아닙니다."
+          },
+          {
+            "label": "S→(Result<A>,S)에서 증가 후 실패",
+            "result": "결과는 (Error(boom),6)입니다. 실패 결과와 갱신된 상태를 동시에 관찰할 수 있습니다."
+          },
+          {
+            "label": "(Result<A>,Log)에서 로그 기록 후 실패",
+            "result": "오류와 로그를 함께 보존할 수 있습니다. Result<(A,Log)>의 실패 분기와 정보량이 다릅니다."
+          }
+        ]
+      },
+      "limit": "이 실험은 순수한 효과 표현의 조합입니다. 예외 처리·DB 트랜잭션·취소·외부 I/O를 자동 구현하지 않습니다. Haskell의 transformer 원전은 연산의 타입을 확인하는 참고 자료이며 C# 코드에 그 고차 타입 문법을 그대로 옮기지 않습니다. 다음에는 22장의 합성 법칙에 각 조합의 정책을 대입하세요.",
+      "sources": [
+        {
+          "href": "https://hackage-content.haskell.org/package/transformers-0.6.3.0/docs/Control-Monad-Trans-State-Lazy.html",
+          "label": "transformers · StateT의 상태 전달 타입"
+        },
+        {
+          "href": "https://hackage-content.haskell.org/package/transformers-0.6.3.0/docs/Control-Monad-Trans-Except.html",
+          "label": "transformers · ExceptT의 오류 분기와 실행 중단"
+        }
+      ]
+    },
+    {
+      "slug": "free-dsl-interpreters",
+      "title": "Free 구조·명령 DSL과 테스트 해석기",
+      "before": {
+        "href": "19-free-forgetful-adjunctions.html",
+        "label": "기존 19장 · 생성자와 해석의 확장"
+      },
+      "after": {
+        "href": "24-f-algebras.html",
+        "label": "기존 24장 · 재귀 구조의 해석"
+      },
+      "opening": "카운터를 읽고 1을 더해 저장하는 기능을 테스트하려고 합니다. 기능을 만들 때 실제 파일을 읽는다면 테스트마다 파일 환경이 필요합니다. 무엇을 할지 표현한 명령 트리와 그것을 실제로 수행하는 해석기를 분리해, 같은 프로그램을 메모리·추적·실제 저장의 세 경계에서 살펴봅니다.",
+      "sections": [
+        {
+          "title": "명령을 데이터로 만들고 다음 계산을 보존하기",
+          "body": [
+            "작은 C# 전용 설계로 Program을 Return(int Value), Read(string Key, Func<int,Program> Next), Write(string Key,int Value,Program Next)의 합 타입으로 정합니다. Read의 반환값에 따라 다음 Write 값이 달라지므로 단순 문자열 명령 목록보다 continuation이 필요합니다. 예제 프로그램은 Read(counter,n→Write(counter,n+1,Return(n+1)))입니다.",
+            "프로그램 트리를 구성하는 단계에서는 저장소를 바꾸지 않습니다. 해석기가 Read를 만나 dictionary나 파일에서 값을 얻어 Next에 전달하고, Write를 만났을 때만 해당 실행 경계에서 변경합니다. 명령 합성을 일반화하는 Bind는 Return에서 후속 함수를 적용하고, Read·Write에서는 다음 Program에 재귀적으로 연결합니다. 범용 Free의 고차 타입 구현과 이 구체적인 세 명령 설계는 구분해야 합니다."
+          ]
+        },
+        {
+          "title": "여러 해석기와 관찰 가능한 동등성",
+          "body": [
+            "테스트 해석기는 초기 dictionary[counter]=7을 주어 Write(counter,8) 후 결과 8을 얻습니다. 추적 해석기도 Read에 돌려줄 7을 fixture로 제공해야 뒤 명령을 결정할 수 있습니다. 값을 제공하지 않은 채 모든 미래 명령을 완전히 나열했다고 주장하면 데이터 의존성을 무시한 것입니다. 실제 파일 해석기는 오류·취소·자원 수명을 별도로 구현해야 합니다.",
+            "법칙 검사는 프로그램의 참조 주소보다 동일 입력에 대한 결과와 효과 trace를 비교합니다. Return을 연결하는 양쪽 항등과 Bind의 괄호 변경이 Read/Write 순서를 바꾸지 않는지 확인하세요. Free 구조는 I/O를 설명하는 자료를 주지만 재시도 안전성이나 트랜잭션을 자동으로 추가하지 않습니다. Write가 외부 효과라면 재해석이 같은 쓰기를 반복할 수 있습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "초기 counter=7에서 프로그램 구성만 했을 때와 해석했을 때 값을 예측하세요. 조건별 결과를 확인한 뒤 C#에서 세 record 변형과 dictionary 해석기를 작성합니다. 임의 파일을 변경하지 말고 별도 메모리 사전으로 Read·Write trace와 최종 결과를 검사하세요.",
+        "cases": [
+          {
+            "label": "프로그램 구성만 수행",
+            "result": "counter는 7 그대로입니다. Read·Write를 설명하는 값만 만들었으며 해석기를 실행하지 않았습니다."
+          },
+          {
+            "label": "dictionary 해석, Read 결과 7",
+            "result": "trace는 Read(counter)=7, Write(counter,8), Return(8)이고 최종 counter와 결과는 8입니다."
+          },
+          {
+            "label": "동일 프로그램을 변경된 counter=8에 다시 해석",
+            "result": "새 Read는 8을 반환해 Write(9)가 됩니다. Free 표현은 실행을 자동 멱등하게 만들지 않습니다."
+          }
+        ]
+      },
+      "limit": "조건 선택은 세 명령의 한정된 인터프리터 모형입니다. 이 JSON 단원이 C# 범용 Free 라이브러리를 제공하는 것은 아닙니다. 장거리 재귀의 stack 사용·직렬화 불가능한 continuation·실제 I/O 실패는 추가 설계입니다. 다음에는 24장의 fold와 프로그램 해석의 공통 구조를 비교하세요.",
+      "sources": [
+        {
+          "href": "https://hackage-content.haskell.org/package/free-5.2/docs/Control-Monad-Free.html",
+          "label": "free 패키지 · Pure·Free와 foldFree"
+        },
+        {
+          "href": "https://bartoszmilewski.com/2015/07/21/free-monoids/",
+          "label": "Bartosz Milewski · 자유 구조와 해석"
+        }
+      ]
+    },
+    {
+      "slug": "expression-language-capstone",
+      "title": "표현식 언어 캡스톤과 법칙 기반 최적화",
+      "before": {
+        "href": "24-f-algebras.html",
+        "label": "기존 24장 · F-대수와 fold"
+      },
+      "after": {
+        "href": "21-monads-effects.html",
+        "label": "기존 21장 · 오류·상태·로그 경계"
+      },
+      "opening": "덧셈·곱셈 표현식을 계산하고 출력하는 작은 언어를 만듭니다. 같은 트리를 다른 대수로 해석하면 계산기와 pretty printer를 분리할 수 있습니다. 이어 0 곱셈 최적화를 넣어, 수학적 값이 같다는 법칙이 오류나 로그가 있는 실행에서도 그대로 성립하는지 시험합니다.",
+      "sections": [
+        {
+          "title": "자료형·한 층의 해석·전체 재귀를 분리하기",
+          "body": [
+            "Expr를 Const(BigInteger), Add(Expr,Expr), Mul(Expr,Expr), Var(string)의 닫힌 합으로 정합니다. 한 층의 자식 자리만 A로 바꾼 ExprF<A>에 Map을 정의하면 자식 해석과 현재 노드 계산을 분리할 수 있습니다. fold는 자식들을 먼저 해석하고 Const/Add/Mul/Var에 해당하는 대수를 적용합니다. C# record를 썼다는 사실만으로 이 법칙이나 깊은 불변성이 증명되지는 않습니다.",
+            "Add(Const(2),Mul(Const(3),Const(4)))를 숫자 대수로 해석하면 14, 문자열 대수로 해석하면 (2+(3*4))를 얻습니다. 같은 구조를 재사용하지만 carrier 타입이 다릅니다. 문자열 모양의 동일성과 수치 결과의 동일성을 혼동하지 말고, pretty printer의 괄호·우선순위 정책도 명세해야 합니다. BigInteger를 쓰는 것은 이 산술 모형에서 고정 폭 정수 오버플로를 제외하기 위해서입니다."
+          ]
+        },
+        {
+          "title": "최적화는 관찰 범위가 고정되어야 정당화된다",
+          "body": [
+            "순수하고 전부 정의된 정수 계산에서는 x*0을 0으로 바꾸어 값 의미를 보존할 수 있습니다. 그러나 Var(missing)을 엄격하게 평가하면 오류가 나는 언어에서 Mul(Const(0),Var(missing))을 Const(0)으로 바꾸면 오류가 사라집니다. 수치 항등식만으로 오류 관찰을 보존했다고 결론 낼 수 없는 반례입니다.",
+            "캡스톤 검사는 작은 트리 생성기로 원본과 최적화된 식의 Result<BigInteger>를 비교합니다. 값을 비교할지, 오류 종류·평가 순서·로그 trace까지 비교할지 먼저 정합니다. 순수 총함수 하위 언어와 실패 가능한 경계를 나누면 허용할 rewrite도 선명해집니다. 두 해석기의 계산 수가 다르더라도 성능 주장은 실제 입력 크기와 측정 환경을 정한 별도 실험으로 다뤄야 합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "기본 식의 값과 괄호 문자열을 먼저 적고 아래 조건을 선택하세요. 다음으로 C# 작은 트리를 깊이 3까지 만들어 원본/최적화의 결과를 비교하는 연습을 합니다. 외부 코드 실행 대신 자기 Expr 타입의 해석만 사용하고, missing 변수 반례를 반드시 포함하세요.",
+        "cases": [
+          {
+            "label": "순수 기본 식 2+(3*4)",
+            "result": "숫자 결과는 14, 완전 괄호 문자열은 (2+(3*4))입니다. 서로 다른 carrier를 가진 두 대수가 같은 트리를 해석합니다."
+          },
+          {
+            "label": "총함수 정수 식 x*0에서 x=7",
+            "result": "원본과 Const(0)의 값은 모두 0입니다. 이 제한된 관찰에서는 rewrite가 값을 보존합니다."
+          },
+          {
+            "label": "엄격 평가의 0*Var(missing)을 0으로 축약",
+            "result": "원본은 MissingVariable 오류, 축약식은 성공 0입니다. 오류도 관찰하는 언어에서는 이 rewrite가 안전하지 않습니다."
+          }
+        ]
+      },
+      "limit": "예상 결과는 제시한 표현식 의미론의 계산입니다. 기존 24장의 C# 예제를 이 언어로 교체하거나 범용 컴파일러를 구현한 것은 아닙니다. 무한 구조·실제 I/O·비종료는 범위 밖입니다. 다음에는 21장의 효과 조합으로 오류와 로그를 보존하는 해석기를 정의하세요.",
+      "sources": [
+        {
+          "href": "https://bartoszmilewski.com/2017/02/28/f-algebras/",
+          "label": "Bartosz Milewski · F-대수와 재귀 해석"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/dotnet/api/system.numerics.biginteger",
+          "label": "Microsoft · BigInteger 정수 산술"
+        }
+      ]
+    }
+  ]
+}

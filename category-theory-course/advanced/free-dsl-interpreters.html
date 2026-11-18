@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free 구조·명령 DSL과 테스트 해석기 · C# 범주론 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 범주론 심화</a></header>
+<main>
+<h1>Free 구조·명령 DSL과 테스트 해석기</h1>
+<p class="connection">선수 장 · <a href="../19-free-forgetful-adjunctions.html">기존 19장 · 생성자와 해석의 확장</a></p>
+<p class="lead">카운터를 읽고 1을 더해 저장하는 기능을 테스트하려고 합니다. 기능을 만들 때 실제 파일을 읽는다면 테스트마다 파일 환경이 필요합니다. 무엇을 할지 표현한 명령 트리와 그것을 실제로 수행하는 해석기를 분리해, 같은 프로그램을 메모리·추적·실제 저장의 세 경계에서 살펴봅니다.</p>
+<section><h2>명령을 데이터로 만들고 다음 계산을 보존하기</h2>
+<p>작은 C# 전용 설계로 Program을 Return(int Value), Read(string Key, Func&lt;int,Program&gt; Next), Write(string Key,int Value,Program Next)의 합 타입으로 정합니다. Read의 반환값에 따라 다음 Write 값이 달라지므로 단순 문자열 명령 목록보다 continuation이 필요합니다. 예제 프로그램은 Read(counter,n→Write(counter,n+1,Return(n+1)))입니다.</p>
+<p>프로그램 트리를 구성하는 단계에서는 저장소를 바꾸지 않습니다. 해석기가 Read를 만나 dictionary나 파일에서 값을 얻어 Next에 전달하고, Write를 만났을 때만 해당 실행 경계에서 변경합니다. 명령 합성을 일반화하는 Bind는 Return에서 후속 함수를 적용하고, Read·Write에서는 다음 Program에 재귀적으로 연결합니다. 범용 Free의 고차 타입 구현과 이 구체적인 세 명령 설계는 구분해야 합니다.</p></section>
+<section><h2>여러 해석기와 관찰 가능한 동등성</h2>
+<p>테스트 해석기는 초기 dictionary[counter]=7을 주어 Write(counter,8) 후 결과 8을 얻습니다. 추적 해석기도 Read에 돌려줄 7을 fixture로 제공해야 뒤 명령을 결정할 수 있습니다. 값을 제공하지 않은 채 모든 미래 명령을 완전히 나열했다고 주장하면 데이터 의존성을 무시한 것입니다. 실제 파일 해석기는 오류·취소·자원 수명을 별도로 구현해야 합니다.</p>
+<p>법칙 검사는 프로그램의 참조 주소보다 동일 입력에 대한 결과와 효과 trace를 비교합니다. Return을 연결하는 양쪽 항등과 Bind의 괄호 변경이 Read/Write 순서를 바꾸지 않는지 확인하세요. Free 구조는 I/O를 설명하는 자료를 주지만 재시도 안전성이나 트랜잭션을 자동으로 추가하지 않습니다. Write가 외부 효과라면 재해석이 같은 쓰기를 반복할 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>초기 counter=7에서 프로그램 구성만 했을 때와 해석했을 때 값을 예측하세요. 조건별 결과를 확인한 뒤 C#에서 세 record 변형과 dictionary 해석기를 작성합니다. 임의 파일을 변경하지 말고 별도 메모리 사전으로 Read·Write trace와 최종 결과를 검사하세요.</p>
+<details><summary>프로그램 구성만 수행</summary><p>counter는 7 그대로입니다. Read·Write를 설명하는 값만 만들었으며 해석기를 실행하지 않았습니다.</p></details>
+<details><summary>dictionary 해석, Read 결과 7</summary><p>trace는 Read(counter)=7, Write(counter,8), Return(8)이고 최종 counter와 결과는 8입니다.</p></details>
+<details><summary>동일 프로그램을 변경된 counter=8에 다시 해석</summary><p>새 Read는 8을 반환해 Write(9)가 됩니다. Free 표현은 실행을 자동 멱등하게 만들지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>조건 선택은 세 명령의 한정된 인터프리터 모형입니다. 이 JSON 단원이 C# 범용 Free 라이브러리를 제공하는 것은 아닙니다. 장거리 재귀의 stack 사용·직렬화 불가능한 continuation·실제 I/O 실패는 추가 설계입니다. 다음에는 24장의 fold와 프로그램 해석의 공통 구조를 비교하세요.</p><p>관련 기존 장 · <a href="../24-f-algebras.html">기존 24장 · 재귀 구조의 해석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://hackage-content.haskell.org/package/free-5.2/docs/Control-Monad-Free.html">free 패키지 · Pure·Free와 foldFree</a></li><li><a href="https://bartoszmilewski.com/2015/07/21/free-monoids/">Bartosz Milewski · 자유 구조와 해석</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="effect-order-transformers.html">이전 심화 · 오류·상태·로그 효과의 조합 순서</a><a href="expression-language-capstone.html">다음 심화 · 표현식 언어 캡스톤과 법칙 기반 최적화</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

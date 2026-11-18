@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>네이티브 종료와 사후 분석 자료 · Node.js 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Node.js 심화</a></header>
+<main>
+<h1>네이티브 종료와 사후 분석 자료</h1>
+<p class="connection">선수 장 · <a href="../19-native-addons-wasm.html#s3">네이티브 핸들 수명</a></p>
+<p class="lead">힙 스냅샷의 JS 객체가 작다고 네이티브 쪽 메모리나 프로세스 종료를 설명할 수 있는 것은 아닙니다. 핸들·callback 수명에서 어떤 진단 자료가 필요한지 연결합니다.</p>
+<section><h2>실패 종류와 자료의 차이</h2>
+<p>일반 JS 예외, V8 fatal 종료, OS 신호로 끝난 프로세스는 같은 사건이 아닙니다. Diagnostic Report는 JS·네이티브 스택, 자원, libuv 상태 등을 JSON으로 보여 주고, heap snapshot은 객체 도달성 그래프를 봅니다. OS core dump는 다른 자료이며 해당 실행 파일·라이브러리·심볼과 짝지어야 합니다.</p>
+<p><code>process.report.writeReport()</code>로 자신의 정상 로컬 프로세스의 기준 자료를 만들고 report의 JavaScript stack·native stack·libuv 항목을 찾습니다. <code>--report-on-fatalerror</code>가 모든 종류의 네이티브 종료에 report를 보장하는 것으로 해석하지 않습니다. 종료 코드·신호와 실제 생성된 파일을 함께 확인합니다.</p></section>
+<section><h2>네이티브 소유권을 스택과 연결하기</h2>
+<p>Node-API 함수의 임시 napi_value와 명시적 napi_ref의 수명은 다릅니다. worker/native thread가 JS 값을 임의로 접근할 수 있는 권한을 참조 하나가 주지는 않습니다. native callback을 JS로 전달할 때 thread-safe function의 큐·종료 반환 상태와 release 경로를 읽습니다.</p>
+<p>코드 검토에서는 환경 cleanup 시작, 새 callback 접수 중지, native 작업 종료, 참조·리소스 해제의 순서를 표시합니다. cleanup 뒤 callback이 남는지와 중복 해제가 없는지를 정상 시작·종료 실험에서 검사합니다. 수집한 스택을 실제 사용한 애드온 빌드와 연결해야 이름이 비슷한 다른 바이너리를 분석하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>자신의 로컬 앱에서 정상 처리 중과 정상 종료 직전의 Diagnostic Report를 만들고 차이를 비교하세요. 네이티브 의존성이 있다면 공식 예제의 정상 작업·종료 경로를 따라 열린 자원과 cleanup 로그를 대조합니다. 이미 확보한 비식별 종료 자료가 있을 때에만 일치하는 빌드·심볼로 native frame을 해석하세요.</p>
+<details><summary>heap snapshot만 수집</summary><p>JS의 보유 경로는 볼 수 있지만 네이티브 종료 원인과 OS 전체 메모리를 모두 설명하지는 못합니다.</p></details>
+<details><summary>종료 종류·빌드·report/core를 함께 기록</summary><p>필요한 분석 경로를 선택할 수 있습니다. 자료가 없으면 native bug의 특정 원인을 확정하지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>메모리 손상이나 취약점 재현 코드는 다루지 않습니다. 다음 진단 장에서는 관측 자료의 범위로 가설을 선택하고 증거가 없는 원인은 미확정으로 남깁니다.</p><p>관련 기존 장 · <a href="../20-diagnostics-workshop.html#s2">증상별 첫 관측</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://nodejs.org/docs/latest-v22.x/api/report.html">Diagnostic Report</a></li><li><a href="https://nodejs.org/docs/latest-v22.x/api/n-api.html#asynchronous-thread-safe-function-calls">Node-API thread-safe 함수 호출</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="package-runtime-matrix.html">이전 심화 · 패키지 호환성과 런타임 업그레이드</a><a href="slow-service-lifecycle.html">다음 심화 · 느린 의존성과 종료를 포함한 서비스 실험</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

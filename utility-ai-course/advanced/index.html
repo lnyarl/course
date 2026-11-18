@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>효용 기반 AI 심화 · 효용 기반 AI 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a></header>
+<main>
+<h1>효용 기반 AI 심화</h1>
+<p class="lead">기존 Hamlet의 점수화에서 출발해 주민이 아는 정보·도달 가능한 목표·예약·평가 예산·중간 재생·검증을 연결합니다. 조건 선택의 계산은 명시한 작은 모형의 예상 결과이며 실제 Unity·Unreal 실행이나 대규모 성능 측정으로 표시하지 않습니다.</p>
+<p><a href="../index.html">기존 코스 목차</a></p>
+<ol class="units">
+<li><a href="perception-memory-beliefs.html">지각·기억과 불확실한 정보</a><p>Hamlet의 consideration은 세계 객체를 직접 읽습니다. 늑대가 벽 뒤로 갔는데도 정확한 좌표를 계속 안다면 주민은 실제 지각이 아니라 전지적인 정보를 쓰는 셈입니다. 세계의 사실과 주민이 마지막으로 관측한 내용을 분리하고, 기억이 오래될 때 점수를 어떻게 바꿀지 설계합니다.</p></li>
+<li><a href="navigation-cost-reachability.html">이동 비용·도달 가능성과 공간 평가</a><p>가장 가까운 빵집으로 골랐는데 길이 막혀 도착하지 못합니다. 현재 Hamlet의 Manhattan 거리와 x·y 이동은 장애물이 없는 모형입니다. 길찾기의 실제 경로 비용과 도달 가능성을 효용 평가에 넣되, 비싼 탐색을 모든 후보에 매번 수행하지 않는 단계를 설계합니다.</p></li>
+<li><a href="reservations-roles-coordination.html">예약·역할과 여러 행위자의 조정</a><p>두 주민이 같은 빈 좌석을 최고점으로 골랐습니다. 현재 엔진은 도착 시 users&lt;capacity를 검사하므로, 이동 중에는 모두 같은 곳을 향할 수 있습니다. 혼잡 감점만으로 해결하기 어려운 경우에 예약 소유권·만료·해제를 추가하고, 팀 역할과 공정성의 경계를 구분합니다.</p></li>
+<li><a href="evaluation-budget-lod.html">평가 예산·증분 계산과 LOD</a><p>주민 여섯 명에서는 매번 모든 후보를 평가해도 괜찮았는데, 백 명으로 늘리자 프레임이 늦어집니다. 단순히 thinkEvery를 늘리면 위협 반응까지 늦어질 수 있습니다. 연산량 예산·가까운 주민의 우선순위·캐시 수명·평가 완료 시각을 분리해 무엇을 줄였는지 측정합니다.</p></li>
+<li><a href="snapshots-event-replay.html">월드 snapshot·난수 상태와 재생 디버깅</a><p>12장의 내보내기는 설정과 seed로 새 마을을 시작합니다. 문제 발생 직전 tick 50의 상태로 돌아가려면 설정만으로는 부족합니다. 현재 욕구·실행 중 행동·예약·난수 진행 위치·외부 입력의 적용 순서를 포함하는 snapshot과 replay 계약을 정의합니다.</p></li>
+<li><a href="automatic-tuning-validation.html">자동 튜닝·검증 seed와 다중 목적</a><p>커브 파라미터를 바꿨더니 세 seed에서 굶주림이 줄었습니다. 그 설정이 새 마을에서도 좋은지는 아직 모릅니다. 다변수 탐색의 목적·제약·검증 데이터를 분리하고, 평균 점수만 높이는 튜닝이 특정 주민이나 반응성을 희생하는지 검사합니다.</p></li>
+</ol>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

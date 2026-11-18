@@ -109,6 +109,8 @@
 
   <div class="engine-part"><b>엔진 부품</b> 새 부품 없음 — 엔진 전체 지도 <code>UAI.Reasoner</code> <code>UAI.NEED_CURVE</code> <code>World.tick()</code> — Reasoner를 블랙박스로 먼저 써 보고, 각 부품이 어느 장에서 열리는지 확인한다.</div>
 
+  <p class="source">문헌 약어: GAP1·GAP2·GAP3는 각각 <i>Game AI Pro</i> 1·2·3권을 뜻한다.</p>
+
   <nav class="toc"><b>목차</b><ol>
     <li><a href="#s1">출발점: 이 코스가 만들려는 것</a></li>
     <li><a href="#s2">Sense–Think–Act 루프</a></li>
@@ -541,7 +543,7 @@ new UAI.Reasoner([
   // ───────────── 1. Sense–Think–Act 스텝 애니메이션 ─────────────
   (function () {
     const tok = $("#sta-tok");
-    const POS = { world: [320, 267], sense: [110, 88], think: [320, 88], act: [530, 88] };
+    const POS = { world: [55, 250], sense: [48, 56], think: [258, 56], act: [468, 56] };
     const STEPS = [
       { at: "world", on: [], flow: [], fam: false,
         cap: "<b>루프 전체.</b> NPC의 하루는 감지 → 결정 → 실행 → 세계 변화의 반복이다. 엔진에서는 <code>World.tick()</code> 한 번이 이 루프 한 바퀴(게임 시간 1분)다." },

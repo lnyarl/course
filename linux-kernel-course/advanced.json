@@ -1,0 +1,324 @@
+{
+  "title": "리눅스 커널 심화",
+  "intro": "기존 커널 지도에서 프로세스 제어, RT 지연, BPF 계측, 장치 수명, KVM, 파일 시스템 저장 경로로 내려갑니다. 소스·API 계약과 현재 환경의 관측을 분리하고 실제 실행하지 않은 값은 예상으로 표시합니다.",
+  "units": [
+    {
+      "slug": "signals-pidfd-ipc",
+      "title": "시그널·pidfd와 로컬 IPC",
+      "before": {
+        "href": "06-fork-exec-exit.html",
+        "label": "생성·실행·종료"
+      },
+      "after": {
+        "href": "08-sleep-wakeup.html",
+        "label": "잠들기와 깨어나기"
+      },
+      "opening": "6장의 자식 생성·종료를 장기 실행 작업 감시로 연결합니다. 숫자 PID를 저장하는 방식, 시그널로 요청하는 방식, 파일 디스크립터로 대상을 참조하는 방식의 차이를 봅니다.",
+      "sections": [
+        {
+          "title": "시그널은 비동기 통지이지 업무 완료 응답이 아니다",
+          "body": [
+            "프로세스별 pending 상태와 스레드별 signal mask를 구분해야 합니다. 프로세스로 향한 시그널은 허용되는 스레드 중 한 곳에서 처리될 수 있으며, 표준 시그널의 반복 전송 횟수를 처리해야 할 작업 개수와 동일시하면 안 됩니다. signal handler 안에서 일반 라이브러리 함수를 자유롭게 호출하는 대신 async-signal-safe 계약과 별도 처리 경로를 사용합니다.",
+            "블로킹 호출은 시그널 때문에 EINTR로 끝나거나 API·설정에 따라 재시작될 수 있습니다. 중단됐다고 업무가 전혀 시작되지 않았다는 뜻도 아닙니다. 종료 요청은 프로세스에게 정리할 기회를 주는 정책이며, 실제 종료 관측과 자식의 wait 수거는 별개 사건입니다. 이 구분은 8장의 sleeping·runnable 상태 해석에도 필요합니다."
+          ]
+        },
+        {
+          "title": "pidfd와 SCM_RIGHTS가 안정화하는 참조",
+          "body": [
+            "PID 숫자는 수명이 끝나면 재사용될 수 있습니다. pidfd_open으로 얻은 디스크립터는 성공적으로 확보한 대상의 수명을 식별하는 참조를 제공하고, poll 또는 적절한 waitid 계약으로 종료를 관찰할 수 있습니다. 다만 PID를 읽은 뒤 pidfd_open까지의 경합이 모두 사라지는 것은 아니며 자식 수거를 통제하거나 생성 시 pidfd를 얻는 계약을 함께 검토합니다.",
+            "Unix domain socket의 SCM_RIGHTS는 파일 디스크립터 숫자를 전달하는 대신 열린 파일 설명에 대한 참조를 수신 프로세스에 설치합니다. 별도 번호를 받더라도 같은 열린 파일 위치를 공유할 수 있습니다. 보내는 쪽이 close했다고 받는 쪽 참조까지 자동으로 사라지지 않으므로 수신·오류·연결 종료마다 각 소유자의 close를 정해야 합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "자신이 생성한 sleep 1 자식의 PID를 기록하고 부모의 wait로 종료를 수거하는 짧은 실험을 합니다. pidfd 예제를 이미 빌드할 환경에서는 같은 자식의 pidfd poll 결과와 wait 수거를 별도 기록하세요. 다른 프로세스에 시그널을 보내거나 PID 재사용을 강제로 만들지 않습니다. 아래는 상태 모델의 예상 비교입니다.",
+        "cases": [
+          {
+            "label": "자식이 살아 있는 동안 pidfd 확보 후 종료",
+            "result": "예상: 성공적으로 확보한 참조는 그 대상을 식별하고 종료 관측이 가능해집니다. 실제 poll 준비와 wait 결과는 실행 로그로 확인하며 이 자료에 실측값은 없습니다."
+          },
+          {
+            "label": "종료·수거 뒤 오래 보관한 PID 숫자만 사용",
+            "result": "예상 설계 판정: 숫자만으로 원래 대상이라고 보장할 수 없습니다. 새 대상에 제어 요청을 보내는 대신 소유한 pidfd·자식 수거 계약을 사용해야 합니다."
+          }
+        ]
+      },
+      "limit": "시그널 handler나 pidfd 사용의 전체 C 구현은 아니며 수명·완료 관측의 계약을 학습합니다. 다음 장에서 대기 종료가 작업 성공과 다른 이유를 소스의 wait 경로와 대조하세요.",
+      "sources": [
+        {
+          "href": "https://man7.org/linux/man-pages/man7/signal.7.html",
+          "label": "Linux 시그널 전달·마스킹"
+        },
+        {
+          "href": "https://man7.org/linux/man-pages/man2/pidfd_open.2.html",
+          "label": "pidfd 참조와 종료 관측"
+        },
+        {
+          "href": "https://man7.org/linux/man-pages/man7/unix.7.html",
+          "label": "Unix socket의 SCM_RIGHTS"
+        }
+      ]
+    },
+    {
+      "slug": "preempt-rt-latency",
+      "title": "PREEMPT_RT와 지연의 구성 요소",
+      "before": {
+        "href": "11-locking.html",
+        "label": "락과 경쟁 상태"
+      },
+      "after": {
+        "href": "25-tracing.html",
+        "label": "실행 중인 커널 추적"
+      },
+      "opening": "11장에서 spinlock과 mutex의 문맥을 구분했습니다. RT 구성에서는 같은 락 이름의 구현과 IRQ의 실행 주체가 달라질 수 있어 지연을 분해하는 기준도 달라집니다.",
+      "sections": [
+        {
+          "title": "선점 가능한 구간을 늘리는 변화",
+          "body": [
+            "PREEMPT_RT는 많은 IRQ 처리를 스레드 문맥으로 옮기고 spinlock_t의 일반적인 동작을 선점·우선순위 상속을 고려한 구현으로 바꿉니다. raw_spinlock_t와 저수준 진입·스케줄러 같은 비선점 경로는 남습니다. 따라서 RT 커널이라는 이유로 모든 handler가 sleep해도 된다고 판단하지 않습니다.",
+            "사용자 요청 지연은 IRQ 전달 대기, IRQ 처리, runnable이 된 뒤 CPU 배정 대기, 실제 실행, 자원 대기를 포함합니다. 평균 처리량이 높아도 드물게 긴 비선점 구간이 있으면 최악 지연이 커질 수 있습니다. 일반 커널과 RT 커널을 비교할 때 동일 CPU 배치·부하·장치·전원 정책을 기록해야 차이를 해석할 수 있습니다."
+          ]
+        },
+        {
+          "title": "우선순위 상속이 해결하는 부분과 남기는 부분",
+          "body": [
+            "높은 우선순위 H가 낮은 우선순위 L이 소유한 락을 기다리고 중간 우선순위 M이 L을 계속 밀어내면 우선순위 역전이 길어질 수 있습니다. PI는 필요한 기간에 L의 실행 우선순위를 높여 락을 풀 기회를 줄 수 있습니다. 락 보유자가 실제로 진행 가능한 상태여야 하며 무한 I/O 대기나 지나치게 긴 임계 구역 자체가 자동 제거되지는 않습니다.",
+            "실시간 정책을 무작정 적용하면 다른 작업의 진행을 막을 수 있습니다. 먼저 chrt -p와 현재 커널 설정, 추적 가능한 이벤트를 읽고 분포와 긴 지연의 스택을 조사합니다. 이 단원에서는 서비스 우선순위·affinity·CPU isolation을 바꾸지 않습니다. 정책 변경 전에 어느 구간을 줄일 것인지 반증 가능한 예측을 적어야 합니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "Linux VM에서 chrt -p $$로 현재 셸 정책을 읽고, 제공되는 config 파일에서 CONFIG_PREEMPT_RT 여부만 확인합니다. H·M·L 사건 카드를 만들어 L의 락 획득→H의 대기→M 실행을 배치한 뒤 PI 유무의 실행 가능 순서를 비교하세요. 실제 지연 실측과 이 논리 순서를 구분합니다.",
+        "cases": [
+          {
+            "label": "PI 없는 H→L 의존과 중간 우선순위 M",
+            "result": "예상 모델 결과: H가 기다려도 M이 L보다 먼저 실행돼 락 해제가 늦어질 수 있습니다. 이 순서만으로 특정 머신의 최악 지연 숫자는 계산할 수 없습니다."
+          },
+          {
+            "label": "PI가 L에 필요한 실행 우선순위를 전달",
+            "result": "예상 모델 결과: L이 M보다 먼저 진행해 락을 풀 기회를 얻습니다. L이 기다리는 장치의 완료 지연까지 0이 된다는 뜻은 아닙니다."
+          }
+        ]
+      },
+      "limit": "RT 설정 변경이나 고우선순위 무한 루프를 실행하지 않습니다. 25장에서는 wakeup→실행까지의 이벤트를 수집해 모델이 가정한 지연 구간이 실제로 존재하는지 확인합니다.",
+      "sources": [
+        {
+          "href": "https://docs.kernel.org/core-api/real-time/theory.html",
+          "label": "PREEMPT_RT 동작과 우선순위 상속"
+        },
+        {
+          "href": "https://docs.kernel.org/locking/locktypes.html",
+          "label": "RT 구성별 락 종류와 규칙"
+        }
+      ]
+    },
+    {
+      "slug": "bpf-verifier-core",
+      "title": "BPF의 검증·연결·이식성",
+      "before": {
+        "href": "25-tracing.html",
+        "label": "실행 중인 커널 추적"
+      },
+      "after": {
+        "href": "26-performance.html",
+        "label": "성능 병목을 증거로 좁히기"
+      },
+      "opening": "25장에서 BPF map 집계를 소개했습니다. 프로그램이 안전하게 로드됐다는 사실, 원하는 hook에 연결됐다는 사실, 수집한 지표가 질문에 맞는다는 사실을 이제 세 단계로 나눕니다.",
+      "sections": [
+        {
+          "title": "open·load·attach는 서로 다른 성공",
+          "body": [
+            "libbpf의 open 단계는 객체와 map·program을 파악하고 설정을 준비합니다. load 단계에서는 map 생성·relocation·verifier 검사와 프로그램 로드가 이뤄집니다. attach 단계가 돼야 실제 hook에서 실행됩니다. 로드 성공만 보고 이벤트가 수집되고 있다고 설명하지 말고 attach 결과와 실제 대상 이벤트를 확인합니다.",
+            "verifier는 허용된 접근과 실행 조건을 검사하지만 분석 의도의 정확성을 보장하지 않습니다. map lookup 결과가 NULL일 수 있는 경로를 검사해야 한다는 예시는 프로그램 자체의 안전 계약입니다. 이를 보안 우회나 커널 오류 재현으로 바꾸지 않습니다. 잘못된 단위·PID 필터는 안전하게 로드되는 잘못된 계측을 만들 수 있습니다."
+          ]
+        },
+        {
+          "title": "CO-RE가 바꾸는 것과 유지하는 것",
+          "body": [
+            "BTF는 타입 정보를 제공하고 CO-RE는 대상 커널의 타입 배치에 맞게 접근을 조정하는 기반입니다. 필드 위치가 달라도 올바른 타입 정보를 이용해 이식할 수 있지만 없는 필드·없는 hook·권한·의미 변화까지 자동 해결하지 않습니다. 내부 함수 이름에 의존한 kprobe와 문서화된 tracepoint는 안정성 경계가 다릅니다.",
+            "고빈도 이벤트마다 문자열을 출력하면 전송·포맷·버퍼 비용이 늘 수 있습니다. map에 개수·히스토그램을 모으면 전달량을 줄일 수 있지만 map 갱신과 경합 비용은 남습니다. 프로그램 전후의 동일 작업량·시간 구간과 dropped event 여부를 함께 기록해야 계측 오버헤드를 비용 없는 관측으로 오해하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "설치된 환경에서 test -r /sys/kernel/btf/vmlinux와 bpftool version을 읽습니다. 도구가 없으면 설치하지 않고 미준비로 기록합니다. 공식 libbpf 예제의 open→load→attach→destroy 호출을 찾아 표에 적고, 수집 전후 동일한 짧은 자기 작업의 완료량을 비교할 계획을 만듭니다.",
+        "cases": [
+          {
+            "label": "load 성공·attach 미수행",
+            "result": "예상: map·프로그램은 준비돼도 hook에서의 실행 증거는 없습니다. 이벤트 0을 시스템 동작이 없었다는 증거로 사용할 수 없습니다."
+          },
+          {
+            "label": "attach 성공·필터가 다른 PID를 선택",
+            "result": "예상: 실행은 가능해도 대상 작업에 대한 통계는 비어 있을 수 있습니다. 필터와 hook·시간 범위를 확인한 뒤 결론을 내려야 합니다. 실제 수집 값은 실행한 경우 별도 기록합니다."
+          }
+        ]
+      },
+      "limit": "이 단원은 BPF 프로그램의 로드 생명주기와 계측 의미를 분석하며 권한 변경·검증 우회·위험한 프로그램 실행은 하지 않습니다. 26장 성능 조사에서는 줄이려는 실제 구간과 계측 구간을 먼저 맞춥니다.",
+      "sources": [
+        {
+          "href": "https://docs.kernel.org/bpf/libbpf/libbpf_overview.html",
+          "label": "libbpf 생명주기와 CO-RE"
+        },
+        {
+          "href": "https://docs.kernel.org/bpf/verifier.html",
+          "label": "BPF verifier 검사 범위"
+        }
+      ]
+    },
+    {
+      "slug": "driver-dma-remove",
+      "title": "드라이버 DMA와 제거 시 자원 회수",
+      "before": {
+        "href": "24-modules.html",
+        "label": "커널 빌드와 드라이버 입문"
+      },
+      "after": {
+        "href": "27-crash-analysis.html",
+        "label": "커널 오류와 크래시 분석"
+      },
+      "opening": "24장의 miscdevice는 하드웨어 요청을 단순화했습니다. 실제 장치에서는 probe에서 얻은 MMIO·IRQ·DMA와 remove에서 끝내야 하는 비동기 참조를 함께 관리합니다.",
+      "sections": [
+        {
+          "title": "probe 성공을 자원 획득 단계로 분해하기",
+          "body": [
+            "드라이버는 장치의 자원을 확인하고 MMIO를 적절한 인터페이스로 매핑하며 IRQ와 DMA 버퍼를 준비합니다. CPU 가상 주소를 장치 descriptor에 그대로 넣지 않고 dma_map_single 또는 dma_map_sg의 결과와 오류 검사를 사용합니다. 실제 마스크·정렬·전송 방향은 해당 장치와 DMA API 계약에 맞춥니다.",
+            "streaming DMA 매핑 뒤 CPU와 장치의 사용 구간을 분리하고 재사용할 때 필요한 동기화를 수행합니다. coherent 버퍼도 descriptor 내용을 쓴 순서와 장치에 소유권을 넘기는 순서를 별도 배리어·MMIO 계약으로 조율해야 합니다. IOMMU가 있다는 사실만으로 모든 잘못된 수명·순서 문제가 해결되는 것은 아닙니다."
+          ]
+        },
+        {
+          "title": "remove의 핵심은 새 작업 차단과 기존 작업 종료",
+          "body": [
+            "제거에서는 새 사용자 요청과 새 장치 작업을 막고 진행 중 DMA·IRQ·work가 더 이상 버퍼를 사용하지 않게 만든 뒤 자원을 회수합니다. 구체적 순서는 장치와 락 관계에 의존합니다. 예를 들어 완료 경로가 필요한 락을 잡은 채 그 완료를 동기 대기하면 교착을 만들 수 있으므로 작업 종료 API의 대기 조건까지 읽어야 합니다.",
+            "devm 계열은 특정 자원의 정리를 연결해 주지만 비동기 사용자가 이미 멈췄다는 보장은 아닙니다. 자동 해제가 콜백보다 먼저 일어나지 않도록 요청 차단·quiesce·참조 해제의 불변식을 설계합니다. open fd·타이머·작업 항목이 소유한 참조를 모두 표에 놓고 마지막 접근이 마지막 free보다 앞에 있는지 검토하세요."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "실제 장치를 제거하지 않고 드라이버 소스의 probe/remove 경로만 읽습니다. 할당·매핑·등록마다 획득표를 만들고 각 해제의 전제 조건을 적으세요. 교육용으로 DMA 진행 중/완료 후 두 사건 순서를 비교합니다.",
+        "cases": [
+          {
+            "label": "DMA가 진행 중인데 버퍼를 먼저 해제",
+            "result": "예상 설계 판정: 수명 불변식을 위반합니다. 이를 실행해 시스템 오류를 재현하지 말고 종료 대기와 소유권 회수 순서를 수정하는 검토 과제로 둡니다."
+          },
+          {
+            "label": "새 제출 차단→진행 종료 확인→unmap/free",
+            "result": "예상 설계 판정: 기본 수명 순서를 만족합니다. 실제 락·IRQ 문맥·장치 완료 의미까지 확인해야 드라이버 전체 안전성을 말할 수 있습니다."
+          }
+        ]
+      },
+      "limit": "실제 DMA나 모듈 로드·제거를 검증한 결과는 아닙니다. 27장 오류 분석에서는 발견된 스택과 최초 수명 위반이 다른 시점일 수 있음을 이 자원표로 설명합니다.",
+      "sources": [
+        {
+          "href": "https://docs.kernel.org/6.18/core-api/dma-api-howto.html",
+          "label": "Linux 6.18 DMA mapping 가이드"
+        },
+        {
+          "href": "https://docs.kernel.org/6.18/driver-api/driver-model/devres.html",
+          "label": "devres 자원 수명과 범위"
+        }
+      ]
+    },
+    {
+      "slug": "kvm-vcpu-boundary",
+      "title": "KVM VM·vCPU와 호스트 실행 경계",
+      "before": {
+        "href": "23-isolation.html",
+        "label": "컨테이너와 가상 머신"
+      },
+      "after": {
+        "href": "26-performance.html",
+        "label": "성능 병목을 증거로 좁히기"
+      },
+      "opening": "23장에서 VM은 별도 게스트 커널을 실행한다고 배웠습니다. 이제 /dev/kvm의 디스크립터와 KVM_RUN의 복귀 이유를 통해 게스트 진행과 호스트 스케줄링을 연결합니다.",
+      "sections": [
+        {
+          "title": "디스크립터의 계층이 자원 소유권을 나눈다",
+          "body": [
+            "/dev/kvm을 열면 시스템 ioctl의 진입점을 얻습니다. KVM_CREATE_VM은 VM fd를, KVM_CREATE_VCPU는 vCPU fd를 만듭니다. 게스트 메모리 등록은 게스트 물리 주소 범위와 사용자 공간 VMM의 버퍼 관계를 설정하는 작업이며, 그 버퍼의 수명을 VM 실행보다 짧게 잡으면 안 됩니다. ioctl 종류마다 허용하는 fd가 다릅니다.",
+            "지원 기능은 KVM_CHECK_EXTENSION 등으로 확인합니다. 문서에 이름이 있다는 이유만으로 현재 호스트·아키텍처·권한에서 사용할 수 있다고 가정하지 않습니다. 실행 kernel과 6.18 API 기준의 차이를 기록하고, VM ioctls의 프로세스·vCPU ioctl의 스레드 관련 사용 계약도 해당 API 항목에서 확인합니다."
+          ]
+        },
+        {
+          "title": "KVM_RUN에서 돌아왔다고 게스트가 실패한 것은 아니다",
+          "body": [
+            "vCPU 스레드는 KVM_RUN으로 게스트 실행을 요청하고, 사용자 공간 처리가 필요한 exit 등에서 복귀할 수 있습니다. exit_reason에 따라 I/O 처리·종료·오류 등을 분기하며 알 수 없는 이유를 정상 완료로 처리하지 않습니다. VM exit, VMM의 처리 시간, 호스트가 vCPU 스레드를 실행하지 못한 시간을 구분해야 지연을 설명할 수 있습니다.",
+            "게스트에서 runnable인 작업이 있어도 해당 vCPU 스레드가 호스트 CPU를 받지 못하면 실제 진행은 늦습니다. 게스트 CPU 평균과 호스트의 실행·대기를 서로 다른 범위로 기록합니다. dirty 추적은 게스트 메모리 변경을 관측하는 기반이지만 그 자체로 live migration의 장치 상태·정지·재개 순서까지 완성하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "현재 Linux에서 ls -l /dev/kvm과 uname -r을 읽어 인터페이스 존재·권한만 확인합니다. 접근 권한을 변경하지 않습니다. 이후 시스템 fd→VM fd→vCPU fd→RUN→exit_reason 분기 카드로 I/O exit와 종료 exit를 각각 추적하세요.",
+        "cases": [
+          {
+            "label": "처리 가능한 I/O exit 뒤 다시 RUN",
+            "result": "예상 모델 결과: VMM이 해당 I/O를 올바르게 처리한 뒤 게스트를 계속 실행할 수 있습니다. exit 횟수가 곧 실패 횟수는 아닙니다."
+          },
+          {
+            "label": "호스트에서 vCPU 스레드가 실행 대기",
+            "result": "예상 모델 결과: 게스트 내부 작업의 준비 상태만으로 종단 지연을 설명할 수 없습니다. 실제 호스트 스케줄링 trace가 있어야 대기 시간을 주장할 수 있습니다."
+          }
+        ]
+      },
+      "limit": "이 단원은 VMM을 실행하거나 VM 성능을 측정하지 않습니다. 호스트·게스트 경계를 분리한 뒤 26장의 실행 시간·배정 대기 분석으로 돌아가 같은 요청의 시간을 정렬합니다.",
+      "sources": [
+        {
+          "href": "https://docs.kernel.org/6.18/virt/kvm/api.html",
+          "label": "Linux 6.18 KVM fd·ioctl·실행 API"
+        }
+      ]
+    },
+    {
+      "slug": "vfs-ext4-durability",
+      "title": "VFS 객체에서 ext4 저널까지",
+      "before": {
+        "href": "17-vfs.html",
+        "label": "파일 디스크립터와 VFS"
+      },
+      "after": {
+        "href": "18-durability.html",
+        "label": "파일 시스템과 저장의 보장"
+      },
+      "opening": "17장의 fd·열린 파일·inode 관계를 실제 파일 시스템의 저장 경로로 이어갑니다. 이름과 열린 참조의 수명, 캐시 데이터와 저널 transaction을 같은 객체라고 읽지 않습니다.",
+      "sections": [
+        {
+          "title": "이름 조회와 열린 파일의 별도 수명",
+          "body": [
+            "경로 탐색은 dentry 캐시와 inode lookup을 통해 대상 객체를 찾습니다. 열린 file은 파일 위치와 연산·참조를 유지하며 fd 테이블 항목이 이를 가리킵니다. hard link로 여러 이름이 같은 inode를 가리킬 수 있고 unlink가 한 이름을 지워도 열린 file 참조가 즉시 없어지는 것은 아닙니다.",
+            "캐시에 dentry가 있다는 사실은 최신 권한·파일 상태 확인을 생략해도 된다는 뜻이 아닙니다. rename·mount·동시 변경과 경합하는 path walk는 정확성 규칙을 지켜야 합니다. 소스에서는 fs/namei.c의 이름 해석과 file_operations를 통한 실제 읽기를 구분하고, 함수 이름을 찾은 다음 락·참조 획득·오류 반환 경로를 함께 읽습니다."
+          ]
+        },
+        {
+          "title": "page cache·block mapping·journal의 서로 다른 상태",
+          "body": [
+            "파일 offset의 데이터는 page cache를 통해 읽고 더러워질 수 있으며, 실제 저장 위치는 파일 시스템의 block mapping이 정합니다. ext4의 extent와 jbd2 저널은 이 배치·메타데이터 일관성에 관여합니다. write가 사용자 버퍼를 받았다고 장치 기록과 journal commit이 모두 끝났다고 판단할 수 없습니다.",
+            "저널의 메타데이터 일관성과 애플리케이션의 여러 파일 트랜잭션은 다릅니다. ext4의 data mode에 따라 데이터·메타데이터 기록 관계도 달라집니다. 임시 파일을 쓰고 fsync한 뒤 rename하고 부모 디렉터리를 동기화하는 18장의 패턴을 읽을 때 파일 내용, 새 이름의 가시성, 장애 후 이름 보존을 각각 어떤 호출이 다루는지 표시하세요."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "자신이 만든 임시 파일만 대상으로 열기→unlink→열린 fd 읽기→close 순서를 종이에 추적하거나 개발 환경의 기존 17장 예제를 실행합니다. findmnt -T .로 현재 파일 시스템 종류·옵션을 읽고, 다른 형식의 결과를 ext4 실측으로 기록하지 않습니다.",
+        "cases": [
+          {
+            "label": "이름을 지웠지만 열린 fd를 유지",
+            "result": "예상: 해당 열린 참조로 읽을 수 있고 마지막 참조가 닫히기 전까지 자원 수명이 남을 수 있습니다. 실제 결과는 소유한 임시 파일의 읽기 결과로 확인합니다."
+          },
+          {
+            "label": "write 성공 후 fsync 없이 종료",
+            "result": "예상 판정: 실행 중 가시성과 정전 내구성을 분리해야 합니다. 프로세스만 종료한 실험에서 내용이 남았다고 전원 차단 보존을 입증할 수 없습니다."
+          }
+        ]
+      },
+      "limit": "파일 시스템 손상이나 강제 재부팅을 유발하지 않습니다. 18장으로 이동해 정상 API 순서와 내구성 주장의 조건을 맞추세요. DB의 WAL·트랜잭션과 파일 시스템 저널을 같은 것으로 취급하지 않습니다.",
+      "sources": [
+        {
+          "href": "https://docs.kernel.org/filesystems/vfs.html",
+          "label": "VFS dentry·inode·file 객체"
+        },
+        {
+          "href": "https://docs.kernel.org/6.18/filesystems/ext4/journal.html",
+          "label": "ext4 jbd2 저널의 보장 경계"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NUMA 이동과 계층형 메모리 정책 · 운영체제 메모리 관리 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">운영체제 메모리 관리 심화</a></header>
+<main>
+<h1>NUMA 이동과 계층형 메모리 정책</h1>
+<p class="connection">선수 장 · <a href="../13-numa-hugepages-cache.html">NUMA, Huge Page, 캐시와 메모리 모델</a></p>
+<p class="lead">13장에서 원격 NUMA 접근을 봤습니다. 더 빠른 메모리와 더 큰 메모리 사이에서 페이지를 움직일 때는 접근 지연 절약과 복사 비용을 함께 계산해야 합니다.</p>
+<section><h2>페이지를 옮기는 동안 주소를 유지하는 방법</h2>
+<p>migration은 프로그램이 보는 가상 주소를 유지하면서 물리 페이지 위치를 바꾸는 작업입니다. 커널은 참조와 매핑을 확인하고 이동 중 접근이 안전하게 기다리거나 재시도하도록 조율한 뒤 새 페이지로 매핑을 바꿉니다. 이동 중 남은 참조나 pinning 때문에 실패할 수 있으므로 목표 노드를 지정한 사실과 이동 성공은 구분합니다.</p>
+<p>소켓 간 NUMA뿐 아니라 메모리 계층에도 같은 비용 문제가 나타납니다. 어떤 페이지를 빠른 쪽으로 올리고 찬 페이지를 느린 쪽으로 내릴지 결정할 때 최근 접근 표본, 페이지 크기, 이동 빈도, 링크 대역폭을 사용합니다. CXL이라는 연결 이름만으로 모든 장치의 지연·대역폭·NUMA 노출 방식이 같다고 판단하지 않습니다.</p></section>
+<section><h2>hotness 표본과 정책 피드백</h2>
+<p>DAMON은 접근 패턴을 효율적으로 관측하고 그 결과를 바탕으로 관리 동작을 선택하는 기반을 제공합니다. 관측 간격이 길면 짧은 hot phase를 놓칠 수 있고, 너무 자주 측정하면 비용이 늘어납니다. 적응형 영역 관측 결과를 개별 페이지의 모든 접근을 빠짐없이 센 기록으로 읽지 않습니다.</p>
+<p>페이지 이동에는 hysteresis와 비용 예산이 필요합니다. hot 판정 한 번으로 승격하고 다음 표본에서 즉시 강등하면 페이지가 오가며 실제 작업보다 복사를 더 할 수 있습니다. 불변식은 정책이 사용할 이동 대역폭·횟수 예산을 넘지 않는 것입니다. 지연 개선뿐 아니라 이동량과 애플리케이션 처리량도 함께 관찰해야 합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>numactl이 이미 설치된 Linux에서 numactl --hardware와 /proc/self/numa_maps를 읽고 노드 수와 현재 배치를 기록합니다. 정책 변경은 하지 않습니다. 이어 2MiB 페이지 복사 비용이 200µs, 향후 접근당 절약이 50ns라는 가정에서 손익분기 접근 수를 계산합니다.</p>
+<details><summary>이동 뒤 1,000번만 더 접근</summary><p>교육용 예상 계산: 절약 50µs가 복사 200µs보다 작습니다. 이동을 선택하면 총 비용이 늘 수 있습니다. 이 수치는 특정 장치 실측이 아닙니다.</p></details>
+<details><summary>이동 뒤 10,000번 더 접근</summary><p>교육용 예상 계산: 절약 500µs에서 복사 200µs를 빼면 300µs 이득입니다. 실제 병렬 접근·캐시·이동 대기 비용이 있으므로 실측과 대조해야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 단원은 메모리 tiering을 활성화하거나 서버의 페이지를 강제로 이동하지 않습니다. 15장에서는 호스트와 게스트가 서로 다른 회수·이동 결정을 내려 이중 비용을 만들 수 있다는 점을 연결합니다.</p><p>관련 기존 장 · <a href="../15-virtualization-memory.html">가상화와 메모리: EPT, Ballooning, KSM</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/mm/page_migration.html">페이지 migration 절차와 제약</a></li><li><a href="https://docs.kernel.org/admin-guide/mm/damon/index.html">DAMON 접근 관측과 관리</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="userfaultfd-paging.html">이전 심화 · 사용자 공간에서 해결하는 페이지 폴트</a><a href="memory-diagnosis-capstone.html">다음 심화 · 메모리 장애를 증거로 좁히는 캡스톤</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

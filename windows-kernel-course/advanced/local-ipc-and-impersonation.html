@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로컬 IPC와 요청자 보안 문맥 · Windows 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Windows 커널 심화</a></header>
+<main>
+<h1>로컬 IPC와 요청자 보안 문맥</h1>
+<p class="connection">선수 장 · <a href="../10-object-manager.html">객체 관리자와 핸들</a></p>
+<p class="lead">10장의 이름 있는 객체와 핸들을 로컬 서비스 요청으로 연결합니다. 서비스가 파일을 대신 열 때 자신의 계정으로 열 것인지 요청자의 권한으로 열 것인지가 핵심 계약입니다.</p>
+<section><h2>전송·endpoint·업무 요청을 구분하기</h2>
+<p>로컬 IPC는 이름 있는 파이프, RPC 등 여러 공개 API로 구성할 수 있습니다. ALPC는 Windows 내부 로컬 통신에서 만나는 전송 기반이지만, 비공식 native 구조를 안정적인 애플리케이션 계약처럼 복사하지 않습니다. RPC 인터페이스의 operation·입력 길이·호출자 인증과 로컬 endpoint의 접근 제어를 각각 설계합니다.</p>
+<p>RPC timeout이나 파이프 연결 종료는 상대가 업무를 실행하지 않았다는 증거가 아닙니다. 서비스가 결과를 기록한 뒤 응답만 유실할 수 있으므로 변경 요청에는 요청 ID와 결과 조회·재시도 계약이 필요합니다. 핸들을 다른 프로세스에 넘길 때도 숫자 값을 단순 복사하는 대신 해당 API가 정한 복제·전달과 소유권을 사용합니다.</p></section>
+<section><h2>가장 범위를 짧게 유지하고 반드시 복귀하기</h2>
+<p>RpcImpersonateClient는 서버 스레드가 요청자 보안 문맥으로 작업하게 할 수 있고, RpcRevertToSelf는 서비스 자신의 문맥으로 돌아오게 합니다. 가장 수준과 인증 공급자가 허용한 범위를 확인해야 하며 가장 성공 여부를 검사하지 않고 privileged service 문맥으로 파일 열기를 계속하면 요청 의도를 잘못 구현합니다.</p>
+<p>가장은 스레드 문맥과 관련 있으므로 비동기 작업을 다른 스레드로 옮겼다고 자동 전파된다고 가정하지 않습니다. try/finally에 해당하는 정리 경로에서 복귀를 보장하고, 파일을 연 시점의 접근 검사와 나중 핸들 사용도 구분합니다. 불변식은 요청 처리가 끝난 재사용 스레드에 이전 사용자의 가장 토큰이 남지 않는 것입니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>직접 보안 문맥을 바꾸는 코드를 실행하지 않고 자신의 IPC 설계에서 요청 수신→인증 확인→가장→자신이 만든 임시 파일 열기→복귀의 사건을 표로 작성합니다. 성공·파일 없음 예외 두 경로에서 복귀 사건이 모두 존재하는지 확인하세요.</p>
+<details><summary>가장 성공 후 파일 작업 성공</summary><p>예상 설계 결과: 파일 접근은 요청자 문맥으로 평가하고 반환 전에 복귀합니다. 실제 성공 여부는 요청자의 파일 권한으로 별도 확인해야 합니다.</p></details>
+<details><summary>파일 열기가 예외로 끝남</summary><p>예상 설계 결과: finally 정리 경로로 복귀해야 합니다. 결과 응답 실패와 가장 토큰 정리를 하나의 정상 경로에만 배치하면 불변식을 만족하지 못합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>타인의 자격 증명을 얻거나 권한 상승을 재현하지 않습니다. 다음 보안 장에서는 이 문맥이 토큰·ACL·무결성 검사에서 어떻게 사용되는지 연결합니다.</p><p>관련 기존 장 · <a href="../13-security.html">보안 모델</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/windows/win32/rpc/client-impersonation">RPC 클라이언트 가장와 복귀</a></li><li><a href="https://learn.microsoft.com/en-us/windows/win32/ipc/interprocess-communications">Windows IPC 방식과 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="pnp-power-request-lifetime.html">이전 심화 · PnP·전원 전이와 대기 요청 수명</a><a href="registry-hive-consistency.html">다음 심화 · Registry 하이브와 캐시·영속성</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registry 하이브와 캐시·영속성 · Windows 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Windows 커널 심화</a></header>
+<main>
+<h1>Registry 하이브와 캐시·영속성</h1>
+<p class="connection">선수 장 · <a href="../03-boot-process.html">부팅 과정</a></p>
+<p class="lead">3장에서 부팅 중 SYSTEM 하이브를 읽었습니다. 여기서는 Registry 키를 열고 값을 바꾸는 API와 하이브 파일에 변경이 남는 시점을 구분합니다.</p>
+<section><h2>키·값·하이브는 서로 다른 단위</h2>
+<p>Registry의 키는 하위 키와 이름 있는 값을 가지며, 하이브는 관련 키·값과 이를 뒷받침하는 파일을 묶는 단위입니다. HKEY_CURRENT_USER 같은 미리 정의된 루트를 물리 파일 이름과 바로 동일시하지 않습니다. 내부 Configuration Manager가 하이브 메모리 구조와 캐시·로그를 관리하며, 관리 제품인 Configuration Manager와 용어가 겹쳐도 다른 구성 요소입니다.</p>
+<p>프로그램은 RegOpenKeyEx·RegQueryValueEx 등 공개 API와 권한 계약을 사용합니다. 32/64비트 Registry view가 구분되는 경로에서는 같은 문자열 경로라도 프로세스와 명시적 view 플래그에 따라 보이는 값이 다를 수 있습니다. 실제 Windows build·프로세스 아키텍처·사용자·view를 적어야 두 조사 결과를 비교할 수 있습니다.</p></section>
+<section><h2>가시성과 파일 내구성을 분리하기</h2>
+<p>값 변경이 다른 조회에 보인다는 사실과 디스크에 완전히 내구화됐다는 주장은 다릅니다. RegFlushKey는 하이브 데이터를 디스크에 쓰도록 요청하지만 비용이 큰 동작이므로 매 값 변경마다 무조건 호출하는 기본 처방으로 삼지 않습니다. 일반적인 애플리케이션 설정 변경과 여러 자원을 묶는 업무 트랜잭션은 별개의 보장입니다.</p>
+<p>커널 Registry 콜백에서 요청을 관찰하는 경우에도 콜백 실행 문맥과 재진입·대기·메모리 소유권을 지켜야 합니다. 콜백이 왔다는 이유로 해당 변경의 최종 성공이나 영속성이 확정되지 않습니다. 상태를 읽는 시점, API 결과, 이후 재조회와 재시작 관측을 분리하면 로그 한 줄을 과장하는 오류를 줄일 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>PowerShell에서 Get-ItemProperty -Path HKCU:\Environment를 읽어 현재 사용자 설정만 관찰합니다. 값을 수정하거나 하이브 파일을 직접 열지 않습니다. 이어 API 성공→다른 조회에 가시→하이브 flush라는 교육용 사건 카드를 정렬해 각 관측이 주장할 수 있는 범위를 적습니다.</p>
+<details><summary>조회 결과에 새 값이 보이는 사례</summary><p>예상 판정: 해당 조회 시점의 가시성은 설명하지만 전원 차단 뒤 보존까지 입증하지 않습니다. 실제 파일 내구 실험은 이번 절차에 없습니다.</p></details>
+<details><summary>두 프로세스가 다른 view를 조회하는 사례</summary><p>예상 판정: 먼저 사용자·프로세스 비트수·view 플래그를 맞춥니다. 값 차이만 보고 Registry 손상을 확정하지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>하이브 손상·시스템 Registry 변경을 유발하지 않습니다. 다음 객체 관리자 장에서는 키 핸들의 권한·참조·닫기 수명을 파일 객체와 비교하세요.</p><p>관련 기존 장 · <a href="../10-object-manager.html">객체 관리자와 핸들</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-hives">Registry 하이브와 지원 파일</a></li><li><a href="https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regflushkey">RegFlushKey의 비용과 보장</a></li><li><a href="https://learn.microsoft.com/en-us/windows/win32/winprog64/registry-redirector">32/64비트 Registry view</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="local-ipc-and-impersonation.html">이전 심화 · 로컬 IPC와 요청자 보안 문맥</a><a href="wpr-wpa-critical-path.html">다음 심화 · WPR·WPA로 실행과 대기 분리하기</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

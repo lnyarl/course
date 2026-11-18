@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>동시성 결함의 재현과 검증 · C# 동시성과 비동기 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 동시성과 비동기 심화</a></header>
+<main>
+<h1>동시성 결함의 재현과 검증</h1>
+<p class="connection">선수 장 · <a href="../index.html#week-7">실패·취소와 정리</a></p>
+<p class="lead">가끔 통과하는 테스트는 경쟁 지점을 지났는지도 알려 주지 않을 수 있습니다. 실패·취소를 다룬 뒤에는 실행 순서를 통제하고 보존해야 할 결과를 검사합니다.</p>
+<section><h2>sleep 대신 사건을 맞추기</h2>
+<p>두 작업이 같은 값을 읽은 뒤 쓰게 만들려면 Barrier나 TaskCompletionSource로 읽기 완료 지점을 맞춥니다. 임의의 50ms sleep은 느린 CI에서 순서를 보장하지 않습니다. 어떤 사건이 다음 사건보다 먼저 일어났어야 하는지 로그에 ID와 단계 번호로 남깁니다.</p>
+<p>대기 자체가 무한해지지 않도록 테스트 전용 timeout을 두고, 실패한 경우에도 공유 CTS를 취소한 뒤 만든 작업을 모두 관측합니다. 교착을 검증하려고 테스트 프로세스를 영원히 멈추게 하지 않습니다. 잠금 순서가 필요한 예는 유한한 TryEnter 대기로 순환 대기를 드러낼 수 있습니다.</p></section>
+<section><h2>결과와 자원 불변식을 검증하기</h2>
+<p>작업 처리기의 결과를 <code>접수 = 성공 + 정상 실패 + 취소 + 미처리</code>처럼 겹치지 않는 상태로 분류합니다. 취소 요청 수와 실제 종료 수를 같은 값으로 취급하지 않습니다. finally에서 활성 자원 수를 줄이고 모든 worker join 뒤 0인지 확인합니다.</p>
+<p>TaskCompletionSource 완료 경쟁은 두 호출이 둘 다 성공하지 않는지, Channel 완료는 입력 ID가 중복되지 않는지 검사합니다. 내부 메서드 호출 횟수 대신 최종 상태와 계약을 봅니다. 스케줄 하나를 재현한 테스트와 모든 가능한 스케줄에 대한 증명은 구분해야 합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>기존 04RaceLock과 08WorkerProject의 복사본에서 읽기 완료·저장 직전·취소 관측 지점에 신호를 넣으세요. 먼저 의도한 경쟁이 로그로 확인되는지 검사하고, 정상/오류/취소마다 결과 ID와 활성 자원 수를 비교합니다. 제한 시간 초과도 실패 결과로 남기고 자식 작업 정리를 기다리세요.</p>
+<details><summary>두 읽기를 Barrier로 맞춘 증가</summary><p>잘못된 읽기·수정·쓰기는 lost update를 재현할 수 있고, 임계 구역 전체를 보호한 경로는 두 증가를 보존합니다.</p></details>
+<details><summary>취소를 보냈지만 종료를 기다리지 않음</summary><p>활성 worker나 자원이 남을 수 있습니다. 모든 작업의 종료를 관측한 뒤에야 자원 0을 완료 기준으로 검사할 수 있습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 실험은 정해진 경쟁 시나리오의 회귀 검사입니다. 마지막 작업 처리기에서는 정상·실패·취소 결과와 미처리 항목을 함께 제출합니다.</p><p>관련 기존 장 · <a href="../index.html#week-8">종합 작업 처리기</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/standard/threading/barrier">Barrier 동기화</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads">협력적 취소</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="cpu-partitioning.html">이전 심화 · CPU 병렬화와 데이터 분할</a><a href="../index.html">기존 코스 목차</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNSSEC 검증과 장애 진단 · 웹 네트워크 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">웹 네트워크 심화</a></header>
+<main>
+<h1>DNSSEC 검증과 장애 진단</h1>
+<p class="connection">선수 장 · <a href="../02-dns.html">2장 DNS</a></p>
+<p class="lead">권한 서버가 주소를 반환하지만 검증 리졸버만 실패하는 상황을 신뢰 사슬과 응답 서명으로 나눠 봅니다.</p>
+<section><h2>위임과 신뢰 사슬</h2>
+<p>상위 존의 DS는 하위 DNSKEY를 가리킵니다. 검증 리졸버는 신뢰 앵커에서 시작해 DS와 DNSKEY를 확인하고, 하위 키로 RRset을 서명한 RRSIG를 검사합니다.</p>
+<p>키가 맞아도 RRSIG 유효 기간이 검사 시각을 포함해야 합니다. DNS 데이터의 출처와 무결성을 확인한 뒤 서비스 TLS의 서버 신원을 따로 검증합니다.</p></section>
+<section><h2>부재 증명과 검증 실패</h2>
+<p>서명된 존에서는 이름이나 유형의 부재도 NSEC 또는 NSEC3을 통해 증명할 수 있습니다. 빈 답과 검증에 실패한 답은 진단 근거가 다릅니다.</p>
+<p>검증 실패가 특정 리졸버에만 보이면 부모 DS, 현재 DNSKEY, RRSIG 날짜, 캐시 내용을 비교합니다. 서명 교체 직후에는 리졸버가 얻은 레코드의 시각도 같이 기록합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>부모 DS가 K1을 가리키고 하위 RRset 서명이 유효한 교육용 존을 그립니다. 하위 키와 서명 시각을 따로 바꿔 어느 시점에 검증이 실패하는지 적으세요.</p>
+<details><summary>하위 키만 K2로 바뀜</summary><p>DS와 일치하는 키를 찾지 못하므로 그 위임의 검증이 멈춥니다.</p></details>
+<details><summary>키가 맞고 RRSIG가 만료됨</summary><p>위임 확인은 성공해도 RRset 서명 검증에서 실패합니다. 서명 날짜와 시계가 증거입니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>실험은 교육용 키 상태의 비교입니다. 3장에서는 캐시가 서로 다른 레코드를 보는 교체 시간을 확인합니다.</p><p>관련 기존 장 · <a href="../03-dns-cache.html">3장 DNS 캐시</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc4035.html">RFC 4035</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="http-framing.html">다음 심화 · HTTP 본문 경계를 확인하기</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

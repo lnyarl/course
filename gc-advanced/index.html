@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C# 가비지 컬렉션 심화 · C# 가비지 컬렉션 심화</title>
+<link rel="stylesheet" href="../shared/advanced.css">
+</head>
+<body>
+<header><a href="../index.html">코스 목록</a></header>
+<main>
+<h1>C# 가비지 컬렉션 심화</h1>
+<p class="lead">기존 할당·도달성·정지·수명 설명을 실제 진단 절차와 자원 소유권으로 확장합니다. 모든 실험은 작은 로컬 자료를 사용하며 GC 모델·예상 관측·실제 측정을 구분합니다.</p>
+<p><a href="../CSharp_GC_학습자료.html">기존 코스 목차</a></p>
+<ol class="units">
+<li><a href="heap-roots.html">힙 누수와 gcroot 분석</a><p>GC 핸들과 약한 참조를 배웠다면 이제 화면을 닫았는데 객체가 남는 이유를 실제 root 경로로 찾습니다. 객체 수 증가와 도달 가능한 불필요한 객체를 구분합니다.</p></li>
+<li><a href="gc-pause-traces.html">GC trace와 일시정지 분석</a><p>GC 자체가 짧은데 응답 정지는 길 수 있습니다. 정지 단계 그림을 실제 이벤트의 시각과 대응해 수집 시간과 사용자 지연을 구분합니다.</p></li>
+<li><a href="pool-memory-ownership.html">풀링·Span·Memory와 버퍼 소유권</a><p>큰 버퍼를 풀에 돌려도 프로세스 메모리가 바로 줄지 않을 수 있습니다. LOH 할당 감소와 보유 메모리, 그리고 사용 가능한 버퍼의 수명을 나눕니다.</p></li>
+<li><a href="interop-safehandle.html">interop·SafeHandle·비관리 메모리</a><p>Dispose를 구현했어도 네이티브 호출이 끝나기 전에 핸들을 닫으면 안 됩니다. 마지막 정리와 현재 사용 중인 작업의 수명을 한 경계로 연결합니다.</p></li>
+<li><a href="gc-container-capacity.html">Server GC·DATAS·컨테이너 용량 실험</a><p>코어가 많은 호스트에서 작은 컨테이너를 실행하면 같은 앱도 GC와 메모리 사용이 달라질 수 있습니다. 모드 선택을 실제 제한과 할당 패턴의 조합으로 검사합니다.</p></li>
+<li><a href="allocation-validation.html">할당 최적화를 검증하는 실험</a><p>new를 지웠는데도 allocation profile이 달라지지 않을 수 있습니다. 숨은 할당 퀴즈를 실제 컴파일·측정과 전체 작업 결과로 연결합니다.</p></li>
+</ol>
+</main>
+<script defer src="../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

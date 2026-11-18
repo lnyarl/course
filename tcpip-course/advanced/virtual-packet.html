@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>가상 링크와 오버레이 MTU · TCP/IP 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">TCP/IP 심화</a></header>
+<main>
+<h1>가상 링크와 오버레이 MTU</h1>
+<p class="connection">선수 장 · <a href="../03-ip.html">3장 IP와 단편화</a></p>
+<p class="lead">컨테이너의 작은 요청은 통하지만 큰 응답은 멈춥니다. 물리 링크 MTU에서 캡슐화에 드는 비용을 떼어 놓고 계산합니다.</p>
+<section><h2>패킷이 지나는 계층</h2>
+<p>컨테이너의 프레임은 veth 쌍을 거쳐 호스트 브리지에 들어갈 수 있습니다. VXLAN 구간에서는 안쪽 이더넷 프레임이 외부 UDP/IP로 다시 감싸집니다.</p>
+<p>안쪽 TCP의 주소와 터널 종단의 외부 IP는 역할이 다릅니다. 컨테이너 포트, 터널 장치, 물리 인터페이스 세 곳에서 어느 계층의 주소와 길이인지 표시해야 반환 경로를 확인할 수 있습니다.</p></section>
+<section><h2>캡슐화를 고려한 크기 산정</h2>
+<p>외부 IP MTU가 1500이고 외부 IPv4 20, UDP 8, VXLAN 8, 내부 이더넷 14바이트를 가정하면 내부 IP MTU는 1450입니다. IPv6 외부 헤더이거나 옵션이 붙으면 계산이 달라집니다.</p>
+<p>성공한 작은 연결 확인은 큰 데이터의 도달을 보장하지 않습니다. 서로 다른 크기를 같은 경로에서 비교하고, MSS와 IP MTU를 혼동하지 않은 상태에서 PMTU 피드백을 확인합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>외부 IP MTU 1500을 고정하고 외부 IPv4 헤더를 20바이트, IPv6 헤더를 40바이트로 바꿔 계산하세요.</p>
+<details><summary>외부 IPv4, VLAN과 옵션 없음</summary><p>외부 36바이트와 내부 이더넷 14바이트를 빼면 내부 IP MTU는 1450입니다.</p></details>
+<details><summary>외부 IPv6, 확장 헤더 없음</summary><p>외부 헤더가 20바이트 늘어 같은 조건에서 내부 IP MTU는 1430입니다.</p></details><form class="lab" data-exercise="overlay-mtu" hidden><h3>오버레이에 남는 IP 크기</h3><div class="lab-inputs"><label>외부 IP MTU<input type="number" name="outer" min="1280" max="9000" value="1500" required></label><label>외부 IP 헤더<input type="number" name="header" min="20" max="100" value="20" required></label></div><p><output aria-live="polite"></output></p></form></section>
+<section><h2>실습의 경계와 다음 장</h2><p>장비별 실제 설정과 추가 헤더는 따로 확인합니다. 10장에서는 IPv6에서 경로 크기 피드백을 송신자가 처리하는 차이를 다룹니다.</p><p>관련 기존 장 · <a href="../10-ipv6.html">10장 IPv6</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc7348.html">RFC 7348</a></li><li><a href="https://www.rfc-editor.org/rfc/rfc8201.html">RFC 8201</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="queue-drop.html">이전 심화 · 수신 경로에서 드롭 지점 찾기</a><a href="routing-convergence.html">다음 심화 · 경로 철회와 수렴 시간선</a></nav>
+</main>
+<script defer src="../../shared/advanced-exercise.js"></script>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

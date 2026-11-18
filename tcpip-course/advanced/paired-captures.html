@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>양단 캡처로 병목 가설 구분 · TCP/IP 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">TCP/IP 심화</a></header>
+<main>
+<h1>양단 캡처로 병목 가설 구분</h1>
+<p class="connection">선수 장 · <a href="../14-lab.html">14장 종합 실습</a></p>
+<p class="lead">양쪽에서 같은 연결을 관찰하면 패킷 손실과 느린 소비자, 연결 설정 자원 부족을 다른 가설로 다룰 수 있습니다.</p>
+<section><h2>연결과 바이트 범위를 맞추기</h2>
+<p>다른 호스트의 시계가 맞지 않을 수 있으므로 연결의 주소·포트와 seq/ack 범위로 먼저 기록을 대응시킵니다. 네트워크 인터페이스 도달과 앱의 데이터 읽기를 별개 시점으로 적습니다.</p>
+<p>한쪽 캡처에서 응답이 보이지 않으면 생성되지 않았거나 반대 방향에서 빠졌거나 캡처가 다른 인터페이스를 본 경우가 있습니다. 캡처 위치와 필터 조건을 먼저 검산합니다.</p></section>
+<section><h2>관찰 패턴에 반증 붙이기</h2>
+<p>큰 패킷만 사라지면 경로 크기 제한을 우선 확인할 수 있습니다. 수신측이 윈도우 0을 광고한다면 느린 수신 소비와 버퍼 압력에서 검증을 시작합니다.</p>
+<p>송신에서 SYN이 보이지 않으면 호출의 정확한 오류와 로컬 소켓 상태가 필요합니다. 패킷이 송신 캡처에 있다면 다음 관찰 지점에 도착했는지 봅니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>세 가지 기록에서 마지막으로 확인된 경계를 표시한 뒤, 원인을 가르는 다음 한 가지 관측을 적습니다.</p>
+<details><summary>큰 데이터만 수신 기록에 없음</summary><p>크기와 경로 피드백을 함께 관찰하고 더 작은 크기로 같은 경로를 재시도합니다.</p></details>
+<details><summary>데이터 수신, 광고 윈도우 0</summary><p>앱이 데이터를 소비하기 시작할 때 윈도우가 열리는지 봅니다.</p></details>
+<details><summary>송신 캡처에 SYN 없음</summary><p>수신 장비 변경 전에 송신 호출 오류와 포트 점유를 확인합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>세 조건은 예상 기록입니다. 13장의 도구 표로 실제 가설에 필요한 구간 측정과 양쪽 증거를 고릅니다.</p><p>관련 기존 장 · <a href="../13-performance.html">13장 성능 분석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc9293.html">RFC 9293</a></li><li><a href="https://www.rfc-editor.org/rfc/rfc8899.html">RFC 8899</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="routing-convergence.html">이전 심화 · 경로 철회와 수렴 시간선</a><a href="../index.html">기존 코스 목차</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

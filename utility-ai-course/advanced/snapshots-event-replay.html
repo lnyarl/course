@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>월드 snapshot·난수 상태와 재생 디버깅 · 효용 기반 AI 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">효용 기반 AI 심화</a></header>
+<main>
+<h1>월드 snapshot·난수 상태와 재생 디버깅</h1>
+<p class="connection">선수 장 · <a href="../09-engine-architecture.html">기존 9장 · 결정론과 seed</a></p>
+<p class="lead">12장의 내보내기는 설정과 seed로 새 마을을 시작합니다. 문제 발생 직전 tick 50의 상태로 돌아가려면 설정만으로는 부족합니다. 현재 욕구·실행 중 행동·예약·난수 진행 위치·외부 입력의 적용 순서를 포함하는 snapshot과 replay 계약을 정의합니다.</p>
+<section><h2>seed와 진행 중 PRNG 상태의 차이</h2>
+<p>난수 fixture를 [0.1,0.8,0.3,0.9]로 고정하고 두 번 사용한 뒤 snapshot을 찍었다고 합시다. 올바른 복원은 cursor=2에서 다음 값 0.3을 내야 합니다. seed만 다시 넣어 cursor=0으로 시작하면 0.1을 사용합니다. 선택 경계가 0.2인 두 후보라면 원래는 B, 잘못된 복원은 A를 고를 수 있습니다.</p>
+<p>현재 UAI.rng는 내부 상태가 closure 안에 있으며 seed 필드를 저장하는 것만으로 중간 상태가 복원되지 않습니다. 확장 serializer는 PRNG의 명시적 export/import 상태 또는 입력 난수 trace를 관리해야 합니다. snapshot에는 시간·tick·주민 갱신 순서·욕구·위치·current·cooldown·오브젝트 사용 수·진행 중 예약처럼 미래를 바꾸는 권위 상태를 포함합니다.</p></section>
+<section><h2>참조 복원과 외부 이벤트 순서를 검사하기</h2>
+<p>current.target을 통째로 중복 복사하면 월드 오브젝트와 다른 인스턴스가 되어 대상 동일성 비교가 달라질 수 있습니다. 안정 ID로 저장하고 로드 시 실제 객체에 다시 연결하세요. 함수와 closure를 포함한 world 전체를 JSON.stringify 또는 structuredClone 한 번으로 완전한 실행 snapshot으로 만들 수 있다고 가정하지 않습니다. 설정 정의와 실행 상태, 캐시·진단 trace를 구분해야 합니다.</p>
+<p>늑대 생성·시설 제거 같은 외부 이벤트에는 tick과 같은 tick 안의 sequence를 붙이고, tick 처리 전/후 중 한 적용 경계를 정합니다. 재생 검사는 snapshot50 이후 이벤트를 같은 순서로 적용해 60까지 진행한 권위 상태와, 중단 없이 60까지 진행한 상태를 비교합니다. 첫 불일치 tick에서 입력·난수 cursor·행동 전환·대상 ID를 나란히 출력하면 원인 범위를 좁힐 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>fixture의 난수를 두 번 사용한 상태에서 다음 값을 예측한 뒤 조건을 선택하세요. 확장 실습은 월드 사본의 tick50 snapshot을 저장하고 이벤트 목록을 고정해 tick60의 값과 trace를 대조합니다. 초기 seed 재시작과 중간 snapshot 복원을 서로 다른 명령으로 표시하세요.</p>
+<details><summary>cursor=2까지 함께 복원</summary><p>다음 난수는 0.3입니다. 0.2 경계 모형에서는 후보 B를 고릅니다.</p></details>
+<details><summary>seed만 복원하고 cursor=0으로 재시작</summary><p>다음 난수는 0.1이며 같은 경계에서는 후보 A를 고릅니다. 설정 재시작을 중간 상태 복원으로 오해한 반례입니다.</p></details>
+<details><summary>대상 ID 대신 별도 객체로 current.target 복사</summary><p>좌표가 같아도 참조 비교나 사용 수 갱신이 다른 객체에 적용될 수 있습니다. 안정 ID 재연결과 상태 비교가 필요합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>난수 네 개는 설명용 fixture이며 seed7의 UAI.rng 출력이라고 주장하지 않습니다. 현재 export/import는 설정 재시작 기능으로 유지되며 중간 snapshot·이벤트 replay는 별도 구현입니다. 런타임·부동소수점·멀티스레드까지 넘는 결정론은 추가 조건이 필요합니다. 다음에는 12장의 저장 버튼이 저장하는 필드와 필요한 권위 상태를 대조하세요.</p><p>관련 기존 장 · <a href="../12-capstone-hamlet.html">기존 12장 · 설정 내보내기와 재시작</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://gafferongames.com/post/fix_your_timestep/">Glenn Fiedler · 고정 시간 간격과 재현 조건</a></li><li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm">MDN · structured clone의 함수·객체 제약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="evaluation-budget-lod.html">이전 심화 · 평가 예산·증분 계산과 LOD</a><a href="automatic-tuning-validation.html">다음 심화 · 자동 튜닝·검증 seed와 다중 목적</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

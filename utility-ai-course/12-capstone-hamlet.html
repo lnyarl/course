@@ -99,6 +99,8 @@ svg.diagram .en { fill: var(--teal-soft); stroke: var(--teal); }
 
   <div class="engine-part"><b>엔진 부품</b> <code>UAI.makeHamlet</code> <code>UAI.World</code> <code>UAI.Reasoner</code> <code>UAI.select</code> <code>UAI.combine</code> <code>UAI.compensate</code> <code>UAI.curve</code> <code>UAI.PRESETS</code> <code>UAI.NEED_CURVE</code> <code>UAI.adValue</code> <code>UAI.hamletActions</code> <code>UAI.rng</code> <code>UAI.clock</code> — 새 부품은 없다. 지금까지 만든 것 전부를 한 화면에서 조립한다.</div>
 
+  <p class="source">문헌 약어: GAP1·GAP2·GAP3는 각각 <i>Game AI Pro</i> 1·2·3권을 뜻한다.</p>
+
   <nav class="toc"><b>목차</b><ol>
     <li><a href="#s1">부품 조립도: 한 tick 해부</a></li>
     <li><a href="#s2">Hamlet 샌드박스</a></li>
@@ -961,6 +963,11 @@ function destOf(a) {
   if (c.dest) return c.dest;
   return null;
 }
+function withParticle(name, finalParticle, vowelParticle, directional = false) {
+  const last = name.charCodeAt(name.length - 1) - 0xAC00;
+  const final = last >= 0 && last < 11172 ? last % 28 : 0;
+  return name + (final && !(directional && final === 8) ? finalParticle : vowelParticle);
+}
 function drawMap() {
   if (!mapDim) return;
   const w = sim.world, { ctx, w: W, h: H, cs } = mapDim;
@@ -1008,27 +1015,54 @@ function drawMap() {
     }
   });
   const sel = selAgent(), all = $("bubbleAll").checked || cs >= 30;
-  const bubbles = [];
+  const bubbles = [], names = [];
+  // 라벨은 주민과 앞서 배치한 라벨의 영역을 피한다. 같은 칸의 주민도 이름을 구분한다.
+  const occupied = pix.map(p => {
+    const r = Math.max(4, cs * 0.3) + 2;
+    return { x: p.x - r, y: p.y - r, w: r * 2, h: r * 2 };
+  });
+  function labelBox(width, height, x, y) {
+    for (let ring = 0; ring <= 8; ring++) {
+      for (let dy = -ring; dy <= ring; dy++) for (let dx = -ring; dx <= ring; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+        const box = { x: Math.max(2, Math.min(W - width - 2, x + dx * (width + 4))),
+          y: Math.max(2, Math.min(H - height - 2, y + dy * (height + 4))), w: width, h: height };
+        if (occupied.some(o => box.x < o.x + o.w + 2 && box.x + box.w + 2 > o.x && box.y < o.y + o.h + 2 && box.y + box.h + 2 > o.y)) continue;
+        occupied.push(box); return box;
+      }
+    }
+    return null;
+  }
   for (const p of pix) {
     const i = w.agents.indexOf(p.a), col = PAL[AGENT_COLORS[i % AGENT_COLORS.length]];
     const r = Math.max(4, cs * 0.3);
     if (p.a === sel) { ctx.beginPath(); ctx.arc(p.x, p.y, r + 3.5, 0, Math.PI * 2); ctx.strokeStyle = PAL["--text"]; ctx.lineWidth = 2; ctx.stroke(); }
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
     ctx.strokeStyle = PAL["--surface"]; ctx.lineWidth = 1.5; ctx.stroke();
-    if (cs >= 20) { ctx.font = "600 11px sans-serif"; ctx.fillStyle = PAL["--text"]; ctx.fillText(p.a.name, p.x, p.y + r + 8); }
+    if (cs >= 20) names.push({ p, r });
     const fleeing = p.a.current && p.a.current.action === "flee";
     if (all || p.a === sel || fleeing) bubbles.push({ p, r, fleeing });
+  }
+  ctx.font = "600 11px sans-serif"; ctx.fillStyle = PAL["--text"];
+  for (const { p, r } of names) {
+    const tw = ctx.measureText(p.a.name).width + 4;
+    const box = labelBox(tw, 14, p.x - tw / 2, p.y + r + 2);
+    if (box) ctx.fillText(p.a.name, box.x + tw / 2, box.y + 7);
   }
   ctx.font = "12px sans-serif";
   const seen = new Set();
   for (const b of bubbles) {
     const c = b.p.a.current;
-    let txt = c ? (c.action === "use" && c.target ? `${c.target.icon} ${c.target.label}${c.using ? " 이용 중" : "로"}` :
-      c.action === "chat" && c.target ? `💬 ${c.target.name}와 수다` : c.action === "flee" ? "😱 도망!" : c.action === "wander" ? "🚶 산책" : c.label) : "…";
+    let txt = c ? (c.action === "use" && c.target ? `${c.target.icon} ${c.using ? c.target.label + " 이용 중" : withParticle(c.target.label, "으로", "로", true)}` :
+      c.action === "chat" && c.target ? `💬 ${withParticle(c.target.name, "과", "와")} 수다` : c.action === "flee" ? "😱 도망!" : c.action === "wander" ? "🚶 산책" : c.label) : "…";
     const key = b.p.a.x + "," + b.p.a.y + txt; // 같은 칸·같은 말풍선은 한 번만
     if (seen.has(key)) continue; seen.add(key);
     const tw = ctx.measureText(txt).width + 12, th = 18;
-    let bx = Math.max(2, Math.min(W - tw - 2, b.p.x - tw / 2)), by = Math.max(2, b.p.y - b.r - th - 6);
+    const box = labelBox(tw, th, b.p.x - tw / 2, b.p.y - b.r - th - 6);
+    if (!box) continue;
+    const bx = box.x, by = box.y;
+    ctx.beginPath(); ctx.moveTo(b.p.x, b.p.y); ctx.lineTo(bx + tw / 2, by + th / 2);
+    ctx.strokeStyle = PAL["--border"]; ctx.lineWidth = 1; ctx.stroke();
     rrect(ctx, bx, by, tw, th, 6); ctx.fillStyle = PAL["--surface"]; ctx.fill();
     ctx.strokeStyle = b.fleeing ? PAL["--bad"] : PAL["--border"]; ctx.lineWidth = 1; ctx.stroke();
     ctx.fillStyle = b.fleeing ? PAL["--bad"] : PAL["--text"]; ctx.fillText(txt, bx + tw / 2, by + th / 2 + 1);

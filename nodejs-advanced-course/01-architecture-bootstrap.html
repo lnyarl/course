@@ -454,7 +454,7 @@ if (isSea()) JSON.parse(getAsset('schema.json', 'utf8'));</code></pre>
     { n: "child_process.spawn", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>internalBinding('process_wrap') → uv_spawn → fork/exec(posix_spawn)</b>. stdio 파이프는 uv_pipe_t로 epoll에 등록. 자식 종료는 SIGCHLD 시그널 핸들 경유." },
     { n: "new Worker()", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["v8", "uv"], note: "<b>lib/internal/worker.js → internalBinding('worker') → 새 OS 스레드 + 새 v8::Isolate + 새 uv_loop_t + Environment</b>. 메시지는 MessagePort(uv_async_t)로. 스레드풀은 메인과 공유." },
     { n: "Intl.DateTimeFormat", layers: ["user", "deps"], deps: ["v8", "icu"], note: "<b>V8 내장 → ICU 라이브러리</b>. Node 레이어 없음. full-icu 데이터(약 30MB)가 바이너리에 내장되어 있다(기본 빌드)." },
-    { n: "process.stdout.write (TTY)", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>internalBinding('tty_wrap') → uv_tty_t</b>. 주의: POSIX에서 TTY와 파일로의 쓰기는 <em>동기</em>, 파이프는 Linux에서 동기·macOS에서 비동기. console.log가 '비동기'라는 통념은 대상에 따라 틀리다." },
+    { n: "process.stdout.write (TTY)", layers: ["user", "lib", "binding", "cpp", "deps", "os"], deps: ["uv"], note: "<b>internalBinding('tty_wrap') → uv_tty_t</b>. 주의: POSIX에서 TTY와 파일로의 쓰기는 <em>동기</em>, 파이프는 Linux와 macOS 모두 <em>비동기</em>. console.log가 '비동기'라는 통념은 대상에 따라 틀리다." },
   ];
   const btns = document.getElementById("lx-btns"), note = document.getElementById("lx-note");
   const layersEl = document.getElementById("lx-layers");
@@ -540,7 +540,7 @@ if (isSea()) JSON.parse(getAsset('schema.json', 'utf8'));</code></pre>
       ["child_process.exec(cmd, cb)", 3, "uv_spawn 후 stdio 파이프를 epoll로 읽는다. 자식의 CPU는 다른 프로세스."],
       ["Buffer.from(str, 'base64')", 1, "simdutf로 메인 스레드에서 변환. 빠르지만 동기."],
       ["new TextDecoder().decode(u8)", 1, "메인 스레드 동기(simdutf/ICU)."],
-      ["process.stdout.write(s) — stdout이 파이프 (Linux)", 1, "Linux에서 파이프로의 stdout 쓰기는 동기. 파이프 버퍼(64KB)가 차면 블로킹된다. 로그 폭주 시 루프 정지의 원인."],
+      ["process.stdout.write(s) — stdout이 파이프 (Linux)", 3, "POSIX 파이프의 stdout 쓰기는 비동기이며 스레드풀을 쓰지 않는다. 반환값 false를 무시하면 느린 소비자 앞에서 쓰기 버퍼가 쌓일 수 있다. 문자열 생성·포맷 비용은 메인 스레드에 남는다."],
       ["crypto.subtle.digest('SHA-256', buf)", 2, "WebCrypto는 Promise 기반이며 내부적으로 스레드풀 작업으로 실행된다."],
       ["fs.open + fs.read 반복 (스트림 createReadStream)", 2, "각 read가 스레드풀 왕복. highWaterMark(64KiB)가 왕복 횟수를 정한다(6장)."],
     ];

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shim·exec·콘솔의 서로 다른 수명 · Rust 컨테이너 런타임 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 컨테이너 런타임 구현 심화</a></header>
+<main>
+<h1>shim·exec·콘솔의 서로 다른 수명</h1>
+<p class="connection">선수 장 · <a href="../09-oci-runtime-spec.html">OCI 런타임 스펙</a></p>
+<p class="lead">9장에서 Docker가 런타임 명령을 호출하는 흐름을 봤습니다. 명령 프로세스가 끝난 뒤에도 컨테이너는 실행될 수 있으므로 감시·종료 코드·stdio를 맡는 주체가 필요합니다.</p>
+<section><h2>짧게 실행되는 runtime과 오래 살아 있는 shim</h2>
+<p>containerd runtime v2에서는 shim이 task 서비스와 런타임 실행을 연결하는 역할을 맡습니다. OCI create/start 명령의 종료와 컨테이너 init의 종료를 같은 이벤트로 처리하면 실행 중 컨테이너를 이미 끝난 것으로 보고할 수 있습니다. 누가 init을 감시하고 종료 상태를 전달하며 stdio 참조를 유지하는지 소유권을 그려야 합니다.</p>
+<p>daemon 연결이 끊기거나 관리 프로세스가 재시작해도 기존 task의 상태와 종료 이벤트를 어떻게 회복할지 별도 계약이 필요합니다. 이벤트 재전달·조회·중복 처리를 구분하고 task ID와 exec ID, 프로세스 세대를 함께 기록합니다. 기존 myctr의 기능이 containerd shim 서비스 전체를 구현했다고 가정하지 않습니다.</p></section>
+<section><h2>exec·attach·TTY를 하나의 명령으로 합치지 않기</h2>
+<p>exec는 기존 격리 환경에서 새 프로세스를 만드는 작업이고 attach는 이미 있는 프로세스의 입출력에 연결하는 작업입니다. 새 프로세스는 namespace 합류뿐 아니라 cgroup·자격·capability·seccomp·작업 디렉터리 계약도 이어야 합니다. 특히 PID namespace 합류는 호출자가 즉시 새 PID를 얻는 동작과 다르므로 setns 뒤 생성 경계를 검토합니다.</p>
+<p>TTY에서는 pseudoterminal, console 전달, 창 크기와 제어 시그널 처리가 추가됩니다. stdout 파이프의 참조가 남아 있으면 읽는 쪽이 EOF를 늦게 볼 수 있고, 터미널 연결 종료가 컨테이너의 모든 프로세스 종료와 같지 않을 수도 있습니다. 프로세스 종료·fd close·콘솔 detach의 세 타임라인을 따로 기록하면 멈춘 attach를 잘못된 생존 판정으로 읽지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>새 exec·TTY 기능을 실행하기 전에 9장의 지원/미지원 표와 containerd shim API를 대조합니다. 교육용으로 runtime 명령 R, init I, 관리 연결 M, stdout fd F 카드 네 개를 두고 R 종료와 I 종료를 따로 진행하세요. 실제 terminal을 끊거나 다른 컨테이너에 attach하지 않습니다.</p>
+<details><summary>create/start 명령 R만 종료</summary><p>예상 상태: I는 계속 실행될 수 있고 shim/관리 주체가 상태·입출력을 유지해야 합니다. R의 exit 0을 I의 업무 완료로 세면 안 됩니다.</p></details>
+<details><summary>I 종료 뒤 F의 다른 참조가 남음</summary><p>예상 상태: 프로세스 종료와 stdout EOF 관측이 다른 시점일 수 있습니다. 실제 어떤 참조가 남았는지는 fd 소유자 조사로 확인해야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>기존 myctr의 exec·TTY 미지원 경계를 유지하며 shim 구현을 새로 제공하지 않습니다. 2장의 PID1·자식 수거를 다시 읽어 감시 프로세스와 종료 이벤트의 책임을 맞춥니다.</p><p>관련 기존 장 · <a href="../02-uts-pid-namespace.html">UTS · PID 네임스페이스</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md">containerd runtime v2와 shim</a></li><li><a href="https://man7.org/linux/man-pages/man2/setns.2.html">namespace 합류와 자식 생성 경계</a></li><li><a href="https://man7.org/linux/man-pages/man7/pty.7.html">pseudoterminal 입출력 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="oci-lifecycle-recovery.html">이전 심화 · OCI 상태 전이와 생성 실패 복구</a><a href="rootless-composition.html">다음 심화 · rootless 권한·자원·파일 소유권 조합</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

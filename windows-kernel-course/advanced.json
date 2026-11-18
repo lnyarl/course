@@ -1,0 +1,332 @@
+{
+  "title": "Windows 커널 심화",
+  "intro": "NT의 객체·I/O·보안 경계를 네트워크, 장치 수명, 로컬 IPC, Registry, 성능 trace, KMDF 요청 설계로 확장합니다. 실험은 기존 도구의 읽기 전용 관찰과 명시적인 상태·시간선 비교를 사용합니다.",
+  "units": [
+    {
+      "slug": "network-stack-ownership",
+      "title": "Windows 네트워크 경로와 버퍼 소유권",
+      "before": {
+        "href": "11-io-system.html",
+        "label": "I/O 시스템과 IRP"
+      },
+      "after": {
+        "href": "15-debugging.html",
+        "label": "커널 디버깅과 크래시 분석"
+      },
+      "opening": "11장에서 요청이 드라이버 스택을 지나 완료되는 흐름을 봤습니다. 네트워크에서는 소켓 요청·프로토콜 처리·NIC 버퍼의 완료 경계가 한 번의 send 성공과 일치하지 않을 수 있습니다.",
+      "sections": [
+        {
+          "title": "소켓 성공과 전송 완료의 범위",
+          "body": [
+            "Winsock 호출은 사용자 API 경계이고, 소켓의 커널 처리와 TCP/IP 스택, NIC 드라이버는 서로 다른 책임을 가집니다. Windows에서 AFD·TCPIP·NDIS 같은 이름을 만나면 요청, 프로토콜 상태, 어댑터 경계를 나눠 읽으세요. loopback이나 가상 스위치 경로는 물리 NIC를 지나는 경로와 다를 수 있으므로 그림 하나를 모든 패킷의 실행 경로로 단정하지 않습니다.",
+            "애플리케이션의 send 성공은 보통 로컬 전송 경로가 데이터를 받아들였다는 의미이며 상대 애플리케이션의 업무 처리 완료는 아닙니다. TCP ACK도 상대 TCP 수신 확인으로서 업무 결과 저장을 증명하지 않습니다. 요청 ID로 애플리케이션 응답을 연결하고, 로컬 큐 대기·재전송·상대 응답 대기를 별도 구간으로 측정해야 합니다."
+          ]
+        },
+        {
+          "title": "NDIS 버퍼와 WFP 정책의 다른 책임",
+          "body": [
+            "NDIS에서 NET_BUFFER_LIST를 아래로 보낸 뒤에는 전송 완료가 반환되기 전까지 그 버퍼의 소유권 규칙을 지켜야 합니다. 수신 indication도 반환 경로와 버퍼 소유자가 따로 있습니다. 완료는 단순 카운터가 아니라 어느 계층이 버퍼를 재사용하거나 해제해도 되는지를 정하는 사건입니다. 참조와 완료 경로를 빠뜨리면 드라이버 제거 때 남은 요청을 설명할 수 없습니다.",
+            "WFP는 네트워크 흐름의 정해진 계층에서 정책을 적용하는 기반입니다. NDIS 패킷 버퍼 처리와 WFP의 연결·흐름 분류를 같은 hook으로 읽으면 로그의 대상을 혼동합니다. 실제 조사에서는 주소·포트·프로토콜·프로세스와 필터 계층, 분류 시각을 함께 남기고 연결 거절인지 이후 전송 지연인지 먼저 구분합니다. 이 단원에서는 방화벽 규칙을 바꾸거나 차단 우회를 시도하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "Windows 개발 PC에서 Get-NetTCPConnection을 읽어 자신이 실행한 프로그램의 소켓만 OwningProcess로 묶습니다. 앱 로그의 요청 시작·send 반환·응답 수신 시각을 별도 열로 놓습니다. 아래 조건은 원리 비교용 예상 사례이며 실제 패킷 전달은 허용된 환경의 trace로 확인합니다.",
+        "cases": [
+          {
+            "label": "send가 빠르게 반환하고 업무 응답이 늦음",
+            "result": "예상 판정: 로컬 접수 성공만으로 상대 처리가 빨랐다고 말할 수 없습니다. 상대 응답과 재전송·큐 대기 중 어디에 시간이 있는지 다음 증거를 정합니다."
+          },
+          {
+            "label": "loopback 소켓 통신",
+            "result": "예상 판정: 소켓·프로토콜 경계는 있어도 물리 NIC를 지났다는 증거는 아닙니다. NIC 카운터 변화가 작다는 이유만으로 요청이 없었다고 결론내리지 않습니다."
+          }
+        ]
+      },
+      "limit": "직접 드라이버를 로드하거나 WFP 정책을 바꾸지 않습니다. 다음 디버깅 장에서 같은 요청의 실행·대기·완료 이벤트를 시간선으로 연결하세요.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/windows/win32/fwp/windows-filtering-platform-start-page",
+          "label": "Windows Filtering Platform 개요"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/drivers/network/sending-network-data",
+          "label": "NDIS 전송 완료와 NET_BUFFER_LIST 소유권"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/drivers/network/receiving-data-in-protocol-drivers",
+          "label": "NDIS 수신 버퍼 반환 계약"
+        }
+      ]
+    },
+    {
+      "slug": "pnp-power-request-lifetime",
+      "title": "PnP·전원 전이와 대기 요청 수명",
+      "before": {
+        "href": "14-driver-development.html",
+        "label": "커널 드라이버 개발"
+      },
+      "after": {
+        "href": "15-debugging.html",
+        "label": "커널 디버깅과 크래시 분석"
+      },
+      "opening": "14장의 최소 KMDF 장치가 읽기에 응답한다고 끝은 아닙니다. 장치가 멈추거나 전원 상태를 바꾸는 동안 큐에 남은 요청을 누가 책임지는지 정해야 합니다.",
+      "sections": [
+        {
+          "title": "PnP 상태와 전원 상태를 별개 축으로 보기",
+          "body": [
+            "장치가 시스템에 존재한다는 PnP 상태와 실제 하드웨어를 사용할 수 있는 D0/Dx 상태는 다릅니다. WDF는 PnP·전원 상태 기계를 관리하고, 기본적인 power-managed 큐는 하드웨어가 사용할 수 있는 상태에 맞춰 요청 전달을 조율합니다. 드라이버는 모든 전이를 손으로 다시 구현하기보다 필요한 콜백에서 장치별 자원을 준비하고 정리합니다.",
+            "EvtDevicePrepareHardware에서 자원을 준비하고 EvtDeviceD0Entry/D0Exit에서 장치 동작을 조정하는 역할을 구분합니다. 실제 장치·큐 구성에 따라 콜백과 순서는 달라질 수 있으므로 WDF 문서의 해당 객체 종류를 기준으로 읽습니다. 소프트웨어 전용 장치에 물리 장치와 같은 전원 작업을 불필요하게 추가하지 않습니다."
+          ]
+        },
+        {
+          "title": "중지·제거 시 소유한 요청을 설명하기",
+          "body": [
+            "큐 안에 아직 전달되지 않은 요청과 드라이버가 이미 꺼내 소유한 요청은 정리 책임이 다릅니다. 중지 알림을 받았을 때 요청을 완료할지, 재큐잉할지, 중지 승인을 할지 해당 큐의 계약을 따릅니다. EvtIoStop에서 아무 조치 없이 장치 버퍼를 해제하면 나중 완료 경로가 해제된 상태를 사용할 수 있습니다.",
+            "제거 순서의 불변식은 새 하드웨어 작업을 막고, 이미 시작한 DMA·인터럽트·워크의 종료를 확인한 다음 관련 메모리를 해제하는 것입니다. surprise removal에서는 장치에 더 접근할 수 없을 수 있어 정상 종료의 마지막 레지스터 쓰기를 그대로 반복하면 안 됩니다. 사용자에게 돌아가는 요청 결과와 내부 자원 회수 완료도 같은 사건으로 처리하지 않습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "Get-PnpDevice -PresentOnly로 장치 상태를 읽기만 하고 장치를 비활성화하지 않습니다. 종이 큐에 Q1(미전달), Q2(드라이버 소유), Q3(하드웨어 진행)을 놓고 D0→중지→제거의 각 단계에서 소유자·완료·메모리 해제 순서를 적습니다.",
+        "cases": [
+          {
+            "label": "미전달 요청만 있는 상태에서 큐 중지",
+            "result": "예상 모델 결과: 새 하드웨어 작업을 시작하지 않고 큐 정책에 따라 대기/취소를 정리할 수 있습니다. 실측 콜백 순서는 실제 드라이버 구성에서 확인해야 합니다."
+          },
+          {
+            "label": "이미 드라이버가 소유한 요청이 있는 제거",
+            "result": "예상 모델 결과: 큐를 닫았다는 사실만으로 Q2/Q3 수명이 끝나지 않습니다. 종료/취소와 완료의 소유권을 결정하기 전 메모리를 해제할 수 없습니다."
+          }
+        ]
+      },
+      "limit": "실제 장치 제거·절전 전환을 자동 실행하지 않습니다. 정리 순서를 정한 뒤 다음 장에서 남은 IRP와 대기 스택을 읽을 때 어느 소유자가 진행을 막는지 확인합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/porting-pnp-and-power-management-functionality",
+          "label": "WDF PnP와 전원 상태 기계"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/using-power-managed-i-o-queues",
+          "label": "Power-managed I/O 큐"
+        }
+      ]
+    },
+    {
+      "slug": "local-ipc-and-impersonation",
+      "title": "로컬 IPC와 요청자 보안 문맥",
+      "before": {
+        "href": "10-object-manager.html",
+        "label": "객체 관리자와 핸들"
+      },
+      "after": {
+        "href": "13-security.html",
+        "label": "보안 모델"
+      },
+      "opening": "10장의 이름 있는 객체와 핸들을 로컬 서비스 요청으로 연결합니다. 서비스가 파일을 대신 열 때 자신의 계정으로 열 것인지 요청자의 권한으로 열 것인지가 핵심 계약입니다.",
+      "sections": [
+        {
+          "title": "전송·endpoint·업무 요청을 구분하기",
+          "body": [
+            "로컬 IPC는 이름 있는 파이프, RPC 등 여러 공개 API로 구성할 수 있습니다. ALPC는 Windows 내부 로컬 통신에서 만나는 전송 기반이지만, 비공식 native 구조를 안정적인 애플리케이션 계약처럼 복사하지 않습니다. RPC 인터페이스의 operation·입력 길이·호출자 인증과 로컬 endpoint의 접근 제어를 각각 설계합니다.",
+            "RPC timeout이나 파이프 연결 종료는 상대가 업무를 실행하지 않았다는 증거가 아닙니다. 서비스가 결과를 기록한 뒤 응답만 유실할 수 있으므로 변경 요청에는 요청 ID와 결과 조회·재시도 계약이 필요합니다. 핸들을 다른 프로세스에 넘길 때도 숫자 값을 단순 복사하는 대신 해당 API가 정한 복제·전달과 소유권을 사용합니다."
+          ]
+        },
+        {
+          "title": "가장 범위를 짧게 유지하고 반드시 복귀하기",
+          "body": [
+            "RpcImpersonateClient는 서버 스레드가 요청자 보안 문맥으로 작업하게 할 수 있고, RpcRevertToSelf는 서비스 자신의 문맥으로 돌아오게 합니다. 가장 수준과 인증 공급자가 허용한 범위를 확인해야 하며 가장 성공 여부를 검사하지 않고 privileged service 문맥으로 파일 열기를 계속하면 요청 의도를 잘못 구현합니다.",
+            "가장은 스레드 문맥과 관련 있으므로 비동기 작업을 다른 스레드로 옮겼다고 자동 전파된다고 가정하지 않습니다. try/finally에 해당하는 정리 경로에서 복귀를 보장하고, 파일을 연 시점의 접근 검사와 나중 핸들 사용도 구분합니다. 불변식은 요청 처리가 끝난 재사용 스레드에 이전 사용자의 가장 토큰이 남지 않는 것입니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "직접 보안 문맥을 바꾸는 코드를 실행하지 않고 자신의 IPC 설계에서 요청 수신→인증 확인→가장→자신이 만든 임시 파일 열기→복귀의 사건을 표로 작성합니다. 성공·파일 없음 예외 두 경로에서 복귀 사건이 모두 존재하는지 확인하세요.",
+        "cases": [
+          {
+            "label": "가장 성공 후 파일 작업 성공",
+            "result": "예상 설계 결과: 파일 접근은 요청자 문맥으로 평가하고 반환 전에 복귀합니다. 실제 성공 여부는 요청자의 파일 권한으로 별도 확인해야 합니다."
+          },
+          {
+            "label": "파일 열기가 예외로 끝남",
+            "result": "예상 설계 결과: finally 정리 경로로 복귀해야 합니다. 결과 응답 실패와 가장 토큰 정리를 하나의 정상 경로에만 배치하면 불변식을 만족하지 못합니다."
+          }
+        ]
+      },
+      "limit": "타인의 자격 증명을 얻거나 권한 상승을 재현하지 않습니다. 다음 보안 장에서는 이 문맥이 토큰·ACL·무결성 검사에서 어떻게 사용되는지 연결합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/windows/win32/rpc/client-impersonation",
+          "label": "RPC 클라이언트 가장와 복귀"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows/win32/ipc/interprocess-communications",
+          "label": "Windows IPC 방식과 계약"
+        }
+      ]
+    },
+    {
+      "slug": "registry-hive-consistency",
+      "title": "Registry 하이브와 캐시·영속성",
+      "before": {
+        "href": "03-boot-process.html",
+        "label": "부팅 과정"
+      },
+      "after": {
+        "href": "10-object-manager.html",
+        "label": "객체 관리자와 핸들"
+      },
+      "opening": "3장에서 부팅 중 SYSTEM 하이브를 읽었습니다. 여기서는 Registry 키를 열고 값을 바꾸는 API와 하이브 파일에 변경이 남는 시점을 구분합니다.",
+      "sections": [
+        {
+          "title": "키·값·하이브는 서로 다른 단위",
+          "body": [
+            "Registry의 키는 하위 키와 이름 있는 값을 가지며, 하이브는 관련 키·값과 이를 뒷받침하는 파일을 묶는 단위입니다. HKEY_CURRENT_USER 같은 미리 정의된 루트를 물리 파일 이름과 바로 동일시하지 않습니다. 내부 Configuration Manager가 하이브 메모리 구조와 캐시·로그를 관리하며, 관리 제품인 Configuration Manager와 용어가 겹쳐도 다른 구성 요소입니다.",
+            "프로그램은 RegOpenKeyEx·RegQueryValueEx 등 공개 API와 권한 계약을 사용합니다. 32/64비트 Registry view가 구분되는 경로에서는 같은 문자열 경로라도 프로세스와 명시적 view 플래그에 따라 보이는 값이 다를 수 있습니다. 실제 Windows build·프로세스 아키텍처·사용자·view를 적어야 두 조사 결과를 비교할 수 있습니다."
+          ]
+        },
+        {
+          "title": "가시성과 파일 내구성을 분리하기",
+          "body": [
+            "값 변경이 다른 조회에 보인다는 사실과 디스크에 완전히 내구화됐다는 주장은 다릅니다. RegFlushKey는 하이브 데이터를 디스크에 쓰도록 요청하지만 비용이 큰 동작이므로 매 값 변경마다 무조건 호출하는 기본 처방으로 삼지 않습니다. 일반적인 애플리케이션 설정 변경과 여러 자원을 묶는 업무 트랜잭션은 별개의 보장입니다.",
+            "커널 Registry 콜백에서 요청을 관찰하는 경우에도 콜백 실행 문맥과 재진입·대기·메모리 소유권을 지켜야 합니다. 콜백이 왔다는 이유로 해당 변경의 최종 성공이나 영속성이 확정되지 않습니다. 상태를 읽는 시점, API 결과, 이후 재조회와 재시작 관측을 분리하면 로그 한 줄을 과장하는 오류를 줄일 수 있습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "PowerShell에서 Get-ItemProperty -Path HKCU:\\Environment를 읽어 현재 사용자 설정만 관찰합니다. 값을 수정하거나 하이브 파일을 직접 열지 않습니다. 이어 API 성공→다른 조회에 가시→하이브 flush라는 교육용 사건 카드를 정렬해 각 관측이 주장할 수 있는 범위를 적습니다.",
+        "cases": [
+          {
+            "label": "조회 결과에 새 값이 보이는 사례",
+            "result": "예상 판정: 해당 조회 시점의 가시성은 설명하지만 전원 차단 뒤 보존까지 입증하지 않습니다. 실제 파일 내구 실험은 이번 절차에 없습니다."
+          },
+          {
+            "label": "두 프로세스가 다른 view를 조회하는 사례",
+            "result": "예상 판정: 먼저 사용자·프로세스 비트수·view 플래그를 맞춥니다. 값 차이만 보고 Registry 손상을 확정하지 않습니다."
+          }
+        ]
+      },
+      "limit": "하이브 손상·시스템 Registry 변경을 유발하지 않습니다. 다음 객체 관리자 장에서는 키 핸들의 권한·참조·닫기 수명을 파일 객체와 비교하세요.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-hives",
+          "label": "Registry 하이브와 지원 파일"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regflushkey",
+          "label": "RegFlushKey의 비용과 보장"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows/win32/winprog64/registry-redirector",
+          "label": "32/64비트 Registry view"
+        }
+      ]
+    },
+    {
+      "slug": "wpr-wpa-critical-path",
+      "title": "WPR·WPA로 실행과 대기 분리하기",
+      "before": {
+        "href": "15-debugging.html",
+        "label": "커널 디버깅과 크래시 분석"
+      },
+      "after": {
+        "href": "17-expert-roadmap.html",
+        "label": "전문가 로드맵과 실습 랩"
+      },
+      "opening": "15장의 크래시 분석은 멈춘 시점의 상태를 읽었습니다. 성능 분석은 요청 시간선에서 CPU 실행과 실행 준비·I/O 대기를 나눠야 합니다.",
+      "sections": [
+        {
+          "title": "trace를 수집하기 전에 질문을 정하기",
+          "body": [
+            "WPR은 ETW 기반 이벤트를 수집하고 WPA는 ETL을 분석합니다. CPU sampling은 실행 중 비용의 표본을 찾는 데 적합하고, CSwitch·ReadyThread 같은 스케줄링 이벤트는 깨어난 뒤 실제 실행까지의 지연을 보는 데 도움이 됩니다. 샘플이 적게 찍힌 함수가 호출되지 않았다고 단정하거나 CPU 프로파일에 대기 시간이 모두 나타난다고 읽지 않습니다.",
+            "수집 전 질문, 프로세스, 시작·종료 구간, 필요한 profile과 스택, 최대 수집 시간을 적습니다. wpr -status로 기존 세션을 먼저 확인하고 자신이 소유한 실습 세션만 다룹니다. 이미 준비된 개발 환경에서 WPR UI로 짧은 GeneralProfile 수집을 하되 다른 사용자의 trace 세션을 중단하지 않습니다. 심볼이 맞지 않으면 함수명을 억지로 추정하지 않습니다."
+          ]
+        },
+        {
+          "title": "critical path와 측정 오버헤드",
+          "body": [
+            "요청이 10ms 계산 후 두 외부 작업 30ms·70ms를 동시에 기다리고 5ms 조립한다면 단순 의존 그래프의 길이는 85ms입니다. 병렬 span을 모두 더해 115ms로 보고하면 응답 시간을 과장합니다. 스레드 이동·await·작업 ID를 연결해 어느 대기가 같은 요청에 속하는지 확인하고 겹친 CPU 실행도 중복 합산하지 않습니다.",
+            "DPC/ISR이 길다는 관측은 어떤 CPU와 시간에 요청의 진행을 막았는지 연결해야 원인 가설이 됩니다. 수집 profile을 무겁게 하면 trace 자체의 비용과 파일 I/O가 달라질 수 있으므로 실행 전후 처리량·오류·경과 시간을 비교합니다. 평균 CPU가 낮아도 runnable 대기나 특정 코어의 긴 실행이 있을 수 있습니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "먼저 10·30·70·5ms 의존 그래프의 예상 critical path를 계산합니다. WPR/WPA가 이미 준비된 개인 개발 VM에서 자신이 실행한 짧은 작업을 5초 이내 수집해 CPU Usage와 스케줄링 구간을 읽습니다. 실측 ETL의 수치와 아래 교육용 숫자는 섞지 않습니다.",
+        "cases": [
+          {
+            "label": "30ms와 70ms 작업이 실제로 겹침",
+            "result": "교육용 예상값은 10+max(30,70)+5=85ms입니다. 실제 trace에서는 의존 관계와 시작 시점이 같았는지 먼저 확인합니다."
+          },
+          {
+            "label": "동일 작업이 차례로 실행됨",
+            "result": "교육용 예상값은 10+30+70+5=115ms입니다. API 이름이나 비동기 표기만으로 두 실행이 겹쳤다고 판단하지 않습니다."
+          }
+        ]
+      },
+      "limit": "이 단원에 실제 ETL이나 Windows 실측 결과가 내장되어 있지는 않습니다. 수집 권한·도구가 없으면 계산 실험만 완료로 기록합니다. 17장 프로젝트에서는 질문·원시 trace·해석·미확인을 함께 제출하세요.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-recorder",
+          "label": "WPR의 ETW 수집 범위"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-analyzer",
+          "label": "WPA 분석 도구"
+        }
+      ]
+    },
+    {
+      "slug": "kmdf-cancel-completion-capstone",
+      "title": "KMDF 요청 취소·완료 캡스톤",
+      "before": {
+        "href": "14-driver-development.html",
+        "label": "커널 드라이버 개발"
+      },
+      "after": {
+        "href": "15-debugging.html",
+        "label": "커널 디버깅과 크래시 분석"
+      },
+      "opening": "14장의 요청 완료 규칙을 timer·work item·사용자 취소가 만나는 상황으로 확장합니다. 완료를 두 번 하지 않는 것과 사용 중 상태를 먼저 해제하지 않는 것을 함께 지켜야 합니다.",
+      "sections": [
+        {
+          "title": "요청 소유권과 취소 콜백",
+          "body": [
+            "프레임워크 큐에 남은 미전달 요청의 취소와 드라이버가 이미 소유한 WDFREQUEST의 취소는 책임이 다릅니다. 드라이버가 보류 요청의 취소를 처리하려면 WdfRequestMarkCancelableEx와 EvtRequestCancel 등 해당 계약을 사용합니다. 취소 가능 등록의 반환 상태를 확인하고 취소와 정상 완료 사이의 승자를 하나로 정해야 합니다.",
+            "정상 완료 쪽에서 WdfRequestUnmarkCancelable을 호출했을 때 STATUS_CANCELLED이면 이미 취소 경로가 요청을 소유할 수 있습니다. 이 경우 정상 경로가 다시 완료하거나 즉시 관련 상태를 해제하면 안 됩니다. 한쪽이 완료권을 얻었다는 상태 변화와 실제 WdfRequestComplete, 워크 종료, 메모리 회수는 서로 다른 사건입니다."
+          ]
+        },
+        {
+          "title": "네 가지 순서로 설계를 검증하기",
+          "body": [
+            "최소 상태 표는 Pending, Completing, Canceling, Finished로 잡을 수 있습니다. 락 또는 프레임워크 동기화로 Pending에서 완료권을 얻는 전이를 한 번만 허용하고, 완료 이후 timer/work가 요청에 접근하지 않게 정리합니다. 상태 이름만 추가해도 안전해지는 것은 아니며 각 콜백이 어느 락과 IRQL에서 전이하는지 실제 API 계약과 맞춰야 합니다.",
+            "검증 표에는 정상 완료만 도착, 취소가 먼저 도착, 완료권 획득과 취소가 겹침, 장치 제거 중 보류 요청이라는 네 경우를 둡니다. 각 경우에서 최종 completion 수가 1이고 남은 콜백 참조가 0이 된 뒤 자원을 회수하는지 확인합니다. 이 캡스톤은 취약한 드라이버를 만들어 시스템을 크래시시키는 과제가 아닙니다."
+          ]
+        }
+      ],
+      "experiment": {
+        "prompt": "공식 WDF 취소 문서를 옆에 두고 Pending 요청 카드 하나와 timer·cancel 두 사건을 종이로 진행합니다. API 성공/STATUS_CANCELLED 분기마다 완료권 소유자를 적고, 다른 경로가 요청을 만지지 않는지 확인하세요. 새 드라이버 로드나 Driver Verifier 강제 실패는 실행하지 않습니다.",
+        "cases": [
+          {
+            "label": "UnmarkCancelable 성공 후 정상 완료",
+            "result": "예상 상태 규칙: 정상 경로가 완료를 책임지고 이후 취소 경로는 같은 요청을 완료하지 않습니다. 실제 드라이버의 해당 반환값·동기화 규칙과 대조해야 합니다."
+          },
+          {
+            "label": "취소가 먼저 소유권을 얻어 STATUS_CANCELLED",
+            "result": "예상 상태 규칙: 정상 경로는 완료를 중복 수행하지 않고 취소 경로의 종료·참조 정리를 기다리는 설계를 따릅니다. 단순한 요청 포인터 검사만으로 수명을 보장할 수 없습니다."
+          }
+        ]
+      },
+      "limit": "이 자료는 요청 소유권 설계·문서 대조 실습이며 드라이버 바이너리를 구현하거나 검증한 결과가 아닙니다. 다음 디버깅 장에서는 IRP·스택·남은 작업을 통해 이 불변식을 관측하는 방법을 연결합니다.",
+      "sources": [
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/canceling-i-o-requests",
+          "label": "WDF I/O 요청 취소 책임"
+        },
+        {
+          "href": "https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestunmarkcancelable",
+          "label": "WdfRequestUnmarkCancelable 반환 계약"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>재개 위치와 실행 문맥 · C# 동시성과 비동기 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 동시성과 비동기 심화</a></header>
+<main>
+<h1>재개 위치와 실행 문맥</h1>
+<p class="connection">선수 장 · <a href="../index.html#week-5">Task와 비동기 상태 머신</a></p>
+<p class="lead">await 뒤 스레드 번호가 바뀌어도 요청 ID는 유지될 수 있습니다. 재개할 실행 장소와 논리 호출 문맥을 분리해야 UI 교착과 컨텍스트 유실을 같은 문제로 오해하지 않습니다.</p>
+<section><h2>세 가지 문맥을 나누기</h2>
+<p><code>SynchronizationContext</code>는 UI 같은 환경이 continuation을 어디로 보낼지에 관여하고, <code>TaskScheduler</code>는 Task 실행을 배치하는 추상화입니다. <code>ExecutionContext</code>는 <code>AsyncLocal&lt;T&gt;</code> 같은 논리 실행 상태를 흐르게 합니다. 이 세 개념은 같은 스레드 번호를 유지한다는 하나의 기능이 아닙니다.</p>
+<p><code>ConfigureAwait(false)</code>는 해당 await에서 캡처한 문맥으로 돌아가려는 요구를 줄입니다. 새 스레드 생성이나 CPU 병렬화를 보장하지 않으며 ExecutionContext 흐름을 끄는 API도 아닙니다. 서버와 UI 앱의 기본 환경이 다르므로 Console에서 성공한 동기 대기를 UI에서도 안전하다고 판단하지 않습니다.</p></section>
+<section><h2>전파와 억제를 코드로 확인하기</h2>
+<p><code>AsyncLocal&lt;string&gt;</code>에 요청 ID를 넣고 await 전후와 Task.Run 안에서 값을 기록합니다. 값을 복사해 흐르게 한다는 설명은 그 값이 가리키는 가변 객체까지 독립 복제한다는 뜻이 아닙니다. 문맥에 큰 요청 객체를 넣어 수명을 늘리는 비용도 살핍니다.</p>
+<p>억제 실험은 <code>Task child; using (ExecutionContext.SuppressFlow()) { child = Task.Run(...); } await child;</code>처럼 억제 범위를 동기 구간 안에서 닫습니다. SuppressFlow의 복원 객체를 await 너머로 들고 가면 다른 실행 문맥에서 복원하려는 문제가 생길 수 있습니다. 필요 데이터는 인자로 명시적으로 넘기는 방식도 비교합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>작은 Console 앱에서 AsyncLocal 요청 ID를 정하고 정상 Task.Run, ConfigureAwait(false) 뒤, SuppressFlow 안에서 생성한 Task의 값을 비교하세요. 각 로그에 스레드 ID와 요청 ID를 함께 남깁니다. 문맥 억제 범위 안에서는 await하지 말고 범위를 닫은 뒤 자식 Task를 기다리세요.</p>
+<details><summary>ConfigureAwait(false)만 적용</summary><p>재개 스레드 번호는 달라질 수 있어도 AsyncLocal 값은 일반적으로 이어집니다. 재개 장소와 논리 문맥이 다른 계약임을 관측합니다.</p></details>
+<details><summary>자식 작업 생성 시 ExecutionContext 흐름 억제</summary><p>자식은 부모 AsyncLocal 값을 자동으로 전달받지 않습니다. 작업 인자로 복사한 ID는 사용할 수 있어 명시적 데이터 전달과 비교됩니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>커스텀 SynchronizationContext를 직접 만드는 것은 UI 프레임워크 구현과 별개입니다. 다음 큐 장에서는 요청 문맥 전체를 worker에 숨겨 전달하는 대신 필요한 작업 데이터와 수명을 명시합니다.</p><p>관련 기존 장 · <a href="../index.html#week-6">처리량·큐·역압력</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.threading.executioncontext.suppressflow">ExecutionContext.SuppressFlow</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.threading.asynclocal-1">AsyncLocal&lt;T&gt;</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="async-state-machine.html">이전 심화 · async 상태 머신과 awaiter</a><a href="async-signals.html">다음 심화 · 비동기 완료 신호와 상호 배제</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

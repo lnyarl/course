@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>캐시 지연과 메모리 대역폭 · 운영체제 메모리 관리 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">운영체제 메모리 관리 심화</a></header>
+<main>
+<h1>캐시 지연과 메모리 대역폭</h1>
+<p class="connection">선수 장 · <a href="../01-hierarchy-address-space.html">메모리 계층과 프로세스 주소 공간</a></p>
+<p class="lead">1장에서 메모리 지연의 자릿수를 배웠습니다. 같은 크기의 배열을 읽는데도 순차 합산과 연결 목록 탐색의 시간이 다른 이유를 요청 의존성과 전송량으로 나눕니다.</p>
+<section><h2>지연을 숨길 수 있는 접근과 없는 접근</h2>
+<p>순차 배열 a[i]를 읽는 반복문은 다음 주소를 미리 계산할 수 있습니다. CPU의 여러 미처리 메모리 요청과 프리페치가 겹치면 처리량은 개별 DRAM 지연의 역수보다 커질 수 있습니다. 반면 i = next[i]처럼 다음 주소가 방금 읽은 값에 달린 탐색은 그 체인을 쉽게 겹치지 못합니다. 같은 캐시 miss 수여도 critical path와 동시 요청 수가 다르면 경과 시간이 달라집니다.</p>
+<p>한 접근의 지연 L이 100ns이고 독립 요청 M개를 동시에 유지한다고 가정하면 단순 상한은 M/L회 접근입니다. 64B씩 가져온다면 M=1은 약 0.64GB/s, M=8은 약 5.12GB/s라는 계산이 됩니다. 이는 교육용 상한 계산이며 캐시·버스·프리페처·실행 명령 비용을 생략했습니다. 실제 대역폭을 제시할 때는 읽은 유효 바이트와 메모리 계층에서 이동한 바이트도 구분합니다.</p></section>
+<section><h2>작업 집합과 측정 경계를 고정하기</h2>
+<p>배열 크기, stride, 반복 횟수, 난수 seed, 스레드 수를 실험 입력으로 남깁니다. 컴파일러가 결과를 쓰지 않는 루프를 지우지 않도록 합계를 출력하고, 초기화와 첫 페이지 fault는 측정 구간 밖에서 수행한 경우 그 사실을 기록합니다. 캐시에 들어가는 배열과 LLC보다 큰 배열을 같은 조건이라고 보고 비교하면 원인을 잘못 설명합니다.</p>
+<p>Linux에서 허용된 환경이면 perf stat -r 5 -e cycles,instructions,cache-misses -- ./bench로 같은 실행을 반복합니다. 이벤트 이름·의미는 CPU마다 다르고 cache-misses가 정확한 DRAM 전송 바이트 수는 아닙니다. 경과 시간·IPC·작업량을 함께 기록하고 이벤트 접근이 거절되면 권한 또는 가상화 제한으로 남깁니다. 13장의 NUMA 배치가 바뀌면 이 비교도 다시 해야 합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>먼저 독립 요청 M=1과 M=8의 교육용 상한을 손으로 계산합니다. 이후 자신이 가진 배열 순차 합산 프로그램과 고정 seed의 next 배열 탐색 프로그램에서 작업 집합·접근 횟수를 같게 두고 5회 측정하세요. 실제 기록 표에는 평균 하나 대신 각 실행 시간과 환경을 적습니다.</p>
+<details><summary>의존 체인 한 개의 계산 모델</summary><p>예상 상한은 1/100ns=천만 접근/s, 64B 기준 0.64GB/s입니다. 실측값이 아니라 겹칠 요청이 없다는 가정의 결과입니다.</p></details>
+<details><summary>독립 요청 여덟 개의 계산 모델</summary><p>예상 상한은 8배지만 실제 실행이 8배 빨라진다는 보장은 없습니다. 버스 포화나 명령·캐시 비용이 다음 제한일 수 있습니다. 실측은 perf 출력과 프로그램 경과 시간으로 별도 기록합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 단원은 특정 CPU의 성능 숫자를 보장하지 않습니다. 캐시 miss를 곧바로 대역폭 부족으로 해석하지 않는 것이 핵심입니다. 다음 13장에서는 공유 캐시 라인과 NUMA 거리 때문에 독립 요청의 비용까지 달라지는 경로를 봅니다.</p><p>관련 기존 장 · <a href="../13-numa-hugepages-cache.html">NUMA, Huge Page, 캐시와 메모리 모델</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://man7.org/linux/man-pages/man1/perf-stat.1.html">perf stat: 반복 측정과 이벤트 통계</a></li><li><a href="https://docs.kernel.org/admin-guide/perf-security.html">perf 관측 권한과 보안 경계</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="publication-order-and-lifetime.html">다음 심화 · 메모리 게시 순서와 객체 수명</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

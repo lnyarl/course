@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>드라이버 DMA와 제거 시 자원 회수 · 리눅스 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">리눅스 커널 심화</a></header>
+<main>
+<h1>드라이버 DMA와 제거 시 자원 회수</h1>
+<p class="connection">선수 장 · <a href="../24-modules.html">커널 빌드와 드라이버 입문</a></p>
+<p class="lead">24장의 miscdevice는 하드웨어 요청을 단순화했습니다. 실제 장치에서는 probe에서 얻은 MMIO·IRQ·DMA와 remove에서 끝내야 하는 비동기 참조를 함께 관리합니다.</p>
+<section><h2>probe 성공을 자원 획득 단계로 분해하기</h2>
+<p>드라이버는 장치의 자원을 확인하고 MMIO를 적절한 인터페이스로 매핑하며 IRQ와 DMA 버퍼를 준비합니다. CPU 가상 주소를 장치 descriptor에 그대로 넣지 않고 dma_map_single 또는 dma_map_sg의 결과와 오류 검사를 사용합니다. 실제 마스크·정렬·전송 방향은 해당 장치와 DMA API 계약에 맞춥니다.</p>
+<p>streaming DMA 매핑 뒤 CPU와 장치의 사용 구간을 분리하고 재사용할 때 필요한 동기화를 수행합니다. coherent 버퍼도 descriptor 내용을 쓴 순서와 장치에 소유권을 넘기는 순서를 별도 배리어·MMIO 계약으로 조율해야 합니다. IOMMU가 있다는 사실만으로 모든 잘못된 수명·순서 문제가 해결되는 것은 아닙니다.</p></section>
+<section><h2>remove의 핵심은 새 작업 차단과 기존 작업 종료</h2>
+<p>제거에서는 새 사용자 요청과 새 장치 작업을 막고 진행 중 DMA·IRQ·work가 더 이상 버퍼를 사용하지 않게 만든 뒤 자원을 회수합니다. 구체적 순서는 장치와 락 관계에 의존합니다. 예를 들어 완료 경로가 필요한 락을 잡은 채 그 완료를 동기 대기하면 교착을 만들 수 있으므로 작업 종료 API의 대기 조건까지 읽어야 합니다.</p>
+<p>devm 계열은 특정 자원의 정리를 연결해 주지만 비동기 사용자가 이미 멈췄다는 보장은 아닙니다. 자동 해제가 콜백보다 먼저 일어나지 않도록 요청 차단·quiesce·참조 해제의 불변식을 설계합니다. open fd·타이머·작업 항목이 소유한 참조를 모두 표에 놓고 마지막 접근이 마지막 free보다 앞에 있는지 검토하세요.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>실제 장치를 제거하지 않고 드라이버 소스의 probe/remove 경로만 읽습니다. 할당·매핑·등록마다 획득표를 만들고 각 해제의 전제 조건을 적으세요. 교육용으로 DMA 진행 중/완료 후 두 사건 순서를 비교합니다.</p>
+<details><summary>DMA가 진행 중인데 버퍼를 먼저 해제</summary><p>예상 설계 판정: 수명 불변식을 위반합니다. 이를 실행해 시스템 오류를 재현하지 말고 종료 대기와 소유권 회수 순서를 수정하는 검토 과제로 둡니다.</p></details>
+<details><summary>새 제출 차단→진행 종료 확인→unmap/free</summary><p>예상 설계 판정: 기본 수명 순서를 만족합니다. 실제 락·IRQ 문맥·장치 완료 의미까지 확인해야 드라이버 전체 안전성을 말할 수 있습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>실제 DMA나 모듈 로드·제거를 검증한 결과는 아닙니다. 27장 오류 분석에서는 발견된 스택과 최초 수명 위반이 다른 시점일 수 있음을 이 자원표로 설명합니다.</p><p>관련 기존 장 · <a href="../27-crash-analysis.html">커널 오류와 크래시 분석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/6.18/core-api/dma-api-howto.html">Linux 6.18 DMA mapping 가이드</a></li><li><a href="https://docs.kernel.org/6.18/driver-api/driver-model/devres.html">devres 자원 수명과 범위</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="bpf-verifier-core.html">이전 심화 · BPF의 검증·연결·이식성</a><a href="kvm-vcpu-boundary.html">다음 심화 · KVM VM·vCPU와 호스트 실행 경계</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>수신 경로에서 드롭 지점 찾기 · TCP/IP 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">TCP/IP 심화</a></header>
+<main>
+<h1>수신 경로에서 드롭 지점 찾기</h1>
+<p class="connection">선수 장 · <a href="../13-performance.html">13장 성능 분석과 도구</a></p>
+<p class="lead">요청은 타임아웃됐지만 호스트는 패킷을 받고 있습니다. NIC, CPU, 소켓 중 어디서 적체되는지 지표를 나눠 봅니다.</p>
+<section><h2>큐마다 다른 관찰 지점</h2>
+<p>장치의 RX ring부터 드라이버의 NAPI poll, CPU별 프로토콜 처리, 소켓 수신 버퍼, 앱의 읽기까지 여러 경계가 있습니다. 같은 요청을 보더라도 각 단계의 카운터가 가리키는 작업은 다릅니다.</p>
+<p>ethtool -S는 인터페이스와 드라이버 통계입니다. /proc/net/softnet_stat은 CPU별 처리의 단서이고, ss -tin은 연결 단위 상태를 보여 줍니다. 누적값을 그대로 비교하지 말고 같은 관측 창에서 변화량을 기록합니다.</p></section>
+<section><h2>흐름 분산과 캡처 위치</h2>
+<p>RSS는 하드웨어 RX 큐로, RPS는 이후 소프트웨어 처리로 흐름을 분배할 수 있습니다. 전체 CPU 평균이 낮아도 한 큐와 CPU에 집중된 흐름에서 드롭이 생길 수 있습니다.</p>
+<p>오프로드 때문에 호스트 캡처의 분할 단위가 실제 선로와 다를 수 있습니다. 송신측의 큰 세그먼트 하나만 보고 경로 MTU 장애로 결론 내리지 말고 반대편 캡처와 카운터를 맞춥니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>60초 전후 카운터 차이를 먼저 뺀 뒤 어느 경계의 데이터를 더 수집할지 선택하세요. 장치마다 세부 카운터 이름이 다르다고 가정합니다.</p>
+<details><summary>NIC 수신 누락 +800, softnet 변화 없음</summary><p>우선 해당 인터페이스와 큐의 드라이버 카운터 정의, 큐별 부하를 확인합니다.</p></details>
+<details><summary>NIC 누락 0, 특정 CPU softnet 드롭 +900</summary><p>해당 CPU로 흐름이 모였는지 확인합니다. 애플리케이션이 늦게 읽는 현상은 소켓 대기 변화로 따로 대조합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>숫자는 합성 자료입니다. 14장에서는 양단 캡처로 처음 가설을 반증하는 절차를 적용합니다.</p><p>관련 기존 장 · <a href="../14-lab.html">14장 종합 실습</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://docs.kernel.org/networking/scaling.html">Linux 네트워크 분산</a></li><li><a href="https://docs.kernel.org/networking/napi.html">Linux NAPI</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="socket-server.html">이전 심화 · 논블로킹 소켓과 메시지 수명</a><a href="virtual-packet.html">다음 심화 · 가상 링크와 오버레이 MTU</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

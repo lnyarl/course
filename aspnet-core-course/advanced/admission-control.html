@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate limiting·timeout·과부하 제어 · ASP.NET Core 구조와 동작 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">ASP.NET Core 구조와 동작 심화</a></header>
+<main>
+<h1>Rate limiting·timeout·과부하 제어</h1>
+<p class="connection">선수 장 · <a href="../index.html#chapter-16">부하와 처리량 측정</a></p>
+<p class="lead">느려진 서버가 모든 요청을 받아들이면 처리한 결과도 클라이언트 timeout 뒤에 도착할 수 있습니다. 유한 큐의 원리를 HTTP 입장 정책으로 연결합니다.</p>
+<section><h2>속도·동시성·대기열을 따로 제한하기</h2>
+<p>토큰 버킷 같은 rate limiter는 시간당 허용량을, concurrency limiter는 동시에 점유할 permit 수를 제한합니다. 느린 요청이 많으면 낮은 요청률에서도 동시성은 높을 수 있습니다. QueueLimit은 실행 permit과 별도로 대기 요청의 상한을 정합니다.</p>
+<p><code>AddRateLimiter</code>에서 이름 있는 concurrency 정책의 PermitLimit과 QueueLimit을 작게 정하고 endpoint에 <code>RequireRateLimiting</code>을 연결합니다. 메타데이터를 쓰는 정책은 라우팅 결과 뒤에 적용되게 구성합니다. 거절 상태와 클라이언트의 재시도 안내도 API 계약으로 명시합니다.</p></section>
+<section><h2>취소 전달과 다중 인스턴스 경계</h2>
+<p>요청 timeout middleware는 실행 중인 계산을 강제로 제거하지 않습니다. 하위 I/O에 취소 토큰을 전달하고 CPU 루프도 협력적으로 확인해야 자원을 돌려받습니다. timeout 응답을 썼다고 DB commit이 롤백됐다는 뜻은 아닙니다.</p>
+<p>프로세스 안 limiter를 인스턴스 세 개에 놓으면 전체 허용량이 단일 인스턴스 설정과 같지 않습니다. 사용자·조직·경로 중 어떤 키로 나눌지, 공유 제한 저장소가 실패하면 어떤 기능을 수용할지 정책을 정합니다. 계수기를 분산했다는 사실만으로 공정성이나 업무 정확성이 생기지는 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>로컬 endpoint에 지연 500ms를 주고 concurrency permit 2, 대기열 2를 설정하세요. 정상 부하와 짧은 작은 burst를 비교해 실행 중·대기·거절·완료 수를 기록합니다. 대기열 0과 2를 비교하고 취소 후 permit이 회수되는지도 확인하세요.</p>
+<details><summary>permit 2, 대기열 0</summary><p>실행 여유를 넘는 요청은 기다리지 않고 거절됩니다. 수용한 요청의 완료와 빠른 거절을 따로 집계합니다.</p></details>
+<details><summary>대기열 확대만 적용</summary><p>burst를 흡수할 수 있지만 처리 용량은 그대로여서 대기 시간이 증가할 수 있습니다. 성공률과 timeout을 함께 봐야 합니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>실습은 자신이 띄운 로컬 서버에 작은 부하만 사용합니다. 다음 운영 장에서는 거절 증가와 readiness 실패를 같은 신호로 취급하지 않고 회복 과정을 관측합니다.</p><p>관련 기존 장 · <a href="../index.html#chapter-15">준비 상태와 안전한 종료</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit">ASP.NET Core rate limiting</a></li><li><a href="https://learn.microsoft.com/en-us/aspnet/core/performance/timeouts">요청 timeout middleware</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="durable-outbox.html">이전 심화 · 영속 접수·Outbox·worker 복구</a><a href="integration-rehearsal.html">다음 심화 · API 통합 테스트와 배포 리허설</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

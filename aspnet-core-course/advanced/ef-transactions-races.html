@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EF Core 저장·트랜잭션·경합 실험 · ASP.NET Core 구조와 동작 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">ASP.NET Core 구조와 동작 심화</a></header>
+<main>
+<h1>EF Core 저장·트랜잭션·경합 실험</h1>
+<p class="connection">선수 장 · <a href="../index.html#chapter-9">LINQ 아래의 SQL과 트랜잭션</a></p>
+<p class="lead">한 요청에서 저장이 성공해도 두 요청이 같은 버전을 갱신하면 다른 문제가 생깁니다. LINQ와 SQL의 연결을 실제 제약조건과 충돌 결과까지 확인합니다.</p>
+<section><h2>두 context가 같은 과거를 읽었을 때</h2>
+<p>서로 다른 DbContext에서 같은 행을 읽고 각각 값을 바꿉니다. Version 속성에 <code>IsConcurrencyToken()</code>을 설정하면 UPDATE의 조건에 읽었던 버전이 포함됩니다. 애플리케이션 관리 Guid 버전이라면 새 갱신마다 <code>Guid.NewGuid()</code>를 지정하는 코드도 함께 구현해야 합니다.</p>
+<p>A를 SaveChangesAsync한 뒤 B를 저장하면 B가 본 버전이 더는 맞지 않아 <code>DbUpdateConcurrencyException</code>을 받을 수 있습니다. 낙관적 충돌은 모든 입력 오류나 unique 위반과 같은 예외가 아닙니다. 충돌 후 현재 값을 다시 읽고 재계산할지 사용자에게 돌려줄지 업무 계약으로 정합니다.</p></section>
+<section><h2>DB가 최종 불변식을 지키게 하기</h2>
+<p>같은 접수 키를 동시에 추가하지 못하게 하려면 메모리의 선행 조회만으로 부족합니다. 실제 테이블의 unique constraint가 최종 경쟁을 조정하고, provider가 돌려주는 제약 위반을 앱의 충돌 계약으로 변환합니다. DbContext를 여러 병렬 작업에서 공유하지 않습니다.</p>
+<p>여러 변경을 하나의 DB 트랜잭션에 묶는 것과 외부 HTTP 효과를 함께 원자화하는 것은 다릅니다. 실행 전략이 재시도하는 단위를 읽고, 사용자가 시작한 트랜잭션을 그 전략과 함께 쓸 때의 공식 패턴을 확인합니다. 재시도해도 안전한 작업 키와 결과 기록이 없으면 중복 효과가 생길 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>운영과 같은 종류의 로컬 테스트 DB를 준비하거나 차이를 명시한 관계형 SQLite 실습을 만드세요. 두 context에서 같은 버전을 읽고 A 저장 후 B 저장을 시도합니다. 이어 unique 키가 같은 두 삽입의 결과와 실행 SQL을 기록하고, 각 실패가 서로 다른 계약으로 응답되는지 검사하세요.</p>
+<details><summary>버전 조건 없는 갱신</summary><p>나중 저장이 앞선 변경을 덮을 수 있습니다. 요청마다 성공 응답만 세면 잃은 변경을 놓칩니다.</p></details>
+<details><summary>concurrency token과 unique 제약 적용</summary><p>갱신 충돌과 중복 삽입을 DB 결과로 분류할 수 있습니다. 충돌을 감지했다고 업무 재계산 정책까지 자동으로 정해지지는 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>SQLite나 InMemory 테스트의 성공을 다른 provider의 격리·SQL 의미로 일반화하지 않습니다. 테스트 장에서는 실제 DB를 포함한 경합 경로를 검증 범위로 표시합니다.</p><p>관련 기존 장 · <a href="../index.html#chapter-14">테스트가 증명하는 범위</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/ef/core/saving/concurrency">EF Core 동시성 충돌</a></li><li><a href="https://learn.microsoft.com/en-us/ef/core/saving/transactions">EF Core 트랜잭션</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="endpoint-execution.html">이전 심화 · 라우팅·binding·validation·filter의 실행 경로</a><a href="authentication-policies.html">다음 심화 · 인증 scheme·리소스 policy·키 수명</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

@@ -2861,7 +2861,7 @@ fn set_opaque(dir: &amp;Path) -&gt; Result&lt;()&gt; {
 
   <h2>실습 과제</h2>
   <ol>
-    <li><b>OCI 런타임 완성.</b> 10절 단계 A~F를 구현하고 <code>sudo ROOTFS=./rootfs ./check.sh</code>를 통과시킨 뒤 <code>git tag ch09</code>. Docker가 없다면 기대: 23개 PASS와 2부 SKIP.</li>
+    <li><b>OCI 런타임 완성.</b> 10절 단계 A~F를 구현하고 <code>sudo ROOTFS=./rootfs ./check.sh</code>를 통과시킨 뒤 <code>git tag ch09</code>. Docker 연동 검사를 실행할 수 없다면 기대: 23개 PASS, 제2부(Docker 연동)는 SKIP. 여기서 2부는 건너뛴 검사 개수가 아니라 검사 구간 이름이다.</li>
     <li><b>손으로 생명주기 돌리기.</b> <code>mkdir b &amp;&amp; cp -a rootfs b/ &amp;&amp; cd b &amp;&amp; sudo myctr spec</code>로 bundle을 만들고, args를 <code>["sleep", "100"]</code>으로 바꾼 뒤 <code>create</code> → <code>state</code> → <code>ls /run/myctr/&lt;id&gt;</code> → <code>start</code> → <code>state</code> → <code>kill</code> → <code>delete</code>를 차례로 실행하며 상태가 어떻게 바뀌는지 보세요. create 직후 <code>ps -o pid,stat,wchan:20,args -p &lt;pid&gt;</code>로 init이 fifo에서 잠든 것(<code>wchan</code>)도 확인하세요.</li>
     <li><b>Docker의 호출 엿보기.</b> 2절의 감시용 스크립트를 <code>trace</code> 런타임으로 등록하고 <code>docker run --rm --runtime=trace alpine:3.24 true</code>를 실행한 뒤, 기록된 config.json을 <code>jq '.linux.namespaces, .mounts[].destination'</code>로 살펴보세요. <code>docker run -m 64m --cpus 0.5 --read-only</code>를 주면 어디가 바뀌는지도 비교하세요.</li>
     <li><b>도전: <code>myctr exec</code>.</b> <code>exec --process process.json --detach --pid-file F ID</code>를 구현하세요. state.json의 pid로 <code>/proc/&lt;pid&gt;/ns/*</code>를 열어 setns하고, PID 네임스페이스는 setns 후 fork해야 그 안에서 태어납니다. cgroup에도 넣고, 같은 capability와 seccomp를 적용하세요.</li>

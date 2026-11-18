@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>논블로킹 소켓과 메시지 수명 · TCP/IP 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">TCP/IP 심화</a></header>
+<main>
+<h1>논블로킹 소켓과 메시지 수명</h1>
+<p class="connection">선수 장 · <a href="../06-application.html">6장 응용 계층과 소켓</a></p>
+<p class="lead">6장의 소켓 서버에 클라이언트가 본문을 여러 번 나눠 보내면, 서버는 읽기 통지와 메시지 완료를 구분해야 합니다.</p>
+<section><h2>연결별 프레이밍 상태</h2>
+<p>연결마다 헤더 처리 여부, 기대 길이, 처리하지 않은 바이트를 유지합니다. 읽기 준비 신호는 바이트를 읽어 볼 수 있다는 뜻입니다. 요청 한 건의 처리 권한은 전체 프레임이 모인 뒤에 생깁니다.</p>
+<p>EAGAIN은 현재 읽을 데이터가 없어 다시 대기하라는 신호입니다. EOF는 상대가 자신의 송신을 끝냈다는 뜻입니다. 마지막 메시지의 본문이 부족하면 잘린 프레임을 완료로 넘기지 않습니다.</p></section>
+<section><h2>쓰기 오프셋과 종료</h2>
+<p>쓰기 호출이 요청한 크기보다 적게 전송하면 오프셋을 전진시킨 뒤 나머지를 재개합니다. 미전송 데이터가 있을 때만 쓰기 이벤트를 기다리면 항상 쓰기 가능한 연결의 바쁜 반복을 줄입니다.</p>
+<p>엣지 트리거에서는 EAGAIN까지 읽는 패턴을 사용합니다. 공정성 때문에 중간에 처리 예산을 끊을 때는 남은 읽기를 명시적으로 재예약할 방법이 필요합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>본문 5바이트를 2와 3으로, 응답 6바이트를 2와 4로 나눕니다. 각 호출 뒤의 남은 바이트와 메시지를 넘긴 횟수를 적으세요.</p>
+<details><summary>부분 읽기 두 번 완료</summary><p>첫 호출 후 3바이트 보류, 두 번째 호출 후 요청 1건 전달. 응답은 앞 2바이트를 제외한 나머지 4바이트만 이어서 씁니다.</p></details>
+<details><summary>부분 본문 뒤 EOF</summary><p>정상 요청은 0건입니다. 이미 완성된 다른 요청의 응답 송신 가능 여부는 상대가 여전히 읽는지에 달려 있습니다.</p></details></section><p>실습 코드 · <a href="../../distributed-queue-course/02-tcp-protocol.html">메시지 큐 2장 TCP 실행 실습</a></p>
+<section><h2>실습의 경계와 다음 장</h2><p>메시지 큐 2장의 TCP 예제로 정상 프레임 분할 수신을 실제 실행할 수 있습니다. 9장의 half-close와 연결 시간 제약을 이어 읽으세요.</p><p>관련 기존 장 · <a href="../09-tcp-advanced.html">9장 TCP 심화 옵션</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.rfc-editor.org/rfc/rfc9293.html">RFC 9293</a></li><li><a href="https://man7.org/linux/man-pages/man7/epoll.7.html">Linux epoll(7)</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="rack-tlp.html">이전 심화 · 재전송 판단과 꼬리 손실</a><a href="queue-drop.html">다음 심화 · 수신 경로에서 드롭 지점 찾기</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

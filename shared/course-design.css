@@ -270,3 +270,9 @@ main :is(.grid-2,.grid-3)>*{min-width:0}
 :root[data-course=windows-kernel] #course-chrome .prog .bar i{display:block;height:100%;background:#175cd3}
 @media(min-width:901px){:root[data-course=windows-kernel] .design-course-menu{top:64px;height:calc(100vh - 64px);max-height:calc(100vh - 64px)}}
 @media(max-width:900px){:root[data-course=windows-kernel] #course-chrome .design-menu{margin-left:0}}
+
+/* Long chapter jumps should land immediately, including across interactive sections. */
+:root[data-course="gc"], :root[data-course="network-web"], :root[data-course="nodejs-advanced"], :root[data-course="os-memory"]{scroll-behavior:auto}
+#course-contents{scroll-margin-top:80px}
+.advanced-context{display:flex;flex-wrap:wrap;gap:.65rem 1.2rem;margin-block:2rem;padding:1rem 0;border-top:1px solid #cbd5e1;font-size:.94rem}
+.advanced-context a{color:#174ca4;text-underline-offset:.2em}

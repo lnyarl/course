@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UPDATE·DELETE와 저장 공간 회수 · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 데이터베이스 구현 심화</a></header>
+<main>
+<h1>UPDATE·DELETE와 저장 공간 회수</h1>
+<p class="connection">선수 장 · <a href="../04-tables-records.html">기존 4장 · 테이블과 RID</a></p>
+<p class="lead">4장은 행을 힙에 넣고 기본키에서 RID를 찾습니다. 이제 이름이 길어져 같은 슬롯에 들어가지 않는 UPDATE와 DELETE를 추가해 봅니다. 행 바이트만 지우면 색인이 이미 다른 행이 된 슬롯을 가리킬 수 있습니다. 목표는 행·색인·공간 관리의 세 변화를 한 연산으로 설명하는 것입니다.</p>
+<section><h2>위치와 정체성을 분리하기</h2>
+<p>학습 모형에서 슬롯은 (page=3, slot=2), 내용은 id=10·name=A입니다. 페이지 안 압축으로 바이트가 이동해도 슬롯 번호는 유지하고 슬롯 디렉터리의 offset만 바꾸면 RID가 유지됩니다. 반대로 삭제한 슬롯을 id=20에 재사용하면 위치가 같아도 다른 행입니다. 오래된 색인이나 호출자가 남아 있다면 단순 RID 비교로는 이를 알아낼 수 없습니다.</p>
+<p>재사용을 허용하는 확장 설계에서는 슬롯 generation을 증가시키거나, 오래된 참조가 없음을 증명한 후 재사용합니다. 예를 들어 (3,2,g=4)를 삭제한 다음 새 행은 (3,2,g=5)에 놓고, g=4 조회는 stale RID 오류로 거절합니다. 이는 현재 mydb RID에 이미 있는 필드가 아니라 이 단원에서 비교하는 설계입니다. 빈 슬롯 수와 연속 빈 공간도 별도로 세어야 합니다.</p></section>
+<section><h2>힙·색인·커밋의 변경을 묶기</h2>
+<p>기본키를 10에서 11로 바꾸면 새 키 중복 검사, 힙 행 변경, 옛 색인 제거, 새 색인 삽입이 모두 성공해야 합니다. 한 단계만 먼저 영속화하면 키 10이 사라졌는데 키 11로도 못 찾거나 두 키가 같은 행을 가리킬 수 있습니다. 기존 7장의 private workspace를 재사용한다면 이 변경들을 workspace에서 끝낸 후 하나의 WAL 커밋으로 설치하는 경계를 유지합니다.</p>
+<p>불변식은 살아 있는 각 기본키가 정확히 한 행으로 연결되고, 색인이 가리킨 행의 기본키가 조회 키와 같다는 것입니다. DELETE는 색인 엔트리와 행의 생존 상태를 함께 바꿉니다. 공간을 즉시 줄이는 일은 별도입니다. 살아 있는 참조를 검증하기 전에 빈 슬롯을 재사용하지 말고, 삭제·커밋·회수의 상태를 분리해서 기록하세요.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>먼저 삭제 후 재사용된 (3,2)가 무엇을 반환해야 할지 예측하세요. 아래 조건을 선택해 키→RID→행 경로를 비교하고, 종이에 슬롯 generation과 색인 엔트리를 적습니다. 실제 파일 검증으로 확장할 때는 임시 DB 사본에만 변경을 넣고 삭제 전·workspace 수정 후·커밋 후 각각 재열어 동일한 불변식을 검사합니다.</p>
+<details><summary>generation 없이 슬롯 재사용</summary><p>옛 색인이 (3,2)를 그대로 읽으면 id=20을 id=10의 결과로 잘못 반환할 수 있습니다. 위치의 재사용과 행의 동일성을 혼동한 반례입니다.</p></details>
+<details><summary>generation 검사 후 재사용</summary><p>옛 (3,2,4) 참조는 거절되고 새 (3,2,5)는 id=20을 읽습니다. id=10의 색인도 같은 커밋에서 제거해야 합니다.</p></details>
+<details><summary>workspace 수정 후 커밋 전 중단</summary><p>home에 변경을 쓰지 않은 모형에서는 재열기 후 id=10이 남습니다. 커밋 뒤라면 id=10은 없어야 하며 반쪽 색인 상태는 실패입니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>조건 선택 결과는 상태 전이의 예상값입니다. 현재 mydb SQL은 UPDATE·DELETE를 지원하지 않으며, 이 단원이 Rust 엔진에 해당 명령을 추가한 것은 아닙니다. 행 MVCC를 도입하면 삭제 표시와 실제 공간 회수 사이에 스냅샷 수명이 추가됩니다. 다음에는 기존 7장의 다중 파일 커밋 순서와 비교하세요.</p><p>관련 기존 장 · <a href="../07-wal-recovery.html">기존 7장 · 여러 파일의 원자적 복구</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.postgresql.org/docs/18/storage-page-layout.html">PostgreSQL 18 · 슬롯과 페이지 구조</a></li><li><a href="https://www.postgresql.org/docs/18/dml-update.html">PostgreSQL 18 · UPDATE</a></li><li><a href="https://www.postgresql.org/docs/18/dml-delete.html">PostgreSQL 18 · DELETE</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="secondary-composite-indexes.html">다음 심화 · 보조·복합 색인과 범위 계획</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

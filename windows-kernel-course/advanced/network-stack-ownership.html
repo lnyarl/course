@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows 네트워크 경로와 버퍼 소유권 · Windows 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Windows 커널 심화</a></header>
+<main>
+<h1>Windows 네트워크 경로와 버퍼 소유권</h1>
+<p class="connection">선수 장 · <a href="../11-io-system.html">I/O 시스템과 IRP</a></p>
+<p class="lead">11장에서 요청이 드라이버 스택을 지나 완료되는 흐름을 봤습니다. 네트워크에서는 소켓 요청·프로토콜 처리·NIC 버퍼의 완료 경계가 한 번의 send 성공과 일치하지 않을 수 있습니다.</p>
+<section><h2>소켓 성공과 전송 완료의 범위</h2>
+<p>Winsock 호출은 사용자 API 경계이고, 소켓의 커널 처리와 TCP/IP 스택, NIC 드라이버는 서로 다른 책임을 가집니다. Windows에서 AFD·TCPIP·NDIS 같은 이름을 만나면 요청, 프로토콜 상태, 어댑터 경계를 나눠 읽으세요. loopback이나 가상 스위치 경로는 물리 NIC를 지나는 경로와 다를 수 있으므로 그림 하나를 모든 패킷의 실행 경로로 단정하지 않습니다.</p>
+<p>애플리케이션의 send 성공은 보통 로컬 전송 경로가 데이터를 받아들였다는 의미이며 상대 애플리케이션의 업무 처리 완료는 아닙니다. TCP ACK도 상대 TCP 수신 확인으로서 업무 결과 저장을 증명하지 않습니다. 요청 ID로 애플리케이션 응답을 연결하고, 로컬 큐 대기·재전송·상대 응답 대기를 별도 구간으로 측정해야 합니다.</p></section>
+<section><h2>NDIS 버퍼와 WFP 정책의 다른 책임</h2>
+<p>NDIS에서 NET_BUFFER_LIST를 아래로 보낸 뒤에는 전송 완료가 반환되기 전까지 그 버퍼의 소유권 규칙을 지켜야 합니다. 수신 indication도 반환 경로와 버퍼 소유자가 따로 있습니다. 완료는 단순 카운터가 아니라 어느 계층이 버퍼를 재사용하거나 해제해도 되는지를 정하는 사건입니다. 참조와 완료 경로를 빠뜨리면 드라이버 제거 때 남은 요청을 설명할 수 없습니다.</p>
+<p>WFP는 네트워크 흐름의 정해진 계층에서 정책을 적용하는 기반입니다. NDIS 패킷 버퍼 처리와 WFP의 연결·흐름 분류를 같은 hook으로 읽으면 로그의 대상을 혼동합니다. 실제 조사에서는 주소·포트·프로토콜·프로세스와 필터 계층, 분류 시각을 함께 남기고 연결 거절인지 이후 전송 지연인지 먼저 구분합니다. 이 단원에서는 방화벽 규칙을 바꾸거나 차단 우회를 시도하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>Windows 개발 PC에서 Get-NetTCPConnection을 읽어 자신이 실행한 프로그램의 소켓만 OwningProcess로 묶습니다. 앱 로그의 요청 시작·send 반환·응답 수신 시각을 별도 열로 놓습니다. 아래 조건은 원리 비교용 예상 사례이며 실제 패킷 전달은 허용된 환경의 trace로 확인합니다.</p>
+<details><summary>send가 빠르게 반환하고 업무 응답이 늦음</summary><p>예상 판정: 로컬 접수 성공만으로 상대 처리가 빨랐다고 말할 수 없습니다. 상대 응답과 재전송·큐 대기 중 어디에 시간이 있는지 다음 증거를 정합니다.</p></details>
+<details><summary>loopback 소켓 통신</summary><p>예상 판정: 소켓·프로토콜 경계는 있어도 물리 NIC를 지났다는 증거는 아닙니다. NIC 카운터 변화가 작다는 이유만으로 요청이 없었다고 결론내리지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>직접 드라이버를 로드하거나 WFP 정책을 바꾸지 않습니다. 다음 디버깅 장에서 같은 요청의 실행·대기·완료 이벤트를 시간선으로 연결하세요.</p><p>관련 기존 장 · <a href="../15-debugging.html">커널 디버깅과 크래시 분석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/windows/win32/fwp/windows-filtering-platform-start-page">Windows Filtering Platform 개요</a></li><li><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/network/sending-network-data">NDIS 전송 완료와 NET_BUFFER_LIST 소유권</a></li><li><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/network/receiving-data-in-protocol-drivers">NDIS 수신 버퍼 반환 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="index.html">심화 목차</a><a href="pnp-power-request-lifetime.html">다음 심화 · PnP·전원 전이와 대기 요청 수명</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

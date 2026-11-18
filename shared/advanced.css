@@ -1,0 +1,46 @@
+:root {
+  color-scheme: light;
+  --ink: #182233;
+  --muted: #435269;
+  --line: #cbd5e1;
+  --link: #174ca4;
+  font: 17px/1.75 system-ui, sans-serif;
+  color: var(--ink);
+  background: #fff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; overflow-wrap: break-word; }
+a { color: var(--link); text-underline-offset: .2em; }
+a:focus-visible, summary:focus-visible { outline: 3px solid #174ca4; outline-offset: 4px; }
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem 1.2rem;
+  padding: 1rem max(1rem, calc((100% - 52rem) / 2));
+  border-bottom: 1px solid var(--line);
+  font-size: .92rem;
+}
+main { max-width: 54rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+h1 { font-size: clamp(1.8rem, 5vw, 2.8rem); line-height: 1.24; margin: 0 0 1.25rem; }
+h2 { font-size: 1.35rem; line-height: 1.35; margin: 0 0 .6rem; }
+p { margin: .65rem 0; }
+section { margin: 2rem 0; }
+.lead { font-size: 1.1rem; }
+.connection, .sources { color: var(--muted); font-size: .94rem; }
+code { background: #f1f5f9; padding: .08em .24em; overflow-wrap: anywhere; }
+.experiment { border-block: 1px solid var(--line); padding: 1.25rem 0; }
+details { border: 1px solid var(--line); border-radius: .32rem; padding: .6rem .9rem; margin: .65rem 0; }
+summary { cursor: pointer; font-weight: 600; }
+details[open] { background: #f8fafc; }
+.pager { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+.units { padding-inline-start: 1.6rem; }
+.units li { padding: .8rem .1rem; border-bottom: 1px solid var(--line); }
+.units li > a { font-weight: 700; }
+.units p { margin: .25rem 0; color: var(--muted); }
+@media print { header, .pager { display: none; } }
+.lab { margin-top: 1.4rem; padding: .8rem 1rem; border: 1px solid var(--line); }
+.lab h3 { margin: 0 0 .6rem; }
+.lab-inputs { display: flex; flex-wrap: wrap; gap: .85rem; }
+.lab-inputs label { display: grid; gap: .25rem; font-size: .92rem; }
+.lab-inputs input { width: 8rem; max-width: 100%; padding: .3rem .45rem; border: 1px solid #64748b; border-radius: .25rem; font: inherit; }
+.lab output { font-weight: 600; }

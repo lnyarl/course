@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WPR·WPA로 실행과 대기 분리하기 · Windows 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Windows 커널 심화</a></header>
+<main>
+<h1>WPR·WPA로 실행과 대기 분리하기</h1>
+<p class="connection">선수 장 · <a href="../15-debugging.html">커널 디버깅과 크래시 분석</a></p>
+<p class="lead">15장의 크래시 분석은 멈춘 시점의 상태를 읽었습니다. 성능 분석은 요청 시간선에서 CPU 실행과 실행 준비·I/O 대기를 나눠야 합니다.</p>
+<section><h2>trace를 수집하기 전에 질문을 정하기</h2>
+<p>WPR은 ETW 기반 이벤트를 수집하고 WPA는 ETL을 분석합니다. CPU sampling은 실행 중 비용의 표본을 찾는 데 적합하고, CSwitch·ReadyThread 같은 스케줄링 이벤트는 깨어난 뒤 실제 실행까지의 지연을 보는 데 도움이 됩니다. 샘플이 적게 찍힌 함수가 호출되지 않았다고 단정하거나 CPU 프로파일에 대기 시간이 모두 나타난다고 읽지 않습니다.</p>
+<p>수집 전 질문, 프로세스, 시작·종료 구간, 필요한 profile과 스택, 최대 수집 시간을 적습니다. wpr -status로 기존 세션을 먼저 확인하고 자신이 소유한 실습 세션만 다룹니다. 이미 준비된 개발 환경에서 WPR UI로 짧은 GeneralProfile 수집을 하되 다른 사용자의 trace 세션을 중단하지 않습니다. 심볼이 맞지 않으면 함수명을 억지로 추정하지 않습니다.</p></section>
+<section><h2>critical path와 측정 오버헤드</h2>
+<p>요청이 10ms 계산 후 두 외부 작업 30ms·70ms를 동시에 기다리고 5ms 조립한다면 단순 의존 그래프의 길이는 85ms입니다. 병렬 span을 모두 더해 115ms로 보고하면 응답 시간을 과장합니다. 스레드 이동·await·작업 ID를 연결해 어느 대기가 같은 요청에 속하는지 확인하고 겹친 CPU 실행도 중복 합산하지 않습니다.</p>
+<p>DPC/ISR이 길다는 관측은 어떤 CPU와 시간에 요청의 진행을 막았는지 연결해야 원인 가설이 됩니다. 수집 profile을 무겁게 하면 trace 자체의 비용과 파일 I/O가 달라질 수 있으므로 실행 전후 처리량·오류·경과 시간을 비교합니다. 평균 CPU가 낮아도 runnable 대기나 특정 코어의 긴 실행이 있을 수 있습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>먼저 10·30·70·5ms 의존 그래프의 예상 critical path를 계산합니다. WPR/WPA가 이미 준비된 개인 개발 VM에서 자신이 실행한 짧은 작업을 5초 이내 수집해 CPU Usage와 스케줄링 구간을 읽습니다. 실측 ETL의 수치와 아래 교육용 숫자는 섞지 않습니다.</p>
+<details><summary>30ms와 70ms 작업이 실제로 겹침</summary><p>교육용 예상값은 10+max(30,70)+5=85ms입니다. 실제 trace에서는 의존 관계와 시작 시점이 같았는지 먼저 확인합니다.</p></details>
+<details><summary>동일 작업이 차례로 실행됨</summary><p>교육용 예상값은 10+30+70+5=115ms입니다. API 이름이나 비동기 표기만으로 두 실행이 겹쳤다고 판단하지 않습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 단원에 실제 ETL이나 Windows 실측 결과가 내장되어 있지는 않습니다. 수집 권한·도구가 없으면 계산 실험만 완료로 기록합니다. 17장 프로젝트에서는 질문·원시 trace·해석·미확인을 함께 제출하세요.</p><p>관련 기존 장 · <a href="../17-expert-roadmap.html">전문가 로드맵과 실습 랩</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-recorder">WPR의 ETW 수집 범위</a></li><li><a href="https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-analyzer">WPA 분석 도구</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="registry-hive-consistency.html">이전 심화 · Registry 하이브와 캐시·영속성</a><a href="kmdf-cancel-completion-capstone.html">다음 심화 · KMDF 요청 취소·완료 캡스톤</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

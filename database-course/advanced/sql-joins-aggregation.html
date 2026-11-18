@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL JOIN·집계와 중복·NULL 계약 · Rust 데이터베이스 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Rust 데이터베이스 구현 심화</a></header>
+<main>
+<h1>SQL JOIN·집계와 중복·NULL 계약</h1>
+<p class="connection">선수 장 · <a href="../06-query-executor.html">기존 6장 · pull 실행기와 조인 API</a></p>
+<p class="lead">6장의 조인 API가 맞더라도 SQL 파서와 바인딩에 연결되지 않으면 SELECT의 일부일 뿐입니다. 두 주문과 같은 키의 두 고객 행을 조인해 봅니다. 관계형 질의의 결과는 자동으로 중복 제거되는 집합이 아니므로, 물리 알고리즘을 바꿔도 행의 개수와 NULL 처리가 같아야 합니다.</p>
+<section><h2>논리 결과를 먼저 고정하기</h2>
+<p>주문을 (orderId,customerId)=(1,10),(2,10),(3,NULL), 고객을 (customerId,name)=(10,A),(10,B),(NULL,N)로 둡니다. 등가 INNER JOIN은 1-A,1-B,2-A,2-B 네 행입니다. NULL=NULL 비교는 TRUE가 아니므로 주문 3과 고객 N은 매치되지 않습니다. customerId가 실제 기본키라면 고객 중복 자체를 거절해야 하지만, 이 실험은 비유일 조인 키의 중복을 보려는 입력입니다.</p>
+<p>LEFT JOIN은 주문 3을 오른쪽 값이 NULL인 행 하나로 추가해 총 다섯 행이 됩니다. 따라서 LEFT JOIN 결과의 COUNT(*)는 5, COUNT(name)은 4입니다. name별 GROUP BY를 하면 A=2, B=2, NULL=1이고 HAVING COUNT(*)&gt;=2는 A·B 그룹만 남깁니다. WHERE는 그룹을 만들기 전 행을 거르고 HAVING은 집계 후 그룹을 거른다는 실행 위치를 지켜야 합니다.</p></section>
+<section><h2>파서·바인더·물리 연산자의 계약</h2>
+<p>AST에는 좌우 입력, 조인 종류, ON 표현식, 그룹 키와 집계 표현식을 구분해 담습니다. 바인더는 o.customer_id와 c.customer_id를 서로 다른 입력 슬롯으로 해석하고, 모호한 무수식 열 이름을 오류로 처리합니다. 해시 조인은 키당 행 목록을 보관해야 네 결과를 보존합니다. merge join도 같은 키의 좌우 연속 구간을 모두 조합해야 합니다.</p>
+<p>실행 검사는 nested loop를 작은 데이터의 기준 결과로 삼고 hash·merge의 결과를 순서 없는 다중집합으로 비교합니다. ORDER BY가 없으면 출력 순서를 같은 계약으로 요구하지 않습니다. 빈 입력, 모든 키 NULL, 같은 키가 양쪽에 여러 번 나오는 입력을 포함하고, 집계의 빈 입력에서 COUNT와 SUM의 차이도 별도로 정합니다. 조인의 빠르기보다 결과 계약을 먼저 고정하는 이유입니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>INNER와 LEFT에서 결과 행 수를 먼저 예측한 뒤 조건을 선택하세요. 종이에 네 개의 10=10 조합을 그려 봅니다. 별도 SQL 환경에서는 VALUES로 위 두 입력을 CTE로 만들고 INNER JOIN, LEFT JOIN, COUNT(*)·COUNT(name)을 실행해 예상값과 비교하세요. 기존 mydb의 SQL에 JOIN을 보낸 것으로 가정하지 않습니다.</p>
+<details><summary>INNER JOIN, 중복 보존</summary><p>행은 1-A,1-B,2-A,2-B의 4개입니다. 고객 키당 마지막 행만 보존한 해시 테이블은 이 수를 줄이므로 잘못된 구현입니다.</p></details>
+<details><summary>LEFT JOIN과 COUNT</summary><p>행은 5개이며 COUNT(*)=5, COUNT(name)=4입니다. 매치되지 않은 주문 3도 한 행으로 보존됩니다.</p></details>
+<details><summary>LEFT JOIN 뒤 GROUP BY·HAVING</summary><p>A=2, B=2, NULL=1을 만든 뒤 HAVING COUNT(*)&gt;=2를 적용하면 A와 B만 남습니다. NULL 그룹을 ON의 NULL 등가 매치와 혼동하면 안 됩니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>조건 선택은 정확히 지정한 유한 입력의 계산입니다. 현재 엔진의 조인 API를 SQL JOIN·집계로 확장해 컴파일한 결과는 아닙니다. 메모리에 안 들어오는 그룹과 조인은 다음 외부 연산 주제이며, 구현할 때는 5장 AST와 6장 바인딩을 함께 수정해야 합니다.</p><p>관련 기존 장 · <a href="../05-sql-parser.html">기존 5장 · JOIN을 AST에 연결할 자리</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://www.postgresql.org/docs/18/queries-table-expressions.html">PostgreSQL 18 · JOIN·GROUP BY·HAVING</a></li><li><a href="https://www.postgresql.org/docs/18/functions-aggregate.html">PostgreSQL 18 · 집계 함수의 NULL·빈 입력</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="secondary-composite-indexes.html">이전 심화 · 보조·복합 색인과 범위 계획</a><a href="external-sort-hash-spill.html">다음 심화 · 메모리보다 큰 정렬과 해시의 spill</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

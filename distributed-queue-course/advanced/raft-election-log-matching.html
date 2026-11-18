@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft 선출·영속 투표와 로그 일치 · C# 메시지 큐 구현 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 메시지 큐 구현 심화</a></header>
+<main>
+<h1>Raft 선출·영속 투표와 로그 일치</h1>
+<p class="connection">선수 장 · <a href="../09-replication.html">기존 9장 · 정적 리더의 로그 복제</a></p>
+<p class="lead">정적 리더의 로그 사본이 두 개 있어도 누구를 새 리더로 뽑아도 되는 것은 아닙니다. 더 최신인 로그를 잃은 후보가 리더가 되거나 같은 term에서 두 후보에게 투표하면 서로 다른 미래가 생길 수 있습니다. 선출의 비교 기준과 AppendEntries의 이전 로그 검사를 나눠 살펴봅니다.</p>
+<section><h2>term·투표·최신 로그의 순서를 고정하기</h2>
+<p>3노드 고정 구성에서 요청 term이 현재보다 높으면 현재 term을 갱신하고 낡은 리더 역할을 내려놓습니다. 같은 term에서 이미 다른 후보에게 준 표를 재사용하지 않으며, 승인한 currentTerm·votedFor는 응답 전에 영속화해야 합니다. 재시작 때 잊어버린 표를 다시 주는 구현은 한 term의 선출 안전성을 깨뜨릴 수 있습니다.</p>
+<p>후보 로그의 최신성은 마지막 term을 먼저, 같으면 마지막 index를 비교합니다. 후보 (lastTerm=4,index=3)와 voter (lastTerm=3,index=10)라면 후보 쪽이 최신입니다. 길이가 길다는 이유로 voter를 무조건 최신이라 판정하지 않습니다. 반대로 term이 같고 후보 index가 더 작으면 최신성 조건을 통과하지 못합니다. 이 비교는 단순 다수 사본 수와 다른 규칙입니다.</p></section>
+<section><h2>AppendEntries가 공통 접두부를 확인하는 방법</h2>
+<p>리더가 prevIndex=2, prevTerm=3을 보냈는데 follower의 index 2 term이 2면 follower는 append를 거절합니다. index가 존재한다는 사실만으로는 충분하지 않습니다. 리더는 공통 접두부를 찾고 그 뒤의 충돌한 미커밋 suffix를 맞춘 후 복제를 다시 시도합니다. follower의 영속 기록 전에 성공 응답하면 디스크 장애 뒤 사본 수를 잘못 셀 수 있습니다.</p>
+<p>실험에서는 노드별 term·votedFor·로그의 (index,term), 승인/거절 사유를 표로 남깁니다. 네트워크 전달 순서와 프로세스 생존을 구분하고, 높은 term 응답을 늦게 받은 옛 리더가 즉시 step down하는지도 확인합니다. 기존 ClusterLab의 선출 반례는 규칙을 점검하는 출발점이며 실제 다중 프로세스 RPC·재시작 구현 전체와 같지는 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>세 노드의 마지막 (term,index)를 적은 뒤 후보 최신성과 append 허용 여부를 먼저 예측하세요. 아래 조건에서 승인·거절 사유를 비교합니다. 다음 구현 단계는 임시 3프로세스에만 분단을 넣고, 재시작을 포함해 같은 term에서 영속 투표가 바뀌지 않는지 확인하는 것입니다.</p>
+<details><summary>후보 (4,3), voter (3,10)</summary><p>로그 최신성 비교에서는 후보가 통과합니다. 마지막 term이 먼저이며, 실제 표는 요청 term·기존 투표 조건도 충족해야 합니다.</p></details>
+<details><summary>후보 (4,3), voter (4,10)</summary><p>같은 마지막 term에서는 index 3이 뒤처지므로 최신성 조건으로 거절합니다.</p></details>
+<details><summary>prevIndex=2는 같지만 prevTerm 불일치</summary><p>append를 거절하고 공통 접두부를 다시 찾습니다. 같은 길이의 다른 로그를 그냥 이어 붙이면 안 됩니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>고정 3노드의 규칙별 유한 모형이며 완전한 Raft 구현이나 안전성 증명이 아닙니다. 구성 변경·시간 기반 lease·읽기 선형화·Byzantine 장애는 범위 밖입니다. 다음에는 기존 10장의 현재 term 커밋 조건을 이어서 확인하세요.</p><p>관련 기존 장 · <a href="../10-consensus-validation.html">기존 10장 · 선출·분단 검증</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://raft.github.io/raft.pdf">Raft 원전 · Figure 2와 선출·로그 복제</a></li><li><a href="https://github.com/etcd-io/raft/blob/main/doc.go">etcd Raft · 상태 영속화와 메시지 처리 계약</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="shutdown-rollout-protocol.html">이전 심화 · 정상 종료·롤링 교체와 프로토콜 진화</a><a href="raft-commit-snapshot-validation.html">다음 심화 · Raft 커밋·스냅샷 설치와 장애 불변식</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

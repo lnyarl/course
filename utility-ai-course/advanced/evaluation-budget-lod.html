@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>평가 예산·증분 계산과 LOD · 효용 기반 AI 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">효용 기반 AI 심화</a></header>
+<main>
+<h1>평가 예산·증분 계산과 LOD</h1>
+<p class="connection">선수 장 · <a href="../09-engine-architecture.html">기존 9장 · time-slicing과 결정 루프</a></p>
+<p class="lead">주민 여섯 명에서는 매번 모든 후보를 평가해도 괜찮았는데, 백 명으로 늘리자 프레임이 늦어집니다. 단순히 thinkEvery를 늘리면 위협 반응까지 늦어질 수 있습니다. 연산량 예산·가까운 주민의 우선순위·캐시 수명·평가 완료 시각을 분리해 무엇을 줄였는지 측정합니다.</p>
+<section><h2>연산량과 반응 지연을 같은 표에 놓기</h2>
+<p>주민 100명, 행동 20개, 대상 5개, consideration 4개이고 early-out이 없다고 고정하면 전체 재평가는 100×20×5×4=40000번입니다. 한 프레임 예산을 2000번으로 두면 전원을 한 번 평가하는 데 최소 20프레임이 필요합니다. 60fps가 유지된다는 추가 가정에서 약 0.333초입니다. 이것은 연산 수의 계산이지 해당 브라우저에서 60fps를 측정한 값이 아닙니다.</p>
+<p>실제 consideration은 한 번의 정수 비교와 raycast처럼 비용이 다릅니다. 개수 예산에 더해 performance.now()로 실제 경과 시간을 관측하고 평가 대기 나이·반응 지연·후보 수를 함께 기록합니다. 긴 단일 함수 실행을 중간에 안전하게 선점할 수 있는 것으로 가정하지 말고, 작업을 재개 가능한 작은 단계로 나누어 경계를 만드세요.</p></section>
+<section><h2>읽기 스냅샷과 확정 시점의 검증</h2>
+<p>증분 평가를 여러 프레임에 나누면 앞 후보와 뒤 후보가 서로 다른 세계를 볼 수 있습니다. 평가 세션의 world revision을 고정하거나, 확정 전에 선택 대상의 유효성을 다시 검사해야 합니다. LOD는 멀리 있는 주민의 평가 빈도를 줄이는 정책일 수 있지만, 늑대 등장 같은 이벤트가 관련 주민을 깨우는 경로는 별도로 설계할 수 있습니다.</p>
+<p>Web Worker로 평가를 옮겨도 DOM·Canvas와 공유 객체를 마음대로 읽는 구조가 자동으로 옮겨지지는 않습니다. 읽기 전용 데이터 snapshot을 보내고 결과에 평가 revision을 붙인 뒤, 메인 상태 소유자가 순서대로 적용하는 방식을 비교하세요. 오래된 결과를 어떻게 폐기할지, 복사·메시지 비용이 평가 절감보다 큰지도 측정해야 합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>전체 40000회와 프레임 예산 2000회에서 한 순회가 몇 프레임인지 먼저 계산하세요. 아래 조건으로 연산 수·반응 지연을 비교합니다. 실제 확장은 동일 seed·동일 주민 수로 평가 전후 performance.now()와 oldest evaluation age를 기록하고 장치·브라우저·실행 조건을 남기는 방식입니다.</p>
+<details><summary>한 프레임에 전원 평가</summary><p>명시한 입력에서는 40000회가 필요합니다. 한 프레임의 실제 ms는 별도로 측정해야 합니다.</p></details>
+<details><summary>프레임당 2000회, 중단 없는 균등 작업</summary><p>한 순회는 20프레임입니다. 60fps 가정에서 약 0.333초의 순회 간격이지만 긴 개별 작업·인터럽트 비용은 포함하지 않았습니다.</p></details>
+<details><summary>평가 revision7, 적용 직전 목표가 revision8에서 삭제</summary><p>오래된 결과를 그대로 실행하지 않고 유효성 검사를 해야 합니다. 계산량을 줄였어도 삭제된 대상을 선택하는 것은 실패입니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>평가 횟수 모형과 실제 시간 측정 방법을 구분합니다. 현재 엔진에 Web Worker·중단 가능한 evaluator·LOD를 추가한 것은 아닙니다. 조건 선택의 출력은 성능 보장이 아니며, 실제 속도는 데이터·입력 함수·복사 비용에 좌우됩니다. 다음에는 11장의 인스펙터에 평가 나이와 지연을 추가해 보세요.</p><p>관련 기존 장 · <a href="../11-tuning-debugging.html">기존 11장 · 비용·반응성 관측</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Performance/now">MDN · performance.now의 경과 시간 관측</a></li><li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers">MDN · Worker 메시지와 데이터 경계</a></li><li><a href="https://www.gameaipro.com/GameAIPro3/GameAIPro3_Chapter34_1000_NPCs_at_60_FPS.pdf">Robert Zubek · 대규모 NPC 실행 구조</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="reservations-roles-coordination.html">이전 심화 · 예약·역할과 여러 행위자의 조정</a><a href="snapshots-event-replay.html">다음 심화 · 월드 snapshot·난수 상태와 재생 디버깅</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

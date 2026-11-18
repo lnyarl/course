@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channel 파이프라인과 비동기 열거 · C# 동시성과 비동기 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 동시성과 비동기 심화</a></header>
+<main>
+<h1>Channel 파이프라인과 비동기 열거</h1>
+<p class="connection">선수 장 · <a href="../index.html#week-6">처리량·큐·역압력</a></p>
+<p class="lead">한 단계 큐의 상한을 정해도 다음 단계가 무한히 결과를 보관하면 전체 메모리는 제한되지 않습니다. 여러 단계의 완료와 오류를 한 수명으로 연결합니다.</p>
+<section><h2>각 경계의 용량을 합산하기</h2>
+<p>읽기 → 변환 → 저장 사이마다 bounded Channel을 두면 느린 저장이 변환과 읽기 생산자에게 전달됩니다. 각 생산자는 WriteAsync를 await해야 합니다. 이미 만든 입력 목록, 처리 중 항목, 다음 큐, 외부 연결 버퍼를 합쳐 전체 메모리 예산을 계산합니다.</p>
+<p><code>BoundedChannelFullMode.Wait</code>는 생산자를 기다리게 하지만 Drop 계열은 유실 정책입니다. 데이터를 잃어도 되는지 먼저 결정합니다. 여러 변환 worker가 같은 입력 순서를 보존한다고 가정하지 말고, 결과에 sequence를 붙여 재정렬할지 완료 순서를 허용할지 계약으로 정합니다.</p></section>
+<section><h2>완료 소유자와 오류 전파</h2>
+<p>생산자 하나라면 <code>try</code>에서 입력을 쓰고 <code>finally</code>에서 <code>writer.TryComplete(error)</code>를 호출하는 흐름을 읽습니다. 생산자가 여러 개면 마지막 생산자를 관리하는 상위 소유자가 완료를 한 번 결정해야 합니다. 소비자는 <code>await foreach (var item in reader.ReadAllAsync(ct))</code>로 정상 완료까지 읽습니다.</p>
+<p>취소 시 남은 항목을 버릴지 drain할지는 ReadAllAsync가 대신 정하지 않습니다. 오류 뒤 공유 CTS를 취소하고 각 worker의 종료를 모두 기다립니다. async iterator의 finally도 열거자가 DisposeAsync될 때 실행되므로 중간에 break하는 경로와 자원 해제를 함께 확인합니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>capacity 2의 입력·출력 채널과 변환 worker 2개를 만들고 저장 단계만 Task.Delay로 늦추세요. 생산자 WriteAsync 대기, 두 큐 길이, 실행 중 수와 완료 ID를 기록합니다. 정상 종료, 중간 변환 실패, 소비자 취소를 따로 실행해 누락·중복·살아 있는 worker 수를 확인하세요.</p>
+<details><summary>느린 소비자와 Wait 정책</summary><p>하류 큐가 찬 뒤 상류 WriteAsync도 기다립니다. 실행 슬롯뿐 아니라 각 경계의 대기량이 제한됩니다.</p></details>
+<details><summary>worker 하나가 실패했지만 형제 수명을 방치</summary><p>다른 worker나 생산자가 계속 기다릴 수 있습니다. 상위 소유자가 취소·완료를 전달하고 모든 종료를 관측해야 정리가 끝납니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>Channel은 영속 큐가 아니며 프로세스 재시작에서 항목을 복구하지 않습니다. 다음 실패 장에서는 drain·취소·정리 중 어떤 계약을 적용했는지 기록합니다.</p><p>관련 기존 장 · <a href="../index.html#week-7">실패·취소와 정리</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/dotnet/core/extensions/channels">System.Threading.Channels</a></li><li><a href="https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream">비동기 스트림</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="async-signals.html">이전 심화 · 비동기 완료 신호와 상호 배제</a><a href="cpu-partitioning.html">다음 심화 · CPU 병렬화와 데이터 분할</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

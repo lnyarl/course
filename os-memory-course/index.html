@@ -59,7 +59,7 @@
     <div class="stage"><svg id="roadmap" class="diagram" viewBox="0 0 880 420" style="min-width:640px"></svg></div>
   </div>
 
-  <h2 class="part-title">Part I. 개론 <small>주소 변환과 가상 메모리의 원리</small></h2>
+  <h2 class="part-title" id="course-contents">Part I. 개론 <small>주소 변환과 가상 메모리의 원리</small></h2>
   <div class="grid" id="g-basic"></div>
 
   <h2 class="part-title">Part II. 심화 <small>커널 내부, 하드웨어, 실제 시스템</small></h2>
@@ -124,7 +124,7 @@ MM.CHAPTERS.forEach(c => {
 // 로드맵 SVG
 const svg = document.getElementById("roadmap");
 const NS = "http://www.w3.org/2000/svg";
-const W = 128, H = 40;
+const W = 128, H = 56;
 const edges = [];
 for (const to in PRE) for (const from of PRE[to]) {
   const [x1, y1] = POS[from], [x2, y2] = POS[to];
@@ -135,13 +135,40 @@ for (const to in PRE) for (const from of PRE[to]) {
   p.dataset.from = from; p.dataset.to = to;
   svg.append(p); edges.push(p);
 }
+const labelMeasure = document.createElement("canvas").getContext("2d");
+labelMeasure.font = `10.5px ${getComputedStyle(svg).fontFamily}`;
+function wrapTitle(title) {
+  const lines = [];
+  let line = "";
+  for (const word of title.split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (labelMeasure.measureText(candidate).width <= W - 12) {
+      line = candidate;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = "";
+    for (const char of word) {
+      if (line && labelMeasure.measureText(line + char).width > W - 12) {
+        lines.push(line);
+        line = "";
+      }
+      line += char;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
 MM.CHAPTERS.forEach(c => {
   const [x, y] = POS[c.id];
   const g = document.createElementNS(NS, "g");
   g.setAttribute("class", "node " + cls[c.part]);
-  g.innerHTML = `<rect x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="8"></rect>
-    <text x="${x}" y="${y - 3}" text-anchor="middle" style="font-weight:700">${c.id}</text>
-    <text x="${x}" y="${y + 12}" text-anchor="middle" class="muted" style="font-size:10.5px">${c.title.split(/[:,]/)[0].slice(0, 15)}</text>`;
+  const lines = wrapTitle(c.title);
+  const numberY = y - lines.length * 11 / 2 + 1;
+  g.innerHTML = `<title>${c.id}. ${c.title}</title>
+    <rect x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="8"></rect>
+    <text x="${x}" y="${numberY}" text-anchor="middle" style="font-weight:700">${c.id}</text>
+    <text text-anchor="middle" class="muted" style="font-size:10.5px">${lines.map((line, i) => `<tspan x="${x}" y="${numberY + 14 + i * 11}">${line}</tspan>`).join("")}</text>`;
   g.onmouseenter = () => {
     // 이 챕터에 이르는 모든 선수 경로 강조
     const need = new Set([c.id]), stack = [c.id];

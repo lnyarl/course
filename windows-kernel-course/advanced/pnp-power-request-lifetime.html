@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PnP·전원 전이와 대기 요청 수명 · Windows 커널 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">Windows 커널 심화</a></header>
+<main>
+<h1>PnP·전원 전이와 대기 요청 수명</h1>
+<p class="connection">선수 장 · <a href="../14-driver-development.html">커널 드라이버 개발</a></p>
+<p class="lead">14장의 최소 KMDF 장치가 읽기에 응답한다고 끝은 아닙니다. 장치가 멈추거나 전원 상태를 바꾸는 동안 큐에 남은 요청을 누가 책임지는지 정해야 합니다.</p>
+<section><h2>PnP 상태와 전원 상태를 별개 축으로 보기</h2>
+<p>장치가 시스템에 존재한다는 PnP 상태와 실제 하드웨어를 사용할 수 있는 D0/Dx 상태는 다릅니다. WDF는 PnP·전원 상태 기계를 관리하고, 기본적인 power-managed 큐는 하드웨어가 사용할 수 있는 상태에 맞춰 요청 전달을 조율합니다. 드라이버는 모든 전이를 손으로 다시 구현하기보다 필요한 콜백에서 장치별 자원을 준비하고 정리합니다.</p>
+<p>EvtDevicePrepareHardware에서 자원을 준비하고 EvtDeviceD0Entry/D0Exit에서 장치 동작을 조정하는 역할을 구분합니다. 실제 장치·큐 구성에 따라 콜백과 순서는 달라질 수 있으므로 WDF 문서의 해당 객체 종류를 기준으로 읽습니다. 소프트웨어 전용 장치에 물리 장치와 같은 전원 작업을 불필요하게 추가하지 않습니다.</p></section>
+<section><h2>중지·제거 시 소유한 요청을 설명하기</h2>
+<p>큐 안에 아직 전달되지 않은 요청과 드라이버가 이미 꺼내 소유한 요청은 정리 책임이 다릅니다. 중지 알림을 받았을 때 요청을 완료할지, 재큐잉할지, 중지 승인을 할지 해당 큐의 계약을 따릅니다. EvtIoStop에서 아무 조치 없이 장치 버퍼를 해제하면 나중 완료 경로가 해제된 상태를 사용할 수 있습니다.</p>
+<p>제거 순서의 불변식은 새 하드웨어 작업을 막고, 이미 시작한 DMA·인터럽트·워크의 종료를 확인한 다음 관련 메모리를 해제하는 것입니다. surprise removal에서는 장치에 더 접근할 수 없을 수 있어 정상 종료의 마지막 레지스터 쓰기를 그대로 반복하면 안 됩니다. 사용자에게 돌아가는 요청 결과와 내부 자원 회수 완료도 같은 사건으로 처리하지 않습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>Get-PnpDevice -PresentOnly로 장치 상태를 읽기만 하고 장치를 비활성화하지 않습니다. 종이 큐에 Q1(미전달), Q2(드라이버 소유), Q3(하드웨어 진행)을 놓고 D0→중지→제거의 각 단계에서 소유자·완료·메모리 해제 순서를 적습니다.</p>
+<details><summary>미전달 요청만 있는 상태에서 큐 중지</summary><p>예상 모델 결과: 새 하드웨어 작업을 시작하지 않고 큐 정책에 따라 대기/취소를 정리할 수 있습니다. 실측 콜백 순서는 실제 드라이버 구성에서 확인해야 합니다.</p></details>
+<details><summary>이미 드라이버가 소유한 요청이 있는 제거</summary><p>예상 모델 결과: 큐를 닫았다는 사실만으로 Q2/Q3 수명이 끝나지 않습니다. 종료/취소와 완료의 소유권을 결정하기 전 메모리를 해제할 수 없습니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>실제 장치 제거·절전 전환을 자동 실행하지 않습니다. 정리 순서를 정한 뒤 다음 장에서 남은 IRP와 대기 스택을 읽을 때 어느 소유자가 진행을 막는지 확인합니다.</p><p>관련 기존 장 · <a href="../15-debugging.html">커널 디버깅과 크래시 분석</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/porting-pnp-and-power-management-functionality">WDF PnP와 전원 상태 기계</a></li><li><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/using-power-managed-i-o-queues">Power-managed I/O 큐</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="network-stack-ownership.html">이전 심화 · Windows 네트워크 경로와 버퍼 소유권</a><a href="local-ipc-and-impersonation.html">다음 심화 · 로컬 IPC와 요청자 보안 문맥</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>

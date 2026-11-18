@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오류·상태·로그 효과의 조합 순서 · C# 범주론 심화</title>
+<link rel="stylesheet" href="../../shared/advanced.css">
+</head>
+<body>
+<header><a href="../../index.html">코스 목록</a><a href="index.html">C# 범주론 심화</a></header>
+<main>
+<h1>오류·상태·로그 효과의 조합 순서</h1>
+<p class="connection">선수 장 · <a href="../21-monads-effects.html">기존 21장 · Reader·Writer·State</a></p>
+<p class="lead">카운터를 5에서 6으로 바꾼 뒤 오류가 났습니다. 호출자는 새 상태 6을 볼 수 있을까요? 두 효과를 모두 사용했다는 설명만으로는 답이 정해지지 않습니다. 오류가 상태 결과를 감싸는지, 상태가 오류 결과를 감싸는지 타입을 펼쳐 보면 정책 차이를 직접 읽을 수 있습니다.</p>
+<section><h2>바깥 구조가 실패 때 남는 정보를 정한다</h2>
+<p>첫 타입을 S→Result&lt;(A,S)&gt;로 둡니다. 성공이면 값과 다음 상태를 반환하지만 오류이면 Result의 실패 분기만 남아 다음 상태가 없습니다. 둘째는 S→(Result&lt;A&gt;,S)입니다. 실패해도 쌍의 두 번째 성분으로 상태를 반환할 수 있습니다. C#에서는 Result를 이 교재의 성공/오류 합 타입으로 정의한 뒤 구체 Func 타입으로 표현할 수 있으며, 이 이름이 표준 BCL 타입이라는 뜻은 아닙니다.</p>
+<p>초기 상태 5에서 증가 후 실패하는 순수 계산을 전개하면 첫 모형은 Error(&quot;boom&quot;), 둘째는 (Error(&quot;boom&quot;),6)입니다. 첫 결과에 새 상태가 없다는 것이 이미 수행한 DB 변경이나 전역 변수 변경을 되돌렸다는 뜻은 아닙니다. 이 비교는 입력과 반환값으로만 상태를 전달하는 순수 계산에 한정합니다.</p></section>
+<section><h2>로그 보존과 catch 이후의 의미</h2>
+<p>로그도 Result&lt;(A,Log)&gt;이면 실패 때 로그를 반환할 자리가 없고, (Result&lt;A&gt;,Log)이면 실패와 로그를 함께 보존할 수 있습니다. 읽은 설정·증가한 상태·기록한 로그가 오류 처리 이후 어떤 형태로 보이는지 API 계약으로 정해야 합니다. 같은 효과 이름을 나열한 두 stack이 서로 교환 가능하다고 가정하면 디버그 로그나 업무 상태를 잃을 수 있습니다.</p>
+<p>오류를 catch하고 대체 계산을 실행할 때 어떤 상태에서 다시 시작하는지도 비교합니다. 원래 상태 5인지 실패 직전 상태 6인지 타입과 Bind·Catch 정의로 정해야 합니다. 변환기를 여러 겹 쌓는 일반 라이브러리보다 두 구체 타입의 Pure·Bind·실패 처리를 먼저 전개하고, 작은 상태와 오류 입력에서 양쪽 결과를 검증하는 편이 계산 경계를 이해하기 쉽습니다.</p></section>
+<section class="experiment"><h2>실습과 예상 관찰</h2><p>초기 5→증가→오류의 반환 타입을 먼저 쓰고 아래 두 조합을 선택하세요. C# 실습은 전역 카운터 없이 Func를 두 종류로 정의하고 같은 입력 5를 넣습니다. 성공 경로·실패 경로·catch 후 재시작의 결과와 로그를 각각 출력해 비교하세요.</p>
+<details><summary>S→Result&lt;(A,S)&gt;에서 증가 후 실패</summary><p>결과는 Error(boom)이며 반환된 다음 상태가 없습니다. 외부 세계를 롤백했다는 증거는 아닙니다.</p></details>
+<details><summary>S→(Result&lt;A&gt;,S)에서 증가 후 실패</summary><p>결과는 (Error(boom),6)입니다. 실패 결과와 갱신된 상태를 동시에 관찰할 수 있습니다.</p></details>
+<details><summary>(Result&lt;A&gt;,Log)에서 로그 기록 후 실패</summary><p>오류와 로그를 함께 보존할 수 있습니다. Result&lt;(A,Log)&gt;의 실패 분기와 정보량이 다릅니다.</p></details></section>
+<section><h2>실습의 경계와 다음 장</h2><p>이 실험은 순수한 효과 표현의 조합입니다. 예외 처리·DB 트랜잭션·취소·외부 I/O를 자동 구현하지 않습니다. Haskell의 transformer 원전은 연산의 타입을 확인하는 참고 자료이며 C# 코드에 그 고차 타입 문법을 그대로 옮기지 않습니다. 다음에는 22장의 합성 법칙에 각 조합의 정책을 대입하세요.</p><p>관련 기존 장 · <a href="../22-monads-categorically.html">기존 22장 · 합성과 법칙</a></p></section>
+<section class="sources"><h2>참고 자료</h2><ul><li><a href="https://hackage-content.haskell.org/package/transformers-0.6.3.0/docs/Control-Monad-Trans-State-Lazy.html">transformers · StateT의 상태 전달 타입</a></li><li><a href="https://hackage-content.haskell.org/package/transformers-0.6.3.0/docs/Control-Monad-Trans-Except.html">transformers · ExceptT의 오류 분기와 실행 중단</a></li></ul></section><nav class="pager" aria-label="심화 단원 이동"><a href="traversable-sequence-structure.html">이전 심화 · Traversable·sequence와 구조를 보존하는 순회</a><a href="free-dsl-interpreters.html">다음 심화 · Free 구조·명령 DSL과 테스트 해석기</a></nav>
+</main>
+<script defer src="../../shared/course-comments.js" data-root="main"></script>
+</body>
+</html>
